@@ -154,9 +154,7 @@ def generate_launch_description():
         
         # [LAUNCH FILES] #
         standard_bringup,
-        # [IMPORTANT: DO NOT BRING UP AN EXTRA CONTROL LAUNCH!]
-        # IF TWO CONTROL LAUNCHES ARE RUNNING SIMULTANEOUSLY,
-        # THERE WILL BE CORRUPTION IN THE /encoders AND /cmd_vel TOPICS
+ 
         # ============================ #
         
         # Data collection node
