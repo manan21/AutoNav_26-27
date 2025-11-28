@@ -62,7 +62,7 @@ data_publisher:
     # Test 000: DAQ Mode — Broad numeric topics, no images
     # Useful for debugging and exposing more signals into CSV
     t000: [
-      "/gps/fix",
+      "/gps_fix",
       "/odom",
       "/tf",
       "/encoders",
