@@ -59,6 +59,21 @@ data_publisher:
     # To add support for other types, modify data_publisher.cpp
     #
     
+    # Test 000: DAQ Mode — Broad numeric topics, no images
+    # Useful for debugging and exposing more signals into CSV
+    t000: [
+      "/gps_fix",
+      "/odom",
+      "/tf",
+      "/encoders",
+      "/cmd_vel",
+      "/scan",
+      "/imu/data",
+      "/local_costmap/costmap",
+      "/global_costmap/costmap",
+      "/plan"
+    ]
+
     # Test 001: GPS Calibration - Validates GPS accuracy and waypoint navigation
     t001: ["/gps_fix", "/odom", "/tf", "/encoders", "/cmd_vel"]
     
