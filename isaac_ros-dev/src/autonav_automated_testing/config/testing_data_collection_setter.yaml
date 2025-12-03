@@ -64,13 +64,10 @@ data_publisher:
     t000: [
       "/gps_fix",
       "/odom",
-      "/tf",
       "/encoders",
       "/cmd_vel",
       "/scan",
-      "/imu/data",
-      "/local_costmap/costmap",
-      "/global_costmap/costmap",
+      "/zed/zed_node/imu/data",
       "/plan"
     ]
 
