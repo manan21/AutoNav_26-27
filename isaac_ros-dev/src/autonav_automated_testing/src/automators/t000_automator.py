@@ -12,7 +12,7 @@ Behavior:
 
 import rclpy
 from base_automator import BaseAutomator
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import Joy, NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
@@ -23,6 +23,8 @@ class T000Automator(BaseAutomator):
         # State
         self.odom_online = False
         self.joy_online = False
+        self.gps_online = False
+        self.imu_online = False
         self.systems_ready = False
         self.waiting_for_trigger = False
         self.A_BUTTON_INDEX = 0
@@ -34,6 +36,8 @@ class T000Automator(BaseAutomator):
         # Subscribers
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.joy_sub = self.create_subscription(Joy, 'joy', self.joy_callback, 10)
+        self.gps_sub = self.create_subscription(NavSatFix, '/gps/fix', self.gps_callback, 10)
+        self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
 
         # Timers
         self.status_timer = self.create_timer(1.0, self.check_systems)
@@ -50,9 +54,11 @@ class T000Automator(BaseAutomator):
         self.get_logger().info('=== DAQ Mode Status Check ===')
         self.get_logger().info(f'Odometry:   {"ONLINE" if self.odom_online else "OFFLINE"}')
         self.get_logger().info(f'Joystick:   {"ONLINE" if self.joy_online else "OFFLINE"}')
+        self.get_logger().info(f'GPS:        {"ONLINE" if self.gps_online else "OFFLINE"}')
+        self.get_logger().info(f'IMU:        {"ONLINE" if self.imu_online else "OFFLINE"}')
         self.get_logger().info(f'Elapsed: {elapsed:.1f}s / {self.sensor_timeout}s')
         self.get_logger().info('================================')
-        if self.odom_online and self.joy_online:
+        if self.odom_online and self.joy_online and self.gps_online and self.imu_online:
             self.systems_ready = True
             self.status_timer.cancel()
             self.get_logger().info('\n' + '!'*50)
@@ -62,7 +68,7 @@ class T000Automator(BaseAutomator):
             self.waiting_timer = self.create_timer(2.0, self.print_waiting_message)
             return
         if elapsed > self.sensor_timeout:
-            self.get_logger().error('Sensor timeout — odom/joy not online.')
+            self.get_logger().error('Sensor timeout — odom/joy/gps/imu not online.')
             self.status_timer.cancel()
 
     def print_waiting_message(self):
@@ -74,6 +80,16 @@ class T000Automator(BaseAutomator):
         if not self.odom_online:
             self.odom_online = True
             self.get_logger().info('Odometry online')
+
+    def gps_callback(self, msg):
+        if not self.gps_online:
+            self.gps_online = True
+            self.get_logger().info('GPS online')
+
+    def imu_callback(self, msg):
+        if not self.imu_online:
+            self.imu_online = True
+            self.get_logger().info('IMU online')
 
     def joy_callback(self, msg: Joy):
         if not self.joy_online:
@@ -136,6 +152,7 @@ def main(args=None):
         if automator is not None:
             try:
                 automator.destroy_node()
+            
             except:
                 pass
         if rclpy.ok():
