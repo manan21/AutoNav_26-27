@@ -29,9 +29,16 @@ def generate_launch_description():
         default_value='false',
         description='Use simulation (Gazebo) clock if true'
     )
+    
+    camera_model = DeclareLaunchArgument(
+        'camera_model',
+        default_value='zed2i',
+        description='ZED camera model'
+    )
 
     # Package directories
     autonav_testing_share = get_package_share_directory('autonav_automated_testing')
+    zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
     control_share = FindPackageShare('control')
     gps_share = FindPackageShare('gps_handler')
     odom_share = FindPackageShare('odom_handler')
@@ -86,6 +93,15 @@ def generate_launch_description():
         }]
     )
 
+    # Include ZED camera launch file for camera and IMU data
+    zed_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(zed_pkg),
+        launch_arguments={
+            'camera_model': LaunchConfiguration('camera_model'),
+            'use_sim_time': LaunchConfiguration('use_sim_time')
+        }.items()
+    )
+
     # Include control launch file for motor control and /cmd_vel processing
     control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -119,10 +135,12 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time,
+        camera_model,
         # [NODES]
         gps_handler_node,
         odom_handler_node,
         # [LAUNCH FILES]
+        zed_launch,
         control_launch,
         # Data collection
         data_publisher_node,

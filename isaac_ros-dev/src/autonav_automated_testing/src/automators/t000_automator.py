@@ -36,7 +36,7 @@ class T000Automator(BaseAutomator):
         # Subscribers
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.joy_sub = self.create_subscription(Joy, 'joy', self.joy_callback, 10)
-        self.gps_sub = self.create_subscription(NavSatFix, '/gps/fix', self.gps_callback, 10)
+        self.gps_sub = self.create_subscription(NavSatFix, '/gps_fix', self.gps_callback, 10)
         self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
 
         # Timers
