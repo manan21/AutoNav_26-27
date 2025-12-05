@@ -69,7 +69,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'gps_port': '/dev/ttyUSB0'  # Adjust based on your GPS device
+            'gps_port': '/dev/serial/by-id/usb-Prolific_Technology_Inc._USB-Serial_Controller_D-if00-port0'  # Adjust based on your GPS device
         }]
     )
 
