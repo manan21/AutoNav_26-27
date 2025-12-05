@@ -40,8 +40,6 @@ def generate_launch_description():
     autonav_testing_share = get_package_share_directory('autonav_automated_testing')
     zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
     control_share = FindPackageShare('control')
-    gps_share = FindPackageShare('gps_handler')
-    odom_share = FindPackageShare('odom_handler')
 
     # Path to test data configuration file
     test_data_config = os.path.join(
