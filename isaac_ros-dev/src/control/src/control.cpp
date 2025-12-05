@@ -44,7 +44,6 @@ class ControlNode : public rclcpp::Node {
         configure_server = this->create_service<autonav_interfaces::srv::ConfigureControl>
              ("configure_control", std::bind(&ControlNode::configure, this, std::placeholders::_1, std::placeholders::_2));
 
-
     }
 
     serialib arduinoSerial;
@@ -276,15 +275,24 @@ class ControlNode : public rclcpp::Node {
         // ESTOP CALLBACK
 	
         
+        // ----- HARD GUARD FOR ENCODER PUBLISHER -----
+        auto existing_pubs = this->get_publishers_info_by_topic(encoder_topic, false);
 
+        if (!existing_pubs.empty()) {
+            RCLCPP_FATAL(
+                this->get_logger(),
+                "Another node already publishes %s. Not creating encoder publisher in this ControlNode.",
+                encoder_topic.c_str());
+            // DO NOT create encodersPub or encoder_timer_ here
+        } else {
+            // NAVIGATION ENCODER PUB
+            encodersPub = this->create_publisher<autonav_interfaces::msg::Encoders>(encoder_topic, 10);
 
-        //NAVIGATION ENCODER PUB
-        encodersPub = this->create_publisher<autonav_interfaces::msg::Encoders>(encoder_topic, 10);
-
-        encoder_timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(30),
-            std::bind(&ControlNode::publish_encoder_data, this)
-        );
+            encoder_timer_ = this->create_wall_timer(
+                std::chrono::milliseconds(30),
+                std::bind(&ControlNode::publish_encoder_data, this));
+        }
+        // ----- END HARD GUARD -----
 
        /* joy_timer_ = this->create_wall_timer(
             std::chrono::milliseconds(20),
@@ -297,10 +305,7 @@ class ControlNode : public rclcpp::Node {
 
 
         response->ret = 0;
-
-
     }
-
 };
 
 
