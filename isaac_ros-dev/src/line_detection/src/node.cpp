@@ -28,7 +28,7 @@ class LineDetectorNode : public rclcpp::Node {
 	public:
 
 	LineDetectorNode() : Node("lines"),
-	 tf_buffer(std::make_shared<rclcpp::Clock>(RCL_ROS_TIME)),
+	 tf_buffer(this->get_clock()),
 	  tf_listener(tf_buffer) {
 
 		// set parameters
@@ -135,7 +135,7 @@ sensor_msgs::msg::PointCloud2 createPointCloud(const std::vector<std::array<floa
 											   const std::string& frame_id) {
 	sensor_msgs::msg::PointCloud2 pointcloud;
 	pointcloud.header.frame_id = frame_id;
-	pointcloud.header.stamp = rclcpp::Clock().now();
+	pointcloud.header.stamp = node->get_clock()->now();
 	pointcloud.height = 1;
 	pointcloud.width = points.size();
 	pointcloud.is_dense = false;
@@ -255,8 +255,17 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
         transform_available = false;
     }
 
+    RCLCPP_INFO(get_logger(), "depth: %ux%u step=%u data=%zu enc=%s frame=%s",
+        depth_msg->width, depth_msg->height, depth_msg->step, depth_msg->data.size(),
+        depth_msg->encoding.c_str(), frame_id.c_str());
+
     // Process each line point
     for (int i = 0; i < line_points_len; i++) {
+        if (i == 0) {
+            RCLCPP_INFO(get_logger(), "first line point: (%d,%d)",
+                line_points[i].x, line_points[i].y);
+        }
+
         // Bounds checking
         if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
             line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
