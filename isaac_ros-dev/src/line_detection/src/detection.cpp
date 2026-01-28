@@ -315,57 +315,57 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
     // =========================
     // DEBUG: save 3 images once
     // =========================
-    static bool saved_debug_images = false;
-    if (!saved_debug_images) {
-        saved_debug_images = true;
+    // static bool saved_debug_images = false;
+    // if (!saved_debug_images) {
+    //     saved_debug_images = true;
 
-        const std::string out_dir = "line_debug";
-        std::filesystem::create_directories(out_dir);
+    //     const std::string out_dir = "line_debug";
+    //     std::filesystem::create_directories(out_dir);
 
-        // 1) Raw input (BGR)
-        cv::Mat raw_bgr;
-        if (image.channels() == 3) {
-            raw_bgr = image.clone();
-        } else if (image.channels() == 4) {
-            cv::cvtColor(image, raw_bgr, cv::COLOR_BGRA2BGR);
-        } else {
-            cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
-        }
+    //     // 1) Raw input (BGR)
+    //     cv::Mat raw_bgr;
+    //     if (image.channels() == 3) {
+    //         raw_bgr = image.clone();
+    //     } else if (image.channels() == 4) {
+    //         cv::cvtColor(image, raw_bgr, cv::COLOR_BGRA2BGR);
+    //     } else {
+    //         cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
+    //     }
 
-        // 2) Mask visualization (save as actual mask image)
-        // mask is already CV_8UC1 with values {0,255}
-        cv::imwrite(out_dir + "/line_mask.png", mask);
+    //     // 2) Mask visualization (save as actual mask image)
+    //     // mask is already CV_8UC1 with values {0,255}
+    //     cv::imwrite(out_dir + "/line_mask.png", mask);
 
-        // Optional: also save raw grayscale used for threshold/integral (often helpful)
-        // cv::imwrite(out_dir + "/line_gray.png", gray_img);
+    //     // Optional: also save raw grayscale used for threshold/integral (often helpful)
+    //     // cv::imwrite(out_dir + "/line_gray.png", gray_img);
 
-        // 3) Line points overlay (red points on raw)
-        cv::Mat lines_overlay = raw_bgr.clone();
-        const int n = *counter_return;
+    //     // 3) Line points overlay (red points on raw)
+    //     cv::Mat lines_overlay = raw_bgr.clone();
+    //     const int n = *counter_return;
 
-        for (int i = 0; i < n; i++) {
-            int x = output_return[i].x;
-            int y = output_return[i].y;
-            if (0 <= x && x < width && 0 <= y && y < height) {
-                // red dot
-                lines_overlay.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
-                // make it slightly more visible (tiny cross)
-                if (x + 1 < width) lines_overlay.at<cv::Vec3b>(y, x + 1) = cv::Vec3b(0, 0, 255);
-                if (x - 1 >= 0)   lines_overlay.at<cv::Vec3b>(y, x - 1) = cv::Vec3b(0, 0, 255);
-                if (y + 1 < height) lines_overlay.at<cv::Vec3b>(y + 1, x) = cv::Vec3b(0, 0, 255);
-                if (y - 1 >= 0)     lines_overlay.at<cv::Vec3b>(y - 1, x) = cv::Vec3b(0, 0, 255);
-            }
-        }
+    //     for (int i = 0; i < n; i++) {
+    //         int x = output_return[i].x;
+    //         int y = output_return[i].y;
+    //         if (0 <= x && x < width && 0 <= y && y < height) {
+    //             // red dot
+    //             lines_overlay.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+    //             // make it slightly more visible (tiny cross)
+    //             if (x + 1 < width) lines_overlay.at<cv::Vec3b>(y, x + 1) = cv::Vec3b(0, 0, 255);
+    //             if (x - 1 >= 0)   lines_overlay.at<cv::Vec3b>(y, x - 1) = cv::Vec3b(0, 0, 255);
+    //             if (y + 1 < height) lines_overlay.at<cv::Vec3b>(y + 1, x) = cv::Vec3b(0, 0, 255);
+    //             if (y - 1 >= 0)     lines_overlay.at<cv::Vec3b>(y - 1, x) = cv::Vec3b(0, 0, 255);
+    //         }
+    //     }
 
-        cv::imwrite(out_dir + "/line_raw.png", raw_bgr);
-        cv::imwrite(out_dir + "/line_lines.png", lines_overlay);
+    //     cv::imwrite(out_dir + "/line_raw.png", raw_bgr);
+    //     cv::imwrite(out_dir + "/line_lines.png", lines_overlay);
 
-        RCLCPP_INFO(
-            rclcpp::get_logger("lines"),
-            "Saved debug images to %s (line points=%d)",
-            out_dir.c_str(), n
-        );
-    }
+    //     RCLCPP_INFO(
+    //         rclcpp::get_logger("lines"),
+    //         "Saved debug images to %s (line points=%d)",
+    //         out_dir.c_str(), n
+    //     );
+    // }
 
 
     // Clean up device memory

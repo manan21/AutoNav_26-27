@@ -194,13 +194,34 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
     int tf_success_count = 0;
     int tf_fail_count = 0;
 
-    // ZED depth is 32FC1 (32-bit float, single channel) in METERS
-    bool depth_in_meters = (depth_msg->encoding == "32FC1");
-    
-    RCLCPP_INFO_ONCE(get_logger(), 
-        "Depth encoding: %s (units: %s)", 
-        depth_msg->encoding.c_str(),
-        depth_in_meters ? "meters" : "unknown - assuming meters");
+    // Must be 32FC1
+    if (depth_msg->encoding != "32FC1") {
+    RCLCPP_ERROR(get_logger(), "Unexpected depth encoding: %s", depth_msg->encoding.c_str());
+    return {};
+    }
+
+    const size_t row_step = depth_msg->step;                 // bytes per row
+    const size_t bytes_per_pixel = sizeof(float);
+
+    if (row_step < depth_msg->width * bytes_per_pixel) {
+    RCLCPP_ERROR(get_logger(), "Depth step too small: step=%zu width=%u", row_step, depth_msg->width);
+    return {};
+    }
+
+    const size_t needed = row_step * depth_msg->height;
+    if (depth_msg->data.size() < needed) {
+    RCLCPP_ERROR(get_logger(), "Depth data too small: have=%zu need=%zu", depth_msg->data.size(), needed);
+    return {};
+    }
+
+    auto depth_ptr_u8 = depth_msg->data.data();
+
+    auto get_depth = [&](int x, int y) -> float {
+    const size_t offset = (size_t)y * row_step + (size_t)x * bytes_per_pixel;
+    float d;
+    std::memcpy(&d, depth_ptr_u8 + offset, sizeof(float));
+    return d;
+    };
 
     // Check if transform is available
     bool transform_available = false;
@@ -244,7 +265,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 
         // Get depth value (in meters for ZED)
         size_t depth_index = line_points[i].y * depth_msg->width + line_points[i].x;
-        float depth_meters = depth_data[depth_index];
+        float depth_meters = get_depth(line_points[i].x, line_points[i].y);
         
         // Debug first few
         if (valid_depth_count + invalid_depth_count < 3) {
