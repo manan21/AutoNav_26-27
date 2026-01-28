@@ -305,9 +305,15 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
         return {};
         }
 
+        RCLCPP_INFO(get_logger(), "checkpoint A: before projectPixelTo3dRay (initialized=%d)",
+            camera_model_.initialized());
+
         // Project pixel to 3D ray
         cv::Point3d ray = camera_model_.projectPixelTo3dRay(
-            cv::Point2d(line_points[i].x, line_points[i].y));
+            cv::Point2d(line_points[i].x, line_points[i].y))
+        
+        RCLCPP_INFO(get_logger(), "checkpoint B: after projectPixelTo3dRay");
+
         
         // Scale ray by depth to get 3D point in camera frame (meters)
         float point_x = static_cast<float>(ray.x * depth_meters);
@@ -333,6 +339,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
                 camera_point.point.y = point_y;
                 camera_point.point.z = point_z;
                 
+                RCLCPP_INFO(get_logger(), "checkpoint C: before tf2::doTransform");
                 // Transform to map
                 geometry_msgs::msg::PointStamped map_point;
                 tf2::doTransform(camera_point, map_point, transform);
