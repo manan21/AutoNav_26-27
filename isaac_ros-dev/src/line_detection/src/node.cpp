@@ -135,7 +135,7 @@ sensor_msgs::msg::PointCloud2 createPointCloud(const std::vector<std::array<floa
 											   const std::string& frame_id) {
 	sensor_msgs::msg::PointCloud2 pointcloud;
 	pointcloud.header.frame_id = frame_id;
-	pointcloud.header.stamp = node->get_clock()->now();
+	pointcloud.header.stamp = rclcpp::Clock().now();
 	pointcloud.height = 1;
 	pointcloud.width = points.size();
 	pointcloud.is_dense = false;
