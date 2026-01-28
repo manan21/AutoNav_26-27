@@ -5,7 +5,7 @@
 #include "line_detection/cuda.cuh"
 
 // the window has to be odd
-#define HALF_WINDOW_SIZE 5 // this produces a window of n * 2 + 1 size
+#define HALF_WINDOW_SIZE 3 // this produces a window of n * 2 + 1 size
 #define WINDOW_SIZE  2 * HALF_WINDOW_SIZE + 1
 #define WINDOW_SIZE_SQ  (WINDOW_SIZE) * (WINDOW_SIZE)
 #define SIGMA_THRESHOLD  5
@@ -51,7 +51,7 @@ __global__ void __cerias_kernel (
                         - integral_sq[y2*(width+1) + x1] + integral_sq[y1*(width+1) + x1]);
 
 
-    float num_pixels = static_cast<float>(WINDOW_SIZE_SQ);
+    float num_pixels = float((x2 - x1) * (y2 - y1));
 
     //printf("intensity: %f, squared: %f, num pixels: %f\n",sum_intensity, sum_intensity_sq, num_pixels);
 
