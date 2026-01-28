@@ -264,7 +264,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
         }
 
         // Get depth value (in meters for ZED)
-        size_t depth_index = line_points[i].y * depth_msg->width + line_points[i].x;
         float depth_meters = get_depth(line_points[i].x, line_points[i].y);
         
         // Debug first few
@@ -291,6 +290,11 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
         }
         
         valid_depth_count++;
+
+        if (!camera_model_.initialized()) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "Camera model not initialized");
+        return {};
+        }
 
         // Project pixel to 3D ray
         cv::Point3d ray = camera_model_.projectPixelTo3dRay(
