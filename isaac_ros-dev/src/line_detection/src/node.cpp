@@ -310,7 +310,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 
         // Project pixel to 3D ray
         cv::Point3d ray = camera_model_.projectPixelTo3dRay(
-            cv::Point2d(line_points[i].x, line_points[i].y))
+            cv::Point2d(line_points[i].x, line_points[i].y));
         
         RCLCPP_INFO(get_logger(), "checkpoint B: after projectPixelTo3dRay");
 
