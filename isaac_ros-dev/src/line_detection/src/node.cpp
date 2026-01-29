@@ -19,10 +19,6 @@
 #include <mutex>
 #include <cstring>
 
-//#define DEBUG_2
-//#define DEBUG_3
-//#define DEBUG_LOG
-
 class LineDetectorNode : public rclcpp::Node {
 
 public:
@@ -31,7 +27,6 @@ public:
 		tf_buffer(std::make_shared<rclcpp::Clock>(RCL_ROS_TIME)),
 		tf_listener(tf_buffer) {
 
-		// Set parameters with ZED camera defaults
 		this->declare_parameter("camera_topic", "/zed/zed_node/rgb/color/rect/image");
 		this->declare_parameter("depth_camera_topic", "/zed/zed_node/depth/depth_registered");
 		this->declare_parameter("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info");
@@ -49,16 +44,13 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Depth topic: %s", depth_camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Camera info: %s", camera_info_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Output topic: %s", line_points_topic.c_str());
-		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
-		// subscribe to camera topics
 		auto get_latest_msg = [this](sensor_msgs::msg::Image::SharedPtr msg) {
 			std::lock_guard<std::mutex> lock(callback_lock);
 			latest_img = msg;
 			if (!first_image_received_) {
-				RCLCPP_INFO(this->get_logger(), "First RGB image received: %ux%u, encoding: %s",
-					msg->width, msg->height, msg->encoding.c_str());
+				RCLCPP_INFO(this->get_logger(), "First RGB image received");
 				first_image_received_ = true;
 			}
 		};
@@ -66,38 +58,25 @@ public:
 			std::lock_guard<std::mutex> lock(depth_callback_lock);
 			latest_depth_img = msg;
 			if (!first_depth_received_) {
-				RCLCPP_INFO(this->get_logger(), "First depth image received: %ux%u, encoding: %s",
-					msg->width, msg->height, msg->encoding.c_str());
+				RCLCPP_INFO(this->get_logger(), "First depth image received");
 				first_depth_received_ = true;
 			}
 		};
 		
 		_zed_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
 			camera_topic, 10, get_latest_msg);
-
 		_zed_depth_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
 			depth_camera_topic, 10, get_latest_depth_msg);
-
 		_camera_model_sub = this->create_subscription<sensor_msgs::msg::CameraInfo>(
 			camera_info_topic, 1, std::bind(&LineDetectorNode::cameraInfoCallback, this, std::placeholders::_1));
 
-		// PUBLISHERS 
-		_line_pub = this->create_publisher<autonav_interfaces::msg::LinePoints>(
-			line_points_topic, 1);
-			
-		_line_timer = this->create_wall_timer(
-			std::chrono::seconds(1), 
+		_line_pub = this->create_publisher<autonav_interfaces::msg::LinePoints>(line_points_topic, 1);
+		_line_timer = this->create_wall_timer(std::chrono::seconds(1), 
 			std::bind(&LineDetectorNode::line_callback, this));
-
-		_line_point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-			"lines_pointcloud", 10);
-			
-		// create service for line detection
-		_line_service = this->create_service<autonav_interfaces::srv::AnvLines>(
-			"line_service",
+		_line_service = this->create_service<autonav_interfaces::srv::AnvLines>("line_service",
 			std::bind(&LineDetectorNode::line_service, this, std::placeholders::_1, std::placeholders::_2));
 			
-		RCLCPP_INFO(this->get_logger(), "LineDetectorNode initialized - waiting for camera data...");
+		RCLCPP_INFO(this->get_logger(), "Node initialized");
 	}
 
 private:
@@ -105,9 +84,7 @@ private:
 	rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr _zed_subscriber;
 	rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr _zed_depth_subscriber;
 	rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr _camera_model_sub;
-
 	rclcpp::Service<autonav_interfaces::srv::AnvLines>::SharedPtr _line_service;
-	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _line_point_cloud_pub; 
 	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_pub;
 	rclcpp::TimerBase::SharedPtr _line_timer;
 
@@ -141,28 +118,19 @@ private:
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 };
 
-// gets camera params
 void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
 	std::lock_guard<std::mutex> model_lock(camera_model_lock);
 	
 	if (!camera_model_.initialized()) {
 		camera_model_.fromCameraInfo(*msg);
 		configured_ = true;
-		
-		RCLCPP_INFO(this->get_logger(), "Camera model initialized: %ux%u, fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f",
-			msg->width, msg->height, msg->k[0], msg->k[4], msg->k[2], msg->k[5]);
-		
+		RCLCPP_INFO(this->get_logger(), "Camera model initialized");
 		if (enable_timer_) {
-			RCLCPP_INFO(this->get_logger(), 
-				"Publishing enabled on topic: %s", 
-				this->get_parameter("line_points_topic").as_string().c_str());
+			RCLCPP_INFO(this->get_logger(), "Publishing enabled");
 		}
 	}
 }
 
-/**
- * Converts a list of image indices to map frame coordinates  
- */
 std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	const sensor_msgs::msg::Image::SharedPtr depth_msg, 
 	int2* line_points, 
@@ -172,39 +140,10 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	
 	std::vector<Eigen::Vector3d> depth_line_points;
 	
-	// Early validation
-	if (line_points_len <= 0) {
-		RCLCPP_WARN(get_logger(), "No line points to transform");
-		return depth_line_points;
-	}
-	
-	if (!line_points) {
-		RCLCPP_ERROR(get_logger(), "line_points is null!");
-		return depth_line_points;
-	}
-	
-	// Test if we can safely access the first element
-	RCLCPP_INFO(get_logger(), "Testing line_points array access...");
-	try {
-		volatile int test_x = line_points[0].x;
-		volatile int test_y = line_points[0].y;
-		RCLCPP_INFO(get_logger(), "First point accessible: (%d, %d)", (int)test_x, (int)test_y);
-	} catch (...) {
-		RCLCPP_ERROR(get_logger(), "Cannot access line_points[0] - memory corruption!");
-		return depth_line_points;
-	}
-	
-	if (!depth_msg) {
-		RCLCPP_ERROR(get_logger(), "depth_msg is null!");
-		return depth_line_points;
-	}
-	
-	if (depth_msg->data.empty()) {
-		RCLCPP_ERROR(get_logger(), "depth_msg data is empty!");
+	if (line_points_len <= 0 || !line_points || !depth_msg || depth_msg->data.empty()) {
 		return depth_line_points;
 	}
 
-	// Check camera model initialization
 	{
 		std::lock_guard<std::mutex> model_lock(camera_model_lock);
 		if (!camera_model_.initialized()) {
@@ -213,35 +152,26 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		}
 	}
 
-	RCLCPP_INFO(get_logger(), "Depth: %ux%u, encoding: %s, step: %u",
-		depth_msg->width, depth_msg->height, depth_msg->encoding.c_str(), depth_msg->step);
-
-	// Verify encoding - ZED publishes 32FC1
 	if (depth_msg->encoding != "32FC1") {
-		RCLCPP_ERROR(get_logger(), "Unexpected depth encoding: %s (expected 32FC1)", 
-			depth_msg->encoding.c_str());
+		RCLCPP_ERROR(get_logger(), "Wrong encoding: %s", depth_msg->encoding.c_str());
 		return depth_line_points;
 	}
 
-	// DON'T use transform - just build pointcloud
-	RCLCPP_INFO(get_logger(), "Skipping TF transform, only building pointcloud for debugging");
+	RCLCPP_INFO(get_logger(), "TEST 1: Adding camera projection (no TF, no pointcloud)");
 	
 	const size_t row_step = depth_msg->step;
 	const size_t bytes_per_pixel = sizeof(float);
 	const uint8_t* depth_ptr_u8 = depth_msg->data.data();
 
 	int valid_count = 0;
-	int invalid_depth = 0;
 
-	// SIMPLIFIED LOOP - NO TRANSFORM
+	// ADD CAMERA PROJECTION
 	for (int i = 0; i < line_points_len; i++) {
-		// Bounds checking
 		if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
 			line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
 			continue;
 		}
 
-		// Get depth value
 		const size_t offset = (size_t)line_points[i].y * row_step + (size_t)line_points[i].x * bytes_per_pixel;
 		if (offset + sizeof(float) > depth_msg->data.size()) {
 			continue;
@@ -250,20 +180,40 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		float depth_m;
 		std::memcpy(&depth_m, depth_ptr_u8 + offset, sizeof(float));
 		
-		// Validate depth
 		if (depth_m < 0.1f || depth_m > 20.0f || std::isnan(depth_m) || std::isinf(depth_m)) {
-			invalid_depth++;
 			continue;
 		}
 		
 		valid_count++;
 		
-		// Just add a dummy point to map coordinates for now
-		depth_line_points.emplace_back(0.0, 0.0, 0.0);
+		// PROJECT TO 3D USING CAMERA MODEL
+		cv::Point3d ray;
+		{
+			std::lock_guard<std::mutex> model_lock(camera_model_lock);
+			try {
+				ray = camera_model_.projectPixelTo3dRay(
+					cv::Point2d(line_points[i].x, line_points[i].y));
+			} catch (const std::exception& e) {
+				RCLCPP_ERROR_ONCE(get_logger(), "Projection failed: %s", e.what());
+				continue;
+			}
+		}
+		
+		// Scale by depth
+		double px = ray.x * depth_m;
+		double py = ray.y * depth_m;
+		double pz = ray.z * depth_m;
+		
+		if (std::isnan(px) || std::isnan(py) || std::isnan(pz)) {
+			continue;
+		}
+		
+		// Just add to output (camera frame, not map frame)
+		depth_line_points.emplace_back(px, py, pz);
 	}
 
-	RCLCPP_INFO(get_logger(), "Processed: %d valid, %d invalid_depth", valid_count, invalid_depth);
-	RCLCPP_INFO(get_logger(), "Returning %zu map points (all zeros for debug)", depth_line_points.size());
+	RCLCPP_INFO(get_logger(), "Processed %d valid points with camera projection", valid_count);
+	RCLCPP_INFO(get_logger(), "Returning %zu camera-frame points", depth_line_points.size());
 	
 	return depth_line_points;
 }
@@ -274,25 +224,11 @@ void LineDetectorNode::line_service(
 {
 	(void)request;
 	
-	RCLCPP_INFO(this->get_logger(), "Line service called");
+	auto camera_msg = [this]() { std::lock_guard<std::mutex> lock(callback_lock); return latest_img; }();
+	auto depth_msg = [this]() { std::lock_guard<std::mutex> lock(depth_callback_lock); return latest_depth_img; }();
 
-	// Get latest images thread-safely
-	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(callback_lock);
-		return latest_img;
-	}();
-	
-	sensor_msgs::msg::Image::SharedPtr depth_camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(depth_callback_lock);
-		return latest_depth_img;
-	}();
+	if (!camera_msg || !depth_msg) return;
 
-	if (!camera_msg || !depth_camera_msg) {
-		RCLCPP_ERROR(this->get_logger(), "No camera images available");
-		return;
-	}
-
-	// Convert camera image to grayscale
 	cv_bridge::CvImagePtr cv_ptr;
 	try {
 		if (camera_msg->encoding == "bgra8" || camera_msg->encoding == "bgr8") {
@@ -308,16 +244,12 @@ void LineDetectorNode::line_service(
 		return;
 	}
 
-	// Detect lines
 	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image);
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
 
-	RCLCPP_INFO(this->get_logger(), "Detected %d line pixels", *line_points_len);
-	
-	std::vector<Eigen::Vector3d> map_points = map_transform(depth_camera_msg, line_points, *line_points_len);
+	std::vector<Eigen::Vector3d> map_points = map_transform(depth_msg, line_points, *line_points_len);
 
-	// Populate response
 	for (const auto & point: map_points) {
 		geometry_msgs::msg::Vector3 vec_msg;
 		vec_msg.x = point.x();
@@ -326,48 +258,19 @@ void LineDetectorNode::line_service(
 		response->points.emplace_back(vec_msg);
 	}
 
-	RCLCPP_INFO(this->get_logger(), "Service returning %zu points", response->points.size());
-
-	// Free memory
 	delete[] line_points;
 	delete line_points_len;
 }
 
 void LineDetectorNode::line_callback()
 {
-	// Check prerequisites
-	if (!configured_){
-		RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-			"Not configured - waiting for camera info");
-		return;
-	}
-	
-	if (!enable_timer_) return;
+	if (!configured_ || !enable_timer_) return;
 
-	// Get latest images
-	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(callback_lock);
-		return latest_img;
-	}();
-	
-	sensor_msgs::msg::Image::SharedPtr depth_msg = [this]() {
-		std::lock_guard<std::mutex> lock(depth_callback_lock);
-		return latest_depth_img;
-	}();
+	auto camera_msg = [this]() { std::lock_guard<std::mutex> lock(callback_lock); return latest_img; }();
+	auto depth_msg = [this]() { std::lock_guard<std::mutex> lock(depth_callback_lock); return latest_depth_img; }();
 
-	if (!camera_msg) {
-		RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-			"No RGB image received");
-		return;
-	}
-	
-	if (!depth_msg) {
-		RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-			"No depth image received");
-		return;
-	}
+	if (!camera_msg || !depth_msg) return;
 
-	// Convert to grayscale
 	cv_bridge::CvImagePtr cv_ptr;
 	try {
 		if (camera_msg->encoding == "bgra8" || camera_msg->encoding == "bgr8") {
@@ -384,11 +287,9 @@ void LineDetectorNode::line_callback()
 	}
 	
 	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
-		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
 		return;
 	}
 
-	// Detect lines
 	std::pair<int2*,int*> line_pair;
 	try {
 		line_pair = lines::detect_line_pixels(cv_ptr->image);
@@ -409,13 +310,9 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	RCLCPP_INFO(this->get_logger(), "About to call map_transform");
-
-	// Transform to map frame
 	std::vector<Eigen::Vector3d> map_points;
 	try {
 		map_points = map_transform(depth_msg, line_points, *line_points_len);
-		RCLCPP_INFO(this->get_logger(), "map_transform returned successfully");
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
 		delete[] line_points;
@@ -423,9 +320,6 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	RCLCPP_INFO(this->get_logger(), "Got %zu map points, about to publish", map_points.size());
-
-	// Publish
 	if (!map_points.empty()) {
 		auto message = autonav_interfaces::msg::LinePoints();
 		for (const auto & point: map_points) {
@@ -437,16 +331,12 @@ void LineDetectorNode::line_callback()
 		}
 
 		_line_pub->publish(message);
-		RCLCPP_INFO(this->get_logger(), "Published %zu line points", message.points.size());
+		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+			"Published %zu line points (camera frame)", message.points.size());
 	}
 
-	RCLCPP_INFO(this->get_logger(), "About to free memory");
-
-	// Free memory
 	delete[] line_points;
 	delete line_points_len;
-	
-	RCLCPP_INFO(this->get_logger(), "Callback complete");
 }
 
 int main(int argc, char** argv) {
