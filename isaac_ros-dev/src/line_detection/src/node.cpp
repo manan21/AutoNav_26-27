@@ -162,7 +162,7 @@ void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::Sh
 sensor_msgs::msg::PointCloud2 createPointCloud(
 	const std::vector<std::array<float, 3>>& points, 
 	const std::string& frame_id,
-	const rclcpp::Time& timestamp) 
+	const builtin_interfaces::msg::Time& timestamp) 
 {
 	sensor_msgs::msg::PointCloud2 pointcloud;
 	pointcloud.header.frame_id = frame_id;
@@ -249,7 +249,9 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	const uint8_t* depth_ptr_u8 = depth_msg->data.data();
 	std::string frame_id = depth_msg->header.frame_id;
 	std::vector<std::array<float, 3>> pc_vec;
-	pc_vec.reserve(line_points_len);
+	pc_vec.reserve(std::min(line_points_len, 10000));  // Cap reserve size
+
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 1: Starting depth access setup");
 
 	// Lambda to safely get depth value
 	auto get_depth = [&](int x, int y) -> float {
@@ -261,6 +263,8 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		std::memcpy(&d, depth_ptr_u8 + offset, sizeof(float));
 		return d;
 	};
+
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 2: Lambda created, checking transform");
 
 	// Check if transform is available
 	bool transform_available = false;
@@ -274,11 +278,12 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 			std::chrono::milliseconds(50)
 		);
 		transform_available = true;
-		RCLCPP_INFO_ONCE(get_logger(), "Transform available: map <- %s", frame_id.c_str());
+		RCLCPP_INFO(get_logger(), "Transform available: map <- %s", frame_id.c_str());
 	} catch (const tf2::TransformException& ex) {
-		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-			"TF not available (map <- %s): %s", frame_id.c_str(), ex.what());
+		RCLCPP_WARN(get_logger(), "TF not available (map <- %s): %s", frame_id.c_str(), ex.what());
 	}
+
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 3: Starting point loop (transform_available=%d)", transform_available);
 
 	int valid_count = 0;
 	int invalid_depth = 0;
@@ -288,103 +293,126 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 
 	// Process each line point
 	for (int i = 0; i < line_points_len; i++) {
-		// Bounds checking
-		if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
-			line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
-			out_of_bounds++;
-			continue;
-		}
-
-		// Get depth value (ZED outputs meters)
-		float depth_m = get_depth(line_points[i].x, line_points[i].y);
-		
-		// Validate depth: 0.1m to 20m range
-		if (depth_m < 0.1f || depth_m > 20.0f || std::isnan(depth_m) || std::isinf(depth_m)) {
-			invalid_depth++;
-			continue;
+		if (i % 500 == 0) {
+			RCLCPP_INFO(get_logger(), "Processing point %d/%d", i, line_points_len);
 		}
 		
-		valid_count++;
+		try {
+			// Bounds checking
+			if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
+				line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
+				out_of_bounds++;
+				continue;
+			}
 
-		// Project pixel to 3D with camera model (thread-safe)
-		cv::Point3d ray;
-		bool success = false;
-		
-		{
-			std::lock_guard<std::mutex> model_lock(camera_model_lock);
+			// Get depth value (ZED outputs meters)
+			float depth_m = get_depth(line_points[i].x, line_points[i].y);
 			
-			if (!camera_model_.initialized()) {
-				RCLCPP_ERROR(get_logger(), "Camera model became uninitialized!");
+			// Validate depth: 0.1m to 20m range
+			if (depth_m < 0.1f || depth_m > 20.0f || std::isnan(depth_m) || std::isinf(depth_m)) {
+				invalid_depth++;
+				continue;
+			}
+			
+			valid_count++;
+
+			// Project pixel to 3D with camera model (thread-safe)
+			cv::Point3d ray;
+			bool success = false;
+			
+			{
+				std::lock_guard<std::mutex> model_lock(camera_model_lock);
+				
+				if (!camera_model_.initialized()) {
+					RCLCPP_ERROR(get_logger(), "Camera model became uninitialized!");
+					break;
+				}
+
+				try {
+					ray = camera_model_.projectPixelTo3dRay(
+						cv::Point2d(line_points[i].x, line_points[i].y));
+					success = true;
+				} catch (const std::exception& e) {
+					projection_fail++;
+					if (projection_fail == 1) {
+						RCLCPP_ERROR(get_logger(), "projectPixelTo3dRay failed: %s", e.what());
+					}
+					continue;
+				}
+			}
+			
+			if (!success) continue;
+			
+			// Scale ray by depth to get 3D point in camera frame
+			float px = static_cast<float>(ray.x * depth_m);
+			float py = static_cast<float>(ray.y * depth_m);
+			float pz = static_cast<float>(ray.z * depth_m);
+			
+			if (std::isnan(px) || std::isnan(py) || std::isnan(pz)) {
+				continue;
+			}
+
+			// Add to pointcloud for visualization - be careful here
+			try {
+				std::array<float, 3> pt = {px, py, pz};
+				pc_vec.push_back(pt);
+			} catch (const std::exception& e) {
+				RCLCPP_ERROR(get_logger(), "Failed to add to pc_vec: %s", e.what());
 				break;
 			}
 
-			try {
-				ray = camera_model_.projectPixelTo3dRay(
-					cv::Point2d(line_points[i].x, line_points[i].y));
-				success = true;
-			} catch (const std::exception& e) {
-				projection_fail++;
-				if (projection_fail == 1) {
-					RCLCPP_ERROR(get_logger(), "projectPixelTo3dRay failed: %s", e.what());
+			// Transform to map frame if available
+			if (transform_available) {
+				try {
+					geometry_msgs::msg::PointStamped camera_point;
+					camera_point.header = depth_msg->header;
+					camera_point.point.x = static_cast<double>(px);
+					camera_point.point.y = static_cast<double>(py);
+					camera_point.point.z = static_cast<double>(pz);
+					
+					geometry_msgs::msg::PointStamped map_point;
+					tf2::doTransform(camera_point, map_point, transform);
+					
+					if (!std::isnan(map_point.point.x) && !std::isnan(map_point.point.y)) {
+						depth_line_points.emplace_back(
+							map_point.point.x, 
+							map_point.point.y, 
+							0.0  // Project to ground plane
+						);
+						tf_success++;
+					}
+				} catch (const std::exception& ex) {
+					if (tf_success == 0) {
+						RCLCPP_ERROR(get_logger(), "First TF transform error: %s", ex.what());
+					}
 				}
-				continue;
 			}
-		}
-		
-		if (!success) continue;
-		
-		// Scale ray by depth to get 3D point in camera frame
-		float px = static_cast<float>(ray.x * depth_m);
-		float py = static_cast<float>(ray.y * depth_m);
-		float pz = static_cast<float>(ray.z * depth_m);
-		
-		if (std::isnan(px) || std::isnan(py) || std::isnan(pz)) {
-			continue;
-		}
-
-		// Add to pointcloud for visualization
-		pc_vec.push_back({px, py, pz});
-
-		// Transform to map frame if available
-		if (transform_available) {
-			try {
-				geometry_msgs::msg::PointStamped camera_point;
-				camera_point.header = depth_msg->header;
-				camera_point.point.x = px;
-				camera_point.point.y = py;
-				camera_point.point.z = pz;
-				
-				geometry_msgs::msg::PointStamped map_point;
-				tf2::doTransform(camera_point, map_point, transform);
-				
-				if (!std::isnan(map_point.point.x) && !std::isnan(map_point.point.y)) {
-					depth_line_points.emplace_back(
-						map_point.point.x, 
-						map_point.point.y, 
-						0.0  // Project to ground plane
-					);
-					tf_success++;
-				}
-			} catch (const std::exception& ex) {
-				// Silent fail for individual points
-			}
+		} catch (const std::exception& e) {
+			RCLCPP_ERROR(get_logger(), "Exception at point %d: %s", i, e.what());
+			break;
 		}
 	}
 
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 4: Loop complete");
 	RCLCPP_INFO(get_logger(), "Stats: %d valid, %d invalid_depth, %d out_of_bounds, %d projection_fail, %d->map",
 		valid_count, invalid_depth, out_of_bounds, projection_fail, tf_success);
 
 	// Publish pointcloud for visualization
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 5: Creating pointcloud with %zu points", pc_vec.size());
+	
 	if (!pc_vec.empty()) {
 		try {
+			RCLCPP_INFO(get_logger(), "CHECKPOINT 5a: About to call createPointCloud");
 			sensor_msgs::msg::PointCloud2 pc = createPointCloud(pc_vec, frame_id, depth_msg->header.stamp);
+			RCLCPP_INFO(get_logger(), "CHECKPOINT 5b: Pointcloud created, about to publish");
 			_line_point_cloud_pub->publish(pc);
-			RCLCPP_INFO_ONCE(get_logger(), "Pointcloud published with %zu points", pc_vec.size());
+			RCLCPP_INFO(get_logger(), "CHECKPOINT 5c: Pointcloud published with %zu points", pc_vec.size());
 		} catch (const std::exception& e) {
-			RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
+			RCLCPP_ERROR(get_logger(), "Pointcloud publish failed: %s", e.what());
 		}
 	}
 
+	RCLCPP_INFO(get_logger(), "CHECKPOINT 6: Returning %zu map points", depth_line_points.size());
 	return depth_line_points;
 }
 
