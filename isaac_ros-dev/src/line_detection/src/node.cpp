@@ -121,7 +121,10 @@ class LineDetectorNode : public rclcpp::Node {
 // gets camera params
 void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
     if (!camera_model_.initialized()) {
-        camera_model_.fromCameraInfo(*msg);
+        {
+            std::lock_guard<std::mutex> model_lock(camera_model_lock);
+            camera_model_.fromCameraInfo(*msg);
+        }
 		RCLCPP_INFO(this->get_logger(), "hello, its me, bowser. I am sentient. tell no one");
 		configured_ = true;
 		if (enable_timer_) {
@@ -326,8 +329,14 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
             }
 
             // Project pixel to 3D ray
-            cv::Point3d ray = camera_model_.projectPixelTo3dRay(
-                cv::Point2d(line_points[i].x, line_points[i].y));
+            cv::Point3d ray;
+            try {
+                ray = camera_model_.projectPixelTo3dRay(
+                    cv::Point2d(line_points[i].x, line_points[i].y));
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(get_logger(), "projectPixelTo3dRay failed: %s", e.what());
+                continue;
+            }
             
             RCLCPP_INFO(get_logger(), "checkpoint B: after projectPixelTo3dRay");
 
