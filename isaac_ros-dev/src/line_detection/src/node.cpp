@@ -93,6 +93,7 @@ class LineDetectorNode : public rclcpp::Node {
 
 	std::mutex callback_lock;
 	std::mutex depth_callback_lock;
+	std::mutex camera_model_lock;
 	sensor_msgs::msg::Image::SharedPtr latest_img;
 	sensor_msgs::msg::Image::SharedPtr latest_depth_img;
 	tf2_ros::Buffer tf_buffer;
@@ -300,25 +301,42 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
         
         valid_depth_count++;
 
-        if (!camera_model_.initialized()) {
-        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "Camera model not initialized");
-        return {};
+        float point_x, point_y, point_z;
+
+        {
+            std::lock_guard<std::mutex> model_lock(camera_model_lock);
+            
+            if (!camera_model_.initialized()) {
+                RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000, "Camera model not initialized");
+                continue;
+            }
+
+            RCLCPP_INFO(get_logger(), "checkpoint A: before projectPixelTo3dRay (initialized=%d)",
+                camera_model_.initialized());
+
+            // Bounds check against camera model
+            if (line_points[i].x < 0 || line_points[i].x >= (int)camera_model_.cameraInfo().width ||
+                line_points[i].y < 0 || line_points[i].y >= (int)camera_model_.cameraInfo().height) {
+                RCLCPP_WARN_ONCE(get_logger(), 
+                    "Pixel (%d,%d) out of camera bounds (%ux%u)", 
+                    line_points[i].x, line_points[i].y,
+                    camera_model_.cameraInfo().width,
+                    camera_model_.cameraInfo().height);
+                continue;
+            }
+
+            // Project pixel to 3D ray
+            cv::Point3d ray = camera_model_.projectPixelTo3dRay(
+                cv::Point2d(line_points[i].x, line_points[i].y));
+            
+            RCLCPP_INFO(get_logger(), "checkpoint B: after projectPixelTo3dRay");
+
+            
+            // Scale ray by depth to get 3D point in camera frame (meters)
+            point_x = static_cast<float>(ray.x * depth_meters);
+            point_y = static_cast<float>(ray.y * depth_meters);
+            point_z = static_cast<float>(ray.z * depth_meters);
         }
-
-        RCLCPP_INFO(get_logger(), "checkpoint A: before projectPixelTo3dRay (initialized=%d)",
-            camera_model_.initialized());
-
-        // Project pixel to 3D ray
-        cv::Point3d ray = camera_model_.projectPixelTo3dRay(
-            cv::Point2d(line_points[i].x, line_points[i].y));
-        
-        RCLCPP_INFO(get_logger(), "checkpoint B: after projectPixelTo3dRay");
-
-        
-        // Scale ray by depth to get 3D point in camera frame (meters)
-        float point_x = static_cast<float>(ray.x * depth_meters);
-        float point_y = static_cast<float>(ray.y * depth_meters);
-        float point_z = static_cast<float>(ray.z * depth_meters);
         
         // Sanity check
         if (std::isnan(point_x) || std::isnan(point_y) || std::isnan(point_z)) {
@@ -525,19 +543,8 @@ void LineDetectorNode::line_callback()
             cv_ptr->image = gray_img;
             cv_ptr->encoding = sensor_msgs::image_encodings::MONO8;
         }
-        else if (camera_msg->encoding == "rgb8") {
-            cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::RGB8);
-            cv::Mat gray_img;
-            cv::cvtColor(cv_ptr->image, gray_img, cv::COLOR_RGB2GRAY);
-            cv_ptr->image = gray_img;
-            cv_ptr->encoding = sensor_msgs::image_encodings::MONO8;
-        }
-        else if (camera_msg->encoding == "mono8") {
-            cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::MONO8);
-        }
         else {
-            RCLCPP_ERROR(this->get_logger(), "Unsupported encoding: %s", camera_msg->encoding.c_str());
-            return;
+            cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::MONO8);
         }
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
@@ -635,5 +642,5 @@ int main(int argc, char** argv) {
 	return 0;
 }
 
-	
-	
+
+
