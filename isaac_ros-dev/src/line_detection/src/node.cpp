@@ -40,7 +40,7 @@ public:
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
 
-		RCLCPP_INFO(this->get_logger(), "=== Line Detector Configuration ===");
+		RCLCPP_INFO(this->get_logger(), "=== Line Detection Config ===");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Depth topic: %s", depth_camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Camera info: %s", camera_info_topic.c_str());
@@ -131,10 +131,6 @@ void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::Sh
 	std::lock_guard<std::mutex> lock(camera_params_lock);
 	
 	// Extract camera intrinsics from the K matrix
-	// K = [fx  0  cx]
-	//     [ 0 fy  cy]
-	//     [ 0  0   1]
-	// Stored as: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
 	fx_ = msg->k[0];  // Focal length X
 	fy_ = msg->k[4];  // Focal length Y
 	cx_ = msg->k[2];  // Principal point X
@@ -264,7 +260,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 			continue;
 		}
 
-		// Get depth value (ZED outputs meters)
+		// Get depth value (meters)
 		const size_t offset = (size_t)line_points[i].y * row_step + (size_t)line_points[i].x * bytes_per_pixel;
 		if (offset + sizeof(float) > depth_msg->data.size()) {
 			continue;
@@ -282,9 +278,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		valid_count++;
 
 		// Manual 3D projection using pinhole camera model
-		// X = (u - cx) * Z / fx
-		// Y = (v - cy) * Z / fy
-		// Z = depth
 		double x_normalized = (line_points[i].x - cx) / fx;
 		double y_normalized = (line_points[i].y - cy) / fy;
 		
