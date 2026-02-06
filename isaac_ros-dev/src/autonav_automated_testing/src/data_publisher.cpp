@@ -44,14 +44,14 @@ private:
     bool estop_triggered_;
     std::string test_id_;
     
-    // Latest data storage
-    std::string latest_gps_data_;
-    std::string latest_odom_data_;
-    std::string latest_cmd_vel_data_;
-    std::string latest_encoder_data_;
-    std::string latest_imu_data_;
-    std::string latest_scan_data_;
-    std::string latest_lines_data_;
+    // Data storage
+    std::string gps_data_;
+    std::string odom_data_;
+    std::string cmd_vel_data_;
+    std::string encoder_data_;
+    std::string imu_data_;
+    std::string scan_data_;
+    std::string lines_data_;
     
     // Generic subscribers - will be created dynamically based on topics_to_monitor
     std::vector<rclcpp::SubscriptionBase::SharedPtr> dynamic_subscribers_;
@@ -106,11 +106,11 @@ private:
                     std::stringstream ss;
                     ss << std::fixed << std::setprecision(8)
                        << msg->latitude << "," << msg->longitude << "," << msg->altitude;
-                    latest_gps_data_ = ss.str();
+                    gps_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
-        else if (topic == "/imu/data") {
+        else if (topic == "/zed/zed_node/imu/data") {
             auto sub = this->create_subscription<sensor_msgs::msg::Imu>(
                 topic, rclcpp::SensorDataQoS(),
                 [this](const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -125,7 +125,7 @@ private:
                        << msg->orientation.x << ","
                        << msg->orientation.y << ","
                        << msg->orientation.z;
-                    latest_imu_data_ = ss.str();
+                    imu_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -136,7 +136,7 @@ private:
                     std::stringstream ss;
                     ss << std::fixed << std::setprecision(3)
                        << msg->range_min << "," << msg->range_max << "," << msg->ranges.size();
-                    latest_scan_data_ = ss.str();
+                    scan_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -149,7 +149,7 @@ private:
                        << msg->pose.pose.position.x << ","
                        << msg->pose.pose.position.y << ","
                        << msg->pose.pose.orientation.z;
-                    latest_odom_data_ = ss.str();
+                    odom_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -160,7 +160,7 @@ private:
                     std::stringstream ss;
                     ss << std::fixed << std::setprecision(3)
                        << msg->linear.x << "," << msg->angular.z;
-                    latest_cmd_vel_data_ = ss.str();
+                    cmd_vel_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -170,7 +170,7 @@ private:
                 [this](const autonav_interfaces::msg::Encoders::SharedPtr msg) {
                     std::stringstream ss;
                     ss << msg->left_motor_count << "," << msg->right_motor_count;
-                    latest_encoder_data_ = ss.str();
+                    encoder_data_ = ss.str();
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -179,7 +179,7 @@ private:
             auto sub = this->create_subscription<std_msgs::msg::String>(
                 topic, 10,
                 [this](const std_msgs::msg::String::SharedPtr msg) {
-                    latest_lines_data_ = msg->data;
+                    lines_data_ = msg->data;
                 });
             dynamic_subscribers_.push_back(sub);
         }
@@ -191,13 +191,13 @@ private:
         if (collecting_data_) {
             RCLCPP_INFO(this->get_logger(), "Data collection ENABLED");
             // Clear previous data
-            latest_gps_data_.clear();
-            latest_odom_data_.clear();
-            latest_cmd_vel_data_.clear();
-            latest_encoder_data_.clear();
-            latest_imu_data_.clear();
-            latest_scan_data_.clear();
-            latest_lines_data_.clear();
+            gps_data_.clear();
+            odom_data_.clear();
+            cmd_vel_data_.clear();
+            encoder_data_.clear();
+            imu_data_.clear();
+            scan_data_.clear();
+            lines_data_.clear();
         } else {
             RCLCPP_INFO(this->get_logger(), "Data collection DISABLED");
         }
@@ -227,28 +227,29 @@ private:
         // Publish data for each topic separately in the format expected by base_automator:
         // "topic_name,data_type,data_values"
         
+        
         auto msg = std_msgs::msg::String();
         static int debug_count = 0;
         
         // Publish GPS data
-        if (!latest_gps_data_.empty()) {
-            msg.data = "/gps_fix,NavSatFix," + latest_gps_data_;
+        if (!gps_data_.empty()) {
+            msg.data = "/gps_fix,NavSatFix," + gps_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing GPS: %s", msg.data.c_str());
             }
         }
         // Publish IMU data
-        if (!latest_imu_data_.empty()) {
-            msg.data = "/imu/data,Imu," + latest_imu_data_;
+        if (!imu_data_.empty()) {
+            msg.data = "/zed/zed_node/imu/data,Imu," + imu_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing IMU: %s", msg.data.c_str());
             }
         }
         // Publish LaserScan data summary
-        if (!latest_scan_data_.empty()) {
-            msg.data = "/scan,LaserScan," + latest_scan_data_;
+        if (!scan_data_.empty()) {
+            msg.data = "/scan,LaserScan," + scan_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing Scan: %s", msg.data.c_str());
@@ -256,8 +257,8 @@ private:
         }
         
         // Publish Odometry data
-        if (!latest_odom_data_.empty()) {
-            msg.data = "/odom,Odometry," + latest_odom_data_;
+        if (!odom_data_.empty()) {
+            msg.data = "/odom,Odometry," + odom_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing Odom: %s", msg.data.c_str());
@@ -265,8 +266,8 @@ private:
         }
         
         // Publish cmd_vel data
-        if (!latest_cmd_vel_data_.empty()) {
-            msg.data = "/cmd_vel,Twist," + latest_cmd_vel_data_;
+        if (!cmd_vel_data_.empty()) {
+            msg.data = "/cmd_vel,Twist," + cmd_vel_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing cmd_vel: %s", msg.data.c_str());
@@ -274,16 +275,16 @@ private:
         }
         
         // Publish encoder data
-        if (!latest_encoder_data_.empty()) {
-            msg.data = "/encoders,String," + latest_encoder_data_;
+        if (!encoder_data_.empty()) {
+            msg.data = "/encoders,String," + encoder_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing encoders: %s", msg.data.c_str());
             }
         }
         // Publish line detection data if available
-        if (!latest_lines_data_.empty()) {
-            msg.data = "/line_detection/lines,String," + latest_lines_data_;
+        if (!lines_data_.empty()) {
+            msg.data = "/line_detection/lines,String," + lines_data_;
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing lines: %s", msg.data.c_str());
