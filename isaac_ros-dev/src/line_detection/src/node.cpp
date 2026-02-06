@@ -40,7 +40,7 @@ public:
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
 
-		RCLCPP_INFO(this->get_logger(), "=== Line Detection Config ===");
+		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Depth topic: %s", depth_camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Camera info: %s", camera_info_topic.c_str());
@@ -130,7 +130,7 @@ private:
 void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
 	std::lock_guard<std::mutex> lock(camera_params_lock);
 	
-	// Extract camera intrinsics from the K matrix
+	// Extract camera intrinsics
 	fx_ = msg->k[0];  // Focal length X
 	fy_ = msg->k[4];  // Focal length Y
 	cx_ = msg->k[2];  // Principal point X
@@ -269,7 +269,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		float depth_m;
 		std::memcpy(&depth_m, depth_ptr_u8 + offset, sizeof(float));
 		
-		// Validate depth: 0.1m to 20m range
+		// 0.1m to 20m range
 		if (depth_m < 0.1f || depth_m > 20.0f || std::isnan(depth_m) || std::isinf(depth_m)) {
 			invalid_depth++;
 			continue;
@@ -277,7 +277,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		
 		valid_count++;
 
-		// Manual 3D projection using pinhole camera model
+		// Manual 3D proj
 		double x_normalized = (line_points[i].x - cx) / fx;
 		double y_normalized = (line_points[i].y - cy) / fy;
 		
@@ -289,10 +289,10 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 			continue;
 		}
 
-		// Add to pointcloud for visualization (camera frame)
+		// Add to pointcloud
 		pc_vec.push_back({static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)});
 
-		// Transform to map frame if available
+		// TF to map frame if available
 		if (transform_available) {
 			try {
 				geometry_msgs::msg::PointStamped camera_point;
@@ -313,7 +313,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 					tf_success++;
 				}
 			} catch (const std::exception& ex) {
-				// Silent fail for individual points
 			}
 		}
 	}
@@ -322,7 +321,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		"Processing: %d valid, %d invalid_depth, %d out_of_bounds → %d map points", 
 		valid_count, invalid_depth, out_of_bounds, tf_success);
 
-	// Publish pointcloud for visualization
+	// Publish pointcloud
 	if (!pc_vec.empty()) {
 		try {
 			sensor_msgs::msg::PointCloud2 pc = createPointCloud(pc_vec, frame_id, depth_msg->header.stamp);
@@ -341,7 +340,7 @@ void LineDetectorNode::line_service(
 {
 	(void)request;
 
-	// Get latest images thread-safely
+	// Get latest images
 	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
 		std::lock_guard<std::mutex> lock(callback_lock);
 		return latest_img;
