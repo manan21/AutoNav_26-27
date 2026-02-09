@@ -117,7 +117,24 @@ if [[ -n "$REN_GID" ]]; then DOCKER_ARGS+=("--group-add=${REN_GID}"); fi
 if [[ -n "$INPUT_GID" ]]; then DOCKER_ARGS+=("--group-add=${INPUT_GID}"); fi
 
 attach_shell() {
-    docker exec -i -t -u "${USERNAME}" --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" "${CONTAINER_NAME}" /bin/bash "$@"
+    if ! docker exec "${CONTAINER_NAME}" getent passwd "${USERNAME}" >/dev/null 2>&1; then
+        echo "User ${USERNAME} not found in running container. Initializing user..."
+        docker exec \
+            -e "USERNAME=${USERNAME}" \
+            -e "HOST_USER_UID=$(id -u)" \
+            -e "HOST_USER_GID=$(id -g)" \
+            -e "WORKDIR=${CONTAINER_WORKDIR}" \
+            -u root \
+            "${CONTAINER_NAME}" \
+            "${ENTRYPOINT}" /bin/true >/dev/null || true
+    fi
+
+    if docker exec "${CONTAINER_NAME}" getent passwd "${USERNAME}" >/dev/null 2>&1; then
+        docker exec -i -t -u "${USERNAME}" --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" "${CONTAINER_NAME}" /bin/bash "$@"
+    else
+        echo "Warning: user ${USERNAME} is still unavailable; attaching as root"
+        docker exec -i -t -u root --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" "${CONTAINER_NAME}" /bin/bash "$@"
+    fi
 }
 
 # RE-USE EXISTING CONTAINER
