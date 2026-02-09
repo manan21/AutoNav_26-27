@@ -9,9 +9,7 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 INIT_STATE_FILE="/var/local/container-init.state"
-# Keep init-state tied to numeric identity so a USERNAME env mismatch does not
-# force expensive re-initialization.
-CURRENT_INIT_STATE="${HOST_USER_UID}:${HOST_USER_GID}"
+CURRENT_INIT_STATE="${USERNAME}:${HOST_USER_UID}:${HOST_USER_GID}"
 PREVIOUS_INIT_STATE=""
 if [ -f "${INIT_STATE_FILE}" ]; then
   PREVIOUS_INIT_STATE="$(cat "${INIT_STATE_FILE}")"
@@ -69,18 +67,12 @@ if [ "${PREVIOUS_INIT_STATE}" != "${CURRENT_INIT_STATE}" ]; then
     fi
   done
 
-  # Restart udev once, but do not let this block startup indefinitely.
-  if command -v service >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 12s service udev restart || echo "udev restart timed out/skipped"
-    else
-      service udev restart || echo "udev restart failed/skipped"
-    fi
-  fi
+  # Restart udev daemon once during initialization.
+  service udev restart
 
   printf '%s\n' "${CURRENT_INIT_STATE}" > "${INIT_STATE_FILE}"
 else
-  echo "Initialization already completed for uid=${HOST_USER_UID}:gid=${HOST_USER_GID}; skipping heavy setup"
+  echo "Initialization already completed for '${USERNAME}' uid=${HOST_USER_UID}:gid=${HOST_USER_GID}; skipping heavy setup"
 fi
 
 # Change to workdir
