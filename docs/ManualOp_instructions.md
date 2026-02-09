@@ -9,10 +9,8 @@
     * `ssh jetson`
     * `./AutoNav_25-26/env/docker/run-container.sh`
     * WAIT UNTIL THE CONTAINER BOOTS UP
-    * `ros2 run joy joy_node`
-7. Open another terminal tab, by pressing '+' at the top of the terminal
-8. Now repeat step 6, until the last step. Instead run the following command:
     * `ros2 launch control control_dev.launch.py`
+7. Wait for the node to boot up (Arduino connected, Motor Controller connected, Joystick connected)
 9. You are ready to operate the robot.
 
 #### Controls:
