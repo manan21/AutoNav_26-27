@@ -115,18 +115,22 @@ if [[ -n "$VID_GID" ]]; then DOCKER_ARGS+=("--group-add=${VID_GID}"); fi
 if [[ -n "$REN_GID" ]]; then DOCKER_ARGS+=("--group-add=${REN_GID}"); fi
 if [[ -n "$INPUT_GID" ]]; then DOCKER_ARGS+=("--group-add=${INPUT_GID}"); fi
 
+attach_shell() {
+    docker exec -i -t -u "${USERNAME}" --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" "${CONTAINER_NAME}" /bin/bash "$@"
+}
+
 # RE-USE EXISTING CONTAINER
 if [ "$(docker ps -a --quiet --filter status=running --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME is already running. Attaching..."
-    docker exec -i -t -u ${USERNAME} --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" $CONTAINER_NAME /bin/bash "$@"
+    attach_shell "$@"
     exit 0
 fi
 
 # Check if container exists but is stopped
 if [ "$(docker ps -a --quiet --filter status=exited --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME exists but is stopped. Starting and attaching..."
-    docker start $CONTAINER_NAME
-    docker exec -i -t -u ${USERNAME} --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" $CONTAINER_NAME /bin/bash "$@"
+    docker start "$CONTAINER_NAME" >/dev/null
+    attach_shell "$@"
     exit 0
 fi
 
@@ -134,7 +138,7 @@ fi
 echo "Starting new container: $CONTAINER_NAME"
 echo "Mounting: ${HOST_WORKDIR} → ${CONTAINER_WORKDIR}"
 
-docker run -it \
+docker run -d \
     --runtime nvidia \
     --gpus all \
     --privileged \
@@ -146,4 +150,6 @@ docker run -it \
     "${DOCKER_ARGS[@]}" \
     --name "$CONTAINER_NAME" \
     $IMAGE_TAG \
-    /bin/bash
+    sleep infinity >/dev/null
+
+attach_shell "$@"
