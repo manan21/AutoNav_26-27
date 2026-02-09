@@ -14,7 +14,8 @@ SCRIPT_DIR="$(dirname ${BASH_SOURCE[0]})"
 PLATFORM=$(uname -m)
 
 # USERNAME
-USERNAME="${USERNAME:-admin}"
+# Prefer USER when USERNAME is unset to keep identity stable across shells/tools.
+USERNAME="${USERNAME:-${USER:-admin}}"
 
 DOCKER_ARGS=()
 
