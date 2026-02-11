@@ -21,7 +21,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             get_package_share_directory('slam'),
             'config',
-            'nav_minimal.yaml'
+            'nav2_lines_params.yaml'
         ]),
         description='Path to your custom Nav2 parameters file'
     )
