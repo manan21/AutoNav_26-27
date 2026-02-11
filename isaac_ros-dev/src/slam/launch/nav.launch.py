@@ -10,6 +10,11 @@ from nav2_common.launch import RewrittenYaml
 
 def generate_launch_description():
        
+    bt_xml_path = PathJoinSubstitution([
+        get_package_share_directory('slam'),
+        'behavior_trees',
+        'bt_2.xml'
+    ])
 
     use_sim_time = DeclareLaunchArgument(
             'use_sim_time',
@@ -29,7 +34,10 @@ def generate_launch_description():
     configured_params = RewrittenYaml(
     source_file=LaunchConfiguration('nav2_params'),
     root_key='',
-    param_rewrites={},
+    param_rewrites={
+        'default_nav_to_pose_bt_xml': bt_xml_path,
+        'default_nav_through_poses_bt_xml': bt_xml_path
+    },
     convert_types=True
     )
  
