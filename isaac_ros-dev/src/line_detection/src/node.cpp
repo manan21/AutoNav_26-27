@@ -32,12 +32,14 @@ public:
 		this->declare_parameter("depth_camera_topic", "/zed/zed_node/depth/depth_registered");
 		this->declare_parameter("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info");
 		this->declare_parameter("line_points_topic", "line_points");
+		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true); 
 		
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
 		std::string camera_info_topic = this->get_parameter("camera_info_topic").as_string();
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
+		target_frame_ = this->get_parameter("target_frame").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
@@ -45,6 +47,7 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Depth topic: %s", depth_camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Camera info: %s", camera_info_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Output topic: %s", line_points_topic.c_str());
+		RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
 		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
@@ -112,6 +115,7 @@ private:
 	
 	bool enable_timer_;
 	bool configured_ = false;
+	std::string target_frame_;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -182,7 +186,7 @@ sensor_msgs::msg::PointCloud2 createPointCloud(
 }
 
 /**
- * Converts a list of image indices to map frame coordinates  
+ * Converts a list of image indices to target frame coordinates.
  */
 std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	const sensor_msgs::msg::Image::SharedPtr depth_msg, 
@@ -235,7 +239,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	
 	try {
 		transform = tf_buffer.lookupTransform(
-			"map", 
+			target_frame_,
 			frame_id, 
 			tf2::TimePointZero,
 			std::chrono::milliseconds(50)
@@ -243,7 +247,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		transform_available = true;
 	} catch (const tf2::TransformException& ex) {
 		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-			"TF not available (map <- %s): %s", frame_id.c_str(), ex.what());
+			"TF not available (%s <- %s): %s", target_frame_.c_str(), frame_id.c_str(), ex.what());
 	}
 
 	int valid_count = 0;
@@ -292,7 +296,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		// Add to pointcloud
 		pc_vec.push_back({static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)});
 
-		// TF to map frame if available
+		// TF to target frame if available
 		if (transform_available) {
 			try {
 				geometry_msgs::msg::PointStamped camera_point;
@@ -301,13 +305,13 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 				camera_point.point.y = py;
 				camera_point.point.z = pz;
 				
-				geometry_msgs::msg::PointStamped map_point;
-				tf2::doTransform(camera_point, map_point, transform);
+				geometry_msgs::msg::PointStamped target_point;
+				tf2::doTransform(camera_point, target_point, transform);
 				
-				if (!std::isnan(map_point.point.x) && !std::isnan(map_point.point.y)) {
+				if (!std::isnan(target_point.point.x) && !std::isnan(target_point.point.y)) {
 					depth_line_points.emplace_back(
-						map_point.point.x, 
-						map_point.point.y, 
+						target_point.point.x,
+						target_point.point.y,
 						0.0  // Project to ground plane
 					);
 					tf_success++;
@@ -318,7 +322,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	}
 
 	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-		"Processing: %d valid, %d invalid_depth, %d out_of_bounds → %d map points", 
+		"Processing: %d valid, %d invalid_depth, %d out_of_bounds -> %d transformed points",
 		valid_count, invalid_depth, out_of_bounds, tf_success);
 
 	// Publish pointcloud
@@ -377,10 +381,10 @@ void LineDetectorNode::line_service(
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
 
-	std::vector<Eigen::Vector3d> map_points = map_transform(depth_camera_msg, line_points, *line_points_len);
+	std::vector<Eigen::Vector3d> transformed_points = map_transform(depth_camera_msg, line_points, *line_points_len);
 
 	// Populate response
-	for (const auto & point: map_points) {
+	for (const auto & point: transformed_points) {
 		geometry_msgs::msg::Vector3 vec_msg;
 		vec_msg.x = point.x();
 		vec_msg.y = point.y();
@@ -459,10 +463,10 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	// Transform to map frame
-	std::vector<Eigen::Vector3d> map_points;
+	// Transform to target frame
+	std::vector<Eigen::Vector3d> transformed_points;
 	try {
-		map_points = map_transform(depth_msg, line_points, *line_points_len);
+		transformed_points = map_transform(depth_msg, line_points, *line_points_len);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
 		delete[] line_points;
@@ -471,9 +475,9 @@ void LineDetectorNode::line_callback()
 	}
 
 	// Publish
-	if (!map_points.empty()) {
+	if (!transformed_points.empty()) {
 		auto message = autonav_interfaces::msg::LinePoints();
-		for (const auto & point: map_points) {
+		for (const auto & point: transformed_points) {
 			geometry_msgs::msg::Vector3 vec_msg;
 			vec_msg.x = point.x();
 			vec_msg.y = point.y();
