@@ -56,7 +56,8 @@ using nav2_costmap_2d::NO_INFORMATION;
 //#define DEBUG_2
 //#define DEBUG_3
 //#define DEBUG_4
-#define DEBUG_n
+// Leave high-volume debug logging disabled in normal runtime.
+//#define DEBUG_n
 
 // helper methods outside namespace
 
@@ -349,12 +350,16 @@ LineLayer::updateCosts(
   // why even use the name thingys if auto works for all of them
   auto last = buffer_.read();
   if (!last ){
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "buffa empty... nothing to buf");
+    RCLCPP_DEBUG_THROTTLE(
+      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      "line_layer buffer empty; waiting for line points");
     return;
   }
   auto last_msg = *last;
   if (!last_msg) {
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "last message is gone... in the wind");
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      "line_layer received an empty buffered message");
     return;
   }
   
