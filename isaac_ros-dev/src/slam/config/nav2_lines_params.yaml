@@ -17,7 +17,7 @@ local_costmap:
       line_layer:
         plugin: "line_layer::LineLayer"
         enabled: True
-        line_topic: "/line_points"
+        line_topic: "/line_detection/line_points"
         publish_costmap: True
         rolling_window: true
 
