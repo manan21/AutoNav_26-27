@@ -75,7 +75,10 @@ LineLayer::LineLayer()
 : last_min_x_(0.0),
   last_min_y_(0.0),
   last_max_x_(1.0),
-  last_max_y_(1.0)
+  last_max_y_(1.0),
+  need_recalculation_(false),
+  rolling_window_(false),
+  publish_costmap_(false)
 {
 }
 
@@ -89,6 +92,7 @@ LineLayer::onInitialize()
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
+  declareParameter("publish_costmap", rclcpp::ParameterValue(false));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
@@ -333,6 +337,7 @@ LineLayer::updateCosts(
   // Fixing window coordinates with map size if necessary.
   min_i = std::max(0, min_i);
   min_j = std::max(0, min_j);
+  // Nav2 passes max_i/max_j as exclusive bounds.
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
 
@@ -383,17 +388,18 @@ LineLayer::updateCosts(
     RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "x, y = (%f, %f)", x, y);
     #endif
 
-    unsigned int mx, my;
+    unsigned int mx = 0;
+    unsigned int my = 0;
     if (!master_grid.worldToMap(x, y, mx, my)) {
-      
-      #ifdef DEBUG_n
-        RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "grid coords: (%u,%u)", mx, my); 
-        //RCLCPP_WARN(rclcpp::get_logger("nav_costmap_2d"), "LISTEN UP Computing map coords failed"); 
-	#endif
+      // Point lies outside this costmap window.
+      continue;
     }
 
-
-    if (!within_bounds(static_cast<int>(mx), min_i, max_i) || !within_bounds(static_cast<int>(my), min_j, max_j)) {
+    // Update window is [min_i, max_i) x [min_j, max_j).
+    if (
+      static_cast<int>(mx) < min_i || static_cast<int>(mx) >= max_i ||
+      static_cast<int>(my) < min_j || static_cast<int>(my) >= max_j)
+    {
 
       #ifdef DEBUG_n
       //RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (%d, %d), (%d, %d)",min_i, max_i, min_j, max_j); 
@@ -401,7 +407,6 @@ LineLayer::updateCosts(
       #endif
       continue;
     }
-    int index_new = my * size_x_ + mx;
     unsigned char cost = LETHAL_OBSTACLE; // maybe more dynamic down the line
     
     if (layered_costmap_->isRolling()){
@@ -413,10 +418,7 @@ LineLayer::updateCosts(
     	master_array[index_costmap] = cost; // overwrites cost map
 	continue;
     }
-    if (layered_costmap_->isRolling()){
-	    return;
-    }
-   
+    int index_new = static_cast<int>(my * size_x_ + mx);
     costmap_[index_new] = cost; // overwrites cost map
 
     #ifdef DEBUG_n
