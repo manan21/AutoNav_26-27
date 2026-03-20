@@ -1,0 +1,4 @@
+/**:
+  ros__parameters:
+    pos_tracking:
+      set_as_static: true
