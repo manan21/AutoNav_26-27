@@ -325,14 +325,24 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		"Processing: %d valid, %d invalid_depth, %d out_of_bounds -> %d transformed points",
 		valid_count, invalid_depth, out_of_bounds, tf_success);
 
-	// Publish pointcloud
-	if (!pc_vec.empty()) {
-		try {
+	// Publish debug cloud in target frame if transform succeeded; fallback to camera frame.
+	try {
+		if (!depth_line_points.empty()) {
+			std::vector<std::array<float, 3>> transformed_pc_vec;
+			transformed_pc_vec.reserve(depth_line_points.size());
+			for (const auto & p : depth_line_points) {
+				transformed_pc_vec.push_back(
+					{static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
+			}
+			sensor_msgs::msg::PointCloud2 pc =
+				createPointCloud(transformed_pc_vec, target_frame_, depth_msg->header.stamp);
+			_line_point_cloud_pub->publish(pc);
+		} else if (!pc_vec.empty()) {
 			sensor_msgs::msg::PointCloud2 pc = createPointCloud(pc_vec, frame_id, depth_msg->header.stamp);
 			_line_point_cloud_pub->publish(pc);
-		} catch (const std::exception& e) {
-			RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
 		}
+	} catch (const std::exception& e) {
+		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
 	}
 
 	return depth_line_points;
