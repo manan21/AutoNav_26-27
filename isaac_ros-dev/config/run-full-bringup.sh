@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 WORKSPACE_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
@@ -11,6 +10,8 @@ fi
 if [[ -f "$WORKSPACE_DIR/install/setup.bash" ]]; then
   source "$WORKSPACE_DIR/install/setup.bash"
 fi
+
+set -euo pipefail
 
 PIDS=()
 
