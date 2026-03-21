@@ -77,14 +77,16 @@ public:
 
   virtual void reset()
   {
-    return;
+    resetMaps();
+    current_ = false;
+    need_recalculation_ = true;
   }
 
   virtual void onFootprintChanged();
 
 
 
-  virtual bool isClearable() {return false;}
+  virtual bool isClearable() {return true;}
 
 private:
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;

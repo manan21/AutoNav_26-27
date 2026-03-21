@@ -108,6 +108,8 @@ LineLayer::onInitialize()
 
   
 
+  matchSize();
+
   need_recalculation_ = false;
   current_ = true;
   
@@ -126,6 +128,8 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       line->points = message->points;
 
       buffer_.buffer(line);
+      current_ = false;
+      need_recalculation_ = true;
 
 }
 
@@ -324,10 +328,6 @@ LineLayer::updateCosts(
   // below is a testament to my stupidity. Do not be like me. There is always a reason they have it set up the way they do.
 
   // Idgaf I'm overwriting just like they did
-  unsigned char * master_array = master_grid.getCharMap();
-  if (!master_array) {
-	  return;
-  }
   unsigned int size_x = master_grid.getSizeInCellsX(), size_y = master_grid.getSizeInCellsY();
 
   // {min_i, min_j} - {max_i, max_j} - are update-window coordinates.
@@ -352,12 +352,18 @@ LineLayer::updateCosts(
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "HEEEEEEEEEEEELP HEEEELP ME HEEEEEEEEEELP");
   #endif
 
-  // why even use the name thingys if auto works for all of them
+  // Clear the previous line layer state before applying the latest detection set.
+  resetMaps();
+
   auto last = buffer_.read();
   if (!last ){
     RCLCPP_DEBUG_THROTTLE(
       rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
       "line_layer buffer empty; waiting for line points");
+    if (publish_costmap_) {
+      publishCostmap();
+    }
+    current_ = true;
     return;
   }
   auto last_msg = *last;
@@ -365,9 +371,13 @@ LineLayer::updateCosts(
     RCLCPP_WARN_THROTTLE(
       rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
       "line_layer received an empty buffered message");
+    if (publish_costmap_) {
+      publishCostmap();
+    }
+    current_ = true;
     return;
   }
-  
+
   std::vector<geometry_msgs::msg::Vector3> points = last_msg->points;
 
   #ifdef DEBUG_2
@@ -409,17 +419,8 @@ LineLayer::updateCosts(
     }
     unsigned char cost = LETHAL_OBSTACLE; // maybe more dynamic down the line
     
-    if (layered_costmap_->isRolling()){
-	    #ifdef DEBUG_n
-	      RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "points for map: (%u), (%u)", mx, my); 
-	      #endif
-	   
-    	int index_costmap = master_grid.getIndex(mx, my);
-    	master_array[index_costmap] = cost; // overwrites cost map
-	continue;
-    }
     int index_new = static_cast<int>(my * size_x_ + mx);
-    costmap_[index_new] = cost; // overwrites cost map
+    costmap_[index_new] = cost; // overwrite this layer only
 
     #ifdef DEBUG_n
     RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "grid coords: (%u,%u)", mx, my); 
@@ -430,6 +431,7 @@ LineLayer::updateCosts(
   }
 
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+  current_ = true;
 
   if (publish_costmap_) {
    publishCostmap();
