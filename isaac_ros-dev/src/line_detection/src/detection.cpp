@@ -55,7 +55,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
 
     // get mask
     cv::Mat mask;
-    double threshold = 200;
+    double threshold = 220;
     cv::threshold(gray_img, mask, threshold, 255, cv::THRESH_BINARY);
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
