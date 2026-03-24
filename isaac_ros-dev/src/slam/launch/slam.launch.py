@@ -24,11 +24,6 @@ def generate_launch_description():
             default_value='false',
             description='Use simulation clock if true')
 
-    pointcloud_topic = DeclareLaunchArgument( 
-                            'pointcloud_topic',
-                            default_value='/depth_camera/points',
-                            description='cloud topic to use for cloud 2 scan' )
-    
     publish_period = DeclareLaunchArgument(
         'publish_period',
         # 0.02 if you want to publish
@@ -65,25 +60,6 @@ def generate_launch_description():
 
 
         # !!!
-    point2laser = Node(
-        package='pointcloud_to_laserscan',
-        executable='pointcloud_to_laserscan_node',
-        name='pc2_to_laserscan',
-        parameters=[{
-            'min_height': 0.1,
-            'max_height': 0.5,
-            'angle_increment': 0.0045,
-            'range_max': 30.0,
-            'use_inf': True,
-            'target_frame': 'base_link',
-            'transform_tolerance': 0.03
-        }],
-        remappings=[
-            ('cloud_in', LaunchConfiguration('pointcloud_topic')),
-            ('scan', '/scan')
-        ]
-    )
-
     # 2. SLAM Toolbox (Online Async)
     slam_toolbox = Node(
         package='slam_toolbox',
@@ -164,11 +140,9 @@ def generate_launch_description():
     return LaunchDescription([
         # params
         publish_period,
-        pointcloud_topic,
         use_sim_time,
         nav2_params,
         #nodes
-        #point2laser,
         ekf_local,
         slam_toolbox,
         #gps_transform,

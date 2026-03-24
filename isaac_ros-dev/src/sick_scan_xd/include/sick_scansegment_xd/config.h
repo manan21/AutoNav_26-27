@@ -137,6 +137,7 @@ namespace sick_scansegment_xd
         std::string publish_frame_id;               // = "world"; // frame id of ros Laserscan messages, default: "world"
         std::string publish_laserscan_segment_topic;   // topic of ros Laserscan segment messages
         std::string publish_laserscan_fullframe_topic; //topic of ros Laserscan fullframe messages
+        double max_laserscan_range;               // = 10.0; // max range of ros Laserscan fullframe messages in meters, points beyond this limit are published as NaN
         int udp_input_fifolength;                   // = 20; // max. udp input fifo length(-1: unlimited, default: 20 for buffering 1 second at 20 Hz), elements will be removed from front if number of elements exceeds the fifo_length
         int msgpack_output_fifolength;              // = 20; // max. msgpack output fifo length(-1: unlimited, default: 20 for buffering 1 second at 20 Hz), elements will be removed from front if number of elements exceeds the fifo_length
         int verbose_level;                          // = 1; // verbose_level <= 0: quiet mode, verbose_level == 1: print statistics, verbose_level == 2: print details incl. msgpack data, default: 1

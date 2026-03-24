@@ -275,6 +275,7 @@ sick_scansegment_xd::RosMsgpackPublisher::RosMsgpackPublisher(const std::string&
   m_all_segments_azimuth_max_deg = (float)config.all_segments_max_deg;
   m_host_FREchoFilter = config.host_FREchoFilter;
 	m_host_set_FREchoFilter = config.host_set_FREchoFilter;
+	m_max_laserscan_range = static_cast<float>(config.max_laserscan_range);
 	if (config.host_set_LFPangleRangeFilter)
 	{
 		initLFPangleRangeFilterSettings(config.host_LFPangleRangeFilter);
@@ -799,23 +800,23 @@ void sick_scansegment_xd::RosMsgpackPublisher::convertPointsToLaserscanMsg(uint3
 				laser_scan_msg.intensities.reserve(sorted_points.size());
 				laser_scan_msg.angle_min = sorted_points.front().azimuth;
 				laser_scan_msg.angle_max = sorted_points.back().azimuth;
-				laser_scan_msg.range_min = sorted_points.front().range;
-				laser_scan_msg.range_max = sorted_points.front().range;
+				laser_scan_msg.range_min = 0.0f;
+				laser_scan_msg.range_max = m_max_laserscan_range;
 				float delta_azimuth_expected = (laser_scan_msg.angle_max - laser_scan_msg.angle_min) / std::max(1.0f, (float)sorted_points.size() - 1.0f);
-				const float custom_min_angle = -M_PI / 2.0f; // Added
-				const float custom_max_angle = M_PI / 2.0f; // Added
+				const float custom_min_angle = -M_PI / 2.0f;
+				const float custom_max_angle = M_PI / 2.0f;
 				for(int point_cnt = 0; point_cnt < sorted_points.size(); point_cnt++)
 				{
-					const LaserScanMsgPoint& point = sorted_points[point_cnt]; // Added
-					if (point.azimuth >= custom_min_angle && point.azimuth <= custom_max_angle){ // Added
-						laser_scan_msg.ranges.push_back(point.range); // Added
-						laser_scan_msg.intensities.push_back(point.i); // Added
-						laser_scan_msg.range_min = std::min(point.range, laser_scan_msg.range_min); // Added
-						laser_scan_msg.range_max = std::max(point.range, laser_scan_msg.range_max); // Added
+					const LaserScanMsgPoint& point = sorted_points[point_cnt];
+					if (point.azimuth >= custom_min_angle && point.azimuth <= custom_max_angle && std::isfinite(point.range) && point.range <= m_max_laserscan_range)
+					{
+						laser_scan_msg.ranges.push_back(point.range);
+						laser_scan_msg.intensities.push_back(point.i);
 					}
-					else{ // Added
-						laser_scan_msg.ranges.push_back(NAN); // Added
-						laser_scan_msg.intensities.push_back(0.0); // Added
+					else
+					{
+						laser_scan_msg.ranges.push_back(NAN);
+						laser_scan_msg.intensities.push_back(0.0);
 					}
 					// laser_scan_msg.ranges.push_back(sorted_points[point_cnt].range);
 				 	// laser_scan_msg.intensities.push_back(sorted_points[point_cnt].i);

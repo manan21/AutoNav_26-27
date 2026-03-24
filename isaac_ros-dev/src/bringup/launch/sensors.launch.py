@@ -12,7 +12,7 @@ from launch import LaunchDescription
 def generate_launch_description():
 
     zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
-    #sick_pkg = os.path.join(get_package_share_directory('sick_scan_xd'), 'launch', 'sick_multiscan.launch.py')
+    sick_pkg = os.path.join(get_package_share_directory('sick_scan_xd'), 'launch', 'sick_multiscan.launch.py')
 
 
     # ros2 launch sick_scan_xd sick_multiscan.launch.py hostname:=192.168.0.1 udp_receiver_ip:="192.168.0.2"
@@ -32,33 +32,46 @@ def generate_launch_description():
         default_value='zed2i',
         description='camera_model'
     )
+    max_laserscan_range = DeclareLaunchArgument(
+        'max_laserscan_range',
+        default_value='10.0',
+        description='Maximum range in meters for the native SICK LaserScan publisher'
+    )
        
     print(f"zed: {zed_pkg}")
     #print(f"sick: {sick_pkg}")
 
     zed = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource ([zed_pkg]), launch_arguments={'camera_model':LaunchConfiguration('camera_model')}.items()
+            PythonLaunchDescriptionSource ([zed_pkg]),
+            launch_arguments={
+                'camera_model': LaunchConfiguration('camera_model'),
+                'publish_tf': 'false',
+                'publish_map_tf': 'false',
+            }.items()
     )
 
     sick_args = {
-        'hostname':'192.168.0.1',
-        'udp_receiver_ip':'192.168.0.2',
-        'hostname': LaunchConfiguration('hostname'),
+                'hostname': LaunchConfiguration('hostname'),
         'udp_receiver_ip': LaunchConfiguration('udp_receiver_ip'),
         'publish_frame_id':'lidar_footprint',
-        'tf_publish_rate':'0'
+        'tf_publish_rate':'0',
+        'publish_laserscan_fullframe_topic':'/scan_fullframe',
+        'max_laserscan_range': LaunchConfiguration('max_laserscan_range')
     }
 
 
 
-    #sick = IncludeLaunchDescription(PythonLaunchDescriptionSource ([sick_pkg]), launch_arguments=sick_args.items())
+    sick = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource ([sick_pkg]), launch_arguments=sick_args.items()
+    )
     
     return LaunchDescription([
         camera_model,
         hostname,
         udp_receiver_ip,
+        max_laserscan_range,
         zed,
-        #sick
+        sick
     ])
 
     
