@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -28,11 +28,6 @@ def generate_launch_description():
         default_value="192.168.0.2",
         description="IP address of this machine for the SICK lidar UDP receiver",
     )
-    publish_period = DeclareLaunchArgument(
-        "publish_period",
-        default_value="0.02",
-        description="SLAM map-to-odom transform publish period",
-    )
     max_laserscan_range = DeclareLaunchArgument(
         "max_laserscan_range",
         default_value="10.0",
@@ -46,6 +41,26 @@ def generate_launch_description():
             "nav2_paramsv2.yaml",
         ]),
         description="Nav2 parameter file for demo-day navigation",
+    )
+    sensors_delay = DeclareLaunchArgument(
+        "sensors_delay",
+        default_value="3.0",
+        description="Seconds to wait before launching sensors",
+    )
+    slam_delay = DeclareLaunchArgument(
+        "slam_delay",
+        default_value="8.0",
+        description="Seconds to wait before launching SLAM",
+    )
+    line_detection_delay = DeclareLaunchArgument(
+        "line_detection_delay",
+        default_value="14.0",
+        description="Seconds to wait before launching line detection",
+    )
+    nav2_delay = DeclareLaunchArgument(
+        "nav2_delay",
+        default_value="18.0",
+        description="Seconds to wait before launching Nav2",
     )
 
     bringup_share = FindPackageShare("bringup")
@@ -72,12 +87,7 @@ def generate_launch_description():
     slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([slam_share, "launch", "slam.launch.py"])
-        ),
-        launch_arguments={
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-            "publish_period": LaunchConfiguration("publish_period"),
-            "nav2_params": LaunchConfiguration("nav2_params"),
-        }.items(),
+        )
     )
 
     line_detection = Node(
@@ -115,12 +125,27 @@ def generate_launch_description():
         camera_model,
         hostname,
         udp_receiver_ip,
-        publish_period,
         max_laserscan_range,
         nav2_params,
+        sensors_delay,
+        slam_delay,
+        line_detection_delay,
+        nav2_delay,
         pre_slam,
-        sensors,
-        slam,
-        line_detection,
-        nav2,
+        TimerAction(
+            period=LaunchConfiguration("sensors_delay"),
+            actions=[sensors],
+        ),
+        TimerAction(
+            period=LaunchConfiguration("slam_delay"),
+            actions=[slam],
+        ),
+        TimerAction(
+            period=LaunchConfiguration("line_detection_delay"),
+            actions=[line_detection],
+        ),
+        TimerAction(
+            period=LaunchConfiguration("nav2_delay"),
+            actions=[nav2],
+        ),
     ])
