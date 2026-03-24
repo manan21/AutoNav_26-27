@@ -132,9 +132,9 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 750;
-	std::vector<Eigen::Vector3d> last_valid_points_;
+	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
-	bool has_last_valid_points_ = false;
+	bool has_last_valid_message_ = false;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -151,8 +151,14 @@ private:
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
 
-	void publishLinePoints(const std::vector<Eigen::Vector3d> & points);
-	void cacheAndPublishLinePoints(const std::vector<Eigen::Vector3d> & points);
+	autonav_interfaces::msg::LinePoints makeLinePointsMessage(
+		const std::vector<Eigen::Vector3d> & points,
+		const builtin_interfaces::msg::Time & stamp) const;
+
+	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
+	void cacheAndPublishLinePoints(
+		const std::vector<Eigen::Vector3d> & points,
+		const builtin_interfaces::msg::Time & stamp);
 	void publishHeldOrEmpty(const char * reason);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
@@ -238,9 +244,13 @@ bool LineDetectorNode::imagesAreSynchronized(
 	return true;
 }
 
-void LineDetectorNode::publishLinePoints(const std::vector<Eigen::Vector3d> & points)
+autonav_interfaces::msg::LinePoints LineDetectorNode::makeLinePointsMessage(
+	const std::vector<Eigen::Vector3d> & points,
+	const builtin_interfaces::msg::Time & stamp) const
 {
 	auto message = autonav_interfaces::msg::LinePoints();
+	message.header.frame_id = target_frame_;
+	message.header.stamp = stamp;
 	message.points.reserve(points.size());
 	for (const auto & point : points) {
 		geometry_msgs::msg::Vector3 vec_msg;
@@ -249,15 +259,22 @@ void LineDetectorNode::publishLinePoints(const std::vector<Eigen::Vector3d> & po
 		vec_msg.z = point.z();
 		message.points.emplace_back(vec_msg);
 	}
+	return message;
+}
+
+void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoints & message)
+{
 	_line_pub->publish(message);
 }
 
-void LineDetectorNode::cacheAndPublishLinePoints(const std::vector<Eigen::Vector3d> & points)
+void LineDetectorNode::cacheAndPublishLinePoints(
+	const std::vector<Eigen::Vector3d> & points,
+	const builtin_interfaces::msg::Time & stamp)
 {
-	last_valid_points_ = points;
+	last_valid_message_ = makeLinePointsMessage(points, stamp);
 	last_valid_detection_time_ = this->now();
-	has_last_valid_points_ = !last_valid_points_.empty();
-	publishLinePoints(points);
+	has_last_valid_message_ = !last_valid_message_.points.empty();
+	publishLinePoints(last_valid_message_);
 }
 
 void LineDetectorNode::publishHeldOrEmpty(const char * reason)
@@ -267,8 +284,8 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 	const rclcpp::Time now = this->now();
 
 	if (
-		has_last_valid_points_ &&
-		!last_valid_points_.empty() &&
+		has_last_valid_message_ &&
+		!last_valid_message_.points.empty() &&
 		line_hold_timeout_ms_ > 0 &&
 		now >= last_valid_detection_time_ &&
 		(now - last_valid_detection_time_) <= hold_timeout)
@@ -277,13 +294,18 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 			get_logger(), *get_clock(), 3000,
 			"Holding previous line obstacle set for %.1f ms after %s",
 			(now - last_valid_detection_time_).seconds() * 1000.0, reason);
-		publishLinePoints(last_valid_points_);
+		publishLinePoints(last_valid_message_);
 		return;
 	}
 
-	last_valid_points_.clear();
-	has_last_valid_points_ = false;
-	publishLinePoints({});
+	const rclcpp::Time now_time = this->now();
+	builtin_interfaces::msg::Time empty_stamp;
+	const int64_t now_ns = now_time.nanoseconds();
+	empty_stamp.sec = static_cast<int32_t>(now_ns / 1000000000LL);
+	empty_stamp.nanosec = static_cast<uint32_t>(now_ns % 1000000000LL);
+	last_valid_message_ = makeLinePointsMessage({}, empty_stamp);
+	has_last_valid_message_ = false;
+	publishLinePoints(last_valid_message_);
 }
 
 /**
@@ -604,7 +626,7 @@ void LineDetectorNode::line_callback()
 	}
 
 	// Cache and publish the latest detection set so brief misses do not flicker the line costmap.
-	cacheAndPublishLinePoints(transformed_points);
+	cacheAndPublishLinePoints(transformed_points, depth_msg->header.stamp);
 	if (!transformed_points.empty()) {
 		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 			"Published %zu line points", transformed_points.size());

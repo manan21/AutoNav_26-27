@@ -54,6 +54,9 @@
 #include "geometry_msgs/msg/vector3.hpp"
 #include "nav2_costmap_2d/observation_buffer.hpp"
 #include "line_layer/line_buffer.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
+#include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <optional>
 
@@ -95,6 +98,7 @@ private:
   bool need_recalculation_;
   bool rolling_window_;
   bool publish_costmap_;
+  double transform_tolerance_;
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
 
@@ -106,6 +110,8 @@ private:
   rclcpp::Subscription<autonav_interfaces::msg::LinePoints>::SharedPtr line_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   std::string line_topic_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   // turns out you can type anything you want in a comment
   // poop
 
@@ -113,6 +119,8 @@ private:
   LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>> buffer_;
 
   void linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message);
+  std::optional<std::vector<geometry_msgs::msg::Vector3>> transformPointsToGlobalFrame(
+    const autonav_interfaces::msg::LinePoints & message);
 };
 
 }  // namespace nav2_gradient_costmap_plugin

@@ -45,6 +45,7 @@
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "nav2_costmap_2d/footprint.hpp"
 #include "rclcpp/parameter_events_filter.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 
@@ -78,7 +79,8 @@ LineLayer::LineLayer()
   last_max_y_(1.0),
   need_recalculation_(false),
   rolling_window_(false),
-  publish_costmap_(false)
+  publish_costmap_(false),
+  transform_tolerance_(0.2)
 {
 }
 
@@ -93,10 +95,15 @@ LineLayer::onInitialize()
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
   declareParameter("publish_costmap", rclcpp::ParameterValue(false));
+  declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
+  node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
+
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
 
   line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1, 
@@ -125,12 +132,59 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       RCLCPP_INFO(rclcpp::get_logger("nav_costmap_2d"), "CALM LUH CALLBACK");
       #endif
       auto line = std::make_shared<autonav_interfaces::msg::LinePoints>(); 
+      line->header = message->header;
       line->points = message->points;
 
       buffer_.buffer(line);
       current_ = false;
       need_recalculation_ = true;
 
+}
+
+std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPointsToGlobalFrame(
+  const autonav_interfaces::msg::LinePoints & message)
+{
+  const std::string target_frame = layered_costmap_->getGlobalFrameID();
+  std::vector<geometry_msgs::msg::Vector3> transformed_points;
+  transformed_points.reserve(message.points.size());
+
+  if (message.header.frame_id.empty() || message.header.frame_id == target_frame) {
+    return message.points;
+  }
+
+  geometry_msgs::msg::TransformStamped transform;
+  try {
+    transform = tf_buffer_->lookupTransform(
+      target_frame,
+      message.header.frame_id,
+      rclcpp::Time(message.header.stamp),
+      rclcpp::Duration::from_seconds(transform_tolerance_));
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("nav_costmap_2d"), *node_.lock()->get_clock(), 3000,
+      "line_layer TF unavailable (%s <- %s): %s",
+      target_frame.c_str(), message.header.frame_id.c_str(), ex.what());
+    return std::nullopt;
+  }
+
+  for (const auto & point : message.points) {
+    geometry_msgs::msg::PointStamped input_point;
+    input_point.header = message.header;
+    input_point.point.x = point.x;
+    input_point.point.y = point.y;
+    input_point.point.z = point.z;
+
+    geometry_msgs::msg::PointStamped output_point;
+    tf2::doTransform(input_point, output_point, transform);
+
+    geometry_msgs::msg::Vector3 transformed;
+    transformed.x = output_point.point.x;
+    transformed.y = output_point.point.y;
+    transformed.z = output_point.point.z;
+    transformed_points.push_back(transformed);
+  }
+
+  return transformed_points;
 }
 
 void LineLayer::publishCostmap() {
@@ -352,9 +406,6 @@ LineLayer::updateCosts(
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "HEEEEEEEEEEEELP HEEEELP ME HEEEEEEEEEELP");
   #endif
 
-  // Clear the previous line layer state before applying the latest detection set.
-  resetMaps();
-
   auto last = buffer_.read();
   if (!last ){
     RCLCPP_DEBUG_THROTTLE(
@@ -378,7 +429,16 @@ LineLayer::updateCosts(
     return;
   }
 
-  std::vector<geometry_msgs::msg::Vector3> points = last_msg->points;
+  auto transformed_points = transformPointsToGlobalFrame(*last_msg);
+  if (!transformed_points) {
+    current_ = true;
+    return;
+  }
+
+  // Clear the previous line layer state only when we have a usable message.
+  resetMaps();
+
+  const std::vector<geometry_msgs::msg::Vector3> & points = *transformed_points;
 
   #ifdef DEBUG_2
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "line point len: %zu", points.size());
