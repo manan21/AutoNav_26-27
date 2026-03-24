@@ -44,6 +44,7 @@ def generate_launch_description():
     # controls what nodes are managed by lifecycle manager
     lifecycle_nodes = [
         'controller_server',
+        'behavior_server',
         #'planner_server',
         'bt_navigator',
         # 'waypoint_follower',
@@ -80,11 +81,20 @@ def generate_launch_description():
             output='screen',
             parameters=[configured_params]
     )
+
+    behavior_server = Node(
+            package='nav2_behaviors',
+            executable='behavior_server',
+            name='behavior_server',
+            output='screen',
+            parameters=[configured_params]
+    )
        
     return LaunchDescription([
         use_sim_time,
         nav2_params,
         controller,
+        behavior_server,
         navigator,
         manager
         
