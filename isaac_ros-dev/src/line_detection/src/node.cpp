@@ -37,6 +37,7 @@ public:
 		this->declare_parameter("publish_interval_ms", 250);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
+		this->declare_parameter("line_hold_timeout_ms", 750);
 		
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
@@ -47,6 +48,7 @@ public:
 		publish_interval_ms_ = std::max<int64_t>(50, this->get_parameter("publish_interval_ms").as_int());
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
+		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -58,6 +60,7 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Publish interval: %ld ms", publish_interval_ms_);
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics
@@ -128,6 +131,10 @@ private:
 	int64_t publish_interval_ms_ = 250;
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
+	int64_t line_hold_timeout_ms_ = 750;
+	std::vector<Eigen::Vector3d> last_valid_points_;
+	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
+	bool has_last_valid_points_ = false;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -145,6 +152,8 @@ private:
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
 
 	void publishLinePoints(const std::vector<Eigen::Vector3d> & points);
+	void cacheAndPublishLinePoints(const std::vector<Eigen::Vector3d> & points);
+	void publishHeldOrEmpty(const char * reason);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 };
@@ -241,6 +250,40 @@ void LineDetectorNode::publishLinePoints(const std::vector<Eigen::Vector3d> & po
 		message.points.emplace_back(vec_msg);
 	}
 	_line_pub->publish(message);
+}
+
+void LineDetectorNode::cacheAndPublishLinePoints(const std::vector<Eigen::Vector3d> & points)
+{
+	last_valid_points_ = points;
+	last_valid_detection_time_ = this->now();
+	has_last_valid_points_ = !last_valid_points_.empty();
+	publishLinePoints(points);
+}
+
+void LineDetectorNode::publishHeldOrEmpty(const char * reason)
+{
+	const rclcpp::Duration hold_timeout = rclcpp::Duration::from_nanoseconds(
+		line_hold_timeout_ms_ * 1000000LL);
+	const rclcpp::Time now = this->now();
+
+	if (
+		has_last_valid_points_ &&
+		!last_valid_points_.empty() &&
+		line_hold_timeout_ms_ > 0 &&
+		now >= last_valid_detection_time_ &&
+		(now - last_valid_detection_time_) <= hold_timeout)
+	{
+		RCLCPP_WARN_THROTTLE(
+			get_logger(), *get_clock(), 3000,
+			"Holding previous line obstacle set for %.1f ms after %s",
+			(now - last_valid_detection_time_).seconds() * 1000.0, reason);
+		publishLinePoints(last_valid_points_);
+		return;
+	}
+
+	last_valid_points_.clear();
+	has_last_valid_points_ = false;
+	publishLinePoints({});
 }
 
 /**
@@ -494,7 +537,7 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
-		publishLinePoints({});
+		publishHeldOrEmpty("RGB/depth desynchronization");
 		return;
 	}
 
@@ -535,7 +578,7 @@ void LineDetectorNode::line_callback()
 		"Detected %d line pixels", *line_points_len);
 	
 	if (*line_points_len == 0) {
-		publishLinePoints({});
+		publishHeldOrEmpty("empty line detection");
 		delete[] line_points;
 		delete line_points_len;
 		return;
@@ -547,14 +590,21 @@ void LineDetectorNode::line_callback()
 		transformed_points = map_transform(depth_msg, line_points, *line_points_len);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
-		publishLinePoints({});
+		publishHeldOrEmpty("transform failure");
 		delete[] line_points;
 		delete line_points_len;
 		return;
 	}
 
-	// Publish the latest detection set, even if empty, so the line layer clears stale obstacles.
-	publishLinePoints(transformed_points);
+	if (transformed_points.empty()) {
+		publishHeldOrEmpty("no transformed points");
+		delete[] line_points;
+		delete line_points_len;
+		return;
+	}
+
+	// Cache and publish the latest detection set so brief misses do not flicker the line costmap.
+	cacheAndPublishLinePoints(transformed_points);
 	if (!transformed_points.empty()) {
 		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 			"Published %zu line points", transformed_points.size());
