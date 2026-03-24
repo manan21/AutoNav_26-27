@@ -18,6 +18,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <mutex>
 #include <cstring>
+#include <limits>
 
 class LineDetectorNode : public rclcpp::Node {
 
@@ -34,6 +35,9 @@ public:
 		this->declare_parameter("line_points_topic", "line_points");
 		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true); 
+		this->declare_parameter("max_line_distance_m", 6.0);
+		this->declare_parameter("cluster_radius_m", 0.12);
+		this->declare_parameter("min_cluster_size", 3);
 		
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
@@ -41,6 +45,9 @@ public:
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
 		target_frame_ = this->get_parameter("target_frame").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
+		this->get_parameter("max_line_distance_m", max_line_distance_m_);
+		this->get_parameter("cluster_radius_m", cluster_radius_m_);
+		this->get_parameter("min_cluster_size", min_cluster_size_);
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -49,6 +56,9 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Output topic: %s", line_points_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
 		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
+		RCLCPP_INFO(this->get_logger(), "Max line distance: %.2f m", max_line_distance_m_);
+		RCLCPP_INFO(this->get_logger(), "Cluster radius: %.2f m", cluster_radius_m_);
+		RCLCPP_INFO(this->get_logger(), "Minimum cluster size: %d", min_cluster_size_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics
@@ -116,6 +126,9 @@ private:
 	bool enable_timer_;
 	bool configured_ = false;
 	std::string target_frame_;
+	double max_line_distance_m_ = 6.0;
+	double cluster_radius_m_ = 0.12;
+	int min_cluster_size_ = 3;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -127,6 +140,8 @@ private:
 		const sensor_msgs::msg::Image::SharedPtr depth_msg, 
 		int2* line_points, 
 		int line_points_len); 
+
+	std::vector<Eigen::Vector3d> filterLinePoints(const std::vector<Eigen::Vector3d>& points) const;
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 };
@@ -183,6 +198,48 @@ sensor_msgs::msg::PointCloud2 createPointCloud(
 	}
 
 	return pointcloud;
+}
+
+std::vector<Eigen::Vector3d> LineDetectorNode::filterLinePoints(
+	const std::vector<Eigen::Vector3d>& points) const
+{
+	std::vector<Eigen::Vector3d> filtered_points;
+	filtered_points.reserve(points.size());
+
+	if (points.empty()) {
+		return filtered_points;
+	}
+
+	const double max_distance_sq =
+		max_line_distance_m_ > 0.0 ? max_line_distance_m_ * max_line_distance_m_ : std::numeric_limits<double>::infinity();
+	const double cluster_radius_sq = cluster_radius_m_ * cluster_radius_m_;
+
+	for (size_t i = 0; i < points.size(); ++i) {
+		const auto & point = points[i];
+		const double distance_sq = point.x() * point.x() + point.y() * point.y();
+		if (distance_sq > max_distance_sq) {
+			continue;
+		}
+
+		int cluster_size = 1;
+		for (size_t j = 0; j < points.size() && cluster_size < min_cluster_size_; ++j) {
+			if (i == j) {
+				continue;
+			}
+
+			const double dx = points[j].x() - point.x();
+			const double dy = points[j].y() - point.y();
+			if (dx * dx + dy * dy <= cluster_radius_sq) {
+				++cluster_size;
+			}
+		}
+
+		if (cluster_size >= min_cluster_size_) {
+			filtered_points.push_back(point);
+		}
+	}
+
+	return filtered_points;
 }
 
 /**
@@ -325,12 +382,17 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		"Processing: %d valid, %d invalid_depth, %d out_of_bounds -> %d transformed points",
 		valid_count, invalid_depth, out_of_bounds, tf_success);
 
+	auto filtered_points = filterLinePoints(depth_line_points);
+	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+		"Filtered transformed line points: %zu -> %zu",
+		depth_line_points.size(), filtered_points.size());
+
 	// Publish debug cloud in target frame if transform succeeded; fallback to camera frame.
 	try {
-		if (!depth_line_points.empty()) {
+		if (!filtered_points.empty()) {
 			std::vector<std::array<float, 3>> transformed_pc_vec;
-			transformed_pc_vec.reserve(depth_line_points.size());
-			for (const auto & p : depth_line_points) {
+			transformed_pc_vec.reserve(filtered_points.size());
+			for (const auto & p : filtered_points) {
 				transformed_pc_vec.push_back(
 					{static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
 			}
@@ -345,7 +407,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
 	}
 
-	return depth_line_points;
+	return filtered_points;
 }
 
 void LineDetectorNode::line_service(
