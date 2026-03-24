@@ -104,7 +104,7 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.22
       max_vel_y: 0.0
-      max_vel_theta: 1.0
+      max_vel_theta: 0.6
       min_speed_xy: 0.0
       max_speed_xy: 0.22
       min_speed_theta: 0.0
@@ -112,10 +112,10 @@ controller_server:
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
       acc_lim_x: 2.5
       acc_lim_y: 0.0
-      acc_lim_theta: 3.2
+      acc_lim_theta: 1.8
       decel_lim_x: -2.5
       decel_lim_y: 0.0
-      decel_lim_theta: -3.2
+      decel_lim_theta: -1.8
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
@@ -151,16 +151,8 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.22
-      plugins: ["line_layer", "obstacle_layer", "inflation_layer"]
-
-      line_layer:
-        plugin: "line_layer::LineLayer"
-        enabled: True
-        line_topic: "/line_points"
-        publish_costmap: True
-        rolling_window: true
-
+      robot_radius: 0.41
+      plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -192,7 +184,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: False
-      robot_radius: 0.22
+      robot_radius: 0.41
       resolution: 0.05
       width: 25
       height: 25
@@ -228,7 +220,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.35
+        inflation_radius: 0.45
       always_send_full_costmap: True
 
 map_server:
