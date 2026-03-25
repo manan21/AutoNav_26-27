@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -28,6 +28,11 @@ def generate_launch_description():
         default_value="192.168.0.2",
         description="IP address of this machine for the SICK lidar UDP receiver",
     )
+    publish_period = DeclareLaunchArgument(
+        "publish_period",
+        default_value="0.02",
+        description="SLAM map-to-odom transform publish period",
+    )
     max_laserscan_range = DeclareLaunchArgument(
         "max_laserscan_range",
         default_value="10.0",
@@ -42,35 +47,9 @@ def generate_launch_description():
         ]),
         description="Nav2 parameter file for demo-day navigation",
     )
-    sensors_delay = DeclareLaunchArgument(
-        "sensors_delay",
-        default_value="3.0",
-        description="Seconds to wait before launching sensors",
-    )
-    slam_delay = DeclareLaunchArgument(
-        "slam_delay",
-        default_value="8.0",
-        description="Seconds to wait before launching SLAM",
-    )
-    line_detection_delay = DeclareLaunchArgument(
-        "line_detection_delay",
-        default_value="14.0",
-        description="Seconds to wait before launching line detection",
-    )
-    nav2_delay = DeclareLaunchArgument(
-        "nav2_delay",
-        default_value="18.0",
-        description="Seconds to wait before launching Nav2",
-    )
 
     bringup_share = FindPackageShare("bringup")
     slam_share = FindPackageShare("slam")
-
-    network_setup = ExecuteProcess(
-        cmd=['bash', '-c', 'sudo ip addr flush dev eno1 && sudo ip addr add 192.168.0.2/24 dev eno1 && sudo ip link set eno1 up'],
-        name='network_setup',
-        output='screen',
-    )
 
     pre_slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -86,13 +65,19 @@ def generate_launch_description():
             "camera_model": LaunchConfiguration("camera_model"),
             "hostname": LaunchConfiguration("hostname"),
             "udp_receiver_ip": LaunchConfiguration("udp_receiver_ip"),
+            "max_laserscan_range": LaunchConfiguration("max_laserscan_range"),
         }.items(),
     )
 
     slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([slam_share, "launch", "slam.launch.py"])
-        )
+        ),
+        launch_arguments={
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "publish_period": LaunchConfiguration("publish_period"),
+            "nav2_params": LaunchConfiguration("nav2_params"),
+        }.items(),
     )
 
     line_detection = Node(
@@ -106,7 +91,7 @@ def generate_launch_description():
             "depth_camera_topic": "/zed/zed_node/depth/depth_registered",
             "camera_info_topic": "/zed/zed_node/rgb/color/rect/camera_info",
             "line_points_topic": "/line_points",
-            "target_frame": "map",
+            "target_frame": "odom",
             "enable_timer": True,
             "publish_interval_ms": 250,
             "max_rgb_depth_delta_ms": 120,
@@ -130,28 +115,12 @@ def generate_launch_description():
         camera_model,
         hostname,
         udp_receiver_ip,
+        publish_period,
         max_laserscan_range,
         nav2_params,
-        sensors_delay,
-        slam_delay,
-        line_detection_delay,
-        nav2_delay,
-        network_setup,
         pre_slam,
-        TimerAction(
-            period=LaunchConfiguration("sensors_delay"),
-            actions=[sensors],
-        ),
-        TimerAction(
-            period=LaunchConfiguration("slam_delay"),
-            actions=[slam],
-        ),
-        TimerAction(
-            period=LaunchConfiguration("line_detection_delay"),
-            actions=[line_detection],
-        ),
-        TimerAction(
-            period=LaunchConfiguration("nav2_delay"),
-            actions=[nav2],
-        ),
+        sensors,
+        slam,
+        line_detection,
+        nav2,
     ])

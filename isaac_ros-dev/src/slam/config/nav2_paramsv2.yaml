@@ -127,7 +127,7 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.2
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
@@ -135,6 +135,9 @@ controller_server:
       GoalAlign.forward_point_distance: 0.1
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
   local_costmap:
@@ -148,8 +151,8 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.2
-      plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
+      robot_radius: 0.41
+      plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -166,14 +169,6 @@ local_costmap:
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
 
-      line_layer:
-        plugin: "line_layer::LineLayer"
-        enabled: True
-        line_topic: "/line_points"
-        transform_tolerance: 0.2
-        rolling_window: True
-        publish_costmap: True
-
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
@@ -189,16 +184,22 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: False
-      robot_radius: 0.40
+      robot_radius: 0.41
       resolution: 0.05
       width: 25
       height: 25
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "line_layer", "obstacle_layer", "inflation_layer"]
       
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
+
+      line_layer:
+        plugin: "line_layer::LineLayer"
+        enabled: True
+        line_topic: "/line_points"
+        publish_costmap: True
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -263,9 +264,17 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["backup"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
     backup:
       plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
     global_frame: odom
     robot_base_frame: base_link
     transform_tolerance: 0.1

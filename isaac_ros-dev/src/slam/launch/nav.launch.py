@@ -1,15 +1,15 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from ament_index_python.packages import get_package_share_directory
 from nav2_common.launch import RewrittenYaml
 
-# Launch Nav2 with a package-share BT path so the runtime does not depend
-# on a machine-specific absolute workspace location.
+# launches nav2 with custom nodes for testing
+# assumes publishers already working
 
 def generate_launch_description():
-
+       
     bt_xml_path = PathJoinSubstitution([
         get_package_share_directory('slam'),
         'behavior_trees',
@@ -32,31 +32,70 @@ def generate_launch_description():
     )
 
     configured_params = RewrittenYaml(
-        source_file=LaunchConfiguration('nav2_params'),
-        root_key='',
-        param_rewrites={
-            'default_nav_to_pose_bt_xml': bt_xml_path,
-            'default_nav_through_poses_bt_xml': bt_xml_path,
-        },
-        convert_types=True,
+    source_file=LaunchConfiguration('nav2_params'),
+    root_key='',
+    param_rewrites={
+        'default_nav_to_pose_bt_xml': bt_xml_path,
+        'default_nav_through_poses_bt_xml': bt_xml_path
+    },
+    convert_types=True
     )
+ 
+    # controls what nodes are managed by lifecycle manager
+    lifecycle_nodes = [
+        'controller_server',
+        'behavior_server',
+        #'planner_server',
+        'bt_navigator',
+        # 'waypoint_follower',
+        #'velocity_smoother'
+    ]
 
-    nav2 = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                get_package_share_directory('nav2_bringup'),
-                'launch',
-                'navigation_launch.py',
-            ])
-        ]),
-        launch_arguments={
+    manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_navigation',
+        output='screen',
+        parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'params_file': configured_params,
-        }.items(),
+            'autostart': True,
+            'node_names': lifecycle_nodes
+        }]
     )
 
+
+
+
+    controller = Node(
+            package='nav2_controller',
+            executable='controller_server',
+            name='controller_server',
+            output='screen',
+            parameters=[configured_params]
+    )
+
+    navigator = Node(
+            package='nav2_bt_navigator',
+            executable='bt_navigator',
+            name='bt_navigator',
+            output='screen',
+            parameters=[configured_params]
+    )
+
+    behavior_server = Node(
+            package='nav2_behaviors',
+            executable='behavior_server',
+            name='behavior_server',
+            output='screen',
+            parameters=[configured_params]
+    )
+       
     return LaunchDescription([
         use_sim_time,
         nav2_params,
-        nav2,
+        controller,
+        behavior_server,
+        navigator,
+        manager
+        
     ])
