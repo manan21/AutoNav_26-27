@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, ExecuteProcess
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -66,6 +66,13 @@ def generate_launch_description():
     bringup_share = FindPackageShare("bringup")
     slam_share = FindPackageShare("slam")
 
+    network_setup = ExecuteProcess(
+        cmd='sudo ip addr flush dev eno1 && sudo ip addr add 192.168.0.2/24 dev eno1 && sudo ip link set eno1 up',
+        shell=True,
+        name='network_setup',
+        output='screen',
+    )
+
     pre_slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([bringup_share, "launch", "pre_slam.launch.py"])
@@ -131,6 +138,7 @@ def generate_launch_description():
         slam_delay,
         line_detection_delay,
         nav2_delay,
+        network_setup,
         pre_slam,
         TimerAction(
             period=LaunchConfiguration("sensors_delay"),
