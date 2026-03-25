@@ -45,8 +45,6 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom
-    default_nav_to_pose_bt_xml: "/home/vtcro/AutoNav_25-26/isaac_ros-dev/src/slam/behavior_trees/bt_2.xml"
-    default_nav_through_poses_bt_xml: "/home/vtcro/AutoNav_25-26/isaac_ros-dev/src/slam/behavior_trees/bt_2.xml"
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 1000
