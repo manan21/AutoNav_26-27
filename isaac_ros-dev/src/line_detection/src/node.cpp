@@ -451,8 +451,17 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 			sensor_msgs::msg::PointCloud2 pc =
 				createPointCloud(transformed_pc_vec, target_frame_, depth_msg->header.stamp);
 			_line_point_cloud_pub->publish(pc);
-		} else if (!pc_vec.empty()) {
-			sensor_msgs::msg::PointCloud2 pc = createPointCloud(pc_vec, frame_id, depth_msg->header.stamp);
+		} else if (has_last_valid_message_ && !last_valid_message_.points.empty()) {
+			std::vector<std::array<float, 3>> cached_pc_vec;
+			cached_pc_vec.reserve(last_valid_message_.points.size());
+			for (const auto & point : last_valid_message_.points) {
+				cached_pc_vec.push_back(
+					{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)});
+			}
+			sensor_msgs::msg::PointCloud2 pc = createPointCloud(
+				cached_pc_vec,
+				last_valid_message_.header.frame_id.empty() ? target_frame_ : last_valid_message_.header.frame_id,
+				last_valid_message_.header.stamp);
 			_line_point_cloud_pub->publish(pc);
 		}
 	} catch (const std::exception& e) {
