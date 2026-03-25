@@ -32,7 +32,7 @@ public:
 		this->declare_parameter("depth_camera_topic", "/zed/zed_node/depth/depth_registered");
 		this->declare_parameter("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info");
 		this->declare_parameter("line_points_topic", "line_points");
-		this->declare_parameter("target_frame", "odom");
+		this->declare_parameter("target_frame", "map");
 		this->declare_parameter("enable_timer", true);
 		this->declare_parameter("publish_interval_ms", 250);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);

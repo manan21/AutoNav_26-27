@@ -101,7 +101,7 @@ def generate_launch_description():
             "depth_camera_topic": "/zed/zed_node/depth/depth_registered",
             "camera_info_topic": "/zed/zed_node/rgb/color/rect/camera_info",
             "line_points_topic": "/line_points",
-            "target_frame": "odom",
+            "target_frame": "map",
             "enable_timer": True,
             "publish_interval_ms": 250,
             "max_rgb_depth_delta_ms": 120,
