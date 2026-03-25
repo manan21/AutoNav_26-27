@@ -32,11 +32,6 @@ def generate_launch_description():
         default_value='zed2i',
         description='camera_model'
     )
-    max_laserscan_range = DeclareLaunchArgument(
-        'max_laserscan_range',
-        default_value='10.0',
-        description='Maximum range in meters for the native SICK LaserScan publisher'
-    )
        
     print(f"zed: {zed_pkg}")
     #print(f"sick: {sick_pkg}")
@@ -54,9 +49,7 @@ def generate_launch_description():
                 'hostname': LaunchConfiguration('hostname'),
         'udp_receiver_ip': LaunchConfiguration('udp_receiver_ip'),
         'publish_frame_id':'lidar_footprint',
-        'tf_publish_rate':'0',
-        'publish_laserscan_fullframe_topic':'/scan_fullframe',
-        'max_laserscan_range': LaunchConfiguration('max_laserscan_range')
+        'tf_publish_rate':'0'
     }
 
 
@@ -69,7 +62,6 @@ def generate_launch_description():
         camera_model,
         hostname,
         udp_receiver_ip,
-        max_laserscan_range,
         zed,
         sick
     ])

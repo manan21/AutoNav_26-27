@@ -87,7 +87,6 @@ def generate_launch_description():
             "camera_model": LaunchConfiguration("camera_model"),
             "hostname": LaunchConfiguration("hostname"),
             "udp_receiver_ip": LaunchConfiguration("udp_receiver_ip"),
-            "max_laserscan_range": LaunchConfiguration("max_laserscan_range"),
         }.items(),
     )
 
