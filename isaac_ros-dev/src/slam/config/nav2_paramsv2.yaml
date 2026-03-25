@@ -83,8 +83,8 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.10
-      movement_time_allowance: 3.0
+      required_movement_radius: 0.15
+      movement_time_allowance: 5.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -104,7 +104,7 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.22
       max_vel_y: 0.0
-      max_vel_theta: 0.25
+      max_vel_theta: 0.35
       min_speed_xy: 0.0
       max_speed_xy: 0.22
       min_speed_theta: 0.0
@@ -112,10 +112,10 @@ controller_server:
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
       acc_lim_x: 2.5
       acc_lim_y: 0.0
-      acc_lim_theta: 0.6
+      acc_lim_theta: 0.9
       decel_lim_x: -2.5
       decel_lim_y: 0.0
-      decel_lim_theta: -0.6
+      decel_lim_theta: -0.9
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
@@ -135,7 +135,7 @@ controller_server:
       GoalAlign.forward_point_distance: 0.1
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
-      RotateToGoal.scale: 0.0
+      RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
 
