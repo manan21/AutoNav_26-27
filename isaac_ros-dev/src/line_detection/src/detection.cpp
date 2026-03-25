@@ -1,4 +1,84 @@
 #include "line_detection/detection.hpp"
+#include <algorithm>
+#include <vector>
+
+namespace
+{
+
+constexpr int kMinLineComponentPixels = 40;
+constexpr int kMinLineComponentSpanPx = 12;
+
+std::pair<int2 *, int *> filter_line_components(
+    const int2 *points,
+    int count,
+    int width,
+    int height)
+{
+    int *filtered_count = new int(0);
+    int2 *filtered_points = new int2[1];
+
+    if (!points || count <= 0 || width <= 0 || height <= 0) {
+        return std::make_pair(filtered_points, filtered_count);
+    }
+
+    cv::Mat component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    for (int i = 0; i < count; ++i) {
+        const int x = points[i].x;
+        const int y = points[i].y;
+        if (0 <= x && x < width && 0 <= y && y < height) {
+            component_mask.at<uint8_t>(y, x) = 255;
+        }
+    }
+
+    cv::Mat labels;
+    cv::Mat stats;
+    cv::Mat centroids;
+    const int num_labels =
+        cv::connectedComponentsWithStats(component_mask, labels, stats, centroids, 8, CV_32S);
+
+    std::vector<uint8_t> keep_component(num_labels, 0);
+    int kept_components = 0;
+    for (int label = 1; label < num_labels; ++label) {
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        const int component_width = stats.at<int>(label, cv::CC_STAT_WIDTH);
+        const int component_height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+        const int max_span = std::max(component_width, component_height);
+
+        if (area >= kMinLineComponentPixels && max_span >= kMinLineComponentSpanPx) {
+            keep_component[label] = 1;
+            ++kept_components;
+        }
+    }
+
+    std::vector<int2> kept_points;
+    kept_points.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const int x = points[i].x;
+        const int y = points[i].y;
+        if (0 <= x && x < width && 0 <= y && y < height) {
+            const int label = labels.at<int>(y, x);
+            if (label > 0 && keep_component[label]) {
+                kept_points.push_back(points[i]);
+            }
+        }
+    }
+
+    delete[] filtered_points;
+    *filtered_count = static_cast<int>(kept_points.size());
+    filtered_points = new int2[std::max(1, *filtered_count)];
+    for (int i = 0; i < *filtered_count; ++i) {
+        filtered_points[i] = kept_points[i];
+    }
+
+    RCLCPP_INFO(
+        rclcpp::get_logger("lines"),
+        "Filtered line pixels from %d to %d using %d kept connected components",
+        count, *filtered_count, kept_components);
+
+    return std::make_pair(filtered_points, filtered_count);
+}
+
+}  // namespace
 
 // Error function and macro borrowed from 
 // https://github.com/jiekebo/CUDA-By-Example/blob/master/common/book.h
@@ -311,6 +391,12 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
             return std::make_pair(output_return, counter_return);
         }
     }
+
+    auto filtered_results = filter_line_components(output_return, *counter_return, width, height);
+    delete[] output_return;
+    delete counter_return;
+    output_return = filtered_results.first;
+    counter_return = filtered_results.second;
 
     // =========================
     // DEBUG: save 3 images once
