@@ -67,8 +67,7 @@ def generate_launch_description():
     slam_share = FindPackageShare("slam")
 
     network_setup = ExecuteProcess(
-        cmd='sudo ip addr flush dev eno1 && sudo ip addr add 192.168.0.2/24 dev eno1 && sudo ip link set eno1 up',
-        shell=True,
+        cmd=['bash', '-c', 'sudo ip addr flush dev eno1 && sudo ip addr add 192.168.0.2/24 dev eno1 && sudo ip link set eno1 up'],
         name='network_setup',
         output='screen',
     )
