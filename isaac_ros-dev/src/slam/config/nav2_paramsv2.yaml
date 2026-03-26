@@ -200,8 +200,8 @@ global_costmap:
       # origin_x: -100.0
       # origin_y: -100.0
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
-      
+      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
+
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
@@ -221,6 +221,14 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
+
+      line_layer:
+        plugin: "line_layer::LineLayer"
+        enabled: True
+        line_topic: "/line_points"
+        transform_tolerance: 0.2
+        rolling_window: False
+        publish_costmap: False
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
