@@ -194,11 +194,11 @@ global_costmap:
       use_sim_time: False
       robot_radius: 0.3
       resolution: 0.05
-      width: 200
-      height: 200
+      width: 25
+      height: 25
       # Center the fixed global costmap around the robot's startup area
-      origin_x: -100.0
-      origin_y: -100.0
+      # origin_x: -100.0
+      # origin_y: -100.0
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       
