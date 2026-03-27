@@ -197,8 +197,8 @@ global_costmap:
       width: 50
       height: 50
       # Center the fixed global costmap around the robot's startup area
-      origin_x: -25
-      origin_y: -25
+      origin_x: -25.0
+      origin_y: -25.0
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
 
