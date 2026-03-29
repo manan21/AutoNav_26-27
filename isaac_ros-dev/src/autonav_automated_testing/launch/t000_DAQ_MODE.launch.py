@@ -40,6 +40,7 @@ def generate_launch_description():
     autonav_testing_share = get_package_share_directory('autonav_automated_testing')
     zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
     control_share = FindPackageShare('control')
+    electrical_share = FindPackageShare('autonav_electrical_publisher')
 
     # Path to test data configuration file
     test_data_config = os.path.join(
@@ -100,6 +101,13 @@ def generate_launch_description():
         }.items()
     )
 
+    # Electrical Publisher Node — voltage/current/power from INA226
+    electrical_publisher_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([electrical_share, 'launch', 'electrical_publisher.launch.py'])
+        )
+    )
+
     # Include control launch file for motor control and /cmd_vel processing
     control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -137,6 +145,7 @@ def generate_launch_description():
         # [NODES]
         gps_handler_node,
         odom_handler_node,
+        electrical_publisher_launch,
         # [LAUNCH FILES]
         zed_launch,
         control_launch,

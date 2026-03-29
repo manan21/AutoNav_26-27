@@ -68,7 +68,10 @@ data_publisher:
       "/cmd_vel",
       "/scan",
       "/zed/zed_node/imu/data",
-      "/plan"
+      "/plan",
+      "/electrical/voltage",
+      "/electrical/current",
+      "/electrical/power"
     ]
 
     # Test 001: GPS Calibration - Validates GPS accuracy and waypoint navigation
