@@ -1,5 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/string.hpp"
 
 // I2C includes
 #include <fcntl.h>
@@ -38,6 +39,11 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr voltage_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr current_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr power_pub_;
+
+    // Heartbeat publisher and timer
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
+    rclcpp::TimerBase::SharedPtr heartbeat_timer_;
+    double heartbeat_rate_hz_ = 0.1;  // 0.1 Hz = every 10 seconds
 
     // Timer for fixed-rate I2C polling loop
     rclcpp::TimerBase::SharedPtr i2c_timer_;
@@ -86,12 +92,29 @@ private:
 
         msg.data = power_mW_ / 1000.0;
         power_pub_->publish(msg);
-
-        RCLCPP_INFO(this->get_logger(),
-            "V=%.2f V | I=%.3f A | P=%.1f W",
-            voltage_mV_ / 1000.0, current_mA_ / 1000.0, power_mW_ / 1000.0);
     }
 
+
+    // ================================================================
+    // Heartbeat callback - runs at 0.1 Hz (every 10 seconds)
+    // ================================================================
+    void heartbeat_callback() {
+        double voltage_V = voltage_mV_ / 1000.0;
+        double current_A = current_mA_ / 1000.0;
+        double power_W   = power_mW_   / 1000.0;
+
+        // Publish heartbeat string: "V=xx.xx V | I=x.xxx A | P=xx.x W"
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "V=%.2f V | I=%.3f A | P=%.1f W",
+                 voltage_V, current_A, power_W);
+
+        std_msgs::msg::String heartbeat_msg;
+        heartbeat_msg.data = buf;
+        heartbeat_pub_->publish(heartbeat_msg);
+
+        RCLCPP_INFO(this->get_logger(), "[Heartbeat] %s", buf);
+    }
 
     // I2C helper functions
     bool open_i2c(const std::string& device, int address) {
@@ -214,6 +237,17 @@ public:
 
         power_pub_ = this->create_publisher<std_msgs::msg::Float32>(
             "/electrical/power", 10);
+
+        heartbeat_pub_ = this->create_publisher<std_msgs::msg::String>(
+            "/electrical/heartbeat", 10);
+
+        // ================================================================
+        // Create timer for heartbeat (0.1 Hz)
+        // ================================================================
+        auto heartbeat_period = std::chrono::duration<double>(1.0 / heartbeat_rate_hz_);
+        heartbeat_timer_ = this->create_wall_timer(
+            std::chrono::duration_cast<std::chrono::milliseconds>(heartbeat_period),
+            std::bind(&ElectricalPublisherNode::heartbeat_callback, this));
 
         // ================================================================
         // Create timer for fixed-rate I2C polling loop
