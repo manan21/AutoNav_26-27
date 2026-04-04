@@ -38,7 +38,7 @@ def generate_launch_description():
 
     # Package directories
     autonav_testing_share = get_package_share_directory('autonav_automated_testing')
-    zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
+    # zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
     control_share = FindPackageShare('control')
     electrical_share = FindPackageShare('autonav_electrical_publisher')
 
@@ -93,13 +93,14 @@ def generate_launch_description():
     )
 
     # Include ZED camera launch file for camera and IMU data
-    zed_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(zed_pkg),
-        launch_arguments={
-            'camera_model': LaunchConfiguration('camera_model'),
-            'use_sim_time': LaunchConfiguration('use_sim_time')
-        }.items()
-    )
+    # TODO: Re-enable when zed_wrapper is available
+    # zed_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(zed_pkg),
+    #     launch_arguments={
+    #         'camera_model': LaunchConfiguration('camera_model'),
+    #         'use_sim_time': LaunchConfiguration('use_sim_time')
+    #     }.items()
+    # )
 
     # Electrical Publisher Node — voltage/current/power from INA226
     electrical_publisher_launch = IncludeLaunchDescription(
@@ -147,7 +148,7 @@ def generate_launch_description():
         odom_handler_node,
         electrical_publisher_launch,
         # [LAUNCH FILES]
-        zed_launch,
+        # zed_launch,  # TODO: Re-enable when zed_wrapper is available
         control_launch,
         # Data collection
         data_publisher_node,
