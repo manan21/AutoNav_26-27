@@ -23,8 +23,8 @@ class T000Automator(BaseAutomator):
         # State
         self.odom_online = False
         self.joy_online = False
-        self.gps_online = False
-        self.imu_online = False
+        self.gps_online = True
+        self.imu_online = True
         self.systems_ready = False
         self.waiting_for_trigger = False
         self.A_BUTTON_INDEX = 0
