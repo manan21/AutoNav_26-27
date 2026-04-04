@@ -417,6 +417,7 @@ public:
 
             coulomb_mah_       = init_soc / 100.0 * PACK_CAPACITY_MAH;
             last_coulomb_time_ = this->now();
+            last_recal_check_  = this->now();
             charge_state_      = ChargeState::IDLE;
 
             RCLCPP_INFO(this->get_logger(), "SOC seeded: %.1f%%", init_soc);
