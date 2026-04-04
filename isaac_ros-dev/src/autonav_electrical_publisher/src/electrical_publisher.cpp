@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <chrono>
+#include <csignal>
 #include <functional>
 
 // Battery constants (Renogy 25 Ah 25.6 V LFP pack, 8s BMS)
@@ -72,6 +73,7 @@ private:
     // Coulomb counter state variables
     double coulomb_mah_       = 0.0;   // accumulated charge (mAh)
     rclcpp::Time last_coulomb_time_;    // wall-clock for dt
+    rclcpp::Time last_recal_check_;     // throttle recalibration to 1 Hz
     ChargeState charge_state_ = ChargeState::IDLE;
 
     // Publishers
@@ -172,6 +174,24 @@ private:
             }
         }
         last_coulomb_time_ = now;
+
+        // ============================================================
+        // Voltage-vs-coulomb sanity check — reseed if > 15% apart
+        // Throttled to 1 Hz. Only at low current where OCV is trustworthy.
+        // ============================================================
+        if ((now - last_recal_check_).seconds() >= 1.0) {
+            last_recal_check_ = now;
+            if (std::abs(current_mA_) < 1500.0) {
+                double voltage_soc = voltage_to_soc(voltage_mV_);
+                double coulomb_soc = (coulomb_mah_ / PACK_CAPACITY_MAH) * 100.0;
+                if (std::abs(voltage_soc - coulomb_soc) > 15.0) {
+                    RCLCPP_WARN(this->get_logger(),
+                        "SOC recalibration: coulomb=%.1f%% vs voltage=%.1f%% (delta=%.1f%%), reseeding from table",
+                        coulomb_soc, voltage_soc, voltage_soc - coulomb_soc);
+                    coulomb_mah_ = voltage_soc / 100.0 * PACK_CAPACITY_MAH;
+                }
+            }
+        }
 
         // ============================================================
         // Charge state machine
@@ -293,9 +313,15 @@ public:
         reg = REG_MFG_ID;
         if (write(i2c_fd_, &reg, 1) != 1 || read(i2c_fd_, read_buf, 2) != 2 ||
             read_buf[0] != 0x54 || read_buf[1] != 0x49) {
-            RCLCPP_ERROR(this->get_logger(),
-                "INA226 MFG ID mismatch (got 0x%02X%02X, expected 0x5449)",
-                read_buf[0], read_buf[1]);
+            if (read_buf[0] == 0x00 && read_buf[1] == 0x00) {
+                RCLCPP_FATAL(this->get_logger(),
+                    "INA226 MFG ID read 0x0000 — check SDA/SCL cables. Shutting down.");
+            } else {
+                RCLCPP_ERROR(this->get_logger(),
+                    "INA226 MFG ID mismatch (got 0x%02X%02X, expected 0x5449)",
+                    read_buf[0], read_buf[1]);
+            }
+            raise(SIGINT);
             return;
         }
 
