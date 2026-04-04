@@ -30,6 +30,12 @@ def generate_launch_description():
         param_str = str(service_params).replace("'", '"')
 
 
+    joy = Node(
+            package='joy',
+            executable='joy_node',
+            name='joy',
+        )
+
     control = Node(
             package='control',
             executable='control',
@@ -51,6 +57,7 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
+        joy,
         control,
         configure
     ])
