@@ -58,19 +58,28 @@ if [[ $PLATFORM == "aarch64" ]]; then
 fi
 
 # SERIAL / USB / CAMERA DEVICES
-# Always mount stable USB serial symlinks
+# USB
+DOCKER_ARGS+=("--device=/dev/arduino_uno:/dev/arduino_uno")
+DOCKER_ARGS+=("--device=/dev/roboteq:/dev/roboteq")
+
 DOCKER_ARGS+=("-v" "/dev/serial/by-id:/dev/serial/by-id:ro")
 
-# Pass through all current USB serial and video devices
-for dev in /dev/ttyACM* /dev/ttyUSB* /dev/video*; do
-    if [[ -e "$dev" ]]; then
-        DOCKER_ARGS+=("--device=$dev")
-    fi
+for link in /dev/serial/by-id/usb-Arduino* /dev/serial/by-id/usb-RoboteQ*; do
+  if [[ -e "$link" ]]; then
+    real_dev="$(readlink -f "$link")"
+    DOCKER_ARGS+=("--device=${real_dev}:${real_dev}")
+  fi
 done
 
-# Jetson UART for e-stop
+# Jetson UART for e-stop (if you use it)
 if [[ -e /dev/ttyTHS1 ]]; then
-    DOCKER_ARGS+=("--device=/dev/ttyTHS1")
+    DOCKER_ARGS+=("--device=/dev/ttyTHS1:/dev/ttyTHS1")
+fi
+
+# Ensure container user can open /dev/tty*
+DIALOUT_GID=$(getent group dialout | cut -d: -f3)
+if [[ -n "$DIALOUT_GID" ]]; then
+    DOCKER_ARGS+=("--group-add=${DIALOUT_GID}")
 fi
 
 
