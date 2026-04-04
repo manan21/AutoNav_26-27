@@ -8,41 +8,40 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <chrono>
 #include <functional>
 
-// ====================================================================
-// COULOMB COUNTING — commented out until validated on hardware.
-// To enable: uncomment every block marked [CC], rebuild, and test.
-// ====================================================================
+// Battery constants (Renogy 25 Ah 25.6 V LFP pack, 8s BMS)
+static constexpr double PACK_CAPACITY_MAH  = 20476.0; // empirical usable (82% of rated)
+static constexpr int    CELLS_SERIES       = 8;
+static constexpr double CHARGE_TARGET_V    = 29.0;    // charger CV setpoint
+static constexpr double BMS_OV_V           = 29.2;    // BMS over-voltage cutoff
+static constexpr double BMS_UV_V           = 22.5;    // empirical BMS cutoff (higher than 20V spec)
+static constexpr double TAIL_CURRENT_MA    = 1250.0;  // end-of-charge tail
+static constexpr double BMS_OC_MA          = 27500.0; // BMS over-current cutoff
+static constexpr double PEUKERT_EXP        = 1.05;
+static constexpr double PEUKERT_REF_MA     = 5000.0;  // C/5 reference rate
+static constexpr double COULOMBIC_EFF      = 0.995;   // charge efficiency
+static constexpr double R_PATH_OHM         = 0.254;   // total path resistance for IR compensation
 
-// [CC] Battery constants (Renogy 25 Ah 25.6 V LFP pack, 8s BMS)
-// static constexpr double PACK_CAPACITY_MAH  = 25000.0;
-// static constexpr int    CELLS_SERIES       = 8;
-// static constexpr double CHARGE_TARGET_V    = 29.0;   // charger CV setpoint
-// static constexpr double BMS_OV_V           = 29.2;   // BMS over-voltage cutoff
-// static constexpr double BMS_UV_V           = 20.0;   // BMS under-voltage cutoff
-// static constexpr double TAIL_CURRENT_MA    = 1250.0; // end-of-charge tail
-// static constexpr double BMS_OC_MA          = 27500.0;// BMS over-current cutoff
-// static constexpr double PEUKERT_EXP        = 1.05;
-// static constexpr double PEUKERT_REF_MA     = 5000.0; // C/5 reference rate
-// static constexpr double COULOMBIC_EFF      = 0.995;  // charge efficiency
+// Empirical per-cell mV → SOC lookup table (24 points, ascending voltage)
+// From full discharge test: 2.5% steps at endpoints, 5% in plateau.
+// All voltages are IR-compensated OCV values.
+static constexpr struct { double mv; double soc; } LFP_SOC_TABLE[] = {
+    {2922.0,   0.0}, {3044.0,   2.5}, {3138.0,   5.0},
+    {3179.0,   7.5}, {3196.0,  10.0}, {3211.0,  15.0},
+    {3232.0,  20.0}, {3248.0,  25.0}, {3260.0,  30.0},
+    {3269.0,  35.0}, {3276.0,  40.0}, {3281.0,  45.0},
+    {3284.0,  50.0}, {3287.0,  55.0}, {3288.0,  60.0},
+    {3290.0,  65.0}, {3307.0,  70.0}, {3313.0,  75.0},
+    {3318.0,  80.0}, {3319.0,  85.0}, {3320.0,  90.0},
+    {3321.0,  95.0}, {3322.0,  97.5}, {3323.0, 100.0},
+};
+static constexpr size_t LFP_SOC_TABLE_LEN =
+    sizeof(LFP_SOC_TABLE) / sizeof(LFP_SOC_TABLE[0]);
 
-// [CC] LFP per-cell mV → SOC lookup table (17 points)
-// Replace with empirical curve fit when available.
-// static constexpr struct { double mv; double soc; } LFP_SOC_TABLE[] = {
-//     {2500.0,   0.0}, {2800.0,   1.0}, {2900.0,   2.0},
-//     {3000.0,   5.0}, {3100.0,   8.0}, {3150.0,  10.0},
-//     {3200.0,  20.0}, {3220.0,  30.0}, {3240.0,  40.0},
-//     {3250.0,  50.0}, {3260.0,  60.0}, {3270.0,  70.0},
-//     {3280.0,  80.0}, {3300.0,  90.0}, {3330.0,  95.0},
-//     {3400.0,  99.0}, {3600.0, 100.0},
-// };
-// static constexpr size_t LFP_SOC_TABLE_LEN =
-//     sizeof(LFP_SOC_TABLE) / sizeof(LFP_SOC_TABLE[0]);
-
-// [CC] Charge-state enum
-// enum class ChargeState { IDLE, CHARGING_CC, CHARGING_CV, FULL, DISCHARGING };
+enum class ChargeState { IDLE, CHARGING_CC, CHARGING_CV, FULL, DISCHARGING };
 
 class ElectricalPublisherNode : public rclcpp::Node {
 private:
@@ -70,15 +69,16 @@ private:
 
     bool chip_ready_ = false;
 
-    // [CC] Coulomb counter state variables
-    // double coulomb_mah_       = 0.0;   // accumulated charge (mAh)
-    // rclcpp::Time last_coulomb_time_;    // wall-clock for dt
-    // ChargeState charge_state_ = ChargeState::IDLE;
+    // Coulomb counter state variables
+    double coulomb_mah_       = 0.0;   // accumulated charge (mAh)
+    rclcpp::Time last_coulomb_time_;    // wall-clock for dt
+    ChargeState charge_state_ = ChargeState::IDLE;
 
     // Publishers
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr voltage_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr current_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr power_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr soc_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr  heartbeat_pub_;
 
     // Timers
@@ -88,31 +88,33 @@ private:
     double heartbeat_rate_hz_ = 0.1;   // 0.1 Hz = every 10 seconds
 
     // ================================================================
-    // [CC] voltage_to_soc — linear interpolation on LFP per-cell table
+    // voltage_to_soc — IR-compensated linear interpolation on empirical table
     // ================================================================
-    // double voltage_to_soc(double pack_mV) {
-    //     double cell_mV = pack_mV / CELLS_SERIES;
-    //     if (cell_mV <= LFP_SOC_TABLE[0].mv) return 0.0;
-    //     if (cell_mV >= LFP_SOC_TABLE[LFP_SOC_TABLE_LEN - 1].mv) return 100.0;
-    //     for (size_t i = 1; i < LFP_SOC_TABLE_LEN; ++i) {
-    //         if (cell_mV <= LFP_SOC_TABLE[i].mv) {
-    //             double t = (cell_mV - LFP_SOC_TABLE[i - 1].mv) /
-    //                        (LFP_SOC_TABLE[i].mv - LFP_SOC_TABLE[i - 1].mv);
-    //             return LFP_SOC_TABLE[i - 1].soc +
-    //                    t * (LFP_SOC_TABLE[i].soc - LFP_SOC_TABLE[i - 1].soc);
-    //         }
-    //     }
-    //     return 100.0;
-    // }
+    double voltage_to_soc(double pack_mV) {
+        // IR compensation: estimate OCV by adding back voltage drop across path resistance
+        double ocv_mV = pack_mV + std::abs(current_mA_) / 1000.0 * R_PATH_OHM * 1000.0;
+        double cell_mV = ocv_mV / CELLS_SERIES;
+        if (cell_mV <= LFP_SOC_TABLE[0].mv) return 0.0;
+        if (cell_mV >= LFP_SOC_TABLE[LFP_SOC_TABLE_LEN - 1].mv) return 100.0;
+        for (size_t i = 1; i < LFP_SOC_TABLE_LEN; ++i) {
+            if (cell_mV <= LFP_SOC_TABLE[i].mv) {
+                double t = (cell_mV - LFP_SOC_TABLE[i - 1].mv) /
+                           (LFP_SOC_TABLE[i].mv - LFP_SOC_TABLE[i - 1].mv);
+                return LFP_SOC_TABLE[i - 1].soc +
+                       t * (LFP_SOC_TABLE[i].soc - LFP_SOC_TABLE[i - 1].soc);
+            }
+        }
+        return 100.0;
+    }
 
     // ================================================================
-    // [CC] peukert_capacity — effective capacity at a given discharge rate
+    // peukert_capacity — effective capacity at a given discharge rate
     // ================================================================
-    // double peukert_capacity(double current_mA) {
-    //     if (current_mA <= 0.0) return PACK_CAPACITY_MAH;
-    //     double ratio = current_mA / PEUKERT_REF_MA;
-    //     return PACK_CAPACITY_MAH * std::pow(ratio, 1.0 - PEUKERT_EXP);
-    // }
+    double peukert_capacity(double current_mA) {
+        if (current_mA <= 0.0) return PACK_CAPACITY_MAH;
+        double ratio = current_mA / PEUKERT_REF_MA;
+        return PACK_CAPACITY_MAH * std::pow(ratio, 1.0 - PEUKERT_EXP);
+    }
 
     // ================================================================
     // I2C polling callback — runs at loop_rate_hz_
@@ -147,65 +149,65 @@ private:
         }
 
         // ============================================================
-        // [CC] Coulomb integration (place after current/voltage reads)
+        // Coulomb integration (after current/voltage reads)
         // ============================================================
-        // rclcpp::Time now = this->now();
-        // if (last_coulomb_time_.nanoseconds() > 0) {
-        //     double dt_h = (now - last_coulomb_time_).seconds() / 3600.0;
-        //     double abs_mA = std::abs(current_mA_);
-        //
-        //     if (abs_mA > 50.0) {  // dead-zone: skip < 50 mA
-        //         if (current_mA_ > 0.0) {
-        //             // Discharging — apply Peukert scaling
-        //             double eff_cap = peukert_capacity(abs_mA);
-        //             double scale   = PACK_CAPACITY_MAH / eff_cap;
-        //             coulomb_mah_  -= abs_mA * dt_h * scale;
-        //         } else {
-        //             // Charging — apply coulombic efficiency
-        //             coulomb_mah_ += abs_mA * dt_h * COULOMBIC_EFF;
-        //         }
-        //         // Clamp to valid range
-        //         if (coulomb_mah_ < 0.0) coulomb_mah_ = 0.0;
-        //         if (coulomb_mah_ > PACK_CAPACITY_MAH) coulomb_mah_ = PACK_CAPACITY_MAH;
-        //     }
-        // }
-        // last_coulomb_time_ = now;
+        rclcpp::Time now = this->now();
+        if (last_coulomb_time_.nanoseconds() > 0) {
+            double dt_h = (now - last_coulomb_time_).seconds() / 3600.0;
+            double abs_mA = std::abs(current_mA_);
+
+            if (abs_mA > 50.0) {  // dead-zone: skip < 50 mA
+                if (current_mA_ > 0.0) {
+                    // Discharging — apply Peukert scaling
+                    double eff_cap = peukert_capacity(abs_mA);
+                    double scale   = PACK_CAPACITY_MAH / eff_cap;
+                    coulomb_mah_  -= abs_mA * dt_h * scale;
+                } else {
+                    // Charging — apply coulombic efficiency
+                    coulomb_mah_ += abs_mA * dt_h * COULOMBIC_EFF;
+                }
+                // Clamp to valid range
+                if (coulomb_mah_ < 0.0) coulomb_mah_ = 0.0;
+                if (coulomb_mah_ > PACK_CAPACITY_MAH) coulomb_mah_ = PACK_CAPACITY_MAH;
+            }
+        }
+        last_coulomb_time_ = now;
 
         // ============================================================
-        // [CC] Charge state machine
+        // Charge state machine
         // ============================================================
-        // double v = voltage_mV_ / 1000.0;
-        // double i = current_mA_;
-        // switch (charge_state_) {
-        //     case ChargeState::IDLE:
-        //         if (i < -TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::CHARGING_CC;
-        //         else if (i > TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::DISCHARGING;
-        //         break;
-        //     case ChargeState::CHARGING_CC:
-        //         if (v >= CHARGE_TARGET_V)
-        //             charge_state_ = ChargeState::CHARGING_CV;
-        //         else if (i > -TAIL_CURRENT_MA && i < TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::IDLE;
-        //         break;
-        //     case ChargeState::CHARGING_CV:
-        //         if (std::abs(i) < TAIL_CURRENT_MA) {
-        //             charge_state_ = ChargeState::FULL;
-        //             coulomb_mah_  = PACK_CAPACITY_MAH;  // recalibrate
-        //         }
-        //         break;
-        //     case ChargeState::FULL:
-        //         if (i > TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::DISCHARGING;
-        //         break;
-        //     case ChargeState::DISCHARGING:
-        //         if (i < -TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::CHARGING_CC;
-        //         else if (std::abs(i) < TAIL_CURRENT_MA)
-        //             charge_state_ = ChargeState::IDLE;
-        //         break;
-        // }
+        double v = voltage_mV_ / 1000.0;
+        double i = current_mA_;
+        switch (charge_state_) {
+            case ChargeState::IDLE:
+                if (i < -TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::CHARGING_CC;
+                else if (i > TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::DISCHARGING;
+                break;
+            case ChargeState::CHARGING_CC:
+                if (v >= CHARGE_TARGET_V)
+                    charge_state_ = ChargeState::CHARGING_CV;
+                else if (i > -TAIL_CURRENT_MA && i < TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::IDLE;
+                break;
+            case ChargeState::CHARGING_CV:
+                if (std::abs(i) < TAIL_CURRENT_MA) {
+                    charge_state_ = ChargeState::FULL;
+                    coulomb_mah_  = PACK_CAPACITY_MAH;  // recalibrate
+                }
+                break;
+            case ChargeState::FULL:
+                if (i > TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::DISCHARGING;
+                break;
+            case ChargeState::DISCHARGING:
+                if (i < -TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::CHARGING_CC;
+                else if (std::abs(i) < TAIL_CURRENT_MA)
+                    charge_state_ = ChargeState::IDLE;
+                break;
+        }
 
         // Publish readings (convert milli-units to base units)
         std_msgs::msg::Float32 msg;
@@ -218,6 +220,10 @@ private:
 
         msg.data = power_mW_ / 1000.0;
         power_pub_->publish(msg);
+
+        double soc = (coulomb_mah_ / PACK_CAPACITY_MAH) * 100.0;
+        msg.data = soc;
+        soc_pub_->publish(msg);
     }
 
     // ================================================================
@@ -228,16 +234,12 @@ private:
         double current_A = current_mA_ / 1000.0;
         double power_W   = power_mW_   / 1000.0;
 
+        double soc = (coulomb_mah_ / PACK_CAPACITY_MAH) * 100.0;
+
         char buf[128];
         snprintf(buf, sizeof(buf),
-                 "V=%.2f V | I=%.3f A | P=%.1f W",
-                 voltage_V, current_A, power_W);
-
-        // [CC] Extended heartbeat with SOC:
-        // double soc = (coulomb_mah_ / PACK_CAPACITY_MAH) * 100.0;
-        // snprintf(buf, sizeof(buf),
-        //          "V=%.2f V | I=%.3f A | P=%.1f W | SOC=%.1f%%",
-        //          voltage_V, current_A, power_W, soc);
+                 "V=%.2f V | I=%.3f A | P=%.1f W | SOC=%.1f%%",
+                 voltage_V, current_A, power_W, soc);
 
         std_msgs::msg::String heartbeat_msg;
         heartbeat_msg.data = buf;
@@ -310,10 +312,10 @@ public:
         RCLCPP_INFO(this->get_logger(), "INA226 identified (MFG=TI, DIE=0x2260)");
 
         // ============================================================
-        // 3. Write configuration register (0x00) = 0x4207
-        //    AVG=4, VBUSCT=140us, VSHCT=140us, continuous shunt+bus
+        // 3. Write configuration register (0x00) = 0x4427
+        //    AVG=16, VBUSCT=1.1ms, VSHCT=1.1ms, continuous shunt+bus
         // ============================================================
-        uint8_t config_buf[3] = {REG_CONFIG, 0x42, 0x07};
+        uint8_t config_buf[3] = {REG_CONFIG, 0x44, 0x27};
         if (write(i2c_fd_, config_buf, sizeof(config_buf)) != sizeof(config_buf)) {
             RCLCPP_ERROR(this->get_logger(), "Config register write failed");
             return;
@@ -346,10 +348,53 @@ public:
                 read_buf[0], read_buf[1]);
         }
 
-        // [CC] Initialize coulomb counter from voltage-based SOC estimate
-        // coulomb_mah_       = voltage_to_soc(voltage_mV_) / 100.0 * PACK_CAPACITY_MAH;
-        // last_coulomb_time_ = this->now();
-        // charge_state_      = ChargeState::IDLE;
+        // ============================================================
+        // 4b. Startup calibration — 10 samples to seed SOC accurately
+        //     Each sample is already 16-avg in hardware (0x4427 config),
+        //     so 10 software samples = 160 effective readings.
+        //     50 ms spacing > 35 ms conversion cycle → fresh data each read.
+        // ============================================================
+        {
+            const int N_CAL_SAMPLES   = 10;
+            const int SETTLE_US       = 100000;  // 100 ms for first valid averaged conversion
+            const int SAMPLE_DELAY_US = 50000;   // 50 ms between samples
+            double v_sum = 0.0, i_sum = 0.0;
+            int v_count = 0, i_count = 0;
+
+            usleep(SETTLE_US);
+
+            for (int s = 0; s < N_CAL_SAMPLES; ++s) {
+                reg = REG_VOLTAGE;
+                if (write(i2c_fd_, &reg, 1) == 1 && read(i2c_fd_, read_buf, 2) == 2) {
+                    int16_t raw_v = (read_buf[0] << 8) | read_buf[1];
+                    v_sum += raw_v * bit_2_mVolt;
+                    ++v_count;
+                }
+                reg = REG_CURRENT;
+                if (write(i2c_fd_, &reg, 1) == 1 && read(i2c_fd_, read_buf, 2) == 2) {
+                    int16_t raw_i = (read_buf[0] << 8) | read_buf[1];
+                    i_sum += raw_i * bit_2_mAmp;
+                    ++i_count;
+                }
+                if (s < N_CAL_SAMPLES - 1) usleep(SAMPLE_DELAY_US);
+            }
+
+            if (v_count > 0) voltage_mV_ = v_sum / v_count;
+            if (i_count > 0) current_mA_ = i_sum / i_count;
+
+            double ocv_mV = voltage_mV_ + std::abs(current_mA_) / 1000.0 * R_PATH_OHM * 1000.0;
+            double init_soc = voltage_to_soc(voltage_mV_);
+
+            RCLCPP_INFO(this->get_logger(),
+                "Startup calibration: %d samples, V_avg=%.1f mV, I_avg=%.2f mA, OCV_est=%.1f mV",
+                v_count, voltage_mV_, current_mA_, ocv_mV);
+
+            coulomb_mah_       = init_soc / 100.0 * PACK_CAPACITY_MAH;
+            last_coulomb_time_ = this->now();
+            charge_state_      = ChargeState::IDLE;
+
+            RCLCPP_INFO(this->get_logger(), "SOC seeded: %.1f%%", init_soc);
+        }
 
         // ============================================================
         // 5. Create publishers
@@ -357,6 +402,7 @@ public:
         voltage_pub_   = this->create_publisher<std_msgs::msg::Float32>("/electrical/voltage", 10);
         current_pub_   = this->create_publisher<std_msgs::msg::Float32>("/electrical/current", 10);
         power_pub_     = this->create_publisher<std_msgs::msg::Float32>("/electrical/power", 10);
+        soc_pub_       = this->create_publisher<std_msgs::msg::Float32>("/electrical/soc", 10);
         heartbeat_pub_ = this->create_publisher<std_msgs::msg::String>("/electrical/heartbeat", 10);
 
         // ============================================================
