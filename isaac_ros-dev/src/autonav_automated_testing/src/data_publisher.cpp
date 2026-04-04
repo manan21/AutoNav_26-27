@@ -56,6 +56,7 @@ private:
     std::string latest_imu_data_;
     std::string latest_scan_data_;
     std::string latest_lines_data_;
+    std::string latest_speed_data_;
     
     // Generic subscribers - will be created dynamically based on topics_to_monitor
     std::vector<rclcpp::SubscriptionBase::SharedPtr> dynamic_subscribers_;
@@ -188,6 +189,15 @@ private:
                 });
             dynamic_subscribers_.push_back(sub);
         }
+        else if (topic == "/motor_speed") {
+            auto sub = this->create_subscription<std_msgs::msg::String>(
+                topic, 10,
+                [this](const std_msgs::msg::String::SharedPtr msg) {
+                    std::lock_guard<std::mutex> lock(data_mutex_);
+                    latest_speed_data_ = msg->data;
+                });
+            dynamic_subscribers_.push_back(sub);
+        }
         // Add more topic types as needed
     }
 
@@ -203,6 +213,7 @@ private:
             latest_imu_data_.clear();
             latest_scan_data_.clear();
             latest_lines_data_.clear();
+            latest_speed_data_.clear();
         } else {
             RCLCPP_INFO(this->get_logger(), "Data collection DISABLED");
         }
@@ -236,7 +247,7 @@ private:
         static int debug_count = 0;
         
         // Make local copies of data with mutex protection to avoid race conditions
-        std::string gps_data, imu_data, scan_data, odom_data, cmd_vel_data, encoder_data, lines_data;
+        std::string gps_data, imu_data, scan_data, odom_data, cmd_vel_data, encoder_data, lines_data, speed_data;
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             gps_data = latest_gps_data_;
@@ -246,6 +257,7 @@ private:
             cmd_vel_data = latest_cmd_vel_data_;
             encoder_data = latest_encoder_data_;
             lines_data = latest_lines_data_;
+            speed_data = latest_speed_data_;
         }
         
         // Publish GPS data
@@ -307,7 +319,15 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Publishing lines: %s", msg.data.c_str());
             }
         }
-        
+        // Publish motor speed value
+        if (!speed_data.empty()) {
+            msg.data = "/motor_speed,String," + speed_data;
+            data_dump_pub_->publish(msg);
+            if (debug_count < 3) {
+                RCLCPP_INFO(this->get_logger(), "Publishing motor speed: %s", msg.data.c_str());
+            }
+        }
+
         debug_count++;
     }
 };

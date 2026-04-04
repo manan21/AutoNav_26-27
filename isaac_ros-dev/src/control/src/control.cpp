@@ -11,6 +11,7 @@
 
 #include <iostream>
 #include <string>
+#include <chrono>
 
 #define WHEEL_BASE 0.6858
 
@@ -71,6 +72,12 @@ class ControlNode : public rclcpp::Node {
     // rclcpp::TimerBase::SharedPtr joy_timer_;
     // subscription for Nav2 pose
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr pathPlanningSub;
+
+    // Speed publisher for DAQ logging
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speed_pub_;
+
+    // Debounce for bumper speed changes (500ms between changes)
+    std::chrono::steady_clock::time_point last_speed_change_time_{};
 
     bool currX = false;
     bool prevX = false;
@@ -162,13 +169,22 @@ class ControlNode : public rclcpp::Node {
                 motors.move(command.right_motor_speed * motors.getSpeed(), command.left_motor_speed * motors.getSpeed());
             }
             else if(command.cmd == Xbox::SPEED_DOWN){
-                motors.setSpeed(motors.getSpeed() - 5);
-                RCLCPP_INFO(this->get_logger(), "speed down. new speed: %d", motors.getSpeed());
-
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
+                if (elapsed >= 200) {
+                    motors.setSpeed(motors.getSpeed() - 1);
+                    last_speed_change_time_ = now;
+                    RCLCPP_INFO(this->get_logger(), "speed down. new speed: %d", motors.getSpeed());
+                }
             }
             else if(command.cmd == Xbox::SPEED_UP){
-                motors.setSpeed(motors.getSpeed() + 5);
-                RCLCPP_INFO(this->get_logger(), "speed up! new speed: %d", motors.getSpeed());
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
+                if (elapsed >= 200) {
+                    motors.setSpeed(motors.getSpeed() + 1);
+                    last_speed_change_time_ = now;
+                    RCLCPP_INFO(this->get_logger(), "speed up! new speed: %d", motors.getSpeed());
+                }
             }
             else if(command.cmd == Xbox::STOP){
                 motors.shutdown();
@@ -184,6 +200,12 @@ class ControlNode : public rclcpp::Node {
 
         encodersPub->publish(encoder_msg);
 
+        // Publish current speed for DAQ logging
+        if (speed_pub_) {
+            auto speed_msg = std_msgs::msg::String();
+            speed_msg.data = std::to_string(motors.getSpeed());
+            speed_pub_->publish(speed_msg);
+        }
     }
 
     void path_planning_callback(const geometry_msgs::msg::Twist::SharedPtr msg) {
@@ -293,6 +315,9 @@ class ControlNode : public rclcpp::Node {
                 std::bind(&ControlNode::publish_encoder_data, this));
         }
         // ----- END HARD GUARD -----
+
+        // Speed publisher for DAQ logging
+        speed_pub_ = this->create_publisher<std_msgs::msg::String>("/motor_speed", 10);
 
        /* joy_timer_ = this->create_wall_timer(
             std::chrono::milliseconds(20),
