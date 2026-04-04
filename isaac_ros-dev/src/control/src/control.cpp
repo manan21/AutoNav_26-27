@@ -198,7 +198,9 @@ class ControlNode : public rclcpp::Node {
         arduinoEncoderCounts += "\n";
         // arduinoSerial.writeString(arduinoEncoderCounts.c_str());
 
-        encodersPub->publish(encoder_msg);
+        if (encodersPub) {
+            encodersPub->publish(encoder_msg);
+        }
 
         // Publish current speed for DAQ logging
         if (speed_pub_) {
@@ -301,19 +303,19 @@ class ControlNode : public rclcpp::Node {
         auto existing_pubs = this->get_publishers_info_by_topic(encoder_topic, false);
 
         if (!existing_pubs.empty()) {
-            RCLCPP_FATAL(
+            RCLCPP_WARN(
                 this->get_logger(),
-                "Another node already publishes %s. Not creating encoder publisher in this ControlNode.",
+                "Another node already publishes %s. Skipping encoder publisher, but motor control timer still active.",
                 encoder_topic.c_str());
-            // DO NOT create encodersPub or encoder_timer_ here
         } else {
             // NAVIGATION ENCODER PUB
             encodersPub = this->create_publisher<autonav_interfaces::msg::Encoders>(encoder_topic, 10);
-
-            encoder_timer_ = this->create_wall_timer(
-                std::chrono::milliseconds(30),
-                std::bind(&ControlNode::publish_encoder_data, this));
         }
+
+        // Always create the control timer — motor commands and speed changes depend on it
+        encoder_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(30),
+            std::bind(&ControlNode::publish_encoder_data, this));
         // ----- END HARD GUARD -----
 
         // Speed publisher for DAQ logging
