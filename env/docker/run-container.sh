@@ -34,15 +34,19 @@ DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
 # DISPLAY FORWARDING
-XAUTH_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}"
-mkdir -p "${XAUTH_DIR}"
-XAUTH_FILE="${XAUTH_DIR}/.docker-xauth-${CONTAINER_NAME}"
+XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+touch "${XAUTH_FILE}"
+chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
 
 _refresh_x11_auth() {
     [[ -n "${DISPLAY}" ]] || return 0
-    touch "${XAUTH_FILE}" 2>/dev/null || return 0
-    chmod 600 "${XAUTH_FILE}" 2>/dev/null || true
+
+    # Clear stale entries
     xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
+    xauth -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
+
+    # Merge current SSH-forwarded cookie
     xauth nlist "${DISPLAY}" 2>/dev/null \
         | sed 's/^..../ffff/' \
         | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
