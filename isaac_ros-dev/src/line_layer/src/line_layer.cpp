@@ -144,6 +144,10 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
 std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPointsToGlobalFrame(
   const autonav_interfaces::msg::LinePoints & message)
 {
+  auto node = node_.lock();
+  if (!node) {
+    return std::nullopt;
+  }
   const std::string target_frame = layered_costmap_->getGlobalFrameID();
   std::vector<geometry_msgs::msg::Vector3> transformed_points;
   transformed_points.reserve(message.points.size());
@@ -153,15 +157,25 @@ std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPoin
   }
 
   geometry_msgs::msg::TransformStamped transform;
+  const bool use_latest_transform =
+    message.header.frame_id == "map" && target_frame == "odom";
   try {
-    transform = tf_buffer_->lookupTransform(
-      target_frame,
-      message.header.frame_id,
-      rclcpp::Time(message.header.stamp),
-      rclcpp::Duration::from_seconds(transform_tolerance_));
+    if (use_latest_transform) {
+      transform = tf_buffer_->lookupTransform(
+        target_frame,
+        message.header.frame_id,
+        rclcpp::Time(0, 0, node->get_clock()->get_clock_type()),
+        rclcpp::Duration::from_seconds(transform_tolerance_));
+    } else {
+      transform = tf_buffer_->lookupTransform(
+        target_frame,
+        message.header.frame_id,
+        rclcpp::Time(message.header.stamp),
+        rclcpp::Duration::from_seconds(transform_tolerance_));
+    }
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(
-      rclcpp::get_logger("nav_costmap_2d"), *node_.lock()->get_clock(), 3000,
+      rclcpp::get_logger("nav_costmap_2d"), *node->get_clock(), 3000,
       "line_layer TF unavailable (%s <- %s): %s",
       target_frame.c_str(), message.header.frame_id.c_str(), ex.what());
     return std::nullopt;
@@ -288,12 +302,22 @@ LineLayer::updateBounds(
   double robot_x, double robot_y, double /*robot_yaw*/, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
+  if (!rolling_window_) {
+    last_min_x_ = origin_x_;
+    last_min_y_ = origin_y_;
+    last_max_x_ = origin_x_ + getSizeInMetersX();
+    last_max_y_ = origin_y_ + getSizeInMetersY();
+    *min_x = std::min(*min_x, last_min_x_);
+    *min_y = std::min(*min_y, last_min_y_);
+    *max_x = std::max(*max_x, last_max_x_);
+    *max_y = std::max(*max_y, last_max_y_);
+    need_recalculation_ = false;
+    return;
+  }
+
   if (need_recalculation_) {
     
-    if (rolling_window_) {
-
-      updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
-    }
+    updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
 
     
 
@@ -395,6 +419,15 @@ LineLayer::updateCosts(
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
 
+  auto clear_layer = [&]() {
+    resetMaps();
+    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    current_ = true;
+    if (publish_costmap_) {
+      publishCostmap();
+    }
+  };
+
   #ifdef DEBUG_n
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (min_x: %d), (min_y: %d), (max_x: %d), (max_y: %d)",min_i, max_i, min_j, max_j );
   #endif
@@ -411,10 +444,7 @@ LineLayer::updateCosts(
     RCLCPP_DEBUG_THROTTLE(
       rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
       "line_layer buffer empty; waiting for line points");
-    if (publish_costmap_) {
-      publishCostmap();
-    }
-    current_ = true;
+    clear_layer();
     return;
   }
   auto last_msg = *last;
@@ -422,16 +452,13 @@ LineLayer::updateCosts(
     RCLCPP_WARN_THROTTLE(
       rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
       "line_layer received an empty buffered message");
-    if (publish_costmap_) {
-      publishCostmap();
-    }
-    current_ = true;
+    clear_layer();
     return;
   }
 
   auto transformed_points = transformPointsToGlobalFrame(*last_msg);
   if (!transformed_points) {
-    current_ = true;
+    clear_layer();
     return;
   }
 

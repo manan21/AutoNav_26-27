@@ -36,9 +36,12 @@ DOCKER_ARGS+=("--network=host")
 # DISPLAY FORWARDING
 # Generate a wildcard xauth cookie so X11 auth works inside the container
 # regardless of hostname differences between host and container.
-XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+XAUTH_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}"
+mkdir -p "${XAUTH_DIR}"
+XAUTH_FILE="${XAUTH_DIR}/.docker-xauth-${CONTAINER_NAME}"
 _refresh_x11_auth() {
-    touch "${XAUTH_FILE}" && chmod 644 "${XAUTH_FILE}"
+    touch "${XAUTH_FILE}" 2>/dev/null || return 0
+    chmod 644 "${XAUTH_FILE}" 2>/dev/null || true
     if [[ -n "${DISPLAY}" ]]; then
         xauth nlist "${DISPLAY}" 2>/dev/null \
             | sed -e 's/^..../ffff/' \
@@ -108,12 +111,18 @@ DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-build:${CONTAINER_WORKDIR}/isaac_ros-dev/b
 DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-install:${CONTAINER_WORKDIR}/isaac_ros-dev/install")
 DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-log:${CONTAINER_WORKDIR}/isaac_ros-dev/log")
 # ZED settings/resources
-if [[ -d "$HOME/zed/settings" ]]; then
-    DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/settings")
-fi
-if [[ -d "$HOME/zed/resources" ]]; then
-    DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/resources")
-fi
+# Ensure host dirs exist so the SDK can always download and persist
+# factory calibration files (e.g. SN<serial>.conf) across container runs.
+# Without the SDK-5.x path mount, ZED tries to create
+# /usr/local/zed/lib/cmake/ZED/settings/ inside the (read-only) image
+# and fails with "Permission denied" / "CALIBRATION FILE NOT AVAILABLE".
+mkdir -p "$HOME/zed/settings" "$HOME/zed/resources"
+# Legacy paths (ZED SDK < 5)
+DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/settings")
+DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/resources")
+# ZED SDK 5.x paths (calibration + AI models e.g. neural_depth_light_5.2.model)
+DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/lib/cmake/ZED/settings")
+DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/lib/cmake/ZED/resources")
 
 DOCKER_ARGS+=("--entrypoint=$ENTRYPOINT")
 
@@ -132,16 +141,49 @@ if [[ -n "$INPUT_GID" ]]; then DOCKER_ARGS+=("--group-add=${INPUT_GID}"); fi
 attach_shell() {
     # Refresh X11 auth cookie for the current SSH session's display
     _refresh_x11_auth
-    docker exec -i -t -u "${USERNAME}" \
-        -e "DISPLAY=${DISPLAY}" \
-        -e "XAUTHORITY=${XAUTH_FILE}" \
-        --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" \
-        "${CONTAINER_NAME}" /bin/bash "$@"
+    local exec_args=(
+        docker exec -i -t -u "${USERNAME}"
+        -e "DISPLAY=${DISPLAY}"
+        -e "HOME=/home/${USERNAME}"
+        -e "USER=${USERNAME}"
+        -e "XAUTHORITY=${XAUTH_FILE}"
+        --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
+        "${CONTAINER_NAME}"
+    )
+
+    if (($# == 0)); then
+        "${exec_args[@]}" /bin/bash -lc \
+            "source /opt/ros/humble/setup.bash && \
+             if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
+                 source /autonav/isaac_ros-dev/install/setup.bash; \
+             fi && \
+             exec /bin/bash -i"
+    else
+        "${exec_args[@]}" /bin/bash "$@"
+    fi
+}
+
+wait_for_container_user() {
+    local tries=30
+
+    while ((tries > 0)); do
+        if docker exec "${CONTAINER_NAME}" getent passwd "${USERNAME}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        ((tries--))
+    done
+
+    echo "Timed out waiting for user ${USERNAME} to be created in ${CONTAINER_NAME}."
+    echo "Container logs:"
+    docker logs "${CONTAINER_NAME}" || true
+    return 1
 }
 
 # RE-USE EXISTING CONTAINER
 if [ "$(docker ps -a --quiet --filter status=running --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME is already running. Attaching..."
+    wait_for_container_user
     attach_shell "$@"
     exit 0
 fi
@@ -150,6 +192,7 @@ fi
 if [ "$(docker ps -a --quiet --filter status=exited --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME exists but is stopped. Starting and attaching..."
     docker start "$CONTAINER_NAME" >/dev/null
+    wait_for_container_user
     attach_shell "$@"
     exit 0
 fi
@@ -172,4 +215,5 @@ docker run -d \
     $IMAGE_TAG \
     sleep infinity >/dev/null
 
+wait_for_container_user
 attach_shell "$@"
