@@ -41,12 +41,10 @@ chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
 _refresh_x11_auth() {
     [[ -n "${DISPLAY}" ]] || return 0
 
-    # Clear stale entries
     xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
     xauth -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
     xauth -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
 
-    # Merge current SSH-forwarded cookie
     xauth nlist "${DISPLAY}" 2>/dev/null \
         | sed 's/^..../ffff/' \
         | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
@@ -54,9 +52,6 @@ _refresh_x11_auth() {
 _refresh_x11_auth
 
 DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
-DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY}")
-DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
-DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -142,8 +137,8 @@ if [[ -n "$REN_GID" ]]; then DOCKER_ARGS+=("--group-add=${REN_GID}"); fi
 if [[ -n "$INPUT_GID" ]]; then DOCKER_ARGS+=("--group-add=${INPUT_GID}"); fi
 
 attach_shell() {
-    # Refresh X11 auth cookie for the current SSH session's display
     _refresh_x11_auth
+
     local exec_args=(
         docker exec -i -t -u "${USERNAME}"
         -e "DISPLAY=${DISPLAY}"
@@ -157,13 +152,20 @@ attach_shell() {
 
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
-            "source /opt/ros/humble/setup.bash && \
+            "export DISPLAY='${DISPLAY}'; \
+             export XAUTHORITY='${XAUTH_FILE}'; \
+             export QT_X11_NO_MITSHM=1; \
+             source /opt/ros/humble/setup.bash && \
              if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
                  source /autonav/isaac_ros-dev/install/setup.bash; \
              fi && \
              exec /bin/bash -i"
     else
-        "${exec_args[@]}" /bin/bash "$@"
+        "${exec_args[@]}" /bin/bash -lc \
+            "export DISPLAY='${DISPLAY}'; \
+             export XAUTHORITY='${XAUTH_FILE}'; \
+             export QT_X11_NO_MITSHM=1; \
+             exec /bin/bash $*"
     fi
 }
 
