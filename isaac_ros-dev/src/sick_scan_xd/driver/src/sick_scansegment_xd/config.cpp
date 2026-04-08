@@ -148,6 +148,7 @@ sick_scansegment_xd::Config::Config()
     publish_frame_id = "world";            // frame id of ros Laserscan messages, default: "world_<layer-id>"
     publish_laserscan_segment_topic = "scan_segment";     // topic of ros Laserscan segment messages
     publish_laserscan_fullframe_topic = "scan_fullframe"; //topic of ros Laserscan fullframe messages
+    max_laserscan_range = 10.0;                // max range of ros Laserscan fullframe messages in meters, points beyond this limit are published as NaN
     udp_input_fifolength = 20;             // max. udp input fifo length (-1: unlimited, default: 20 for buffering 1 second at 20 Hz), elements will be removed from front if number of elements exceeds the fifo_length
     msgpack_output_fifolength = 20;        // max. msgpack output fifo length (-1: unlimited, default: 20 for buffering 1 second at 20 Hz), elements will be removed from front if number of elements exceeds the fifo_length
     verbose_level = 1;                     // verbose_level <= 0: quiet mode, verbose_level == 1: print statistics, verbose_level == 2: print details incl. msgpack data, default: 1
@@ -264,6 +265,7 @@ bool sick_scansegment_xd::Config::Init(rosNodePtr _node)
     ROS_DECL_GET_PARAMETER(node, "publish_frame_id", publish_frame_id);
     ROS_DECL_GET_PARAMETER(node, "publish_laserscan_segment_topic", publish_laserscan_segment_topic);
     ROS_DECL_GET_PARAMETER(node, "publish_laserscan_fullframe_topic", publish_laserscan_fullframe_topic);
+    ROS_DECL_GET_PARAMETER(node, "max_laserscan_range", max_laserscan_range);
     ROS_DECL_GET_PARAMETER(node, "udp_input_fifolength", udp_input_fifolength);
     ROS_DECL_GET_PARAMETER(node, "msgpack_output_fifolength", msgpack_output_fifolength);
     ROS_DECL_GET_PARAMETER(node, "verbose_level", verbose_level);

@@ -6,6 +6,7 @@
 #include <utility>
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <filesystem>
 
 [[maybe_unused]] static void HandleError( cudaError_t err,
                          const char *file,

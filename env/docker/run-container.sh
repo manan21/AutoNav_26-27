@@ -34,9 +34,24 @@ DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
 # DISPLAY FORWARDING
-DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix")
-DOCKER_ARGS+=("-v" "$HOME/.Xauthority:/home/${USERNAME}/.Xauthority:rw")
-DOCKER_ARGS+=("-e" "DISPLAY")
+XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+touch "${XAUTH_FILE}"
+chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
+
+_refresh_x11_auth() {
+    [[ -n "${DISPLAY}" ]] || return 0
+
+    xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
+    xauth -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
+
+    xauth nlist "${DISPLAY}" 2>/dev/null \
+        | sed 's/^..../ffff/' \
+        | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
+}
+_refresh_x11_auth
+
+DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -94,12 +109,18 @@ DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-build:${CONTAINER_WORKDIR}/isaac_ros-dev/b
 DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-install:${CONTAINER_WORKDIR}/isaac_ros-dev/install")
 DOCKER_ARGS+=("-v" "${CONTAINER_NAME}-log:${CONTAINER_WORKDIR}/isaac_ros-dev/log")
 # ZED settings/resources
-if [[ -d "$HOME/zed/settings" ]]; then
-    DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/settings")
-fi
-if [[ -d "$HOME/zed/resources" ]]; then
-    DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/resources")
-fi
+# Ensure host dirs exist so the SDK can always download and persist
+# factory calibration files (e.g. SN<serial>.conf) across container runs.
+# Without the SDK-5.x path mount, ZED tries to create
+# /usr/local/zed/lib/cmake/ZED/settings/ inside the (read-only) image
+# and fails with "Permission denied" / "CALIBRATION FILE NOT AVAILABLE".
+mkdir -p "$HOME/zed/settings" "$HOME/zed/resources"
+# Legacy paths (ZED SDK < 5)
+DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/settings")
+DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/resources")
+# ZED SDK 5.x paths (calibration + AI models e.g. neural_depth_light_5.2.model)
+DOCKER_ARGS+=("-v" "$HOME/zed/settings:/usr/local/zed/lib/cmake/ZED/settings")
+DOCKER_ARGS+=("-v" "$HOME/zed/resources:/usr/local/zed/lib/cmake/ZED/resources")
 
 DOCKER_ARGS+=("--entrypoint=$ENTRYPOINT")
 
@@ -115,18 +136,70 @@ if [[ -n "$VID_GID" ]]; then DOCKER_ARGS+=("--group-add=${VID_GID}"); fi
 if [[ -n "$REN_GID" ]]; then DOCKER_ARGS+=("--group-add=${REN_GID}"); fi
 if [[ -n "$INPUT_GID" ]]; then DOCKER_ARGS+=("--group-add=${INPUT_GID}"); fi
 
+attach_shell() {
+    _refresh_x11_auth
+
+    local exec_args=(
+        docker exec -i -t -u "${USERNAME}"
+        -e "DISPLAY=${DISPLAY}"
+        -e "HOME=/home/${USERNAME}"
+        -e "USER=${USERNAME}"
+        -e "XAUTHORITY=${XAUTH_FILE}"
+        -e "QT_X11_NO_MITSHM=1"
+        --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
+        "${CONTAINER_NAME}"
+    )
+
+    if (($# == 0)); then
+        "${exec_args[@]}" /bin/bash -lc \
+            "export DISPLAY='${DISPLAY}'; \
+             export XAUTHORITY='${XAUTH_FILE}'; \
+             export QT_X11_NO_MITSHM=1; \
+             source /opt/ros/humble/setup.bash && \
+             if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
+                 source /autonav/isaac_ros-dev/install/setup.bash; \
+             fi && \
+             exec /bin/bash -i"
+    else
+        "${exec_args[@]}" /bin/bash -lc \
+            "export DISPLAY='${DISPLAY}'; \
+             export XAUTHORITY='${XAUTH_FILE}'; \
+             export QT_X11_NO_MITSHM=1; \
+             exec /bin/bash $*"
+    fi
+}
+
+wait_for_container_user() {
+    local tries=30
+
+    while ((tries > 0)); do
+        if docker exec "${CONTAINER_NAME}" getent passwd "${USERNAME}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        ((tries--))
+    done
+
+    echo "Timed out waiting for user ${USERNAME} to be created in ${CONTAINER_NAME}."
+    echo "Container logs:"
+    docker logs "${CONTAINER_NAME}" || true
+    return 1
+}
+
 # RE-USE EXISTING CONTAINER
 if [ "$(docker ps -a --quiet --filter status=running --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME is already running. Attaching..."
-    docker exec -i -t -u ${USERNAME} --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" $CONTAINER_NAME /bin/bash "$@"
+    wait_for_container_user
+    attach_shell "$@"
     exit 0
 fi
 
 # Check if container exists but is stopped
 if [ "$(docker ps -a --quiet --filter status=exited --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME exists but is stopped. Starting and attaching..."
-    docker start $CONTAINER_NAME
-    docker exec -i -t -u ${USERNAME} --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev" $CONTAINER_NAME /bin/bash "$@"
+    docker start "$CONTAINER_NAME" >/dev/null
+    wait_for_container_user
+    attach_shell "$@"
     exit 0
 fi
 
@@ -134,7 +207,7 @@ fi
 echo "Starting new container: $CONTAINER_NAME"
 echo "Mounting: ${HOST_WORKDIR} → ${CONTAINER_WORKDIR}"
 
-docker run -it \
+docker run -d \
     --runtime nvidia \
     --gpus all \
     --privileged \
@@ -146,4 +219,7 @@ docker run -it \
     "${DOCKER_ARGS[@]}" \
     --name "$CONTAINER_NAME" \
     $IMAGE_TAG \
-    /bin/bash
+    sleep infinity >/dev/null
+
+wait_for_container_user
+attach_shell "$@"
