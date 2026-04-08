@@ -34,26 +34,25 @@ DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
 # DISPLAY FORWARDING
-# Generate a wildcard xauth cookie so X11 auth works inside the container
-# regardless of hostname differences between host and container.
 XAUTH_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}"
 mkdir -p "${XAUTH_DIR}"
 XAUTH_FILE="${XAUTH_DIR}/.docker-xauth-${CONTAINER_NAME}"
+
 _refresh_x11_auth() {
+    [[ -n "${DISPLAY}" ]] || return 0
     touch "${XAUTH_FILE}" 2>/dev/null || return 0
-    chmod 644 "${XAUTH_FILE}" 2>/dev/null || true
-    if [[ -n "${DISPLAY}" ]]; then
-        xauth nlist "${DISPLAY}" 2>/dev/null \
-            | sed -e 's/^..../ffff/' \
-            | xauth -f "${XAUTH_FILE}" nmerge - 2>/dev/null || true
-    fi
+    chmod 600 "${XAUTH_FILE}" 2>/dev/null || true
+    xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
+    xauth nlist "${DISPLAY}" 2>/dev/null \
+        | sed 's/^..../ffff/' \
+        | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
 }
 _refresh_x11_auth
 
-DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix")
 DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
 DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY}")
 DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
+DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -147,6 +146,7 @@ attach_shell() {
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
         -e "XAUTHORITY=${XAUTH_FILE}"
+        -e "QT_X11_NO_MITSHM=1"
         --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
         "${CONTAINER_NAME}"
     )
