@@ -5,3 +5,4 @@ logs
 .vscode
 logs
 __pycache__
+.claude/
