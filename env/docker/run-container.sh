@@ -29,6 +29,18 @@ _detect_local_x_display() {
     return 1
 }
 
+_xauth_names_for_display() {
+    local display_number="${DISPLAY#localhost:}"
+    display_number="${display_number#:}"
+    display_number="${display_number%%.*}"
+
+    printf '%s\n' \
+        "${DISPLAY}" \
+        "$(hostname)/unix:${display_number}" \
+        "unix:${display_number}" \
+        "localhost:${display_number}"
+}
+
 # DISPLAY FORWARDING
 #
 # SSH X11 forwarding is enough for simple X clients, but GLX hardware contexts
@@ -78,7 +90,7 @@ chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
 
 _refresh_x11_auth() {
     [[ -n "${DISPLAY}" ]] || return 0
-    local auth_source auth_entries
+    local auth_source auth_entries auth_name tmp_auth
 
     xauth -b -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
     xauth -b -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
@@ -86,22 +98,37 @@ _refresh_x11_auth() {
 
     for auth_source in "${XAUTHORITY:-}" "/run/user/$(id -u)/gdm/Xauthority" "$HOME/.Xauthority"; do
         [[ -n "${auth_source}" && -r "${auth_source}" ]] || continue
-        auth_entries="$(xauth -b -f "${auth_source}" nlist "${DISPLAY}" 2>/dev/null || true)"
-        if [[ -n "${auth_entries}" ]]; then
-            printf '%s\n' "${auth_entries}" \
-                | sed 's/^..../ffff/' \
-                | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 && return 0
-        fi
+        tmp_auth="/tmp/.docker-xauth-source-${CONTAINER_NAME}-$$"
+        cp "${auth_source}" "${tmp_auth}" 2>/dev/null || continue
+        chmod 600 "${tmp_auth}" 2>/dev/null || true
+
+        while IFS= read -r auth_name; do
+            auth_entries="$(xauth -b -f "${tmp_auth}" nlist "${auth_name}" 2>/dev/null || true)"
+            if [[ -n "${auth_entries}" ]]; then
+                printf '%s\n' "${auth_entries}" \
+                    | sed 's/^..../ffff/' \
+                    | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 && {
+                        rm -f "${tmp_auth}"
+                        return 0
+                    }
+            fi
+        done < <(_xauth_names_for_display)
+
+        rm -f "${tmp_auth}"
     done
 
-    auth_entries="$(xauth -b nlist "${DISPLAY}" 2>/dev/null || true)"
-    if [[ -n "${auth_entries}" ]] && printf '%s\n' "${auth_entries}" \
-        | sed 's/^..../ffff/' \
-        | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1; then
-        return 0
-    fi
+    while IFS= read -r auth_name; do
+        auth_entries="$(xauth -b nlist "${auth_name}" 2>/dev/null || true)"
+        if [[ -n "${auth_entries}" ]] && printf '%s\n' "${auth_entries}" \
+            | sed 's/^..../ffff/' \
+            | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1; then
+            return 0
+        fi
+    done < <(_xauth_names_for_display)
 
     echo "Warning: could not copy X11 authorization for DISPLAY=${DISPLAY} into ${XAUTH_FILE}."
+    echo "Local X sockets visible to this shell: $(find /tmp/.X11-unix -maxdepth 1 -type s -printf '%f ' 2>/dev/null || true)"
+    echo "Checked Xauthority sources: ${XAUTHORITY:-<unset>} /run/user/$(id -u)/gdm/Xauthority $HOME/.Xauthority"
     echo "If RViz reports 'Authorization required', run from the Jetson desktop session or set AUTONAV_DISPLAY."
 }
 _refresh_x11_auth
