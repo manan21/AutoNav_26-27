@@ -12,14 +12,20 @@ if [[ "${DISPLAY:-}" =~ ^localhost: ]]; then
     echo "RViz needs a working GLX/OpenGL context; prefer DISPLAY=:0 on the Jetson desktop."
 fi
 
+if [[ "${AUTONAV_RVIZ_SOFTWARE:-0}" == "1" ]]; then
+    echo "AUTONAV_RVIZ_SOFTWARE=1 set; using Mesa software rendering."
+    export LIBGL_ALWAYS_SOFTWARE=1
+fi
+
 if command -v glxinfo >/dev/null 2>&1; then
-    if ! glxinfo -B >/dev/null 2>&1; then
+    GLX_OUTPUT="$(glxinfo -B 2>&1)" || {
         echo "ERROR: OpenGL/GLX is not working for DISPLAY=${DISPLAY:-<unset>}."
+        echo "$GLX_OUTPUT"
         echo "RViz cannot create its OGRE render window until the container display/GPU path is fixed."
         echo "Try re-entering the container with env/docker/run-container.sh, or use:"
-        echo "  LIBGL_ALWAYS_SOFTWARE=1 $0"
+        echo "  AUTONAV_RVIZ_SOFTWARE=1 $0"
         exit 1
-    fi
+    }
 fi
 
 NAV_PATH="$(dirname "${BASH_SOURCE[0]}")/../src/sim/config/view_bot.rviz"
