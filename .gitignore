@@ -6,3 +6,4 @@ logs
 logs
 __pycache__
 .claude/
+.codex
