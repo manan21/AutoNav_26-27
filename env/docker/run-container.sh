@@ -16,6 +16,28 @@ PLATFORM=$(uname -m)
 # USERNAME
 USERNAME="${USERNAME:-admin}"
 
+# DISPLAY FORWARDING
+#
+# SSH X11 forwarding is enough for simple X clients, but GLX hardware contexts
+# often fail there on Jetson, which makes rviz2/OGRE abort while creating its
+# render window. Prefer the Jetson's local display for hardware GL unless the
+# caller explicitly asks otherwise.
+if [[ -n "${AUTONAV_DISPLAY:-}" ]]; then
+    echo "Using AUTONAV_DISPLAY=${AUTONAV_DISPLAY}."
+    DISPLAY="${AUTONAV_DISPLAY}"
+elif [[ "${AUTONAV_KEEP_SSH_X11:-0}" != "1" && "${DISPLAY:-}" =~ ^localhost: && "${PLATFORM}" == "aarch64" ]]; then
+    echo "DISPLAY=${DISPLAY} looks like SSH X11 forwarding; using DISPLAY=:0 for Jetson hardware GL."
+    DISPLAY=":0"
+elif [[ -z "${DISPLAY:-}" && "${PLATFORM}" == "aarch64" ]]; then
+    echo "DISPLAY is unset; using DISPLAY=:0 for Jetson hardware GL."
+    DISPLAY=":0"
+fi
+
+XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+XDG_RUNTIME_DIR="/tmp/runtime-${USERNAME}"
+mkdir -p "${XDG_RUNTIME_DIR}"
+chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+
 DOCKER_ARGS=()
 
 # ENVIRONMENT VARIABLES
@@ -26,6 +48,10 @@ DOCKER_ARGS+=("-e" "USERNAME=${USERNAME}")
 DOCKER_ARGS+=("-e" "HOST_USER_UID=$(id -u)")
 DOCKER_ARGS+=("-e" "HOST_USER_GID=$(id -g)")
 DOCKER_ARGS+=("-e" "WORKDIR=${CONTAINER_WORKDIR}")
+DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY:-:0}")
+DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
+DOCKER_ARGS+=("-e" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
 
 # BLUETOOTH AND DBUS
 DOCKER_ARGS+=("-v" "/run/dbus:/run/dbus")
@@ -33,8 +59,6 @@ DOCKER_ARGS+=("-v" "/dev/input:/dev/input")
 DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
-# DISPLAY FORWARDING
-XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
 touch "${XAUTH_FILE}"
 chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
 
@@ -52,6 +76,8 @@ _refresh_x11_auth() {
 _refresh_x11_auth
 
 DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
+DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+DOCKER_ARGS+=("-v" "${XDG_RUNTIME_DIR}:${XDG_RUNTIME_DIR}:rw")
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -141,10 +167,12 @@ attach_shell() {
 
     local exec_args=(
         docker exec -i -t -u "${USERNAME}"
-        -e "DISPLAY=${DISPLAY}"
+        -e "DISPLAY=${DISPLAY:-:0}"
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
+        -e "USERNAME=${USERNAME}"
         -e "XAUTHORITY=${XAUTH_FILE}"
+        -e "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
         -e "QT_X11_NO_MITSHM=1"
         --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
         "${CONTAINER_NAME}"
@@ -152,8 +180,9 @@ attach_shell() {
 
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY}'; \
+            "export DISPLAY='${DISPLAY:-:0}'; \
              export XAUTHORITY='${XAUTH_FILE}'; \
+             export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
              export QT_X11_NO_MITSHM=1; \
              source /opt/ros/humble/setup.bash && \
              if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
@@ -162,8 +191,9 @@ attach_shell() {
              exec /bin/bash -i"
     else
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY}'; \
+            "export DISPLAY='${DISPLAY:-:0}'; \
              export XAUTHORITY='${XAUTH_FILE}'; \
+             export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
              export QT_X11_NO_MITSHM=1; \
              exec /bin/bash $*"
     fi
