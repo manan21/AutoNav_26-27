@@ -16,6 +16,19 @@ PLATFORM=$(uname -m)
 # USERNAME
 USERNAME="${USERNAME:-admin}"
 
+_detect_local_x_display() {
+    local socket display
+
+    for socket in /tmp/.X11-unix/X*; do
+        [[ -S "${socket}" ]] || continue
+        display=":${socket##*/X}"
+        printf '%s\n' "${display}"
+        return 0
+    done
+
+    return 1
+}
+
 # DISPLAY FORWARDING
 #
 # SSH X11 forwarding is enough for simple X clients, but GLX hardware contexts
@@ -26,11 +39,12 @@ if [[ -n "${AUTONAV_DISPLAY:-}" ]]; then
     echo "Using AUTONAV_DISPLAY=${AUTONAV_DISPLAY}."
     DISPLAY="${AUTONAV_DISPLAY}"
 elif [[ "${AUTONAV_KEEP_SSH_X11:-0}" != "1" && "${DISPLAY:-}" =~ ^localhost: && "${PLATFORM}" == "aarch64" ]]; then
-    echo "DISPLAY=${DISPLAY} looks like SSH X11 forwarding; using DISPLAY=:0 for Jetson hardware GL."
-    DISPLAY=":0"
+    ORIGINAL_DISPLAY="${DISPLAY}"
+    DISPLAY="$(_detect_local_x_display || printf ':0')"
+    echo "DISPLAY=${ORIGINAL_DISPLAY} looks like SSH X11 forwarding; using DISPLAY=${DISPLAY} for Jetson hardware GL."
 elif [[ -z "${DISPLAY:-}" && "${PLATFORM}" == "aarch64" ]]; then
-    echo "DISPLAY is unset; using DISPLAY=:0 for Jetson hardware GL."
-    DISPLAY=":0"
+    DISPLAY="$(_detect_local_x_display || printf ':0')"
+    echo "DISPLAY is unset; using DISPLAY=${DISPLAY} for Jetson hardware GL."
 fi
 
 XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
@@ -64,14 +78,31 @@ chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
 
 _refresh_x11_auth() {
     [[ -n "${DISPLAY}" ]] || return 0
+    local auth_source auth_entries
 
-    xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
-    xauth -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
-    xauth -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
 
-    xauth nlist "${DISPLAY}" 2>/dev/null \
+    for auth_source in "${XAUTHORITY:-}" "/run/user/$(id -u)/gdm/Xauthority" "$HOME/.Xauthority"; do
+        [[ -n "${auth_source}" && -r "${auth_source}" ]] || continue
+        auth_entries="$(xauth -b -f "${auth_source}" nlist "${DISPLAY}" 2>/dev/null || true)"
+        if [[ -n "${auth_entries}" ]]; then
+            printf '%s\n' "${auth_entries}" \
+                | sed 's/^..../ffff/' \
+                | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 && return 0
+        fi
+    done
+
+    auth_entries="$(xauth -b nlist "${DISPLAY}" 2>/dev/null || true)"
+    if [[ -n "${auth_entries}" ]] && printf '%s\n' "${auth_entries}" \
         | sed 's/^..../ffff/' \
-        | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
+        | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "Warning: could not copy X11 authorization for DISPLAY=${DISPLAY} into ${XAUTH_FILE}."
+    echo "If RViz reports 'Authorization required', run from the Jetson desktop session or set AUTONAV_DISPLAY."
 }
 _refresh_x11_auth
 
