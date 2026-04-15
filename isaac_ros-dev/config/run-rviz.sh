@@ -22,8 +22,12 @@ if command -v glxinfo >/dev/null 2>&1; then
         echo "ERROR: OpenGL/GLX is not working for DISPLAY=${DISPLAY:-<unset>}."
         echo "$GLX_OUTPUT"
         echo "RViz cannot create its OGRE render window until the container display/GPU path is fixed."
-        echo "Try re-entering the container with env/docker/run-container.sh, or use:"
-        echo "  AUTONAV_RVIZ_SOFTWARE=1 $0"
+        if [[ "${DISPLAY:-}" =~ ^localhost: ]]; then
+            echo "SSH X11 forwarding is still failing GLX. Use the Jetson desktop display via xhost, VNC, NoMachine, or another remote desktop with OpenGL support."
+        elif [[ "${AUTONAV_RVIZ_SOFTWARE:-0}" != "1" ]]; then
+            echo "For diagnosis only, you can try:"
+            echo "  AUTONAV_RVIZ_SOFTWARE=1 $0"
+        fi
         exit 1
     }
 fi
