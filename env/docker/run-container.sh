@@ -41,6 +41,37 @@ _xauth_names_for_display() {
         "localhost:${display_number}"
 }
 
+_discover_xauth_sources() {
+    local pid env_file entry key value
+
+    printf '%s\n' \
+        "${XAUTHORITY:-}" \
+        "/run/user/$(id -u)/gdm/Xauthority" \
+        "$HOME/.Xauthority"
+
+    for env_file in /proc/[0-9]*/environ; do
+        [[ -r "${env_file}" ]] || continue
+        pid="${env_file#/proc/}"
+        pid="${pid%/environ}"
+
+        case "$(ps -p "${pid}" -o comm= 2>/dev/null || true)" in
+            Xorg|Xwayland|gnome-shell|gnome-session*|gdm-session-worker)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        while IFS= read -r -d '' entry; do
+            key="${entry%%=*}"
+            value="${entry#*=}"
+            if [[ "${key}" == "XAUTHORITY" && -n "${value}" ]]; then
+                printf '%s\n' "${value}"
+            fi
+        done < "${env_file}"
+    done
+}
+
 # DISPLAY FORWARDING
 #
 # SSH X11 forwarding is enough for simple X clients, but GLX hardware contexts
@@ -96,7 +127,7 @@ _refresh_x11_auth() {
     xauth -b -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
     xauth -b -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
 
-    for auth_source in "${XAUTHORITY:-}" "/run/user/$(id -u)/gdm/Xauthority" "$HOME/.Xauthority"; do
+    while IFS= read -r auth_source; do
         [[ -n "${auth_source}" && -r "${auth_source}" ]] || continue
         tmp_auth="/tmp/.docker-xauth-source-${CONTAINER_NAME}-$$"
         cp "${auth_source}" "${tmp_auth}" 2>/dev/null || continue
@@ -115,7 +146,7 @@ _refresh_x11_auth() {
         done < <(_xauth_names_for_display)
 
         rm -f "${tmp_auth}"
-    done
+    done < <(_discover_xauth_sources | sort -u)
 
     while IFS= read -r auth_name; do
         auth_entries="$(xauth -b nlist "${auth_name}" 2>/dev/null || true)"
@@ -128,7 +159,7 @@ _refresh_x11_auth() {
 
     echo "Warning: could not copy X11 authorization for DISPLAY=${DISPLAY} into ${XAUTH_FILE}."
     echo "Local X sockets visible to this shell: $(find /tmp/.X11-unix -maxdepth 1 -type s -printf '%f ' 2>/dev/null || true)"
-    echo "Checked Xauthority sources: ${XAUTHORITY:-<unset>} /run/user/$(id -u)/gdm/Xauthority $HOME/.Xauthority"
+    echo "Checked Xauthority sources: $(_discover_xauth_sources | sort -u | tr '\n' ' ')"
     echo "If RViz reports 'Authorization required', run from the Jetson desktop session or set AUTONAV_DISPLAY."
 }
 _refresh_x11_auth
