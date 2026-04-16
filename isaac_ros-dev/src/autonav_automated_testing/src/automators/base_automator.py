@@ -69,6 +69,7 @@ class BaseAutomator(Node):
             '/zed/zed_node/imu/data': 'accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,orient_x,orient_y,orient_z',
             '/scan': 'range_min,range_max,ranges_count',
             '/line_detection/lines': 'lines_detected',
+            '/motor_speed': 'speed_setting',
             '/electrical/voltage': 'voltage_V',
             '/electrical/current': 'current_A',
             '/electrical/power': 'power_W'
@@ -242,6 +243,13 @@ class BaseAutomator(Node):
                         ros_timestamp,
                         topic_name,
                         "lines_detected"
+                    ] + data_values[0:1])
+            elif topic_name == "/motor_speed":
+                if len(data_values) >= 1:
+                    formatted_rows.append([
+                        ros_timestamp,
+                        topic_name,
+                        "speed_setting"
                     ] + data_values[0:1])
             elif topic_name == "/electrical/voltage":
                 if len(data_values) >= 1:

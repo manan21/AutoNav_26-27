@@ -57,6 +57,7 @@ private:
     std::string latest_imu_data_;
     std::string latest_scan_data_;
     std::string latest_lines_data_;
+    std::string latest_motor_speed_data_;
     std::string latest_voltage_data_;
     std::string latest_current_data_;
     std::string latest_power_data_;
@@ -197,6 +198,15 @@ private:
                 });
             dynamic_subscribers_.push_back(sub);
         }
+        else if (topic == "/motor_speed") {
+            auto sub = this->create_subscription<std_msgs::msg::String>(
+                topic, 10,
+                [this](const std_msgs::msg::String::SharedPtr msg) {
+                    std::lock_guard<std::mutex> lock(data_mutex_);
+                    latest_motor_speed_data_ = msg->data;
+                });
+            dynamic_subscribers_.push_back(sub);
+        }
         else if (topic == "/electrical/voltage") {
             auto sub = this->create_subscription<std_msgs::msg::Float32>(
                 topic, 10,
@@ -245,6 +255,7 @@ private:
             latest_imu_data_.clear();
             latest_scan_data_.clear();
             latest_lines_data_.clear();
+            latest_motor_speed_data_.clear();
             latest_voltage_data_.clear();
             latest_current_data_.clear();
             latest_power_data_.clear();
@@ -282,7 +293,7 @@ private:
 
         // Make local copies of data with mutex protection
         std::string gps_data, imu_data, scan_data, odom_data, cmd_vel_data,
-                    encoder_data, lines_data, voltage_data, current_data, power_data;
+                    encoder_data, lines_data, motor_speed_data, voltage_data, current_data, power_data;
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             gps_data = latest_gps_data_;
@@ -292,6 +303,7 @@ private:
             cmd_vel_data = latest_cmd_vel_data_;
             encoder_data = latest_encoder_data_;
             lines_data = latest_lines_data_;
+            motor_speed_data = latest_motor_speed_data_;
             voltage_data = latest_voltage_data_;
             current_data = latest_current_data_;
             power_data = latest_power_data_;
@@ -354,6 +366,15 @@ private:
             data_dump_pub_->publish(msg);
             if (debug_count < 3) {
                 RCLCPP_INFO(this->get_logger(), "Publishing lines: %s", msg.data.c_str());
+            }
+        }
+
+        // Publish motor speed data
+        if (!motor_speed_data.empty()) {
+            msg.data = "/motor_speed,String," + motor_speed_data;
+            data_dump_pub_->publish(msg);
+            if (debug_count < 3) {
+                RCLCPP_INFO(this->get_logger(), "Publishing motor_speed: %s", msg.data.c_str());
             }
         }
 

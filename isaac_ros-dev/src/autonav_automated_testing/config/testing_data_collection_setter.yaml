@@ -66,6 +66,7 @@ data_publisher:
       "/odom",
       "/encoders",
       "/cmd_vel",
+      "/motor_speed",
       "/scan",
       "/zed/zed_node/imu/data",
       "/plan",
