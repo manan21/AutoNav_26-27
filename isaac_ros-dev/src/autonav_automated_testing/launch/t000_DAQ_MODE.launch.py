@@ -94,7 +94,7 @@ def generate_launch_description():
     )
     test_automater = ExecuteProcess(
         cmd=[
-            'python3',
+            'python3', '-u',
             automater_script_path,
             '--ros-args',
             '-p',
