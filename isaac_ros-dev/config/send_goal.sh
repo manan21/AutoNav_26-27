@@ -22,7 +22,7 @@ YAW_DEG=${3:-0}
 
 if $RELATIVE; then
   # Get current pose from tf2
-  TF_OUTPUT=$(ros2 run tf2_ros tf2_echo map base_link --once 2>&1)
+  TF_OUTPUT=$(timeout 7 ros2 run tf2_ros tf2_echo map base_link 2>&1)
 
   GLOBAL=$(python3 -c "
 import math, re, sys

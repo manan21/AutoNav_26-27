@@ -31,14 +31,7 @@ void MotorController::forward(){
     return;
   }
   else{
-    int leftMotorSpeed = -1 * (int)(stepSize * speed);
-    int rightMotorSpeed = (int)(stepSize * speed);
-
-    std::string leftMotorCommand = "!G 1 " + std::to_string(leftMotorSpeed) + "\r";
-    std::string rightMotorCommand = "!G 2 " + std::to_string(rightMotorSpeed) + "\r";
-
-    motorSerial.writeString(leftMotorCommand.c_str());
-    motorSerial.writeString(rightMotorCommand.c_str());
+    move(speed, speed);
   }
 }
 
@@ -48,14 +41,7 @@ void MotorController::backward(){
     return;
   }
   else{
-    int leftMotorSpeed = -1 * (int)(stepSize * speed);
-    int rightMotorSpeed = (int)(stepSize * speed);
-
-    std::string leftMotorCommand = "!G 1 " + std::to_string(leftMotorSpeed) + "\r";
-    std::string rightMotorCommand = "!G 2 " + std::to_string(rightMotorSpeed) + "\r";
-
-    motorSerial.writeString(leftMotorCommand.c_str());
-    motorSerial.writeString(rightMotorCommand.c_str());
+    move(-speed, -speed);
   }
 }
 
@@ -96,8 +82,8 @@ void MotorController::turnRight(){
 // moves the robot at specific motor speeds
 void MotorController::move(float right_speed, float left_speed){
   
-    int leftMotorSpeed = (int)(-stepSize * left_speed);
-    int rightMotorSpeed = (int)(stepSize * right_speed);
+    int leftMotorSpeed = (int)(stepSize * left_speed);
+    int rightMotorSpeed = (int)(-stepSize * right_speed);
 
     std::string leftMotorCommand = "!G 1 " + std::to_string(leftMotorSpeed) + "\r";
     std::string rightMotorCommand = "!G 2 " + std::to_string(rightMotorSpeed) + "\r";

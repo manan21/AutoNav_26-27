@@ -22,7 +22,7 @@ class WheelOdomPublisher : public rclcpp::Node
   public:
     WheelOdomPublisher()
     : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0), 
-    wheel_base_(0.6858), wheel_radius_(0.205), prev_left_encoder_count_(0), prev_right_encoder_count_(0), 
+    wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0), 
     left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923)
     {
       encoder_subscription_ = this->create_subscription<autonav_interfaces::msg::Encoders>("encoders", 
