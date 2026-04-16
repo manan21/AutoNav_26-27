@@ -11,14 +11,18 @@ from launch_ros.actions import Node
 '''
 Launch script for [TEST ID: t000] DAQ Mode automated test.
 
-Launching this script will:
-1. Start the data_publisher node to collect broad DAQ data
-2. Launch standard bringup and control (for operator control)
-3. Execute t000_automator.py which starts/stops data collection on A button
+IMPORTANT: This launch file is designed to run ALONGSIDE the DEMO_DAY bringup.
+Run the 7 DEMO_DAY steps first (pre_slam, zed, lidar, slam, lines, nav2, rviz),
+then launch this in an 8th terminal to add DAQ data collection.
 
-Notes:
-- No camera image topics are used for DAQ here.
-- This is a framework to expose more numeric topics into the CSV.
+This launch file ONLY starts nodes not already covered by DEMO_DAY:
+  - gps_publisher         (GPS fix data)
+  - electrical_publisher   (voltage/current/power from INA226)
+  - data_publisher         (DAQ data collection to CSV)
+  - t000_automator         (A button start/stop control)
+
+It does NOT start odom, ZED, control, or joy — those are already
+running from pre_slam.launch.py and run-zed.sh.
 '''
 
 def generate_launch_description():
@@ -29,17 +33,9 @@ def generate_launch_description():
         default_value='false',
         description='Use simulation (Gazebo) clock if true'
     )
-    
-    camera_model = DeclareLaunchArgument(
-        'camera_model',
-        default_value='zed2i',
-        description='ZED camera model'
-    )
 
     # Package directories
     autonav_testing_share = get_package_share_directory('autonav_automated_testing')
-    # zed_pkg = os.path.join(get_package_share_directory('zed_wrapper'), 'launch', 'zed_camera.launch.py')
-    control_share = FindPackageShare('control')
     electrical_share = FindPackageShare('autonav_electrical_publisher')
 
     # Path to test data configuration file
@@ -55,7 +51,7 @@ def generate_launch_description():
         data_publisher_params = all_params.get('data_publisher', {}).get('ros__parameters', {})
         topics_to_monitor = data_publisher_params.get('t000', [])
 
-    # Data Publisher Node
+    # Data Publisher Node — collects all configured topics into CSV
     data_publisher_node = Node(
         package='autonav_automated_testing',
         executable='data_publisher',
@@ -68,8 +64,8 @@ def generate_launch_description():
         }]
     )
 
-    # [NODES]
-    # GPS Handler Node - publishes GPS fix data to /gps/fix
+    # GPS Handler Node — publishes GPS fix data to /gps_fix
+    # (not started by any DEMO_DAY step)
     gps_handler_node = Node(
         package='gps_handler',
         executable='gps_publisher',
@@ -81,45 +77,15 @@ def generate_launch_description():
         }]
     )
 
-    # Odometry Handler Node - publishes wheel encoder data to /encoders and /odom
-    odom_handler_node = Node(
-        package='odom_handler',
-        executable='wheel_odometry_publisher',
-        name='odom_publisher_node',
-        output='screen',
-        parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time')
-        }]
-    )
-
-    # Include ZED camera launch file for camera and IMU data
-    # TODO: Re-enable when zed_wrapper is available
-    # zed_launch = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(zed_pkg),
-    #     launch_arguments={
-    #         'camera_model': LaunchConfiguration('camera_model'),
-    #         'use_sim_time': LaunchConfiguration('use_sim_time')
-    #     }.items()
-    # )
-
     # Electrical Publisher Node — voltage/current/power from INA226
+    # (not started by any DEMO_DAY step)
     electrical_publisher_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([electrical_share, 'launch', 'electrical_publisher.launch.py'])
         )
     )
 
-    # Include control launch file for motor control and /cmd_vel processing
-    control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([control_share, 'launch', 'control_dev.launch.py'])
-        ),
-        launch_arguments={
-            'use_sim_time': LaunchConfiguration('use_sim_time')
-        }.items()
-    )
-
-    # Execute the test automator script
+    # Execute the test automator script (A button start/stop)
     automater_script_path = os.path.join(
         autonav_testing_share,
         'src',
@@ -142,14 +108,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time,
-        camera_model,
-        # [NODES]
+        # Nodes not covered by DEMO_DAY
         gps_handler_node,
-        odom_handler_node,
         electrical_publisher_launch,
-        # [LAUNCH FILES]
-        # zed_launch,  # TODO: Re-enable when zed_wrapper is available
-        control_launch,
         # Data collection
         data_publisher_node,
         # Automator

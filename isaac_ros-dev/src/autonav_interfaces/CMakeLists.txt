@@ -11,6 +11,7 @@ endif()
 # find_package(<dependency> REQUIRED)
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 
 
@@ -25,7 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 	srv/ConfigureControl.srv
   msg/LinePoints.msg
 	srv/AnvLines.srv
-	DEPENDENCIES geometry_msgs
+	DEPENDENCIES geometry_msgs std_msgs
 )
 
 # rosidl_target_interfaces(${PROJECT_NAME}

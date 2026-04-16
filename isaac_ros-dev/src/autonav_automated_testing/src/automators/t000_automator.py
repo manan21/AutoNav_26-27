@@ -19,12 +19,12 @@ from std_msgs.msg import Bool
 class T000Automator(BaseAutomator):
     def __init__(self):
         super().__init__('t000_automater', 't000', 'DAQ_MODE')
-        
+
         # State
         self.odom_online = False
         self.joy_online = False
-        self.gps_online = True
-        self.imu_online = True
+        self.gps_online = False
+        self.imu_online = False
         self.systems_ready = False
         self.waiting_for_trigger = False
         self.A_BUTTON_INDEX = 0
@@ -152,7 +152,6 @@ def main(args=None):
         if automator is not None:
             try:
                 automator.destroy_node()
-            
             except:
                 pass
         if rclpy.ok():

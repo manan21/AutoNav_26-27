@@ -71,8 +71,7 @@ data_publisher:
       "/plan",
       "/electrical/voltage",
       "/electrical/current",
-      "/electrical/power",
-      "/motor_speed"
+      "/electrical/power"
     ]
 
     # Test 001: GPS Calibration - Validates GPS accuracy and waypoint navigation

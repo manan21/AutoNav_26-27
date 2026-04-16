@@ -8,76 +8,88 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-echo "Creating non-root container '${USERNAME}' for host user uid=${HOST_USER_UID}:gid=${HOST_USER_GID}"
-
-if [ ! $(getent group ${HOST_USER_GID}) ]; then
-  groupadd --gid ${HOST_USER_GID} ${USERNAME} &>/dev/null
-else
-  CONFLICTING_GROUP_NAME=`getent group ${HOST_USER_GID} | cut -d: -f1`
-  groupmod -o --gid ${HOST_USER_GID} -n ${USERNAME} ${CONFLICTING_GROUP_NAME}
+INIT_STATE_FILE="/var/local/container-init.state"
+CURRENT_INIT_STATE="${USERNAME}:${HOST_USER_UID}:${HOST_USER_GID}"
+PREVIOUS_INIT_STATE=""
+if [ -f "${INIT_STATE_FILE}" ]; then
+  PREVIOUS_INIT_STATE="$(cat "${INIT_STATE_FILE}")"
 fi
 
-if [ ! $(getent passwd ${HOST_USER_UID}) ]; then
-  useradd --no-log-init --uid ${HOST_USER_UID} --gid ${HOST_USER_GID} -m ${USERNAME} &>/dev/null
-else
-  CONFLICTING_USER_NAME=`getent passwd ${HOST_USER_UID} | cut -d: -f1`
-  usermod -l ${USERNAME} -u ${HOST_USER_UID} -m -d /home/${USERNAME} ${CONFLICTING_USER_NAME} &>/dev/null
-  mkdir -p /home/${USERNAME}
-  # Wipe files that may create issues for users with large uid numbers.
-  rm -f /var/log/lastlog /var/log/faillog
-fi
+if [ "${PREVIOUS_INIT_STATE}" != "${CURRENT_INIT_STATE}" ]; then
+  echo "Running first-start initialization for '${USERNAME}' uid=${HOST_USER_UID}:gid=${HOST_USER_GID}"
 
-# Update 'admin' user
-chown ${USERNAME}:${USERNAME} /home/${USERNAME}
-echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME}
-chmod 0440 /etc/sudoers.d/${USERNAME}
-adduser ${USERNAME} video >/dev/null
-adduser ${USERNAME} plugdev >/dev/null
-adduser ${USERNAME} sudo  >/dev/null
-adduser ${USERNAME} dialout  >/dev/null
-adduser ${USERNAME} bluetooth  >/dev/null
-adduser ${USERNAME} systemd-journal >/dev/null
-adduser ${USERNAME} zed >/dev/null
-
-source /opt/ros/humble/setup.bash # source ros setup
-
-# If jtop present, give the user access
-if [ -S /run/jtop.sock ]; then
-  JETSON_STATS_GID="$(stat -c %g /run/jtop.sock)"
-  addgroup --gid ${JETSON_STATS_GID} jtop >/dev/null
-  adduser ${USERNAME} jtop >/dev/null
-fi
-
-# Run all entrypoint additions
-shopt -s nullglob
-for addition in /usr/local/bin/scripts/entrypoint_additions/*.sh; do
-  if [[ "${addition}" =~ ".user." ]]; then
-    echo "Running entryrypoint extension: ${addition} as user ${USERNAME}"
-    #gosu ${USERNAME} ${addition}
+  if [ ! "$(getent group "${HOST_USER_GID}")" ]; then
+    groupadd --gid "${HOST_USER_GID}" "${USERNAME}" &>/dev/null
   else
-    echo "Sourcing entryrypoint extension: ${addition}"
-    source ${addition}
+    CONFLICTING_GROUP_NAME="$(getent group "${HOST_USER_GID}" | cut -d: -f1)"
+    groupmod -o --gid "${HOST_USER_GID}" -n "${USERNAME}" "${CONFLICTING_GROUP_NAME}"
+  fi
+
+  if [ ! "$(getent passwd "${HOST_USER_UID}")" ]; then
+    useradd --no-log-init --uid "${HOST_USER_UID}" --gid "${HOST_USER_GID}" -m "${USERNAME}" &>/dev/null
+  else
+    CONFLICTING_USER_NAME="$(getent passwd "${HOST_USER_UID}" | cut -d: -f1)"
+    usermod -l "${USERNAME}" -u "${HOST_USER_UID}" -m -d "/home/${USERNAME}" "${CONFLICTING_USER_NAME}" &>/dev/null
+    mkdir -p "/home/${USERNAME}"
+    # Wipe files that may create issues for users with large uid numbers.
+    rm -f /var/log/lastlog /var/log/faillog
+  fi
+
+  chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
+  echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > "/etc/sudoers.d/${USERNAME}"
+  chmod 0440 "/etc/sudoers.d/${USERNAME}"
+  adduser "${USERNAME}" video >/dev/null
+  adduser "${USERNAME}" plugdev >/dev/null
+  adduser "${USERNAME}" sudo >/dev/null
+  adduser "${USERNAME}" dialout >/dev/null
+  adduser "${USERNAME}" bluetooth >/dev/null
+  adduser "${USERNAME}" systemd-journal >/dev/null
+  adduser "${USERNAME}" zed >/dev/null
+
+  # If jtop present, give the user access
+  if [ -S /run/jtop.sock ]; then
+    JETSON_STATS_GID="$(stat -c %g /run/jtop.sock)"
+    if ! getent group jtop >/dev/null; then
+      addgroup --gid "${JETSON_STATS_GID}" jtop >/dev/null
+    fi
+    adduser "${USERNAME}" jtop >/dev/null
+  fi
+
+  # Run all entrypoint additions
+  shopt -s nullglob
+  for addition in /usr/local/bin/scripts/entrypoint_additions/*.sh; do
+    if [[ "${addition}" =~ ".user." ]]; then
+      echo "Running entrypoint extension: ${addition} as user ${USERNAME}"
+      #gosu ${USERNAME} ${addition}
+    else
+      echo "Sourcing entrypoint extension: ${addition}"
+      source "${addition}"
+    fi
+  done
+
+  # Restart udev daemon once during initialization.
+  service udev restart
+
+  printf '%s\n' "${CURRENT_INIT_STATE}" > "${INIT_STATE_FILE}"
+else
+  echo "Initialization already completed for '${USERNAME}' uid=${HOST_USER_UID}:gid=${HOST_USER_GID}; skipping heavy setup"
+fi
+
+# Change to workdir
+cd "${WORKDIR}/isaac_ros-dev" 2>/dev/null || cd "${WORKDIR}" 2>/dev/null || true
+
+# Repair ownership on persisted colcon volumes so non-root builds work.
+for dir in build install log; do
+  if [ -e "${dir}" ]; then
+    chown -R "${HOST_USER_UID}:${HOST_USER_GID}" "${dir}" || true
   fi
 done
 
-# Restart udev daemon
-service udev restart
-
-# Change to workdir
-cd ${WORKDIR}/isaac_ros-dev 2>/dev/null || cd ${WORKDIR} 2>/dev/null || true
-
-# Fix permissions on build directories if they exist
-for dir in build install log; do
-    if [ -d "$dir" ]; then
-        chown -R ${HOST_USER_UID}:${HOST_USER_GID} "$dir"
-    fi
-done
-
-# Source workspace
-if [ -f "${WORKDIR}/isaac_ros-dev/install/setup.bash" ]; then
-    if ! grep -q "source.*install/setup.bash" /home/${USERNAME}/.bashrc; then
-        echo "source ${WORKDIR}/isaac_ros-dev/install/setup.bash" >> /home/${USERNAME}/.bashrc
-    fi
+# Ensure workspace setup is sourced once for interactive shells.
+if [ -f "${WORKDIR}/isaac_ros-dev/install/setup.bash" ] && [ -f "/home/${USERNAME}/.bashrc" ]; then
+  if ! grep -q "source ${WORKDIR}/isaac_ros-dev/install/setup.bash" "/home/${USERNAME}/.bashrc"; then
+    echo "source ${WORKDIR}/isaac_ros-dev/install/setup.bash" >> "/home/${USERNAME}/.bashrc"
+  fi
 fi
 
-exec gosu ${USERNAME} "$@"
+exec gosu "${USERNAME}" "$@"

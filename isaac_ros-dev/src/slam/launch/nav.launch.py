@@ -10,6 +10,11 @@ from nav2_common.launch import RewrittenYaml
 
 def generate_launch_description():
        
+    bt_xml_path = PathJoinSubstitution([
+        get_package_share_directory('slam'),
+        'behavior_trees',
+        'bt_2.xml'
+    ])
 
     use_sim_time = DeclareLaunchArgument(
             'use_sim_time',
@@ -21,7 +26,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             get_package_share_directory('slam'),
             'config',
-            'nav_minimal.yaml'
+            'nav2_lines_params.yaml'
         ]),
         description='Path to your custom Nav2 parameters file'
     )
@@ -29,13 +34,17 @@ def generate_launch_description():
     configured_params = RewrittenYaml(
     source_file=LaunchConfiguration('nav2_params'),
     root_key='',
-    param_rewrites={},
+    param_rewrites={
+        'default_nav_to_pose_bt_xml': bt_xml_path,
+        'default_nav_through_poses_bt_xml': bt_xml_path
+    },
     convert_types=True
     )
  
     # controls what nodes are managed by lifecycle manager
     lifecycle_nodes = [
         'controller_server',
+        'behavior_server',
         #'planner_server',
         'bt_navigator',
         # 'waypoint_follower',
@@ -72,11 +81,20 @@ def generate_launch_description():
             output='screen',
             parameters=[configured_params]
     )
+
+    behavior_server = Node(
+            package='nav2_behaviors',
+            executable='behavior_server',
+            name='behavior_server',
+            output='screen',
+            parameters=[configured_params]
+    )
        
     return LaunchDescription([
         use_sim_time,
         nav2_params,
         controller,
+        behavior_server,
         navigator,
         manager
         

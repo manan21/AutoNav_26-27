@@ -45,6 +45,7 @@
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "nav2_costmap_2d/footprint.hpp"
 #include "rclcpp/parameter_events_filter.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 
@@ -56,7 +57,8 @@ using nav2_costmap_2d::NO_INFORMATION;
 //#define DEBUG_2
 //#define DEBUG_3
 //#define DEBUG_4
-#define DEBUG_n
+// Leave high-volume debug logging disabled in normal runtime.
+//#define DEBUG_n
 
 // helper methods outside namespace
 
@@ -74,7 +76,11 @@ LineLayer::LineLayer()
 : last_min_x_(0.0),
   last_min_y_(0.0),
   last_max_x_(1.0),
-  last_max_y_(1.0)
+  last_max_y_(1.0),
+  need_recalculation_(false),
+  rolling_window_(false),
+  publish_costmap_(false),
+  transform_tolerance_(0.2)
 {
 }
 
@@ -88,10 +94,16 @@ LineLayer::onInitialize()
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
+  declareParameter("publish_costmap", rclcpp::ParameterValue(false));
+  declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
+  node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
+
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
 
   line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1, 
@@ -102,6 +114,8 @@ LineLayer::onInitialize()
   }
 
   
+
+  matchSize();
 
   need_recalculation_ = false;
   current_ = true;
@@ -118,10 +132,73 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       RCLCPP_INFO(rclcpp::get_logger("nav_costmap_2d"), "CALM LUH CALLBACK");
       #endif
       auto line = std::make_shared<autonav_interfaces::msg::LinePoints>(); 
+      line->header = message->header;
       line->points = message->points;
 
       buffer_.buffer(line);
+      current_ = false;
+      need_recalculation_ = true;
 
+}
+
+std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPointsToGlobalFrame(
+  const autonav_interfaces::msg::LinePoints & message)
+{
+  auto node = node_.lock();
+  if (!node) {
+    return std::nullopt;
+  }
+  const std::string target_frame = layered_costmap_->getGlobalFrameID();
+  std::vector<geometry_msgs::msg::Vector3> transformed_points;
+  transformed_points.reserve(message.points.size());
+
+  if (message.header.frame_id.empty() || message.header.frame_id == target_frame) {
+    return message.points;
+  }
+
+  geometry_msgs::msg::TransformStamped transform;
+  const bool use_latest_transform =
+    message.header.frame_id == "map" && target_frame == "odom";
+  try {
+    if (use_latest_transform) {
+      transform = tf_buffer_->lookupTransform(
+        target_frame,
+        message.header.frame_id,
+        rclcpp::Time(0, 0, node->get_clock()->get_clock_type()),
+        rclcpp::Duration::from_seconds(transform_tolerance_));
+    } else {
+      transform = tf_buffer_->lookupTransform(
+        target_frame,
+        message.header.frame_id,
+        rclcpp::Time(message.header.stamp),
+        rclcpp::Duration::from_seconds(transform_tolerance_));
+    }
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("nav_costmap_2d"), *node->get_clock(), 3000,
+      "line_layer TF unavailable (%s <- %s): %s",
+      target_frame.c_str(), message.header.frame_id.c_str(), ex.what());
+    return std::nullopt;
+  }
+
+  for (const auto & point : message.points) {
+    geometry_msgs::msg::PointStamped input_point;
+    input_point.header = message.header;
+    input_point.point.x = point.x;
+    input_point.point.y = point.y;
+    input_point.point.z = point.z;
+
+    geometry_msgs::msg::PointStamped output_point;
+    tf2::doTransform(input_point, output_point, transform);
+
+    geometry_msgs::msg::Vector3 transformed;
+    transformed.x = output_point.point.x;
+    transformed.y = output_point.point.y;
+    transformed.z = output_point.point.z;
+    transformed_points.push_back(transformed);
+  }
+
+  return transformed_points;
 }
 
 void LineLayer::publishCostmap() {
@@ -225,12 +302,22 @@ LineLayer::updateBounds(
   double robot_x, double robot_y, double /*robot_yaw*/, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
+  if (!rolling_window_) {
+    last_min_x_ = origin_x_;
+    last_min_y_ = origin_y_;
+    last_max_x_ = origin_x_ + getSizeInMetersX();
+    last_max_y_ = origin_y_ + getSizeInMetersY();
+    *min_x = std::min(*min_x, last_min_x_);
+    *min_y = std::min(*min_y, last_min_y_);
+    *max_x = std::max(*max_x, last_max_x_);
+    *max_y = std::max(*max_y, last_max_y_);
+    need_recalculation_ = false;
+    return;
+  }
+
   if (need_recalculation_) {
     
-    if (rolling_window_) {
-
-      updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
-    }
+    updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
 
     
 
@@ -319,10 +406,6 @@ LineLayer::updateCosts(
   // below is a testament to my stupidity. Do not be like me. There is always a reason they have it set up the way they do.
 
   // Idgaf I'm overwriting just like they did
-  unsigned char * master_array = master_grid.getCharMap();
-  if (!master_array) {
-	  return;
-  }
   unsigned int size_x = master_grid.getSizeInCellsX(), size_y = master_grid.getSizeInCellsY();
 
   // {min_i, min_j} - {max_i, max_j} - are update-window coordinates.
@@ -332,8 +415,18 @@ LineLayer::updateCosts(
   // Fixing window coordinates with map size if necessary.
   min_i = std::max(0, min_i);
   min_j = std::max(0, min_j);
+  // Nav2 passes max_i/max_j as exclusive bounds.
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
+
+  auto clear_layer = [&]() {
+    resetMaps();
+    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    current_ = true;
+    if (publish_costmap_) {
+      publishCostmap();
+    }
+  };
 
   #ifdef DEBUG_n
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (min_x: %d), (min_y: %d), (max_x: %d), (max_y: %d)",min_i, max_i, min_j, max_j );
@@ -346,19 +439,33 @@ LineLayer::updateCosts(
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "HEEEEEEEEEEEELP HEEEELP ME HEEEEEEEEEELP");
   #endif
 
-  // why even use the name thingys if auto works for all of them
   auto last = buffer_.read();
   if (!last ){
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "buffa empty... nothing to buf");
+    RCLCPP_DEBUG_THROTTLE(
+      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      "line_layer buffer empty; waiting for line points");
+    clear_layer();
     return;
   }
   auto last_msg = *last;
   if (!last_msg) {
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "last message is gone... in the wind");
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      "line_layer received an empty buffered message");
+    clear_layer();
     return;
   }
-  
-  std::vector<geometry_msgs::msg::Vector3> points = last_msg->points;
+
+  auto transformed_points = transformPointsToGlobalFrame(*last_msg);
+  if (!transformed_points) {
+    clear_layer();
+    return;
+  }
+
+  // Clear the previous line layer state only when we have a usable message.
+  resetMaps();
+
+  const std::vector<geometry_msgs::msg::Vector3> & points = *transformed_points;
 
   #ifdef DEBUG_2
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "line point len: %zu", points.size());
@@ -378,17 +485,18 @@ LineLayer::updateCosts(
     RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "x, y = (%f, %f)", x, y);
     #endif
 
-    unsigned int mx, my;
+    unsigned int mx = 0;
+    unsigned int my = 0;
     if (!master_grid.worldToMap(x, y, mx, my)) {
-      
-      #ifdef DEBUG_n
-        RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "grid coords: (%u,%u)", mx, my); 
-        //RCLCPP_WARN(rclcpp::get_logger("nav_costmap_2d"), "LISTEN UP Computing map coords failed"); 
-	#endif
+      // Point lies outside this costmap window.
+      continue;
     }
 
-
-    if (!within_bounds(static_cast<int>(mx), min_i, max_i) || !within_bounds(static_cast<int>(my), min_j, max_j)) {
+    // Update window is [min_i, max_i) x [min_j, max_j).
+    if (
+      static_cast<int>(mx) < min_i || static_cast<int>(mx) >= max_i ||
+      static_cast<int>(my) < min_j || static_cast<int>(my) >= max_j)
+    {
 
       #ifdef DEBUG_n
       //RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (%d, %d), (%d, %d)",min_i, max_i, min_j, max_j); 
@@ -396,23 +504,10 @@ LineLayer::updateCosts(
       #endif
       continue;
     }
-    int index_new = my * size_x_ + mx;
     unsigned char cost = LETHAL_OBSTACLE; // maybe more dynamic down the line
     
-    if (layered_costmap_->isRolling()){
-	    #ifdef DEBUG_n
-	      RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "points for map: (%u), (%u)", mx, my); 
-	      #endif
-	   
-    	int index_costmap = master_grid.getIndex(mx, my);
-    	master_array[index_costmap] = cost; // overwrites cost map
-	continue;
-    }
-    if (layered_costmap_->isRolling()){
-	    return;
-    }
-   
-    costmap_[index_new] = cost; // overwrites cost map
+    int index_new = static_cast<int>(my * size_x_ + mx);
+    costmap_[index_new] = cost; // overwrite this layer only
 
     #ifdef DEBUG_n
     RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "grid coords: (%u,%u)", mx, my); 
@@ -423,6 +518,7 @@ LineLayer::updateCosts(
   }
 
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+  current_ = true;
 
   if (publish_costmap_) {
    publishCostmap();
