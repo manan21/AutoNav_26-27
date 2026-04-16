@@ -89,7 +89,7 @@ public:
             std::bind(&DataPublisherNode::estop_callback, this, std::placeholders::_1));
         
         // Create data dump publisher
-        data_dump_pub_ = this->create_publisher<std_msgs::msg::String>("/data/dump", 10);
+        data_dump_pub_ = this->create_publisher<std_msgs::msg::String>("/data/dump", 100);
         
         // Subscribe to test-specific topics
         for (const auto& topic : topics) {

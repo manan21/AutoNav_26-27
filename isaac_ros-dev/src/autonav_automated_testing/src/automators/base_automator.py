@@ -48,7 +48,7 @@ class BaseAutomator(Node):
 
         # Common Subscribers
         self.data_sub = self.create_subscription(
-            String, '/data/dump', self.data_callback, 10)
+            String, '/data/dump', self.data_callback, 100)
         self.estop_sub = self.create_subscription(
             String, '/estop', self.estop_callback, 10)
         
