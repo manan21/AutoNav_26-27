@@ -8,3 +8,4 @@ __pycache__
 .claude/
 .codex
 *.png
+.DS_STORE
