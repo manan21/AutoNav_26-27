@@ -14,26 +14,76 @@
   </asset>
 
   <worldbody>
-    <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part1"/>
-    <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part2"/>
-    <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part3"/>
-    <geom pos="0.77904 -2.3725 0.54987" quat="0.707105 -0.707108 0 0" type="mesh" rgba="1 1 1 1" mesh="Lidar_Link"/>
-    <geom pos="0.78801 -2.3703 0.65142" quat="0.984807 0.17365 0 0" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="Camera_Link"/>
-    <geom pos="0.77883 -1.5005 1.0058" quat="0.707105 0.707108 0 0" type="mesh" rgba="1 1 1 1" mesh="GPS_Link"/>
-    <body name="Caster_link" pos="0.77814 -2.2897 0.30331" quat="-2.59734e-06 -2.59735e-06 0.707108 0.707105">
-      <inertial pos="-2.81665e-05 -0.00217036 -0.00864632" quat="0.989142 0.146966 9.62076e-07 -1.51992e-06" mass="1.38253" diaginertia="0.00244291 0.00153399 0.0014063"/>
-      <joint name="Caster" pos="0 0 0" axis="0 0 1"/>
-      <geom type="mesh" rgba="0.866667 0.909804 1 1" mesh="Caster_link"/>
-    </body>
-    <body name="Right_Wheel_Link" pos="0.37276 -1.7127 0.34419" quat="-7.14974e-07 -3.60295e-06 -0.980874 -0.194646">
-      <inertial pos="-0.0370066 -2.47008e-05 1.86946e-05" quat="0.638314 0.769776 8.29338e-07 -6.87704e-07" mass="2.05714" diaginertia="0.0144751 0.00793699 0.00793588"/>
-      <joint name="Right_Wheel" pos="0 0 0" axis="1 0 0"/>
-      <geom type="mesh" rgba="1 1 1 1" mesh="Right_Wheel_Link"/>
-    </body>
-    <body name="Left_Wheel_Link" pos="0.37276 -1.7127 0.34419" quat="0.644903 0.764264 0 0">
-      <inertial pos="0.775343 -2.47012e-05 1.86946e-05" quat="0.638307 0.769782 8.28749e-07 -6.87203e-07" mass="2.05714" diaginertia="0.0144751 0.00793699 0.00793588"/>
-      <joint name="Left_Wheel" pos="0 0 0" axis="1 0 0"/>
-      <geom type="mesh" rgba="1 1 1 1" mesh="Left_Wheel_Link"/>
+
+    <body name="base_link" pos="-0.77894 1.93808 -0.2255">
+      <freejoint name="base_freejoint"/>
+      <inertial pos="0.77894 -1.93808 0.55" mass="24.349"
+                diaginertia="0.36047 0.31998 0.18504"/>
+      <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part1"
+            contype="0" conaffinity="0"/>
+      <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part2"
+            contype="0" conaffinity="0"/>
+      <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part3"
+            contype="0" conaffinity="0"/>
+      <geom name="base_collision" type="box" pos="0.77894 -1.93808 0.45"
+            size="0.409 0.542 0.16" rgba="0.2 0.2 0.2 0"
+            friction="0.8 0.02 0.001"/>
+      <geom pos="0.77904 -2.3725 0.54987" quat="0.707105 -0.707108 0 0" type="mesh"
+            rgba="1 1 1 1" mesh="Lidar_Link" contype="0" conaffinity="0"/>
+      <geom pos="0.78801 -2.3703 0.65142" quat="0.984807 0.17365 0 0" type="mesh"
+            rgba="0.792157 0.819608 0.933333 1" mesh="Camera_Link" contype="0" conaffinity="0"/>
+      <geom pos="0.77883 -1.5005 1.0058" quat="0.707105 0.707108 0 0" type="mesh"
+            rgba="1 1 1 1" mesh="GPS_Link" contype="0" conaffinity="0"/>
+      <body name="Caster_link" pos="0.77814 -2.2897 0.30331">
+        <geom name="caster_mount" type="cylinder" pos="0 0 0.025" size="0.028 0.055"
+              rgba="0.55 0.58 0.66 1" contype="0" conaffinity="0"/>
+        <body name="Caster_Swivel" pos="0 0 0">
+          <inertial pos="0 -0.035 -0.004" mass="0.45" diaginertia="0.0009 0.0009 0.0005"/>
+          <joint name="Caster_Swivel" pos="0 0 0" axis="0 0 1" limited="false"
+                 damping="0.004" frictionloss="0.0005"/>
+          <geom name="caster_swivel_pin" type="cylinder" pos="0 0 0" size="0.018 0.025"
+                rgba="0.32 0.34 0.4 1" contype="0" conaffinity="0"/>
+          <geom name="caster_fork_left" type="box" pos="-0.042 -0.045 -0.003" size="0.008 0.018 0.075"
+                rgba="0.42 0.45 0.52 1" contype="0" conaffinity="0"/>
+          <geom name="caster_fork_right" type="box" pos="0.042 -0.045 -0.003" size="0.008 0.018 0.075"
+                rgba="0.42 0.45 0.52 1" contype="0" conaffinity="0"/>
+          <body name="Caster_Wheel" pos="0 -0.045 -0.003">
+            <inertial pos="0 0 0" mass="0.35" diaginertia="0.0007 0.0007 0.0004"/>
+            <joint name="Caster_Wheel_Roll" pos="0 0 0" axis="1 0 0" limited="false"
+                   damping="0.003" armature="0.001"/>
+            <geom name="caster_wheel" type="cylinder" quat="0.707107 0 0.707107 0"
+                  size="0.075 0.032" rgba="0.04 0.04 0.04 1"
+                  friction="1.0 0.02 0.002"/>
+          </body>
+        </body>
+      </body>
+      <body name="Right_Wheel_Link" pos="0.37276 -1.7127 0.34419" quat="-7.14974e-07 -3.60295e-06 -0.980874 -0.194646">
+        <inertial pos="-0.0370066 -2.47008e-05 1.86946e-05" quat="0.638314 0.769776 8.29338e-07 -6.87704e-07" mass="2.05714" diaginertia="0.0144751 0.00793699 0.00793588"/>
+        <joint name="Right_Wheel" pos="0 0 0" axis="1 0 0" limited="false" damping="0.02" armature="0.01"/>
+        <geom type="mesh" rgba="1 1 1 1" mesh="Right_Wheel_Link"
+              contype="0" conaffinity="0"/>
+        <geom name="right_wheel_collision" type="cylinder" pos="-0.04455 0 0"
+              quat="0.707107 0 0.707107 0" size="0.113 0.0445"
+              rgba="0.05 0.05 0.05 0" friction="1.6 0.05 0.005"/>
+      </body>
+      <body name="Left_Wheel_Link" pos="0.37276 -1.7127 0.34419" quat="0.644903 0.764264 0 0">
+        <inertial pos="0.775343 -2.47012e-05 1.86946e-05" quat="0.638307 0.769782 8.28749e-07 -6.87203e-07" mass="2.05714" diaginertia="0.0144751 0.00793699 0.00793588"/>
+        <joint name="Left_Wheel" pos="0 0 0" axis="1 0 0" limited="false" damping="0.02" armature="0.01"/>
+        <geom type="mesh" rgba="1 1 1 1" mesh="Left_Wheel_Link"
+              contype="0" conaffinity="0"/>
+        <geom name="left_wheel_collision" type="cylinder" pos="0.7678 0 0"
+              quat="0.707107 0 0.707107 0" size="0.113 0.0445"
+              rgba="0.05 0.05 0.05 0" friction="1.6 0.05 0.005"/>
+      </body>
     </body>
   </worldbody>
+
+  <actuator>
+    <velocity name="right_wheel_velocity" joint="Right_Wheel" kv="12"
+              ctrllimited="true" ctrlrange="-30 30"
+              forcelimited="true" forcerange="-80 80"/>
+    <velocity name="left_wheel_velocity" joint="Left_Wheel" kv="12"
+              ctrllimited="true" ctrlrange="-30 30"
+              forcelimited="true" forcerange="-80 80"/>
+  </actuator>
 </mujoco>
