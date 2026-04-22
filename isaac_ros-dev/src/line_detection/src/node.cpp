@@ -165,6 +165,7 @@ private:
 		const builtin_interfaces::msg::Time & stamp) const;
 
 	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
+	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
 	void publishLivePointCloud(
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
@@ -280,6 +281,21 @@ void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoin
 	_line_pub->publish(message);
 }
 
+void LineDetectorNode::publishPointCloudFromLineMessage(
+	const autonav_interfaces::msg::LinePoints & message)
+{
+	std::vector<std::array<float, 3>> point_cloud_points;
+	point_cloud_points.reserve(message.points.size());
+	for (const auto & point : message.points) {
+		point_cloud_points.push_back(
+			{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)});
+	}
+
+	sensor_msgs::msg::PointCloud2 pc =
+		createPointCloud(point_cloud_points, message.header.frame_id, message.header.stamp);
+	_line_point_cloud_pub->publish(pc);
+}
+
 void LineDetectorNode::publishLivePointCloud(
 	const std::vector<Eigen::Vector3d> & points,
 	const builtin_interfaces::msg::Time & stamp)
@@ -313,8 +329,6 @@ void LineDetectorNode::cacheAndPublishLinePoints(
 
 void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 {
-	publishEmptyPointCloud(this->now());
-
 	if (has_last_valid_message_ && !last_valid_message_.points.empty()) {
 		const rclcpp::Time now = this->now();
 
@@ -333,6 +347,7 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 					get_logger(), *get_clock(), 3000,
 					"Clearing held line obstacle set after %s because cached data is %.1f ms old",
 					reason, age.seconds() * 1000.0);
+				publishEmptyPointCloud(empty_message.header.stamp);
 				publishLinePoints(empty_message);
 				return;
 			}
@@ -344,6 +359,7 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 			get_logger(), *get_clock(), 3000,
 			"Reusing remembered line obstacle set after %s",
 			reason);
+		publishPointCloudFromLineMessage(held_message);
 		publishLinePoints(held_message);
 		return;
 	}
@@ -356,6 +372,7 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 	auto empty_message = autonav_interfaces::msg::LinePoints();
 	empty_message.header.frame_id = target_frame_;
 	empty_message.header.stamp = this->now();
+	publishEmptyPointCloud(empty_message.header.stamp);
 	publishLinePoints(empty_message);
 }
 
@@ -522,17 +539,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		"Processing: %d valid, %d invalid_depth, %d out_of_bounds -> %d transformed points",
 		valid_count, invalid_depth, out_of_bounds, tf_success);
 
-	// Publish live detections only; remembered obstacles are represented by /line_points.
-	try {
-		if (!depth_line_points.empty()) {
-			publishLivePointCloud(depth_line_points, depth_msg->header.stamp);
-		} else {
-			publishEmptyPointCloud(depth_msg->header.stamp);
-		}
-	} catch (const std::exception& e) {
-		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
-	}
-
 	return depth_line_points;
 }
 
@@ -693,6 +699,11 @@ void LineDetectorNode::line_callback()
 	}
 
 	// Cache and publish the latest detection set so brief misses do not flicker the line costmap.
+	try {
+		publishLivePointCloud(transformed_points, depth_msg->header.stamp);
+	} catch (const std::exception& e) {
+		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
+	}
 	cacheAndPublishLinePoints(transformed_points, depth_msg->header.stamp);
 	if (!transformed_points.empty()) {
 		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
