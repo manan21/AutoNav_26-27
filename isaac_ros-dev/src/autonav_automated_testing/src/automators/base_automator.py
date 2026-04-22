@@ -68,7 +68,7 @@ class BaseAutomator(Node):
             '/odom': 'pos_x,pos_y,orient_z',
             '/cmd_vel': 'linear_x,angular_z',
             '/zed/zed_node/imu/data': 'accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,orient_x,orient_y,orient_z',
-            '/scan': 'range_min,range_max,ranges_count',
+            '/scan_fullframe': 'range_min,range_max,ranges_count',
             '/line_detection/lines': 'lines_detected',
             '/motor_speed': 'speed_setting',
             '/electrical/voltage': 'voltage_V',
@@ -229,7 +229,7 @@ class BaseAutomator(Node):
                         topic_name, 
                         "accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,orient_x,orient_y,orient_z"
                     ] + data_values[0:9])
-            elif topic_name == "/scan":
+            elif topic_name == "/scan_fullframe":
                 # LiDAR data - summarize range data
                 if len(data_values) >= 3:
                     formatted_rows.append([

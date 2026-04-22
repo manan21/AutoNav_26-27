@@ -155,7 +155,7 @@ private:
                 });
             dynamic_subscribers_.push_back(sub);
         }
-        else if (topic == "/scan") {
+        else if (topic == "/scan_fullframe") {
             auto sub = this->create_subscription<sensor_msgs::msg::LaserScan>(
                 topic, rclcpp::SensorDataQoS(),
                 [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {

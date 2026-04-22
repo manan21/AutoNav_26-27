@@ -51,11 +51,11 @@ class T000Automator(BaseAutomator):
         self.gps_sub = self.create_subscription(NavSatFix, '/gps_fix', self.gps_callback, 10)
         self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
         self.create_subscription(
-            Image, '/zed2i/zed_node/rgb/image_rect_color',
+            Image, '/zed/zed_node/rgb/color/rect/image',
             self._cam_rec_cb, SENSOR_QOS,
         )
         self.create_subscription(
-            LaserScan, '/scan',
+            LaserScan, '/scan_fullframe',
             self._lidar_rec_cb, SENSOR_QOS,
         )
 

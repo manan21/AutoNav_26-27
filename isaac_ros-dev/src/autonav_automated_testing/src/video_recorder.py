@@ -5,7 +5,7 @@ bird's-eye-view as MP4 files alongside the DAQ CSV.
 
 Subscribes to:
     /data/toggle_collect  (std_msgs/Bool)  — start/stop, same signal as CSV
-    /zed2i/zed_node/rgb/image_rect_color  (sensor_msgs/Image) — camera
+    /zed/zed_node/rgb/color/rect/image  (sensor_msgs/Image) — camera
     /scan  (sensor_msgs/LaserScan) — LiDAR
 
 Outputs (per recording session):
@@ -64,13 +64,13 @@ class VideoRecorder(Node):
         # Subscriptions (always active so frames are cached)
         self.create_subscription(
             Image,
-            '/zed2i/zed_node/rgb/image_rect_color',
+            '/zed/zed_node/rgb/color/rect/image',
             self._camera_cb,
             SENSOR_QOS,
         )
         self.create_subscription(
             LaserScan,
-            '/scan',
+            '/scan_fullframe',
             self._scan_cb,
             SENSOR_QOS,
         )
