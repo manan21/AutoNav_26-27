@@ -5,8 +5,9 @@
 namespace
 {
 
-constexpr int kMinLineComponentPixels = 40;
-constexpr int kMinLineComponentSpanPx = 12;
+constexpr int kMinLineComponentPixels = 20;
+constexpr float kMinLineMajorAxisPx = 12.0F;
+constexpr float kMinLineAspectRatio = 4.0F;
 
 std::pair<int2 *, int *> filter_line_components(
     const int2 *points,
@@ -40,11 +41,33 @@ std::pair<int2 *, int *> filter_line_components(
     int kept_components = 0;
     for (int label = 1; label < num_labels; ++label) {
         const int area = stats.at<int>(label, cv::CC_STAT_AREA);
-        const int component_width = stats.at<int>(label, cv::CC_STAT_WIDTH);
-        const int component_height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
-        const int max_span = std::max(component_width, component_height);
+        if (area < kMinLineComponentPixels) {
+            continue;
+        }
 
-        if (area >= kMinLineComponentPixels && max_span >= kMinLineComponentSpanPx) {
+        std::vector<cv::Point2f> component_points;
+        component_points.reserve(area);
+        for (int row = 0; row < height; ++row) {
+            const int * label_row = labels.ptr<int>(row);
+            for (int col = 0; col < width; ++col) {
+                if (label_row[col] == label) {
+                    component_points.emplace_back(
+                        static_cast<float>(col),
+                        static_cast<float>(row));
+                }
+            }
+        }
+
+        if (component_points.size() < static_cast<size_t>(kMinLineComponentPixels)) {
+            continue;
+        }
+
+        const cv::RotatedRect rect = cv::minAreaRect(component_points);
+        const float major_axis = std::max(rect.size.width, rect.size.height);
+        const float minor_axis = std::max(1.0F, std::min(rect.size.width, rect.size.height));
+        const float aspect_ratio = major_axis / minor_axis;
+
+        if (major_axis >= kMinLineMajorAxisPx && aspect_ratio >= kMinLineAspectRatio) {
             keep_component[label] = 1;
             ++kept_components;
         }
