@@ -5,7 +5,7 @@
 #include "line_detection/cuda.cuh"
 
 // the window has to be odd
-#define HALF_WINDOW_SIZE 3 // this produces a window of n * 2 + 1 size
+#define HALF_WINDOW_SIZE 2 // fixed windows that are too large drop distant tape as it narrows in perspective
 #define WINDOW_SIZE  2 * HALF_WINDOW_SIZE + 1
 #define WINDOW_SIZE_SQ  (WINDOW_SIZE) * (WINDOW_SIZE)
 #define SIGMA_THRESHOLD  8
@@ -100,4 +100,3 @@ extern "C" void cerias_kernel(float * gray_img,
 }
 
                             
-
