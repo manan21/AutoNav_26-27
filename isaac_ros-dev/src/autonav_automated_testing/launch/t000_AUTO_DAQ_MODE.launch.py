@@ -20,6 +20,7 @@ This launch file ONLY starts nodes not already covered by DEMO_DAY:
   - electrical_publisher   (voltage/current/power from INA226)
   - data_publisher         (DAQ data collection to CSV)
   - t000_automator         (A button start/stop control)
+  - video_recorder         (camera + LiDAR BEV video recording)
 
 It does NOT start odom, ZED, control, or joy — those are already
 running from pre_slam.launch.py and run-zed.sh.
@@ -107,6 +108,26 @@ def generate_launch_description():
         name='t000_automater'
     )
 
+    # Video recorder — camera + LiDAR BEV alongside DAQ CSV
+    video_recorder_script_path = os.path.join(
+        autonav_testing_share,
+        'src',
+        'video_recorder.py'
+    )
+    video_recorder = ExecuteProcess(
+        cmd=[
+            'python3',
+            video_recorder_script_path,
+            '--ros-args',
+            '-p',
+            PythonExpression([
+                "'use_sim_time:=' + '", LaunchConfiguration('use_sim_time'), "'"
+            ])
+        ],
+        output='screen',
+        name='video_recorder'
+    )
+
     return LaunchDescription([
         use_sim_time,
         # Nodes not covered by DEMO_DAY
@@ -115,5 +136,7 @@ def generate_launch_description():
         # Data collection
         data_publisher_node,
         # Automator
-        test_automater
+        test_automater,
+        # Video recording
+        video_recorder
     ])

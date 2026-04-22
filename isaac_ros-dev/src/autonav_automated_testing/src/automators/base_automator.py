@@ -34,12 +34,13 @@ class BaseAutomator(Node):
         # Data storage
         self.collected_data = []
         
-        # Create log directory and file
-        self.log_dir = Path('/autonav/logs')
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+        # Create per-run log directory:  /autonav/logs/t000_20260422_143000/
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.log_file = self.log_dir / f'{self.test_id}_{timestamp}.csv'
+        self.run_stem = f'{self.test_id}_{timestamp}'
+        self.log_dir = Path('/autonav/logs') / self.run_stem
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        self.log_file = self.log_dir / f'{self.run_stem}.csv'
         
         self.get_logger().info(f'Test log file: {self.log_file}')
         
