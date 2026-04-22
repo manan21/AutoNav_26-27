@@ -2003,7 +2003,7 @@ class HudWindow(QMainWindow):
     # Default directory for playback CSVs (relative to this file)
     _CSV_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        '..', 'resource', 'example-playback-csv',
+        '..', 'python-gui-example', 'example-playback-csv',
     )
 
     # -----------------------------------------------------------------
