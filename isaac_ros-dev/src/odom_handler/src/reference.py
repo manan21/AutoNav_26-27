@@ -16,7 +16,7 @@ class Odom():
         self.right_displacement = 0.0
 
         self.distance_between_wheels = 0.6858
-        self.wheel_radius = 0.205
+        self.wheel_radius = 0.12946
         self.encoder_counts_per_revolution = 81923
 
         self.x = 0.0
