@@ -22,6 +22,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.qos import SensorDataQoS
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool
 
@@ -49,18 +50,22 @@ class VideoRecorder(Node):
 
         self._recording = False
 
+        # Online flags — log once when first message arrives
+        self._camera_online = False
+        self._lidar_online = False
+
         # Subscriptions (always active so frames are cached)
         self.create_subscription(
             Image,
             '/zed2i/zed_node/rgb/image_rect_color',
             self._camera_cb,
-            10,
+            SensorDataQoS(),
         )
         self.create_subscription(
             LaserScan,
             '/scan',
             self._scan_cb,
-            10,
+            SensorDataQoS(),
         )
         self.create_subscription(
             Bool,
@@ -74,12 +79,18 @@ class VideoRecorder(Node):
     # -- Subscription callbacks ------------------------------------------------
 
     def _camera_cb(self, msg: Image):
+        if not self._camera_online:
+            self._camera_online = True
+            self.get_logger().info('Camera record online')
         try:
             self._latest_bgr = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
         except Exception as e:
             self.get_logger().warn(f'cv_bridge error: {e}')
 
     def _scan_cb(self, msg: LaserScan):
+        if not self._lidar_online:
+            self._lidar_online = True
+            self.get_logger().info('LiDAR record online')
         self._latest_scan = msg
 
     def _toggle_cb(self, msg: Bool):

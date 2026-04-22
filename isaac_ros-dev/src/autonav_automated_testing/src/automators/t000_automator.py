@@ -14,7 +14,8 @@ import sys
 
 import rclpy
 from base_automator import BaseAutomator
-from sensor_msgs.msg import Joy, NavSatFix, Imu
+from rclpy.qos import SensorDataQoS
+from sensor_msgs.msg import Image, Joy, LaserScan, NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 
@@ -28,6 +29,8 @@ class T000Automator(BaseAutomator):
         self.joy_online = False
         self.gps_online = False
         self.imu_online = False
+        self._cam_rec_online = False
+        self._lidar_rec_online = False
         self.A_BUTTON_INDEX = 0
         self.last_joy_buttons = None
 
@@ -39,6 +42,14 @@ class T000Automator(BaseAutomator):
         self.joy_sub = self.create_subscription(Joy, 'joy', self.joy_callback, 10)
         self.gps_sub = self.create_subscription(NavSatFix, '/gps_fix', self.gps_callback, 10)
         self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
+        self.create_subscription(
+            Image, '/zed2i/zed_node/rgb/image_rect_color',
+            self._cam_rec_cb, SensorDataQoS(),
+        )
+        self.create_subscription(
+            LaserScan, '/scan',
+            self._lidar_rec_cb, SensorDataQoS(),
+        )
 
         # Status display timer — prints a visible status box every 5 seconds
         self.status_timer = self.create_timer(5.0, self.print_status)
@@ -64,12 +75,14 @@ class T000Automator(BaseAutomator):
             '######################################\n'
             '#  Odom : %-8s  GPS : %-8s #\n'
             '#  Joy  : %-8s  IMU : %-8s #\n'
+            '#  CamRec : %-6s  LidRec : %-6s #\n'
             '#  DAQ  : %-28s #\n'
             '#  A = Start/Stop  Ctrl-C = Save     #\n'
             '######################################'
             % (
                 self._tag(self.odom_online), self._tag(self.gps_online),
                 self._tag(self.joy_online), self._tag(self.imu_online),
+                self._tag(self._cam_rec_online), self._tag(self._lidar_rec_online),
                 self._daq_state()
             )
         )
@@ -89,6 +102,16 @@ class T000Automator(BaseAutomator):
         if not self.imu_online:
             self.imu_online = True
             self.get_logger().info('IMU online')
+
+    def _cam_rec_cb(self, msg):
+        if not self._cam_rec_online:
+            self._cam_rec_online = True
+            self.get_logger().info('Camera record online')
+
+    def _lidar_rec_cb(self, msg):
+        if not self._lidar_rec_online:
+            self._lidar_rec_online = True
+            self.get_logger().info('LiDAR record online')
 
     def joy_callback(self, msg: Joy):
         if not self.joy_online:
