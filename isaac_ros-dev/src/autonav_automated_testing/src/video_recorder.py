@@ -22,9 +22,16 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import SensorDataQoS
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool
+
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=5,
+)
 
 LOG_DIR = '/autonav/logs'
 FRAME_SIZE = 150
@@ -59,13 +66,13 @@ class VideoRecorder(Node):
             Image,
             '/zed2i/zed_node/rgb/image_rect_color',
             self._camera_cb,
-            SensorDataQoS(),
+            SENSOR_QOS,
         )
         self.create_subscription(
             LaserScan,
             '/scan',
             self._scan_cb,
-            SensorDataQoS(),
+            SENSOR_QOS,
         )
         self.create_subscription(
             Bool,

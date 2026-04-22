@@ -14,10 +14,18 @@ import sys
 
 import rclpy
 from base_automator import BaseAutomator
-from rclpy.qos import SensorDataQoS
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, Joy, LaserScan, NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
+
+
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=5,
+)
 
 
 class T000Automator(BaseAutomator):
@@ -44,11 +52,11 @@ class T000Automator(BaseAutomator):
         self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
         self.create_subscription(
             Image, '/zed2i/zed_node/rgb/image_rect_color',
-            self._cam_rec_cb, SensorDataQoS(),
+            self._cam_rec_cb, SENSOR_QOS,
         )
         self.create_subscription(
             LaserScan, '/scan',
-            self._lidar_rec_cb, SensorDataQoS(),
+            self._lidar_rec_cb, SENSOR_QOS,
         )
 
         # Status display timer — prints a visible status box every 5 seconds
