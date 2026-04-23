@@ -194,12 +194,13 @@ class VideoRecorder(Node):
                 continue
 
             # Hit point in pixel coords (x forward → up on canvas)
-            hx = int(cx + r * math.sin(-angle) * scale)
-            hy = int(cy - r * math.cos(angle) * scale)
+            # LiDAR is mounted upside-down, so negate angle to correct
+            hx = int(cx + r * math.sin(angle) * scale)
+            hy = int(cy + r * math.cos(angle) * scale)
 
             # Shadow line from hit outward to max range
-            sx = int(cx + max_range * math.sin(-angle) * scale)
-            sy = int(cy - max_range * math.cos(angle) * scale)
+            sx = int(cx + max_range * math.sin(angle) * scale)
+            sy = int(cy + max_range * math.cos(angle) * scale)
             cv2.line(canvas, (hx, hy), (sx, sy), (40, 40, 40), 1)
 
             # Green hit dot
