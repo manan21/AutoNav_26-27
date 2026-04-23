@@ -1,37 +1,31 @@
 #!/bin/bash
 set -e
 
-echo "run-rviz.sh: checking display/OpenGL environment"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAV_PATH="${AUTONAV_RVIZ_CONFIG:-${SCRIPT_DIR}/../src/sim/config/view_bot.rviz}"
 
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-${USER:-$(id -un)}}"
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
-
-if [[ "${DISPLAY:-}" =~ ^localhost: ]]; then
-    echo "WARNING: DISPLAY=${DISPLAY} looks like SSH X11 forwarding."
-    echo "RViz needs a working GLX/OpenGL context; prefer DISPLAY=:0 on the Jetson desktop."
+if [[ -f /opt/ros/humble/setup.bash ]]; then
+    source /opt/ros/humble/setup.bash
 fi
 
-if [[ "${AUTONAV_RVIZ_SOFTWARE:-0}" == "1" ]]; then
-    echo "AUTONAV_RVIZ_SOFTWARE=1 set; using Mesa software rendering."
-    export LIBGL_ALWAYS_SOFTWARE=1
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+
+if [[ -n "${RMW_IMPLEMENTATION:-}" ]]; then
+    export RMW_IMPLEMENTATION
 fi
 
-if command -v glxinfo >/dev/null 2>&1; then
-    GLX_OUTPUT="$(glxinfo -B 2>&1)" || {
-        echo "ERROR: OpenGL/GLX is not working for DISPLAY=${DISPLAY:-<unset>}."
-        echo "$GLX_OUTPUT"
-        echo "RViz cannot create its OGRE render window until the container display/GPU path is fixed."
-        if [[ "${DISPLAY:-}" =~ ^localhost: ]]; then
-            echo "SSH X11 forwarding is still failing GLX. Use the Jetson desktop display via xhost, VNC, NoMachine, or another remote desktop with OpenGL support."
-        elif [[ "${AUTONAV_RVIZ_SOFTWARE:-0}" != "1" ]]; then
-            echo "For diagnosis only, you can try:"
-            echo "  AUTONAV_RVIZ_SOFTWARE=1 $0"
-        fi
-        exit 1
-    }
+if ! command -v rviz2 >/dev/null 2>&1; then
+    echo "ERROR: rviz2 is not installed or not on PATH."
+    echo "Install ROS 2 Humble RViz on the laptop, then re-run this script."
+    exit 1
 fi
 
-NAV_PATH="$(dirname "${BASH_SOURCE[0]}")/../src/sim/config/view_bot.rviz"
+echo "run-rviz.sh: launching native RViz"
+echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
+echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY}"
+if [[ -n "${RMW_IMPLEMENTATION:-}" ]]; then
+    echo "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}"
+fi
 
 rviz2 -d "$NAV_PATH"

@@ -15,6 +15,7 @@ PLATFORM=$(uname -m)
 
 # USERNAME
 USERNAME="${USERNAME:-admin}"
+CONTAINER_GUI="${AUTONAV_CONTAINER_GUI:-0}"
 
 _detect_local_x_display() {
     local socket display
@@ -74,41 +75,55 @@ _discover_xauth_sources() {
 
 # DISPLAY FORWARDING
 #
-# SSH X11 forwarding is enough for simple X clients, but GLX hardware contexts
-# often fail there on Jetson, which makes rviz2/OGRE abort while creating its
-# render window. Prefer the Jetson's local display for hardware GL unless the
-# caller explicitly asks otherwise.
-if [[ -n "${AUTONAV_DISPLAY:-}" ]]; then
-    echo "Using AUTONAV_DISPLAY=${AUTONAV_DISPLAY}."
-    DISPLAY="${AUTONAV_DISPLAY}"
-elif [[ "${AUTONAV_KEEP_SSH_X11:-0}" != "1" && "${DISPLAY:-}" =~ ^localhost: && "${PLATFORM}" == "aarch64" ]]; then
-    ORIGINAL_DISPLAY="${DISPLAY}"
-    DISPLAY="$(_detect_local_x_display || printf ':0')"
-    echo "DISPLAY=${ORIGINAL_DISPLAY} looks like SSH X11 forwarding; using DISPLAY=${DISPLAY} for Jetson hardware GL."
-elif [[ -z "${DISPLAY:-}" && "${PLATFORM}" == "aarch64" ]]; then
-    DISPLAY="$(_detect_local_x_display || printf ':0')"
-    echo "DISPLAY is unset; using DISPLAY=${DISPLAY} for Jetson hardware GL."
-fi
+# Default to a headless container so the Jetson owns the ROS 2 stack while RViz
+# runs natively on the laptop over DDS. The old X11 path is still available by
+# setting AUTONAV_CONTAINER_GUI=1.
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    if [[ -n "${AUTONAV_DISPLAY:-}" ]]; then
+        echo "Using AUTONAV_DISPLAY=${AUTONAV_DISPLAY}."
+        DISPLAY="${AUTONAV_DISPLAY}"
+    elif [[ "${AUTONAV_KEEP_SSH_X11:-0}" != "1" && "${DISPLAY:-}" =~ ^localhost: && "${PLATFORM}" == "aarch64" ]]; then
+        ORIGINAL_DISPLAY="${DISPLAY}"
+        DISPLAY="$(_detect_local_x_display || printf ':0')"
+        echo "DISPLAY=${ORIGINAL_DISPLAY} looks like SSH X11 forwarding; using DISPLAY=${DISPLAY} for Jetson hardware GL."
+    elif [[ -z "${DISPLAY:-}" && "${PLATFORM}" == "aarch64" ]]; then
+        DISPLAY="$(_detect_local_x_display || printf ':0')"
+        echo "DISPLAY is unset; using DISPLAY=${DISPLAY} for Jetson hardware GL."
+    fi
 
-XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
-XDG_RUNTIME_DIR="/tmp/runtime-${USERNAME}"
-mkdir -p "${XDG_RUNTIME_DIR}"
-chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+    XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+    XDG_RUNTIME_DIR="/tmp/runtime-${USERNAME}"
+    mkdir -p "${XDG_RUNTIME_DIR}"
+    chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+else
+    echo "AUTONAV_CONTAINER_GUI=0; starting ${CONTAINER_NAME} headless."
+    echo "Run RViz locally on the laptop with the same DDS/ROS settings."
+fi
 
 DOCKER_ARGS=()
 
 # ENVIRONMENT VARIABLES
 # ENVIRONMENT VARIABLES
 DOCKER_ARGS+=("-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}")
+DOCKER_ARGS+=("-e" "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}")
 DOCKER_ARGS+=("-e" "USER=${USERNAME}")
 DOCKER_ARGS+=("-e" "USERNAME=${USERNAME}")
 DOCKER_ARGS+=("-e" "HOST_USER_UID=$(id -u)")
 DOCKER_ARGS+=("-e" "HOST_USER_GID=$(id -g)")
 DOCKER_ARGS+=("-e" "WORKDIR=${CONTAINER_WORKDIR}")
-DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY:-:0}")
-DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
-DOCKER_ARGS+=("-e" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
-DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
+
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+    if [[ -n "${!passthrough_var:-}" ]]; then
+        DOCKER_ARGS+=("-e" "${passthrough_var}=${!passthrough_var}")
+    fi
+done
+
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY:-:0}")
+    DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
+    DOCKER_ARGS+=("-e" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+    DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
+fi
 
 # BLUETOOTH AND DBUS
 DOCKER_ARGS+=("-v" "/run/dbus:/run/dbus")
@@ -116,10 +131,13 @@ DOCKER_ARGS+=("-v" "/dev/input:/dev/input")
 DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
-touch "${XAUTH_FILE}"
-chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    touch "${XAUTH_FILE}"
+    chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
+fi
 
 _refresh_x11_auth() {
+    [[ "${CONTAINER_GUI}" == "1" ]] || return 0
     [[ -n "${DISPLAY}" ]] || return 0
     local auth_source auth_entries auth_name tmp_auth
 
@@ -164,9 +182,11 @@ _refresh_x11_auth() {
 }
 _refresh_x11_auth
 
-DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
-DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix:rw")
-DOCKER_ARGS+=("-v" "${XDG_RUNTIME_DIR}:${XDG_RUNTIME_DIR}:rw")
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
+    DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+    DOCKER_ARGS+=("-v" "${XDG_RUNTIME_DIR}:${XDG_RUNTIME_DIR}:rw")
+fi
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -256,34 +276,55 @@ attach_shell() {
 
     local exec_args=(
         docker exec -i -t -u "${USERNAME}"
-        -e "DISPLAY=${DISPLAY:-:0}"
+        -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
+        -e "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}"
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
         -e "USERNAME=${USERNAME}"
-        -e "XAUTHORITY=${XAUTH_FILE}"
-        -e "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
-        -e "QT_X11_NO_MITSHM=1"
         --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
         "${CONTAINER_NAME}"
     )
 
+    for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+        if [[ -n "${!passthrough_var:-}" ]]; then
+            exec_args+=("-e" "${passthrough_var}=${!passthrough_var}")
+        fi
+    done
+
+    if [[ "${CONTAINER_GUI}" == "1" ]]; then
+        exec_args+=(
+            -e "DISPLAY=${DISPLAY:-:0}"
+            -e "XAUTHORITY=${XAUTH_FILE}"
+            -e "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+            -e "QT_X11_NO_MITSHM=1"
+        )
+    fi
+
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY:-:0}'; \
-             export XAUTHORITY='${XAUTH_FILE}'; \
-             export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
-             export QT_X11_NO_MITSHM=1; \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
              source /opt/ros/humble/setup.bash && \
              if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
                  source /autonav/isaac_ros-dev/install/setup.bash; \
+             fi; \
+             if [ '${CONTAINER_GUI}' = '1' ]; then \
+                 export DISPLAY='${DISPLAY:-:0}'; \
+                 export XAUTHORITY='${XAUTH_FILE}'; \
+                 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
+                 export QT_X11_NO_MITSHM=1; \
              fi && \
              exec /bin/bash -i"
     else
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY:-:0}'; \
-             export XAUTHORITY='${XAUTH_FILE}'; \
-             export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
-             export QT_X11_NO_MITSHM=1; \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
+             if [ '${CONTAINER_GUI}' = '1' ]; then \
+                 export DISPLAY='${DISPLAY:-:0}'; \
+                 export XAUTHORITY='${XAUTH_FILE}'; \
+                 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
+                 export QT_X11_NO_MITSHM=1; \
+             fi; \
              exec /bin/bash $*"
     fi
 }
