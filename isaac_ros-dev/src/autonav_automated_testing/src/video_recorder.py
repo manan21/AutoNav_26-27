@@ -35,7 +35,7 @@ SENSOR_QOS = QoSProfile(
 
 LOG_DIR = '/autonav/logs'
 FRAME_SIZE = 150
-VIDEO_FPS = 10
+VIDEO_FPS = 30
 
 
 class VideoRecorder(Node):
