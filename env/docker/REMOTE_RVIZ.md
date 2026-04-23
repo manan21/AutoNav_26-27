@@ -32,6 +32,11 @@ ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./isaac_ros-dev/config/run-rviz.sh
 If you are forcing a middleware implementation, use the same
 `RMW_IMPLEMENTATION` value on both machines.
 
+If you use non-default DDS discovery or interface config, export the same
+variables before launching RViz on the laptop as well. The RViz launcher now
+passes through `ROS_DISCOVERY_SERVER`, `FASTDDS_DEFAULT_PROFILES_FILE`, and
+`CYCLONEDDS_URI` in addition to `RMW_IMPLEMENTATION`.
+
 ## DDS Notes
 
 - Both machines must be on the same reachable network or VPN.
