@@ -15,17 +15,118 @@ PLATFORM=$(uname -m)
 
 # USERNAME
 USERNAME="${USERNAME:-admin}"
+CONTAINER_GUI="${AUTONAV_CONTAINER_GUI:-0}"
+RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${CONTAINER_WORKDIR}/env/docker/fastdds_udp.xml}"
+FASTDDS_DEFAULT_PROFILES_FILE="${FASTDDS_DEFAULT_PROFILES_FILE:-${FASTRTPS_DEFAULT_PROFILES_FILE}}"
+
+_detect_local_x_display() {
+    local socket display
+
+    for socket in /tmp/.X11-unix/X*; do
+        [[ -S "${socket}" ]] || continue
+        display=":${socket##*/X}"
+        printf '%s\n' "${display}"
+        return 0
+    done
+
+    return 1
+}
+
+_xauth_names_for_display() {
+    local display_number="${DISPLAY#localhost:}"
+    display_number="${display_number#:}"
+    display_number="${display_number%%.*}"
+
+    printf '%s\n' \
+        "${DISPLAY}" \
+        "$(hostname)/unix:${display_number}" \
+        "unix:${display_number}" \
+        "localhost:${display_number}"
+}
+
+_discover_xauth_sources() {
+    local pid env_file entry key value
+
+    printf '%s\n' \
+        "${XAUTHORITY:-}" \
+        "/run/user/$(id -u)/gdm/Xauthority" \
+        "$HOME/.Xauthority"
+
+    for env_file in /proc/[0-9]*/environ; do
+        [[ -r "${env_file}" ]] || continue
+        pid="${env_file#/proc/}"
+        pid="${pid%/environ}"
+
+        case "$(ps -p "${pid}" -o comm= 2>/dev/null || true)" in
+            Xorg|Xwayland|gnome-shell|gnome-session*|gdm-session-worker)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        while IFS= read -r -d '' entry; do
+            key="${entry%%=*}"
+            value="${entry#*=}"
+            if [[ "${key}" == "XAUTHORITY" && -n "${value}" ]]; then
+                printf '%s\n' "${value}"
+            fi
+        done < "${env_file}"
+    done
+}
+
+# DISPLAY FORWARDING
+#
+# Default to a headless container so the Jetson owns the ROS 2 stack while RViz
+# runs natively on the laptop over DDS. The old X11 path is still available by
+# setting AUTONAV_CONTAINER_GUI=1.
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    if [[ -n "${AUTONAV_DISPLAY:-}" ]]; then
+        echo "Using AUTONAV_DISPLAY=${AUTONAV_DISPLAY}."
+        DISPLAY="${AUTONAV_DISPLAY}"
+    elif [[ "${AUTONAV_KEEP_SSH_X11:-0}" != "1" && "${DISPLAY:-}" =~ ^localhost: && "${PLATFORM}" == "aarch64" ]]; then
+        ORIGINAL_DISPLAY="${DISPLAY}"
+        DISPLAY="$(_detect_local_x_display || printf ':0')"
+        echo "DISPLAY=${ORIGINAL_DISPLAY} looks like SSH X11 forwarding; using DISPLAY=${DISPLAY} for Jetson hardware GL."
+    elif [[ -z "${DISPLAY:-}" && "${PLATFORM}" == "aarch64" ]]; then
+        DISPLAY="$(_detect_local_x_display || printf ':0')"
+        echo "DISPLAY is unset; using DISPLAY=${DISPLAY} for Jetson hardware GL."
+    fi
+
+    XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
+    XDG_RUNTIME_DIR="/tmp/runtime-${USERNAME}"
+    mkdir -p "${XDG_RUNTIME_DIR}"
+    chmod 700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+else
+    echo "AUTONAV_CONTAINER_GUI=0; starting ${CONTAINER_NAME} headless."
+    echo "Run RViz locally on the laptop with the same DDS/ROS settings."
+fi
 
 DOCKER_ARGS=()
 
 # ENVIRONMENT VARIABLES
 # ENVIRONMENT VARIABLES
 DOCKER_ARGS+=("-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}")
+DOCKER_ARGS+=("-e" "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}")
 DOCKER_ARGS+=("-e" "USER=${USERNAME}")
 DOCKER_ARGS+=("-e" "USERNAME=${USERNAME}")
 DOCKER_ARGS+=("-e" "HOST_USER_UID=$(id -u)")
 DOCKER_ARGS+=("-e" "HOST_USER_GID=$(id -g)")
 DOCKER_ARGS+=("-e" "WORKDIR=${CONTAINER_WORKDIR}")
+
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+    if [[ -n "${!passthrough_var:-}" ]]; then
+        DOCKER_ARGS+=("-e" "${passthrough_var}=${!passthrough_var}")
+    fi
+done
+
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    DOCKER_ARGS+=("-e" "DISPLAY=${DISPLAY:-:0}")
+    DOCKER_ARGS+=("-e" "XAUTHORITY=${XAUTH_FILE}")
+    DOCKER_ARGS+=("-e" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
+    DOCKER_ARGS+=("-e" "QT_X11_NO_MITSHM=1")
+fi
 
 # BLUETOOTH AND DBUS
 DOCKER_ARGS+=("-v" "/run/dbus:/run/dbus")
@@ -33,25 +134,62 @@ DOCKER_ARGS+=("-v" "/dev/input:/dev/input")
 DOCKER_ARGS+=("-v" "/run/udev:/run/udev:ro")
 DOCKER_ARGS+=("--network=host")
 
-# DISPLAY FORWARDING
-XAUTH_FILE="/tmp/.docker-xauth-${CONTAINER_NAME}"
-touch "${XAUTH_FILE}"
-chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    touch "${XAUTH_FILE}"
+    chmod 666 "${XAUTH_FILE}" 2>/dev/null || true
+fi
 
 _refresh_x11_auth() {
+    [[ "${CONTAINER_GUI}" == "1" ]] || return 0
     [[ -n "${DISPLAY}" ]] || return 0
+    local auth_source auth_entries auth_name tmp_auth
 
-    xauth -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
-    xauth -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
-    xauth -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "${DISPLAY}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "$(hostname)/unix${DISPLAY#localhost}" >/dev/null 2>&1 || true
+    xauth -b -f "${XAUTH_FILE}" remove "localhost${DISPLAY#localhost}" >/dev/null 2>&1 || true
 
-    xauth nlist "${DISPLAY}" 2>/dev/null \
-        | sed 's/^..../ffff/' \
-        | xauth -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 || true
+    while IFS= read -r auth_source; do
+        [[ -n "${auth_source}" && -r "${auth_source}" ]] || continue
+        tmp_auth="/tmp/.docker-xauth-source-${CONTAINER_NAME}-$$"
+        cp "${auth_source}" "${tmp_auth}" 2>/dev/null || continue
+        chmod 600 "${tmp_auth}" 2>/dev/null || true
+
+        while IFS= read -r auth_name; do
+            auth_entries="$(xauth -b -f "${tmp_auth}" nlist "${auth_name}" 2>/dev/null || true)"
+            if [[ -n "${auth_entries}" ]]; then
+                printf '%s\n' "${auth_entries}" \
+                    | sed 's/^..../ffff/' \
+                    | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1 && {
+                        rm -f "${tmp_auth}"
+                        return 0
+                    }
+            fi
+        done < <(_xauth_names_for_display)
+
+        rm -f "${tmp_auth}"
+    done < <(_discover_xauth_sources | sort -u)
+
+    while IFS= read -r auth_name; do
+        auth_entries="$(xauth -b nlist "${auth_name}" 2>/dev/null || true)"
+        if [[ -n "${auth_entries}" ]] && printf '%s\n' "${auth_entries}" \
+            | sed 's/^..../ffff/' \
+            | xauth -b -f "${XAUTH_FILE}" nmerge - >/dev/null 2>&1; then
+            return 0
+        fi
+    done < <(_xauth_names_for_display)
+
+    echo "Warning: could not copy X11 authorization for DISPLAY=${DISPLAY} into ${XAUTH_FILE}."
+    echo "Local X sockets visible to this shell: $(find /tmp/.X11-unix -maxdepth 1 -type s -printf '%f ' 2>/dev/null || true)"
+    echo "Checked Xauthority sources: $(_discover_xauth_sources | sort -u | tr '\n' ' ')"
+    echo "If RViz reports 'Authorization required', run from the Jetson desktop session or set AUTONAV_DISPLAY."
 }
 _refresh_x11_auth
 
-DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
+if [[ "${CONTAINER_GUI}" == "1" ]]; then
+    DOCKER_ARGS+=("-v" "${XAUTH_FILE}:${XAUTH_FILE}:rw")
+    DOCKER_ARGS+=("-v" "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+    DOCKER_ARGS+=("-v" "${XDG_RUNTIME_DIR}:${XDG_RUNTIME_DIR}:rw")
+fi
 
 # SSH AGENT
 if [[ -n $SSH_AUTH_SOCK ]]; then
@@ -141,30 +279,58 @@ attach_shell() {
 
     local exec_args=(
         docker exec -i -t -u "${USERNAME}"
-        -e "DISPLAY=${DISPLAY}"
+        -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
+        -e "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}"
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
-        -e "XAUTHORITY=${XAUTH_FILE}"
-        -e "QT_X11_NO_MITSHM=1"
+        -e "USERNAME=${USERNAME}"
+    )
+
+    for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+        if [[ -n "${!passthrough_var:-}" ]]; then
+            exec_args+=("-e" "${passthrough_var}=${!passthrough_var}")
+        fi
+    done
+
+    if [[ "${CONTAINER_GUI}" == "1" ]]; then
+        exec_args+=(
+            -e "DISPLAY=${DISPLAY:-:0}"
+            -e "XAUTHORITY=${XAUTH_FILE}"
+            -e "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+            -e "QT_X11_NO_MITSHM=1"
+        )
+    fi
+
+    exec_args+=(
         --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
         "${CONTAINER_NAME}"
     )
 
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY}'; \
-             export XAUTHORITY='${XAUTH_FILE}'; \
-             export QT_X11_NO_MITSHM=1; \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
              source /opt/ros/humble/setup.bash && \
              if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
                  source /autonav/isaac_ros-dev/install/setup.bash; \
+             fi; \
+             if [ '${CONTAINER_GUI}' = '1' ]; then \
+                 export DISPLAY='${DISPLAY:-:0}'; \
+                 export XAUTHORITY='${XAUTH_FILE}'; \
+                 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
+                 export QT_X11_NO_MITSHM=1; \
              fi && \
              exec /bin/bash -i"
     else
         "${exec_args[@]}" /bin/bash -lc \
-            "export DISPLAY='${DISPLAY}'; \
-             export XAUTHORITY='${XAUTH_FILE}'; \
-             export QT_X11_NO_MITSHM=1; \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
+             if [ '${CONTAINER_GUI}' = '1' ]; then \
+                 export DISPLAY='${DISPLAY:-:0}'; \
+                 export XAUTHORITY='${XAUTH_FILE}'; \
+                 export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
+                 export QT_X11_NO_MITSHM=1; \
+             fi; \
              exec /bin/bash $*"
     fi
 }
