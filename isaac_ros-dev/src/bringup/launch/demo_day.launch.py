@@ -96,7 +96,9 @@ def generate_launch_description():
             "publish_interval_ms": 250,
             "max_rgb_depth_delta_ms": 120,
             "tf_lookup_timeout_ms": 100,
-            "line_hold_timeout_ms": 750,
+            "line_hold_timeout_ms": 2500,
+            "line_memory_resolution_m": 0.05,
+            "line_memory_max_points": 20000,
         }],
     )
 

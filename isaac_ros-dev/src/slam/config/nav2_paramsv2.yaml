@@ -170,7 +170,7 @@ local_costmap:
           obstacle_min_range: 0.0
         lines:
           topic: /lines_pointcloud
-          observation_persistence: 0.75
+          observation_persistence: 2.0
           clearing: False
           marking: True
           data_type: "PointCloud2"
@@ -228,7 +228,7 @@ global_costmap:
           obstacle_min_range: 0.0
         lines:
           topic: /lines_pointcloud
-          observation_persistence: 0.75
+          observation_persistence: 2.0
           clearing: False
           marking: True
           data_type: "PointCloud2"

@@ -17,8 +17,10 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <cmath>
 #include <mutex>
 #include <cstring>
+#include <unordered_map>
 
 class LineDetectorNode : public rclcpp::Node {
 
@@ -39,6 +41,8 @@ public:
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("line_hold_timeout_ms", 0);
+		this->declare_parameter("line_memory_resolution_m", 0.05);
+		this->declare_parameter("line_memory_max_points", 20000);
 		
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
@@ -50,6 +54,8 @@ public:
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
+		line_memory_resolution_m_ = std::max(0.01, this->get_parameter("line_memory_resolution_m").as_double());
+		line_memory_max_points_ = std::max<int64_t>(1, this->get_parameter("line_memory_max_points").as_int());
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -62,6 +68,8 @@ public:
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Line memory resolution: %.3f m", line_memory_resolution_m_);
+		RCLCPP_INFO(this->get_logger(), "Line memory max points: %ld", line_memory_max_points_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics
@@ -138,9 +146,32 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
+	double line_memory_resolution_m_ = 0.05;
+	int64_t line_memory_max_points_ = 20000;
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
+
+	struct LineMemoryKey {
+		int64_t x = 0;
+		int64_t y = 0;
+
+		bool operator==(const LineMemoryKey & other) const
+		{
+			return x == other.x && y == other.y;
+		}
+	};
+
+	struct LineMemoryKeyHash {
+		std::size_t operator()(const LineMemoryKey & key) const noexcept
+		{
+			const std::size_t h1 = std::hash<int64_t>{}(key.x);
+			const std::size_t h2 = std::hash<int64_t>{}(key.y);
+			return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+		}
+	};
+
+	std::unordered_map<LineMemoryKey, geometry_msgs::msg::Vector3, LineMemoryKeyHash> remembered_line_cells_;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -160,15 +191,14 @@ private:
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
 
-	autonav_interfaces::msg::LinePoints makeLinePointsMessage(
-		const std::vector<Eigen::Vector3d> & points,
+	LineMemoryKey lineMemoryKey(const Eigen::Vector3d & point) const;
+	void rememberLinePoints(const std::vector<Eigen::Vector3d> & points);
+	autonav_interfaces::msg::LinePoints makeRememberedLinePointsMessage(
 		const builtin_interfaces::msg::Time & stamp) const;
+	void clearRememberedLineMemory();
 
 	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
 	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
-	void publishLivePointCloud(
-		const std::vector<Eigen::Vector3d> & points,
-		const builtin_interfaces::msg::Time & stamp);
 	void publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp);
 	void cacheAndPublishLinePoints(
 		const std::vector<Eigen::Vector3d> & points,
@@ -258,22 +288,57 @@ bool LineDetectorNode::imagesAreSynchronized(
 	return true;
 }
 
-autonav_interfaces::msg::LinePoints LineDetectorNode::makeLinePointsMessage(
-	const std::vector<Eigen::Vector3d> & points,
+LineDetectorNode::LineMemoryKey LineDetectorNode::lineMemoryKey(
+	const Eigen::Vector3d & point) const
+{
+	return LineMemoryKey{
+		static_cast<int64_t>(std::llround(point.x() / line_memory_resolution_m_)),
+		static_cast<int64_t>(std::llround(point.y() / line_memory_resolution_m_))};
+}
+
+void LineDetectorNode::rememberLinePoints(const std::vector<Eigen::Vector3d> & points)
+{
+	for (const auto & point : points) {
+		const LineMemoryKey key = lineMemoryKey(point);
+		auto existing = remembered_line_cells_.find(key);
+		if (existing == remembered_line_cells_.end()) {
+			if (static_cast<int64_t>(remembered_line_cells_.size()) >= line_memory_max_points_) {
+				RCLCPP_WARN_THROTTLE(
+					get_logger(), *get_clock(), 3000,
+					"Line memory is full (%ld cells); dropping new line cells",
+					line_memory_max_points_);
+				continue;
+			}
+
+			geometry_msgs::msg::Vector3 stored;
+			stored.x = key.x * line_memory_resolution_m_;
+			stored.y = key.y * line_memory_resolution_m_;
+			stored.z = 0.0;
+			remembered_line_cells_.emplace(key, stored);
+		} else {
+			existing->second.x = key.x * line_memory_resolution_m_;
+			existing->second.y = key.y * line_memory_resolution_m_;
+			existing->second.z = 0.0;
+		}
+	}
+}
+
+autonav_interfaces::msg::LinePoints LineDetectorNode::makeRememberedLinePointsMessage(
 	const builtin_interfaces::msg::Time & stamp) const
 {
 	auto message = autonav_interfaces::msg::LinePoints();
 	message.header.frame_id = target_frame_;
 	message.header.stamp = stamp;
-	message.points.reserve(points.size());
-	for (const auto & point : points) {
-		geometry_msgs::msg::Vector3 vec_msg;
-		vec_msg.x = point.x();
-		vec_msg.y = point.y();
-		vec_msg.z = point.z();
-		message.points.emplace_back(vec_msg);
+	message.points.reserve(remembered_line_cells_.size());
+	for (const auto & cell : remembered_line_cells_) {
+		message.points.emplace_back(cell.second);
 	}
 	return message;
+}
+
+void LineDetectorNode::clearRememberedLineMemory()
+{
+	remembered_line_cells_.clear();
 }
 
 void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoints & message)
@@ -296,21 +361,6 @@ void LineDetectorNode::publishPointCloudFromLineMessage(
 	_line_point_cloud_pub->publish(pc);
 }
 
-void LineDetectorNode::publishLivePointCloud(
-	const std::vector<Eigen::Vector3d> & points,
-	const builtin_interfaces::msg::Time & stamp)
-{
-	std::vector<std::array<float, 3>> point_cloud_points;
-	point_cloud_points.reserve(points.size());
-	for (const auto & point : points) {
-		point_cloud_points.push_back(
-			{static_cast<float>(point.x()), static_cast<float>(point.y()), static_cast<float>(point.z())});
-	}
-
-	sensor_msgs::msg::PointCloud2 pc = createPointCloud(point_cloud_points, target_frame_, stamp);
-	_line_point_cloud_pub->publish(pc);
-}
-
 void LineDetectorNode::publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp)
 {
 	sensor_msgs::msg::PointCloud2 pc = createPointCloud({}, target_frame_, stamp);
@@ -321,9 +371,11 @@ void LineDetectorNode::cacheAndPublishLinePoints(
 	const std::vector<Eigen::Vector3d> & points,
 	const builtin_interfaces::msg::Time & stamp)
 {
-	last_valid_message_ = makeLinePointsMessage(points, stamp);
+	rememberLinePoints(points);
+	last_valid_message_ = makeRememberedLinePointsMessage(stamp);
 	last_valid_detection_time_ = this->now();
 	has_last_valid_message_ = !last_valid_message_.points.empty();
+	publishPointCloudFromLineMessage(last_valid_message_);
 	publishLinePoints(last_valid_message_);
 }
 
@@ -342,6 +394,7 @@ void LineDetectorNode::publishHeldOrEmpty(const char * reason)
 				empty_message.header.stamp = now;
 				has_last_valid_message_ = false;
 				last_valid_message_ = autonav_interfaces::msg::LinePoints();
+				clearRememberedLineMemory();
 				last_valid_detection_time_ = now;
 				RCLCPP_WARN_THROTTLE(
 					get_logger(), *get_clock(), 3000,
@@ -384,6 +437,7 @@ void LineDetectorNode::clearRememberedLines(
 
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
+	clearRememberedLineMemory();
 	last_valid_detection_time_ = this->now();
 
 	auto empty_message = autonav_interfaces::msg::LinePoints();
@@ -698,13 +752,8 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	// Cache and publish the latest detection set so brief misses do not flicker the line costmap.
-	try {
-		publishLivePointCloud(transformed_points, depth_msg->header.stamp);
-	} catch (const std::exception& e) {
-		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
-	}
-	cacheAndPublishLinePoints(transformed_points, depth_msg->header.stamp);
+	// Publish the accumulated line memory so frame-to-frame detector dropouts do not flicker Nav2.
+	cacheAndPublishLinePoints(transformed_points, this->now());
 	if (!transformed_points.empty()) {
 		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 			"Published %zu line points", transformed_points.size());
