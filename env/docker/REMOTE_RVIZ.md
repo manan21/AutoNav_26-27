@@ -5,7 +5,7 @@ to run natively on the laptop and join the same ROS graph over DDS.
 
 ## Jetson
 
-Start the container headless:
+Start the container headless. The launcher defaults to Fast DDS over UDP only:
 
 ```bash
 ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./env/docker/run-container.sh
@@ -23,7 +23,8 @@ Inside the container, launch the normal ROS 2 stack as usual.
 ## Laptop
 
 Install native ROS 2 Humble + `rviz2` on the laptop. Then run RViz with the
-same DDS settings used on the Jetson:
+same DDS settings used on the Jetson. The launcher uses the same default Fast
+DDS UDP profile as the container launcher:
 
 ```bash
 ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./isaac_ros-dev/config/run-rviz.sh
@@ -34,8 +35,9 @@ If you are forcing a middleware implementation, use the same
 
 If you use non-default DDS discovery or interface config, export the same
 variables before launching RViz on the laptop as well. The RViz launcher now
-passes through `ROS_DISCOVERY_SERVER`, `FASTDDS_DEFAULT_PROFILES_FILE`, and
-`CYCLONEDDS_URI` in addition to `RMW_IMPLEMENTATION`.
+passes through `ROS_DISCOVERY_SERVER`, `FASTRTPS_DEFAULT_PROFILES_FILE`,
+`FASTDDS_DEFAULT_PROFILES_FILE`, and `CYCLONEDDS_URI` in addition to
+`RMW_IMPLEMENTATION`.
 
 ## DDS Notes
 
@@ -43,9 +45,13 @@ passes through `ROS_DISCOVERY_SERVER`, `FASTDDS_DEFAULT_PROFILES_FILE`, and
 - `ROS_DOMAIN_ID` must match on the Jetson and the laptop.
 - `ROS_LOCALHOST_ONLY` must stay `0`, otherwise discovery will be limited to the
   local machine.
+- By default, both launchers set `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` and load
+  `env/docker/fastdds_udp.xml` through both `FASTRTPS_DEFAULT_PROFILES_FILE`
+  and `FASTDDS_DEFAULT_PROFILES_FILE`. This forces Fast DDS to use UDPv4 rather
+  than host-local shared memory transports.
 - If you use custom DDS discovery settings, export the same relevant variables
   before launching the container and RViz. The container launcher now forwards:
-  `RMW_IMPLEMENTATION`, `ROS_DISCOVERY_SERVER`,
+  `RMW_IMPLEMENTATION`, `ROS_DISCOVERY_SERVER`, `FASTRTPS_DEFAULT_PROFILES_FILE`,
   `FASTDDS_DEFAULT_PROFILES_FILE`, and `CYCLONEDDS_URI`.
 
 ## Applying The Change

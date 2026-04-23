@@ -16,6 +16,9 @@ PLATFORM=$(uname -m)
 # USERNAME
 USERNAME="${USERNAME:-admin}"
 CONTAINER_GUI="${AUTONAV_CONTAINER_GUI:-0}"
+RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${CONTAINER_WORKDIR}/env/docker/fastdds_udp.xml}"
+FASTDDS_DEFAULT_PROFILES_FILE="${FASTDDS_DEFAULT_PROFILES_FILE:-${FASTRTPS_DEFAULT_PROFILES_FILE}}"
 
 _detect_local_x_display() {
     local socket display
@@ -112,7 +115,7 @@ DOCKER_ARGS+=("-e" "HOST_USER_UID=$(id -u)")
 DOCKER_ARGS+=("-e" "HOST_USER_GID=$(id -g)")
 DOCKER_ARGS+=("-e" "WORKDIR=${CONTAINER_WORKDIR}")
 
-for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
     if [[ -n "${!passthrough_var:-}" ]]; then
         DOCKER_ARGS+=("-e" "${passthrough_var}=${!passthrough_var}")
     fi
@@ -285,7 +288,7 @@ attach_shell() {
         "${CONTAINER_NAME}"
     )
 
-    for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+    for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
         if [[ -n "${!passthrough_var:-}" ]]; then
             exec_args+=("-e" "${passthrough_var}=${!passthrough_var}")
         fi
