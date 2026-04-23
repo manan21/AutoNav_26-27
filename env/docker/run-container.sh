@@ -284,8 +284,6 @@ attach_shell() {
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
         -e "USERNAME=${USERNAME}"
-        --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
-        "${CONTAINER_NAME}"
     )
 
     for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
@@ -302,6 +300,11 @@ attach_shell() {
             -e "QT_X11_NO_MITSHM=1"
         )
     fi
+
+    exec_args+=(
+        --workdir "${CONTAINER_WORKDIR}/isaac_ros-dev"
+        "${CONTAINER_NAME}"
+    )
 
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
