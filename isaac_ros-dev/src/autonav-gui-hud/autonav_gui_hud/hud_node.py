@@ -1881,10 +1881,20 @@ class HudWindow(QMainWindow):
         self._refresh_terminal_display()
 
     def closeEvent(self, event):
-        """Terminate all subprocesses on window close."""
+        """Terminate all subprocesses and stop all modes on window close."""
+        # Stop live mode if active
+        if self._live_active:
+            self._stop_live_mode()
+
+        # Kill all running processes
         for label, proc in list(self._process_objects.items()):
             self._kill_process(proc, label)
         self._process_objects.clear()
+
+        # Disconnect container
+        if self._container_connected:
+            self._container_connected = False
+
         super().closeEvent(event)
 
     def _cur_btn(self):
@@ -3343,6 +3353,12 @@ if _HAS_ROS:
         history=HistoryPolicy.KEEP_LAST,
         depth=1,
     )
+    _RELIABLE_QOS = QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
 
     class HudNode(Node):
         """ROS2 node for the AutoNav HUD with live sensor subscriptions."""
@@ -3365,7 +3381,7 @@ if _HAS_ROS:
             self.create_subscription(
                 Image,
                 '/zed/zed_node/rgb/color/rect/image',
-                self._cb_image, _SENSOR_QOS,
+                self._cb_image, _RELIABLE_QOS,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
@@ -3394,18 +3410,27 @@ if _HAS_ROS:
                     )
                 else:
                     # Manual conversion without cv_bridge
+                    # Log encoding once for debugging
+                    if not hasattr(self, '_img_enc_logged'):
+                        self._img_enc_logged = True
+                        self.get_logger().info(
+                            f'Camera: {msg.width}x{msg.height} enc={msg.encoding} '
+                            f'step={msg.step} data_len={len(msg.data)}'
+                        )
+                    channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
                     img = np.frombuffer(msg.data, dtype=np.uint8)
-                    img = img.reshape((msg.height, msg.width, -1))
-                    if msg.encoding == 'bgr8':
-                        img = img[:, :, ::-1]  # BGR to RGB
+                    img = img.reshape((msg.height, msg.width, channels))
+                    if msg.encoding in ('bgr8', 'bgr16'):
+                        img = img[:, :, ::-1]
                     elif msg.encoding == 'bgra8':
-                        img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                        img = img[:, :, [2, 1, 0]]
                     elif msg.encoding == 'rgba8':
-                        img = img[:, :, :3]  # RGBA to RGB
-                    # rgb8 and mono8 pass through as-is
+                        img = img[:, :, :3]
                     self.latest_image_rgb = img
-            except Exception:
-                pass
+            except Exception as e:
+                if not hasattr(self, '_img_err_logged'):
+                    self._img_err_logged = True
+                    self.get_logger().warn(f'Camera decode error: {e}')
 
         def _cb_scan(self, msg):
             self.latest_scan = msg
