@@ -949,7 +949,7 @@ class HudWindow(QMainWindow):
             spine.set_visible(False)
         self._odom_ax.set_aspect('equal', adjustable='datalim')
         self._odom_ax.grid(True, which='both', color='#333', linewidth=0.5)
-        self._odom_scatter = None  # PathCollection, recreated each frame
+        self._odom_scatter = None  # Line2D trail, updated in-place
         # Inside axis label + distance readout
         self._odom_xy_label = self._odom_ax.text(
             0.02, 0.96, 'x / y (m)', transform=self._odom_ax.transAxes,
@@ -2474,6 +2474,7 @@ class HudWindow(QMainWindow):
         self._pb_timer.setInterval(50)
         self._pb_timer.timeout.connect(self._playback_tick)
         self._pb_timer.start()
+        self._pb_redraw_counter = 0
 
     def _pause_playback(self):
         self._gui_log_msg("Playback paused")
@@ -2583,9 +2584,13 @@ class HudWindow(QMainWindow):
             self._apply_row(rel_ns, topic, keys, vals)
             self._pb_row_idx += 1
 
-        if self._plots_dirty:
+        # Throttle plot redraws to every 5th tick (~4Hz) to reduce lag
+        # Video frames update every tick for smooth playback
+        self._pb_redraw_counter += 1
+        if self._plots_dirty and self._pb_redraw_counter >= 5:
             self._redraw_plots()
             self._plots_dirty = False
+            self._pb_redraw_counter = 0
 
         self._update_video_frames(elapsed_ns)
 
@@ -2749,19 +2754,19 @@ class HudWindow(QMainWindow):
             )
             self._gps_canvas.draw_idle()
 
-        # --- Odom XY with time-colored scatter + direction triangle ---
+        # --- Odom XY with trail line + direction triangle ---
         xs = self._odom_buf['x']
         ys = self._odom_buf['y']
         thetas = self._odom_buf['theta']
         if xs:
-            # Remove old scatter and recreate with color gradient
-            if self._odom_scatter is not None:
-                self._odom_scatter.remove()
-                self._odom_scatter = None
-            colors = np.linspace(0, 1, len(xs))
-            self._odom_scatter = self._odom_ax.scatter(
-                xs, ys, c=colors, cmap='coolwarm', s=4, zorder=3,
-            )
+            # Use a simple line instead of scatter (much faster)
+            if self._odom_scatter is None:
+                self._odom_scatter, = self._odom_ax.plot(
+                    xs, ys, 'w-', linewidth=1.5, zorder=3,
+                )
+            else:
+                self._odom_scatter.set_data(xs, ys)
+
             if self._odom_tri_patch:
                 self._odom_tri_patch.remove()
                 self._odom_tri_patch = None
@@ -2777,17 +2782,6 @@ class HudWindow(QMainWindow):
             cy_view = (min_y + max_y) / 2
             self._odom_ax.set_xlim(cx_view - half, cx_view + half)
             self._odom_ax.set_ylim(cy_view - half, cy_view + half)
-            # Adaptive grid: pick from 1,2,5,10,20,50,... so ~4-8 lines visible
-            import matplotlib.ticker as mticker
-            nice = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-            target = span / 5
-            grid_sp = nice[0]
-            for n in nice:
-                grid_sp = n
-                if n >= target:
-                    break
-            self._odom_ax.xaxis.set_major_locator(mticker.MultipleLocator(grid_sp))
-            self._odom_ax.yaxis.set_major_locator(mticker.MultipleLocator(grid_sp))
             # Distance traveled
             dist = 0.0
             for i in range(1, len(xs)):
