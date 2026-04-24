@@ -18,10 +18,8 @@ try:
     from nav_msgs.msg import Odometry
     from std_msgs.msg import Float32
     _HAS_ROS = True
-    print("[GUI] rclpy loaded OK")
-except ImportError as e:
+except ImportError:
     _HAS_ROS = False
-    print(f"[GUI] rclpy NOT available: {e}")
 
 try:
     from cv_bridge import CvBridge
@@ -3395,31 +3393,19 @@ if _HAS_ROS:
             )
 
         def _cb_image(self, msg):
-            if not hasattr(self, '_img_cb_count'):
-                self._img_cb_count = 0
-                print(f"[GUI] First camera frame: {msg.width}x{msg.height} enc={msg.encoding} cv_bridge={self._cv_bridge is not None}")
-            self._img_cb_count += 1
             try:
-                if self._cv_bridge is not None:
-                    self.latest_image_rgb = self._cv_bridge.imgmsg_to_cv2(
-                        msg, desired_encoding='rgb8',
-                    )
-                else:
-                    channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
-                    img = np.frombuffer(msg.data, dtype=np.uint8)
-                    img = img.reshape((msg.height, msg.width, channels))
-                    if msg.encoding in ('bgr8', 'bgr16'):
-                        img = img[:, :, ::-1]
-                    elif msg.encoding == 'bgra8':
-                        img = img[:, :, [2, 1, 0]]
-                    elif msg.encoding == 'rgba8':
-                        img = img[:, :, :3]
-                    self.latest_image_rgb = img
-                if self._img_cb_count == 1:
-                    print(f"[GUI] Camera frame decoded OK, shape={self.latest_image_rgb.shape}")
-            except Exception as e:
-                if self._img_cb_count <= 3:
-                    print(f"[GUI] Camera decode error: {e}")
+                channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
+                img = np.frombuffer(msg.data, dtype=np.uint8)
+                img = img.reshape((msg.height, msg.width, channels))
+                if msg.encoding == 'bgra8':
+                    img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                elif msg.encoding in ('bgr8', 'bgr16'):
+                    img = img[:, :, ::-1]  # BGR to RGB
+                elif msg.encoding == 'rgba8':
+                    img = img[:, :, :3]  # RGBA to RGB
+                self.latest_image_rgb = img
+            except Exception:
+                pass
 
         def _cb_scan(self, msg):
             self.latest_scan = msg
