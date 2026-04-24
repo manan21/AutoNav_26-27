@@ -1201,6 +1201,7 @@ class HudWindow(QMainWindow):
 
         self._selected_process = None
         self._gui_log = []  # GUI info log lines
+        self._term_last_text = ''  # cache to skip redundant updates
 
         # Process management state
         self._process_objects = {}   # label → subprocess.Popen
@@ -1209,7 +1210,7 @@ class HudWindow(QMainWindow):
 
         # 5 Hz timer to poll process output and refresh terminal
         self._process_poll_timer = QTimer()
-        self._process_poll_timer.setInterval(200)
+        self._process_poll_timer.setInterval(500)
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
@@ -1803,43 +1804,49 @@ class HudWindow(QMainWindow):
             self._selected_process = name
         self._refresh_terminal_display()
 
+    _MAX_TERMINAL_LINES = 200  # only show last N lines to avoid lag
+
     def _refresh_terminal_display(self):
         """Update the terminal QTextEdit with the selected process's output."""
         label = self._selected_process
         if label is None:
-            # Show GUI log when no process is selected
             self._term_header.setText("GUI Info Log")
-            if self._gui_log:
-                self._term_display.setPlainText("".join(self._gui_log))
-            else:
-                self._term_display.setPlainText("No events yet.")
-            sb = self._term_display.verticalScrollBar()
-            sb.setValue(sb.maximum())
-            return
-        self._term_header.setText(f"Process: {label}")
-        buf = self._process_buffers.get(label)
-        if buf is not None:
-            self._term_display.setPlainText("".join(buf))
+            lines = self._gui_log if self._gui_log else ["No events yet."]
         else:
-            self._term_display.setPlainText(f"Process '{label}' is not running.\n")
-        # Auto-scroll to bottom
+            self._term_header.setText(f"Process: {label}")
+            buf = self._process_buffers.get(label)
+            if buf is not None:
+                lines = buf
+            else:
+                lines = [f"Process '{label}' is not running.\n"]
+        # Only render the last N lines to keep the widget fast
+        tail = lines[-self._MAX_TERMINAL_LINES:]
+        text = "".join(tail)
+        # Skip update if text hasn't changed
+        if text == self._term_last_text:
+            return
+        self._term_last_text = text
+        self._term_display.setPlainText(text)
         sb = self._term_display.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    _MAX_BUF_LINES = 500  # cap per-process buffer to avoid memory growth
+
     def _poll_process_output(self):
-        """5 Hz: clean up exited process handles, refresh terminal if selected."""
+        """2 Hz: clean up exited process handles, trim buffers, refresh terminal."""
         for label in list(self._process_objects.keys()):
             proc = self._process_objects[label]
             if proc.poll() is not None:
-                # Process exited — clean up handle but keep dots green
                 buf = self._process_buffers.get(label)
                 if buf is not None:
                     buf.append(f"[Process exited with code {proc.returncode}]\n")
                 self._process_objects.pop(label, None)
                 self._process_readers.pop(label, None)
-        # Refresh terminal display if a process is selected
-        if self._selected_process is not None:
-            self._refresh_terminal_display()
+        # Trim buffers that have grown too large
+        for buf in self._process_buffers.values():
+            if len(buf) > self._MAX_BUF_LINES:
+                del buf[:-self._MAX_BUF_LINES]
+        self._refresh_terminal_display()
 
     def closeEvent(self, event):
         """Terminate all subprocesses on window close."""
