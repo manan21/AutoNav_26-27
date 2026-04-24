@@ -9,6 +9,9 @@ if [ -f /opt/ros/humble/setup.bash ]; then
     source /opt/ros/humble/setup.bash
 fi
 
+# Match the container's ROS domain
+export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+
 # ROS2 adds its own Qt5 libs to LD_LIBRARY_PATH which breaks
 # system PyQt5 and matplotlib. Strip them out so the system
 # Qt5 is used for rendering.
