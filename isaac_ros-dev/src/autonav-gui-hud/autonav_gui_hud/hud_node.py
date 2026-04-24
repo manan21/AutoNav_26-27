@@ -3347,18 +3347,10 @@ def _bresenham_line(img, x0, y0, x1, y1, color):
 if _HAS_ROS:
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
-    _SENSOR_QOS = QoSProfile(
-        reliability=ReliabilityPolicy.BEST_EFFORT,
-        durability=DurabilityPolicy.VOLATILE,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
-    _RELIABLE_QOS = QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
-        durability=DurabilityPolicy.VOLATILE,
-        history=HistoryPolicy.KEEP_LAST,
-        depth=1,
-    )
+    from rclpy.qos import qos_profile_sensor_data, qos_profile_system_default
+
+    _SENSOR_QOS = qos_profile_sensor_data
+    _RELIABLE_QOS = qos_profile_system_default
 
     class HudNode(Node):
         """ROS2 node for the AutoNav HUD with live sensor subscriptions."""
