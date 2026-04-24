@@ -200,6 +200,7 @@ class HudWindow(QMainWindow):
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
         self.resize(1920, 720)
+        self.showFullScreen()
 
         # Dark palette
         palette = QPalette()
@@ -1686,7 +1687,7 @@ class HudWindow(QMainWindow):
         exec_cmd = self._wrap_container_cmd(cmd)
         buf = []
         self._process_buffers[label] = buf
-        buf.append(f"$ {cmd}\n")
+        buf.append(f"$ {exec_cmd}\n")
         try:
             proc = subprocess.Popen(
                 exec_cmd, shell=True,
@@ -2188,15 +2189,20 @@ class HudWindow(QMainWindow):
         """Wrap a command to run inside the Docker container via docker exec."""
         if not self._container_connected:
             return cmd
+        # Escape single quotes in cmd for safe embedding
+        safe_cmd = cmd.replace("'", "'\\''")
         return (
-            f"docker exec -u {self._container_user} "
+            f"docker exec "
+            f"-u {self._container_user} "
+            f"-e HOME=/home/{self._container_user} "
+            f"-e USER={self._container_user} "
             f"--workdir {self._container_workdir} "
             f"{self._container_name} "
             f"/bin/bash -lc "
             f"'source /opt/ros/humble/setup.bash && "
             f"if [ -f {self._container_workdir}/install/setup.bash ]; then "
             f"source {self._container_workdir}/install/setup.bash; fi && "
-            f"{cmd}'"
+            f"{safe_cmd}'"
         )
 
     def _on_playback_clicked(self):
