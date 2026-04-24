@@ -175,7 +175,7 @@ class ControlNode : public rclcpp::Node {
             }
         }
         else {
-           motors.move(left_wheel_speed * 40, right_wheel_speed * 40);
+           motors.move(right_wheel_speed * 40, left_wheel_speed * 40);
 
         }
 
