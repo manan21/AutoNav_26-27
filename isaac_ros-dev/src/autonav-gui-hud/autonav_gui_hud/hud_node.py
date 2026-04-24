@@ -399,11 +399,17 @@ class HudWindow(QMainWindow):
         options_layout.addLayout(row_test)
         self._nav_buttons.append((self.btn_test, "Test Mode", button_style))
 
+        row_build, self.btn_build = _make_container_btn_row(
+            "Build Workspace", disabled_btn_style, self._on_build_clicked)
+        options_layout.addLayout(row_build)
+        self._nav_buttons.append((self.btn_build, "Build Workspace", button_style))
+
         # Map of container-gated buttons to their base labels
         self._container_buttons = {
             self.btn_launch: "Launch/End Processes",
             self.btn_live: "Live Mode",
             self.btn_test: "Test Mode",
+            self.btn_build: "Build Workspace",
         }
 
         # -- Container Independent Actions --
@@ -1418,6 +1424,43 @@ class HudWindow(QMainWindow):
         self._update_selection()
 
     # -- Test Mode sub-page ---------------------------------------------------
+
+    def _on_build_clicked(self):
+        """Run colcon build inside the container and source the workspace."""
+        if not self._container_connected:
+            return
+        self._gui_log_msg("Building workspace...")
+        build_cmd = "colcon build --symlink-install && source install/setup.bash"
+        label = "Build Workspace"
+        exec_cmd = self._wrap_container_cmd(build_cmd, label=label)
+        buf = []
+        self._process_buffers[label] = buf
+        buf.append(f"$ {build_cmd}\n")
+        try:
+            proc = subprocess.Popen(
+                exec_cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._process_objects[label] = proc
+
+            def _reader():
+                try:
+                    for line in proc.stdout:
+                        buf.append(line)
+                except Exception:
+                    pass
+                buf.append(f"[Build finished with code {proc.returncode}]\n")
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+            self._process_readers[label] = t
+        except Exception as e:
+            buf.append(f"[Failed to start build: {e}]\n")
+
+        # Show build output in terminal
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
 
     def _on_test_clicked(self):
         """Show the Test Mode page."""
