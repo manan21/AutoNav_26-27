@@ -3013,18 +3013,18 @@ class HudWindow(QMainWindow):
         self._pwr_i_canvas.draw_idle()
         self._pwr_p_canvas.draw_idle()
 
-        # Flash all sensor dots yellow/gray until data arrives
-        self._live_received = set()  # dot names that have received data
-        waiting = [n for n in self.status_dots if n != "TEST"]
+        # Flash only the live-relevant sensor dots
+        self._live_received = set()
+        self._live_sensors = {"Camera", "Lidar", "GPS", "Encoders", "Power PCB"}
+        waiting = [n for n in self._live_sensors if n in self.status_dots]
         self._gui_log_msg("Awaiting live data from: " + ", ".join(waiting))
         self._live_flash_state = True
         self._live_dot_flash_timer = QTimer()
         self._live_dot_flash_timer.setInterval(200)
         self._live_dot_flash_timer.timeout.connect(self._live_dot_flash_tick)
         self._live_dot_flash_timer.start()
-        # Set all dots to yellow initially (except TEST)
         for name, dot in self.status_dots.items():
-            if name != "TEST":
+            if name in self._live_sensors:
                 dot.setStyleSheet(self._DOT_YELLOW)
 
         # Start 10 Hz timer
@@ -3034,14 +3034,14 @@ class HudWindow(QMainWindow):
         self._live_timer.start()
 
     def _live_dot_flash_tick(self):
-        """Flash dots yellow/gray for sensors that haven't received data yet."""
+        """Flash dots yellow/gray for live sensors that haven't received data yet."""
         self._live_flash_state = not self._live_flash_state
         style = self._DOT_YELLOW if self._live_flash_state else self._DOT_OFF
-        for name, dot in self.status_dots.items():
-            if name == "TEST":
-                continue
+        for name in self._live_sensors:
             if name not in self._live_received:
-                dot.setStyleSheet(style)
+                dot = self.status_dots.get(name)
+                if dot:
+                    dot.setStyleSheet(style)
 
     def _live_set_dot_received(self, name):
         """Mark a sensor dot as having received data — stop flashing, go green."""
