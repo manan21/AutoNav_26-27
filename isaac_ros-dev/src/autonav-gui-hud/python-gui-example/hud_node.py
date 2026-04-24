@@ -2351,9 +2351,8 @@ class HudWindow(QMainWindow):
                 rgb = np.vstack([crop, bar])
             no_txt.set_visible(False)
             im_handle = getattr(self, attr)
-            vid_aspect = 'equal' if rotate else 'auto'
             if im_handle is None:
-                im_handle = ax.imshow(rgb, aspect=vid_aspect)
+                im_handle = ax.imshow(rgb, aspect='equal')
                 setattr(self, attr, im_handle)
             else:
                 im_handle.set_data(rgb)
@@ -3123,7 +3122,7 @@ class HudWindow(QMainWindow):
             node.latest_image_rgb = None
             self._cam_live_txt.set_visible(False)
             if self._cam_im is None:
-                self._cam_im = self._cam_ax.imshow(img_rgb, aspect='auto')
+                self._cam_im = self._cam_ax.imshow(img_rgb, aspect='equal')
             else:
                 self._cam_im.set_data(img_rgb)
             self._cam_canvas.draw_idle()
