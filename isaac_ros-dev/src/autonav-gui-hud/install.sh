@@ -11,11 +11,10 @@ apt-get install -y \
     python3-matplotlib \
     python3-numpy \
     python3-pil \
-    python3-opencv \
     python3-pip
 
-# numpy<2 pin (in case pip version overrides apt)
-pip3 install "numpy<2"
+# Use headless OpenCV to avoid Qt plugin conflicts with PyQt5
+pip3 install opencv-python-headless "numpy<2"
 
 echo ""
 echo "=== Install complete ==="
