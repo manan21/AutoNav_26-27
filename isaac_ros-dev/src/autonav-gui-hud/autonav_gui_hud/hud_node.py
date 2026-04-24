@@ -3387,13 +3387,25 @@ if _HAS_ROS:
             )
 
         def _cb_image(self, msg):
-            if self._cv_bridge is not None:
-                try:
+            try:
+                if self._cv_bridge is not None:
                     self.latest_image_rgb = self._cv_bridge.imgmsg_to_cv2(
                         msg, desired_encoding='rgb8',
                     )
-                except Exception:
-                    pass
+                else:
+                    # Manual conversion without cv_bridge
+                    img = np.frombuffer(msg.data, dtype=np.uint8)
+                    img = img.reshape((msg.height, msg.width, -1))
+                    if msg.encoding == 'bgr8':
+                        img = img[:, :, ::-1]  # BGR to RGB
+                    elif msg.encoding == 'bgra8':
+                        img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                    elif msg.encoding == 'rgba8':
+                        img = img[:, :, :3]  # RGBA to RGB
+                    # rgb8 and mono8 pass through as-is
+                    self.latest_image_rgb = img
+            except Exception:
+                pass
 
         def _cb_scan(self, msg):
             self.latest_scan = msg
