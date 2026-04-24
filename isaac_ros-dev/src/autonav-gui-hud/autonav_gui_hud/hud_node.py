@@ -1463,9 +1463,10 @@ class HudWindow(QMainWindow):
                 break
 
         # Launch subprocess (wrapped for container if connected)
-        exec_cmd = self._wrap_container_cmd(cmd)
+        test_label = f"test:{tid}"
+        exec_cmd = self._wrap_container_cmd(cmd, label=test_label)
         buf = []
-        self._process_buffers[f"test:{tid}"] = buf
+        self._process_buffers[test_label] = buf
         try:
             proc = subprocess.Popen(
                 exec_cmd, shell=True,
@@ -1494,11 +1495,7 @@ class HudWindow(QMainWindow):
         key = f"test:{tid}"
         proc = self._process_objects.pop(key, None)
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            self._kill_process(proc, key)
         buf = self._process_buffers.get(key)
         if buf is not None:
             buf.append("[Test stopped by user]\n")
@@ -1593,14 +1590,7 @@ class HudWindow(QMainWindow):
             # Terminate subprocess
             proc = self._process_objects.pop(label, None)
             if proc is not None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                self._kill_process(proc, label)
                 buf = self._process_buffers.get(label)
                 if buf is not None:
                     buf.append("[Process terminated by user]\n")
@@ -1684,7 +1674,7 @@ class HudWindow(QMainWindow):
                 break
 
         # Launch real subprocess (wrapped for container if connected)
-        exec_cmd = self._wrap_container_cmd(cmd)
+        exec_cmd = self._wrap_container_cmd(cmd, label=label)
         buf = []
         self._process_buffers[label] = buf
         buf.append(f"$ {exec_cmd}\n")
@@ -1853,14 +1843,7 @@ class HudWindow(QMainWindow):
     def closeEvent(self, event):
         """Terminate all subprocesses on window close."""
         for label, proc in list(self._process_objects.items()):
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            self._kill_process(proc, label)
         self._process_objects.clear()
         super().closeEvent(event)
 
@@ -2185,12 +2168,16 @@ class HudWindow(QMainWindow):
         if self._live_active:
             self._stop_live_mode()
 
-    def _wrap_container_cmd(self, cmd):
-        """Wrap a command to run inside the Docker container via docker exec."""
+    def _wrap_container_cmd(self, cmd, label=None):
+        """Wrap a command to run inside the Docker container via docker exec.
+        Writes the shell PID to /tmp/gui_pid_{label} so we can kill the
+        entire process tree later."""
         if not self._container_connected:
             return cmd
         # Escape single quotes in cmd for safe embedding
         safe_cmd = cmd.replace("'", "'\\''")
+        # Use a sanitized label for the PID file
+        pid_tag = (label or 'unknown').replace(' ', '_').replace('/', '_')
         return (
             f"docker exec "
             f"-u {self._container_user} "
@@ -2199,11 +2186,52 @@ class HudWindow(QMainWindow):
             f"--workdir {self._container_workdir} "
             f"{self._container_name} "
             f"/bin/bash -lc "
-            f"'source /opt/ros/humble/setup.bash && "
+            f"'echo $$ > /tmp/gui_pid_{pid_tag} && "
+            f"source /opt/ros/humble/setup.bash && "
             f"if [ -f {self._container_workdir}/install/setup.bash ]; then "
             f"source {self._container_workdir}/install/setup.bash; fi && "
-            f"{safe_cmd}'"
+            f"exec {safe_cmd}'"
         )
+
+    def _kill_process(self, proc, label):
+        """Kill a launched process. If connected to a container, read the
+        saved PID and kill the entire process tree inside the container."""
+        if self._container_connected:
+            pid_tag = label.replace(' ', '_').replace('/', '_')
+            try:
+                # Read the PID we saved at launch, then kill its process
+                # tree with SIGINT (graceful ROS shutdown)
+                kill_cmd = (
+                    f"docker exec -u root {self._container_name} "
+                    f"/bin/bash -c \""
+                    f"PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                    f"if [ -n \\\"$PID\\\" ]; then "
+                    f"  kill -INT -- -$PID 2>/dev/null; "
+                    f"  sleep 2; "
+                    f"  kill -9 -- -$PID 2>/dev/null; "
+                    f"  rm -f /tmp/gui_pid_{pid_tag}; "
+                    f"fi\""
+                )
+                subprocess.run(kill_cmd, shell=True, timeout=10,
+                               capture_output=True)
+            except Exception:
+                pass
+        # Also terminate the local wrapper process
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _launch_cmd_for(self, label):
+        """Return the raw command string for a device/test label."""
+        for dev_label, _keys, dev_cmd in self._launch_devices:
+            if dev_label == label:
+                return dev_cmd
+        return label
 
     def _on_playback_clicked(self):
         """Show the playback CSV selection page."""
