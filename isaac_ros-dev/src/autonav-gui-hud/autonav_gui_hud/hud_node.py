@@ -878,7 +878,7 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._cam_live_txt.set_visible(False)
-        self._cam_canvas.setMinimumSize(0, 0)
+        self._cam_canvas.setMinimumSize(50, 50)
         cam_layout.addWidget(self._cam_canvas, stretch=1)
 
         # Lidar — image canvas for video playback
@@ -899,7 +899,7 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._lidar_live_txt.set_visible(False)
-        self._lidar_canvas.setMinimumSize(0, 0)
+        self._lidar_canvas.setMinimumSize(50, 50)
         lidar_layout.addWidget(self._lidar_canvas, stretch=1)
 
         # GPS — map plot with satellite background (no axis clutter)
@@ -935,7 +935,7 @@ class HudWindow(QMainWindow):
         self._gps_map_img = None          # numpy RGB array
         self._gps_trail, = self._gps_ax.plot([], [], 'c-', linewidth=1, alpha=0.6)
         self._gps_dot, = self._gps_ax.plot([], [], 'ro', markersize=5, zorder=5)
-        self._gps_canvas.setMinimumSize(0, 0)
+        self._gps_canvas.setMinimumSize(50, 50)
         gps_layout.addWidget(self._gps_canvas, stretch=1)
 
         # Encoders — XY odometry plot with white trail + 1m grid
@@ -968,7 +968,7 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._odom_live_txt.set_visible(False)
-        self._odom_canvas.setMinimumSize(0, 0)
+        self._odom_canvas.setMinimumSize(50, 50)
         enc_layout.addWidget(self._odom_canvas, stretch=1)
 
         # Power PCB — vertical column with 3 mini oscilloscopes + SOC gauge
@@ -990,7 +990,7 @@ class HudWindow(QMainWindow):
             fontsize=7, color='#555', ha='center', va='center', family='monospace',
         )
         self._pwr_v_live_txt.set_visible(False)
-        self._pwr_v_canvas.setMinimumSize(0, 0)
+        self._pwr_v_canvas.setMinimumSize(50, 20)
 
         pwr_v_title_row = QHBoxLayout()
         pwr_v_title_lbl = QLabel("Voltage (V)")
@@ -1013,7 +1013,7 @@ class HudWindow(QMainWindow):
             fontsize=7, color='#555', ha='center', va='center', family='monospace',
         )
         self._pwr_i_live_txt.set_visible(False)
-        self._pwr_i_canvas.setMinimumSize(0, 0)
+        self._pwr_i_canvas.setMinimumSize(50, 20)
 
         pwr_i_title_row = QHBoxLayout()
         pwr_i_title_lbl = QLabel("Current (A)")
@@ -1036,7 +1036,7 @@ class HudWindow(QMainWindow):
             fontsize=7, color='#555', ha='center', va='center', family='monospace',
         )
         self._pwr_p_live_txt.set_visible(False)
-        self._pwr_p_canvas.setMinimumSize(0, 0)
+        self._pwr_p_canvas.setMinimumSize(50, 20)
 
         pwr_p_title_row = QHBoxLayout()
         pwr_p_title_lbl = QLabel("Power (W)")
