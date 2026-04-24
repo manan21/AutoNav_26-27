@@ -9,8 +9,8 @@ Subscribes to:
     /scan  (sensor_msgs/LaserScan) — LiDAR
 
 Outputs (per recording session):
-    {csv_stem}_camera.mp4       150x150 @ 10fps
-    {csv_stem}_lidar_bev.mp4    150x150 @ 10fps
+    {csv_stem}_camera.mp4       640x360 @ 30fps
+    {csv_stem}_lidar_bev.mp4    480x480 @ 30fps
 """
 
 import glob
@@ -34,7 +34,9 @@ SENSOR_QOS = QoSProfile(
 )
 
 LOG_DIR = '/autonav/logs'
-FRAME_SIZE = 150
+CAM_WIDTH = 640
+CAM_HEIGHT = 360
+LIDAR_SIZE = 480
 VIDEO_FPS = 30
 
 
@@ -120,9 +122,9 @@ class VideoRecorder(Node):
         stem = os.path.splitext(os.path.basename(csv_path))[0]
         return directory, stem
 
-    def _make_writer(self, path):
+    def _make_writer(self, path, size):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        return cv2.VideoWriter(path, fourcc, VIDEO_FPS, (FRAME_SIZE, FRAME_SIZE))
+        return cv2.VideoWriter(path, fourcc, VIDEO_FPS, size)
 
     def _start_recording(self):
         run_dir, stem = self._find_csv()
@@ -133,8 +135,8 @@ class VideoRecorder(Node):
         cam_path = os.path.join(run_dir, f'{stem}_camera.mp4')
         lidar_path = os.path.join(run_dir, f'{stem}_lidar_bev.mp4')
 
-        self._cam_writer = self._make_writer(cam_path)
-        self._lidar_writer = self._make_writer(lidar_path)
+        self._cam_writer = self._make_writer(cam_path, (CAM_WIDTH, CAM_HEIGHT))
+        self._lidar_writer = self._make_writer(lidar_path, (LIDAR_SIZE, LIDAR_SIZE))
         self._recording = True
 
         period = 1.0 / VIDEO_FPS
@@ -169,23 +171,31 @@ class VideoRecorder(Node):
             return
         img = self._latest_bgr
         h, w = img.shape[:2]
-        # Center-crop to square
-        side = min(h, w)
-        y0 = (h - side) // 2
-        x0 = (w - side) // 2
-        crop = img[y0:y0 + side, x0:x0 + side]
-        thumb = cv2.resize(crop, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_AREA)
+        # Center-crop to 16:9 aspect ratio
+        target_ratio = CAM_WIDTH / CAM_HEIGHT  # 16:9
+        src_ratio = w / h
+        if src_ratio > target_ratio:
+            # Source is wider — crop width
+            new_w = int(h * target_ratio)
+            x0 = (w - new_w) // 2
+            crop = img[:, x0:x0 + new_w]
+        else:
+            # Source is taller — crop height
+            new_h = int(w / target_ratio)
+            y0 = (h - new_h) // 2
+            crop = img[y0:y0 + new_h, :]
+        thumb = cv2.resize(crop, (CAM_WIDTH, CAM_HEIGHT), interpolation=cv2.INTER_AREA)
         self._cam_writer.write(thumb)
 
     def _write_lidar_frame(self):
         if self._latest_scan is None or self._lidar_writer is None:
             return
         scan = self._latest_scan
-        canvas = np.zeros((FRAME_SIZE, FRAME_SIZE, 3), dtype=np.uint8)
+        canvas = np.zeros((LIDAR_SIZE, LIDAR_SIZE, 3), dtype=np.uint8)
 
         max_range = scan.range_max if scan.range_max > 0 else 10.0
-        scale = (FRAME_SIZE // 2 - 5) / max_range
-        cx, cy = FRAME_SIZE // 2, FRAME_SIZE // 2
+        scale = (LIDAR_SIZE // 2 - 5) / max_range
+        cx, cy = LIDAR_SIZE // 2, LIDAR_SIZE // 2
 
         angle = scan.angle_min
         for r in scan.ranges:
