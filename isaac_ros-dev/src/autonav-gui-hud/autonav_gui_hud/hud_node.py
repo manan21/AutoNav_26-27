@@ -36,6 +36,9 @@ except ImportError:
 import numpy as np
 from PIL import Image as PILImage
 
+import warnings
+warnings.filterwarnings('ignore', message='.*fixed.*data aspect.*')
+
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -947,7 +950,7 @@ class HudWindow(QMainWindow):
                                    labelsize=6, colors='#666', direction='in')
         for spine in self._odom_ax.spines.values():
             spine.set_visible(False)
-        self._odom_ax.set_aspect('equal', adjustable='datalim')
+        self._odom_ax.set_aspect('equal', adjustable='box')
         self._odom_ax.grid(True, which='both', color='#333', linewidth=0.5)
         self._odom_scatter = None  # Line2D trail, updated in-place
         # Inside axis label + distance readout
@@ -1795,13 +1798,34 @@ class HudWindow(QMainWindow):
         self._gui_log.append(f"[{ts}] {msg}\n")
         self._refresh_terminal_display()
 
+    _STATUS_BTN_SELECTED = (
+        "QPushButton {"
+        "  background-color: #1a3a1a; color: #0f0;"
+        "  border: 1px solid #0f0; border-radius: 3px;"
+        "  padding: 1px 4px; font-size: 11px;"
+        "}"
+    )
+
     def _on_status_dot_clicked(self, name):
-        """Handle click on a status dot button — show process output in terminal."""
+        """Toggle device selection — show process output or return to info log."""
         dev_label = self._dot_to_device.get(name)
-        if dev_label is not None:
-            self._selected_process = dev_label
+        target = dev_label if dev_label is not None else name
+
+        if self._selected_process == target:
+            # Clicking the same device again — deselect, show info log
+            self._selected_process = None
         else:
-            self._selected_process = name
+            self._selected_process = target
+
+        # Update button styles — highlight selected, reset others
+        for btn, btn_name, base_style in self._status_nav_buttons:
+            mapped = self._dot_to_device.get(btn_name, btn_name)
+            if mapped == self._selected_process:
+                btn.setStyleSheet(self._STATUS_BTN_SELECTED)
+            else:
+                btn.setStyleSheet(base_style)
+
+        self._term_last_text = ''  # force refresh
         self._refresh_terminal_display()
 
     _MAX_TERMINAL_LINES = 200  # only show last N lines to avoid lag
@@ -2906,6 +2930,14 @@ class HudWindow(QMainWindow):
     def _start_live_mode(self):
         """Activate Live Mode: subscribe to ROS topics at 10 Hz."""
         self._gui_log_msg("Live Mode activated")
+        if self._ros_node is None:
+            self._gui_log_msg("WARNING: No ROS node — rclpy not available, live data disabled")
+        else:
+            self._gui_log_msg(f"ROS node: {self._ros_node.get_name()}")
+            subs = self._ros_node.subscriptions
+            self._gui_log_msg(f"Subscriptions: {len(subs)} topics")
+            for s in subs:
+                self._gui_log_msg(f"  -> {s.topic_name}")
         # Stop playback if running
         if self._pb_state != 'idle':
             self._stop_playback()
