@@ -3348,11 +3348,11 @@ if _HAS_ROS:
 
             self.create_subscription(
                 Image,
-                '/zed2i/zed_node/rgb/image_rect_color',
+                '/zed/zed_node/rgb/color/rect/image',
                 self._cb_image, _SENSOR_QOS,
             )
             self.create_subscription(
-                LaserScan, '/scan', self._cb_scan, _SENSOR_QOS,
+                LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
             )
             self.create_subscription(
                 NavSatFix, '/gps_fix', self._cb_gps, _SENSOR_QOS,
