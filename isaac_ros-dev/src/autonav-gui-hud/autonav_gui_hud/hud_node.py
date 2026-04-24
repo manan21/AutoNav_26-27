@@ -2980,12 +2980,6 @@ class HudWindow(QMainWindow):
         self._gui_log_msg("Live Mode activated")
         if self._ros_node is None:
             self._gui_log_msg("WARNING: No ROS node — rclpy not available, live data disabled")
-        else:
-            self._gui_log_msg(f"ROS node: {self._ros_node.get_name()}")
-            subs = list(self._ros_node.subscriptions)
-            self._gui_log_msg(f"Subscriptions: {len(subs)} topics")
-            for s in subs:
-                self._gui_log_msg(f"  -> {s.topic_name}")
         # Stop playback if running
         if self._pb_state != 'idle':
             self._stop_playback()
