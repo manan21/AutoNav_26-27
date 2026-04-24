@@ -3118,14 +3118,6 @@ class HudWindow(QMainWindow):
         if node is None:
             return  # Placeholders stay visible
 
-        # Debug: log callback counts every 3 seconds
-        if not hasattr(self, '_live_debug_counter'):
-            self._live_debug_counter = 0
-        self._live_debug_counter += 1
-        if self._live_debug_counter % 30 == 0:  # every 3s at 10Hz
-            counts = getattr(node, 'cb_counts', {})
-            self._gui_log_msg(f"[DEBUG] tick #{self._live_debug_counter}, ROS cb: {counts}")
-
         t_s = time.monotonic() - self._live_t0
         any_scalar_changed = False
 
@@ -3239,6 +3231,9 @@ class HudWindow(QMainWindow):
         if scan is not None:
             node.latest_scan = None
             bev = self._render_lidar_bev(scan)
+            # Rotate 90° CCW and flip along Y axis to match robot orientation
+            bev = np.rot90(bev, 1)
+            bev = np.fliplr(bev)
             self._lidar_live_txt.set_visible(False)
             if self._lidar_im is None:
                 self._lidar_im = self._lidar_ax.imshow(bev, aspect='equal')
@@ -3342,7 +3337,6 @@ if _HAS_ROS:
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
-            self.cb_counts = {}  # debug: count callbacks per topic
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
 
@@ -3380,15 +3374,12 @@ if _HAS_ROS:
                     pass
 
         def _cb_scan(self, msg):
-            self.cb_counts['scan'] = self.cb_counts.get('scan', 0) + 1
             self.latest_scan = msg
 
         def _cb_gps(self, msg):
-            self.cb_counts['gps'] = self.cb_counts.get('gps', 0) + 1
             self.latest_gps = (msg.latitude, msg.longitude)
 
         def _cb_odom(self, msg):
-            self.cb_counts['odom'] = self.cb_counts.get('odom', 0) + 1
             p = msg.pose.pose.position
             qz = msg.pose.pose.orientation.z
             self.latest_odom = (p.x, p.y, qz)
