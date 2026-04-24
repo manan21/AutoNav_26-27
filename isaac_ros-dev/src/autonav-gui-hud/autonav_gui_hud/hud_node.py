@@ -2195,24 +2195,36 @@ class HudWindow(QMainWindow):
 
     def _kill_process(self, proc, label):
         """Kill a launched process. If connected to a container, read the
-        saved PID and kill the entire process tree inside the container."""
+        saved PID and kill it plus all child processes."""
         if self._container_connected:
             pid_tag = label.replace(' ', '_').replace('/', '_')
             try:
-                # Read the PID we saved at launch, then kill its process
-                # tree with SIGINT (graceful ROS shutdown)
-                kill_cmd = (
+                # Step 1: SIGINT the parent (ros2 launch) — gives it a
+                # chance to shut nodes down gracefully
+                sigint_cmd = (
                     f"docker exec -u root {self._container_name} "
-                    f"/bin/bash -c \""
-                    f"PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                    f"if [ -n \\\"$PID\\\" ]; then "
-                    f"  kill -INT -- -$PID 2>/dev/null; "
-                    f"  sleep 2; "
-                    f"  kill -9 -- -$PID 2>/dev/null; "
-                    f"  rm -f /tmp/gui_pid_{pid_tag}; "
-                    f"fi\""
+                    f"/bin/bash -c "
+                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                    f"kill -INT $PID 2>/dev/null'"
                 )
-                subprocess.run(kill_cmd, shell=True, timeout=10,
+                subprocess.run(sigint_cmd, shell=True, timeout=5,
+                               capture_output=True)
+                # Wait for graceful shutdown
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+                # Step 2: Force kill parent + any remaining children
+                force_cmd = (
+                    f"docker exec -u root {self._container_name} "
+                    f"/bin/bash -c "
+                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                    f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
+                    f"kill -9 $PID $CHILDREN 2>/dev/null; "
+                    f"rm -f /tmp/gui_pid_{pid_tag}'"
+                )
+                subprocess.run(force_cmd, shell=True, timeout=5,
                                capture_output=True)
             except Exception:
                 pass
