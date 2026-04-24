@@ -18,8 +18,10 @@ try:
     from nav_msgs.msg import Odometry
     from std_msgs.msg import Float32
     _HAS_ROS = True
-except ImportError:
+    print("[GUI] rclpy loaded OK")
+except ImportError as e:
     _HAS_ROS = False
+    print(f"[GUI] rclpy NOT available: {e}")
 
 try:
     from cv_bridge import CvBridge
@@ -3116,16 +3118,13 @@ class HudWindow(QMainWindow):
         if node is None:
             return  # Placeholders stay visible
 
-        # Debug: log callback counts every 5 seconds
+        # Debug: log callback counts every 3 seconds
         if not hasattr(self, '_live_debug_counter'):
             self._live_debug_counter = 0
         self._live_debug_counter += 1
-        if self._live_debug_counter % 50 == 0:  # every 5s at 10Hz
+        if self._live_debug_counter % 30 == 0:  # every 3s at 10Hz
             counts = getattr(node, 'cb_counts', {})
-            if counts:
-                self._gui_log_msg(f"ROS callbacks: {counts}")
-            else:
-                self._gui_log_msg("ROS callbacks: none received yet")
+            self._gui_log_msg(f"[DEBUG] tick #{self._live_debug_counter}, ROS cb: {counts}")
 
         t_s = time.monotonic() - self._live_t0
         any_scalar_changed = False
