@@ -3373,7 +3373,7 @@ if _HAS_ROS:
             self.create_subscription(
                 Image,
                 '/zed/zed_node/rgb/color/rect/image',
-                self._cb_image, _RELIABLE_QOS,
+                self._cb_image, 10,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
