@@ -2008,14 +2008,30 @@ class HudWindow(QMainWindow):
                         .replace("color: #dcdcdc", "color: #0f0")
                     )
                 else:
+                    # Check if this is the selected device button
+                    is_selected_device = False
+                    if self._selected_process is not None:
+                        for _sb, sn, _ss in self._status_nav_buttons:
+                            if _sb is widget:
+                                mapped = self._dot_to_device.get(sn, sn)
+                                if mapped == self._selected_process:
+                                    is_selected_device = True
+                                break
+
                     if is_selected:
                         widget.setText(
                             f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                         )
-                        widget.setStyleSheet(self._make_sel_style(base_style))
+                        if is_selected_device:
+                            widget.setStyleSheet(self._make_sel_style(self._STATUS_BTN_SELECTED))
+                        else:
+                            widget.setStyleSheet(self._make_sel_style(base_style))
                     else:
                         widget.setText(base_label)
-                        widget.setStyleSheet(base_style)
+                        if is_selected_device:
+                            widget.setStyleSheet(self._STATUS_BTN_SELECTED)
+                        else:
+                            widget.setStyleSheet(base_style)
         # Position floating directional indicators around the selected widget
         self._position_indicators()
 
@@ -3100,6 +3116,17 @@ class HudWindow(QMainWindow):
         if node is None:
             return  # Placeholders stay visible
 
+        # Debug: log callback counts every 5 seconds
+        if not hasattr(self, '_live_debug_counter'):
+            self._live_debug_counter = 0
+        self._live_debug_counter += 1
+        if self._live_debug_counter % 50 == 0:  # every 5s at 10Hz
+            counts = getattr(node, 'cb_counts', {})
+            if counts:
+                self._gui_log_msg(f"ROS callbacks: {counts}")
+            else:
+                self._gui_log_msg("ROS callbacks: none received yet")
+
         t_s = time.monotonic() - self._live_t0
         any_scalar_changed = False
 
@@ -3316,6 +3343,7 @@ if _HAS_ROS:
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
+            self.cb_counts = {}  # debug: count callbacks per topic
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
 
@@ -3353,12 +3381,15 @@ if _HAS_ROS:
                     pass
 
         def _cb_scan(self, msg):
+            self.cb_counts['scan'] = self.cb_counts.get('scan', 0) + 1
             self.latest_scan = msg
 
         def _cb_gps(self, msg):
+            self.cb_counts['gps'] = self.cb_counts.get('gps', 0) + 1
             self.latest_gps = (msg.latitude, msg.longitude)
 
         def _cb_odom(self, msg):
+            self.cb_counts['odom'] = self.cb_counts.get('odom', 0) + 1
             p = msg.pose.pose.position
             qz = msg.pose.pose.orientation.z
             self.latest_odom = (p.x, p.y, qz)
