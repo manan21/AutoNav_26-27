@@ -201,6 +201,7 @@ class HudWindow(QMainWindow):
         self.setWindowTitle('AutoNav HUD')
         self.resize(1920, 720)
         self.showFullScreen()
+        self.setCursor(Qt.BlankCursor)
 
         # Dark palette
         palette = QPalette()
@@ -2068,15 +2069,8 @@ class HudWindow(QMainWindow):
     POWER_WINDOW_S = 3.0
 
     # Default directory for playback CSVs
-    # On the Jetson: /autonav/logs; fallback to example data next to this package
-    _CSV_DIR = (
-        '/autonav/logs'
-        if os.path.isdir('/autonav/logs')
-        else os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            '..', 'python-gui-example', 'example-playback-csv',
-        )
-    )
+    # Native Jetson: ~/AutoNav_25-26/logs (same as /autonav/logs inside container)
+    _CSV_DIR = os.path.join(os.path.expanduser('~'), 'AutoNav_25-26', 'logs')
 
     # -----------------------------------------------------------------
     # Playback engine
