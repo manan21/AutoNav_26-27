@@ -3266,6 +3266,15 @@ def _bresenham_line(img, x0, y0, x1, y1, color):
 
 
 if _HAS_ROS:
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+
+    _SENSOR_QOS = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+    )
+
     class HudNode(Node):
         """ROS2 node for the AutoNav HUD with live sensor subscriptions."""
 
@@ -3287,25 +3296,25 @@ if _HAS_ROS:
             self.create_subscription(
                 Image,
                 '/zed2i/zed_node/rgb/image_rect_color',
-                self._cb_image, 1,
+                self._cb_image, _SENSOR_QOS,
             )
             self.create_subscription(
-                LaserScan, '/scan', self._cb_scan, 1,
+                LaserScan, '/scan', self._cb_scan, _SENSOR_QOS,
             )
             self.create_subscription(
-                NavSatFix, '/gps_fix', self._cb_gps, 1,
+                NavSatFix, '/gps_fix', self._cb_gps, _SENSOR_QOS,
             )
             self.create_subscription(
-                Odometry, '/odom', self._cb_odom, 1,
+                Odometry, '/odom', self._cb_odom, _SENSOR_QOS,
             )
             self.create_subscription(
-                Float32, '/electrical/voltage', self._cb_voltage, 1,
+                Float32, '/electrical/voltage', self._cb_voltage, _SENSOR_QOS,
             )
             self.create_subscription(
-                Float32, '/electrical/current', self._cb_current, 1,
+                Float32, '/electrical/current', self._cb_current, _SENSOR_QOS,
             )
             self.create_subscription(
-                Float32, '/electrical/power', self._cb_power, 1,
+                Float32, '/electrical/power', self._cb_power, _SENSOR_QOS,
             )
 
         def _cb_image(self, msg):
