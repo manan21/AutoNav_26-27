@@ -3446,22 +3446,27 @@ def main(args=None):
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     node = None
+    spin_thread = None
     if _HAS_ROS:
         rclpy.init(args=args)
         node = HudNode()
+
+        # Spin in a background thread so DDS discovery and callbacks
+        # run continuously without depending on QTimer timing
+        from rclpy.executors import SingleThreadedExecutor
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+        spin_thread = threading.Thread(target=executor.spin, daemon=True)
+        spin_thread.start()
 
     app = QApplication(sys.argv)
     window = HudWindow(ros_node=node)
     window.show()
 
-    if node:
-        timer = QTimer()
-        timer.timeout.connect(lambda: rclpy.spin_once(node, timeout_sec=0.0))
-        timer.start(50)
-
     exit_code = app.exec_()
 
     if node:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
     sys.exit(exit_code)
