@@ -2952,7 +2952,7 @@ class HudWindow(QMainWindow):
             self._gui_log_msg("WARNING: No ROS node — rclpy not available, live data disabled")
         else:
             self._gui_log_msg(f"ROS node: {self._ros_node.get_name()}")
-            subs = self._ros_node.subscriptions
+            subs = list(self._ros_node.subscriptions)
             self._gui_log_msg(f"Subscriptions: {len(subs)} topics")
             for s in subs:
                 self._gui_log_msg(f"  -> {s.topic_name}")
