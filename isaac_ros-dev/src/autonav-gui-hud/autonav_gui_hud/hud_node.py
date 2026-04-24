@@ -1213,11 +1213,17 @@ class HudWindow(QMainWindow):
         self._process_buffers = {}   # label → list of str lines
         self._process_readers = {}   # label → threading.Thread
 
-        # 5 Hz timer to poll process output and refresh terminal
+        # 2 Hz timer to poll process output and refresh terminal
         self._process_poll_timer = QTimer()
         self._process_poll_timer.setInterval(500)
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
+
+        # Container health check — every 5 seconds
+        self._container_health_timer = QTimer()
+        self._container_health_timer.setInterval(5000)
+        self._container_health_timer.timeout.connect(self._check_container_health)
+        self._container_health_timer.start()
 
         top_layout.addWidget(viz_frame, stretch=2)
 
@@ -2210,6 +2216,22 @@ class HudWindow(QMainWindow):
         # Stop any active container modes
         if self._live_active:
             self._stop_live_mode()
+
+    def _check_container_health(self):
+        """Periodic check: if connected, verify the container is still running."""
+        if not self._container_connected:
+            return
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--quiet', '--filter', 'status=running',
+                 '--filter', f'name=^/{self._container_name}$'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if not result.stdout.strip():
+                self._gui_log_msg(f"Container '{self._container_name}' stopped — disconnecting")
+                self._disconnect_container()
+        except Exception:
+            pass
 
     def _wrap_container_cmd(self, cmd, label=None):
         """Wrap a command to run inside the Docker container via docker exec.
