@@ -160,7 +160,7 @@ from PyQt5.QtWidgets import (
 )
 
 
-def _make_dark_canvas(nrows=1, ncols=1, figsize=(2.4, 1.4)):
+def _make_dark_canvas(nrows=1, ncols=1, figsize=(3.6, 2.4)):
     """Create a small matplotlib figure + canvas with a dark theme."""
     fig = Figure(figsize=figsize, dpi=80, facecolor='#1e1e1e')
     fig.subplots_adjust(left=0.18, right=0.94, top=0.88, bottom=0.22)
@@ -199,7 +199,7 @@ class HudWindow(QMainWindow):
         super().__init__()
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
-        self.resize(1500, 560)
+        self.resize(1920, 720)
 
         # Dark palette
         palette = QPalette()
@@ -244,12 +244,18 @@ class HudWindow(QMainWindow):
         self._live_gps_maxlen = _LIVE_GPS_MAXLEN
         self._live_odom_maxlen = _LIVE_ODOM_MAXLEN
 
+        # Container connection state
+        self._container_connected = False
+        self._container_name = 'koopa-kingdom'
+        self._container_workdir = '/autonav/isaac_ros-dev'
+        self._container_user = 'admin'
+
         # Video playback state (camera + lidar mp4s)
         self._camera_cap = None   # cv2.VideoCapture
         self._lidar_cap = None    # cv2.VideoCapture
         self._cam_im = None       # matplotlib imshow handle
         self._lidar_im = None     # matplotlib imshow handle
-        self._video_fps = 10      # must match recorder's VIDEO_FPS
+        self._video_fps = 30      # must match recorder's VIDEO_FPS
 
         # --- Central widget + top-level 3-column layout ---
         central = QWidget()
@@ -325,12 +331,81 @@ class HudWindow(QMainWindow):
 
         self._nav_buttons = []  # (QPushButton, base_label, base_style)
 
-        btn_launch = QPushButton("Launch/End Processes")
-        btn_launch.setStyleSheet(button_style)
-        btn_launch.setFocusPolicy(Qt.NoFocus)
-        btn_launch.clicked.connect(self._show_launch_page)
-        options_layout.addWidget(btn_launch)
-        self._nav_buttons.append((btn_launch, "Launch/End Processes", button_style))
+        disabled_btn_style = (
+            "QPushButton {"
+            "  background-color: #1a1a1a; color: #555;"
+            "  border: 1px solid #333; border-radius: 4px;"
+            "  padding: 10px; font-size: 13px;"
+            "}"
+        )
+        self._disabled_btn_style = disabled_btn_style
+
+        connect_style = (
+            button_style.replace("#2a2a2a", "#1a2a3a")
+                        .replace("#3a3a3a", "#2a3a4a")
+                        .replace("#1a1a1a", "#0a1a2a")
+        )
+        self.btn_connect = QPushButton("Connect to Container")
+        self.btn_connect.setStyleSheet(connect_style)
+        self.btn_connect.setFocusPolicy(Qt.NoFocus)
+        self.btn_connect.clicked.connect(self._on_connect_container)
+        options_layout.addWidget(self.btn_connect)
+        self._nav_buttons.append((self.btn_connect, "Connect to Container", connect_style))
+        self._connect_style = connect_style
+
+        # -- Container Dependent Actions --
+        lbl_dep = QLabel("Container Dependent")
+        lbl_dep.setAlignment(Qt.AlignCenter)
+        lbl_dep.setStyleSheet(group_label_style)
+        options_layout.addWidget(lbl_dep)
+
+        self._container_dots = []
+
+        def _make_container_btn_row(label, style, click_handler):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            dot.setStyleSheet(
+                "background-color: #f44; border-radius: 5px; border: none;"
+            )
+            btn = QPushButton(label)
+            btn.setStyleSheet(style)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setEnabled(False)
+            btn.clicked.connect(click_handler)
+            row.addWidget(dot)
+            row.addWidget(btn, stretch=1)
+            self._container_dots.append(dot)
+            return row, btn
+
+        row_launch, self.btn_launch = _make_container_btn_row(
+            "Launch/End Processes", disabled_btn_style, self._show_launch_page)
+        options_layout.addLayout(row_launch)
+        self._nav_buttons.append((self.btn_launch, "Launch/End Processes", button_style))
+
+        row_live, self.btn_live = _make_container_btn_row(
+            "Live Mode", disabled_btn_style, self._on_live_clicked)
+        options_layout.addLayout(row_live)
+        self._nav_buttons.append((self.btn_live, "Live Mode", button_style))
+
+        row_test, self.btn_test = _make_container_btn_row(
+            "Test Mode", disabled_btn_style, self._on_test_clicked)
+        options_layout.addLayout(row_test)
+        self._nav_buttons.append((self.btn_test, "Test Mode", button_style))
+
+        # Map of container-gated buttons to their base labels
+        self._container_buttons = {
+            self.btn_launch: "Launch/End Processes",
+            self.btn_live: "Live Mode",
+            self.btn_test: "Test Mode",
+        }
+
+        # -- Container Independent Actions --
+        lbl_indep = QLabel("Container Independent")
+        lbl_indep.setAlignment(Qt.AlignCenter)
+        lbl_indep.setStyleSheet(group_label_style)
+        options_layout.addWidget(lbl_indep)
 
         self.btn_playback = QPushButton("Playback Mode")
         self.btn_playback.setStyleSheet(button_style)
@@ -338,20 +413,6 @@ class HudWindow(QMainWindow):
         self.btn_playback.clicked.connect(self._on_playback_clicked)
         options_layout.addWidget(self.btn_playback)
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
-
-        self.btn_live = QPushButton("Live Mode")
-        self.btn_live.setStyleSheet(button_style)
-        self.btn_live.setFocusPolicy(Qt.NoFocus)
-        self.btn_live.clicked.connect(self._on_live_clicked)
-        options_layout.addWidget(self.btn_live)
-        self._nav_buttons.append((self.btn_live, "Live Mode", button_style))
-
-        self.btn_test = QPushButton("Test Mode")
-        self.btn_test.setStyleSheet(button_style)
-        self.btn_test.setFocusPolicy(Qt.NoFocus)
-        self.btn_test.clicked.connect(self._on_test_clicked)
-        options_layout.addWidget(self.btn_test)
-        self._nav_buttons.append((self.btn_test, "Test Mode", button_style))
 
         options_layout.addStretch()
 
@@ -755,8 +816,9 @@ class HudWindow(QMainWindow):
                 self._dot_to_device[key] = dev_label
         self._dot_to_device["TEST"] = None
 
-        status_col.addStretch()
-        sensor_body.addLayout(status_col)
+        left_col = QVBoxLayout()
+        left_col.addLayout(status_col)
+        left_col.addStretch()
 
         # -- 2b: Sensor Display Grid --
         grid = QGridLayout()
@@ -907,13 +969,18 @@ class HudWindow(QMainWindow):
         self._odom_canvas.setMinimumSize(0, 0)
         enc_layout.addWidget(self._odom_canvas, stretch=1)
 
-        # Power PCB — 3 mini oscilloscopes + SOC gauge
+        # Power PCB — vertical column with 3 mini oscilloscopes + SOC gauge
         power_cell, power_layout = _plot_cell("Power PCB")
-        pwr_row = QHBoxLayout()
+
+        pwr_val_style = (
+            "border: none; color: #0f0; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        pwr_title_style = "border: none; font-weight: bold; color: #ccc; font-size: 9px;"
 
         # Voltage mini-graph — fixed Y: 20-30
         self._pwr_v_fig, self._pwr_v_ax, self._pwr_v_canvas = _make_mini_canvas()
-        _style_ax(self._pwr_v_ax, title='Voltage (V)')
+        _style_ax(self._pwr_v_ax)
         self._pwr_v_ax.set_ylim(20, 30)
         self._pwr_line_v, = self._pwr_v_ax.plot([], [], color='#4af', linewidth=1)
         self._pwr_v_live_txt = self._pwr_v_ax.text(
@@ -922,11 +989,21 @@ class HudWindow(QMainWindow):
         )
         self._pwr_v_live_txt.set_visible(False)
         self._pwr_v_canvas.setMinimumSize(0, 0)
-        pwr_row.addWidget(self._pwr_v_canvas, stretch=1)
+
+        pwr_v_title_row = QHBoxLayout()
+        pwr_v_title_lbl = QLabel("Voltage (V)")
+        pwr_v_title_lbl.setStyleSheet(pwr_title_style)
+        self._pwr_val_v = QLabel("V: --")
+        self._pwr_val_v.setAlignment(Qt.AlignRight)
+        self._pwr_val_v.setStyleSheet(pwr_val_style.replace("#0f0", "#4af"))
+        pwr_v_title_row.addWidget(pwr_v_title_lbl)
+        pwr_v_title_row.addWidget(self._pwr_val_v)
+        power_layout.addLayout(pwr_v_title_row)
+        power_layout.addWidget(self._pwr_v_canvas, stretch=1)
 
         # Current mini-graph — fixed Y: 0-6
         self._pwr_i_fig, self._pwr_i_ax, self._pwr_i_canvas = _make_mini_canvas()
-        _style_ax(self._pwr_i_ax, title='Current (A)')
+        _style_ax(self._pwr_i_ax)
         self._pwr_i_ax.set_ylim(0, 6)
         self._pwr_line_i, = self._pwr_i_ax.plot([], [], color='#f44', linewidth=1)
         self._pwr_i_live_txt = self._pwr_i_ax.text(
@@ -935,11 +1012,21 @@ class HudWindow(QMainWindow):
         )
         self._pwr_i_live_txt.set_visible(False)
         self._pwr_i_canvas.setMinimumSize(0, 0)
-        pwr_row.addWidget(self._pwr_i_canvas, stretch=1)
+
+        pwr_i_title_row = QHBoxLayout()
+        pwr_i_title_lbl = QLabel("Current (A)")
+        pwr_i_title_lbl.setStyleSheet(pwr_title_style)
+        self._pwr_val_i = QLabel("I: --")
+        self._pwr_val_i.setAlignment(Qt.AlignRight)
+        self._pwr_val_i.setStyleSheet(pwr_val_style.replace("#0f0", "#f44"))
+        pwr_i_title_row.addWidget(pwr_i_title_lbl)
+        pwr_i_title_row.addWidget(self._pwr_val_i)
+        power_layout.addLayout(pwr_i_title_row)
+        power_layout.addWidget(self._pwr_i_canvas, stretch=1)
 
         # Power mini-graph — fixed Y: 0-100
         self._pwr_p_fig, self._pwr_p_ax, self._pwr_p_canvas = _make_mini_canvas()
-        _style_ax(self._pwr_p_ax, title='Power (W)')
+        _style_ax(self._pwr_p_ax)
         self._pwr_p_ax.set_ylim(0, 100)
         self._pwr_line_p, = self._pwr_p_ax.plot([], [], color='#4f4', linewidth=1)
         self._pwr_p_live_txt = self._pwr_p_ax.text(
@@ -948,66 +1035,52 @@ class HudWindow(QMainWindow):
         )
         self._pwr_p_live_txt.set_visible(False)
         self._pwr_p_canvas.setMinimumSize(0, 0)
-        pwr_row.addWidget(self._pwr_p_canvas, stretch=1)
 
-        # SOC fuel gauge bar
-        soc_frame = QVBoxLayout()
+        pwr_p_title_row = QHBoxLayout()
+        pwr_p_title_lbl = QLabel("Power (W)")
+        pwr_p_title_lbl.setStyleSheet(pwr_title_style)
+        self._pwr_val_p = QLabel("P: --")
+        self._pwr_val_p.setAlignment(Qt.AlignRight)
+        self._pwr_val_p.setStyleSheet(pwr_val_style.replace("#0f0", "#4f4"))
+        pwr_p_title_row.addWidget(pwr_p_title_lbl)
+        pwr_p_title_row.addWidget(self._pwr_val_p)
+        power_layout.addLayout(pwr_p_title_row)
+        power_layout.addWidget(self._pwr_p_canvas, stretch=1)
+
+        # SOC fuel gauge bar — horizontal
+        soc_row = QHBoxLayout()
         soc_title = QLabel("SOC")
-        soc_title.setAlignment(Qt.AlignCenter)
         soc_title.setStyleSheet("border: none; font-weight: bold; color: #ccc; font-size: 9px;")
-        soc_frame.addWidget(soc_title)
+        soc_row.addWidget(soc_title)
         self._soc_bar = QFrame()
-        self._soc_bar.setFixedWidth(30)
+        self._soc_bar.setFixedHeight(18)
         self._soc_bar.setStyleSheet(
             "background-color: #252525; border: 1px solid #555; border-radius: 2px;"
         )
-        self._soc_bar_layout = QVBoxLayout(self._soc_bar)
+        self._soc_bar_layout = QHBoxLayout(self._soc_bar)
         self._soc_bar_layout.setContentsMargins(2, 2, 2, 2)
         self._soc_bar_layout.setSpacing(0)
-        self._soc_bar_layout.addStretch(1)  # spacer on top (1 = takes all space at 0%)
         self._soc_fill = QFrame()
         self._soc_fill.setStyleSheet("background-color: #4f4; border: none; border-radius: 1px;")
-        self._soc_bar_layout.addWidget(self._soc_fill, stretch=0)  # fill empty at 0%
-        soc_frame.addWidget(self._soc_bar, stretch=1)
+        self._soc_bar_layout.addWidget(self._soc_fill, stretch=0)  # fill at 0%
+        self._soc_bar_layout.addStretch(1)  # empty space on right
+        soc_row.addWidget(self._soc_bar, stretch=1)
         self._soc_label = QLabel("0%")
-        self._soc_label.setAlignment(Qt.AlignCenter)
         self._soc_label.setStyleSheet("border: none; color: #888; font-size: 9px; font-family: monospace;")
-        soc_frame.addWidget(self._soc_label)
-        pwr_row.addLayout(soc_frame)
+        soc_row.addWidget(self._soc_label)
+        power_layout.addLayout(soc_row)
 
-        power_layout.addLayout(pwr_row, stretch=1)
+        # Add Power PCB below the device status list
+        left_col.addWidget(power_cell, stretch=1)
+        sensor_body.addLayout(left_col)
 
-        # Real-time numeric readout under the plots
-        pwr_val_row = QHBoxLayout()
-        pwr_val_row.setSpacing(4)
-        pwr_val_style = (
-            "border: none; color: #0f0; font-size: 10px;"
-            " font-family: monospace;"
-        )
-        self._pwr_val_v = QLabel("V: --")
-        self._pwr_val_v.setAlignment(Qt.AlignCenter)
-        self._pwr_val_v.setStyleSheet(pwr_val_style.replace("#0f0", "#4af"))
-        pwr_val_row.addWidget(self._pwr_val_v, stretch=1)
-        self._pwr_val_i = QLabel("I: --")
-        self._pwr_val_i.setAlignment(Qt.AlignCenter)
-        self._pwr_val_i.setStyleSheet(pwr_val_style.replace("#0f0", "#f44"))
-        pwr_val_row.addWidget(self._pwr_val_i, stretch=1)
-        self._pwr_val_p = QLabel("P: --")
-        self._pwr_val_p.setAlignment(Qt.AlignCenter)
-        self._pwr_val_p.setStyleSheet(pwr_val_style.replace("#0f0", "#4f4"))
-        pwr_val_row.addWidget(self._pwr_val_p, stretch=1)
-        # spacer to align with SOC gauge column
-        pwr_val_row.addSpacing(34)
-        power_layout.addLayout(pwr_val_row)
-
+        # -- 2b continued: Sensor grid (Camera, Lidar, GPS, Encoders) --
         grid.addWidget(cam_cell, 0, 0)
         grid.addWidget(lidar_cell, 0, 1)
         grid.addWidget(gps_cell, 1, 0)
         grid.addWidget(enc_cell, 1, 1)
-        grid.addWidget(power_cell, 2, 0, 1, 2)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
-        grid.setRowStretch(2, 1)
 
         sensor_body.addLayout(grid, stretch=1)
 
@@ -1087,7 +1160,7 @@ class HudWindow(QMainWindow):
 
         sensor_outer.addLayout(slider_row)
 
-        top_layout.addWidget(sensor_frame, stretch=3)
+        top_layout.addWidget(sensor_frame, stretch=5)
 
         # =====================================================================
         # SECTION 3: PROCESS TERMINAL (right column)
@@ -1113,7 +1186,7 @@ class HudWindow(QMainWindow):
         self._term_display = QTextEdit()
         self._term_display.setReadOnly(True)
         self._term_display.setFocusPolicy(Qt.NoFocus)
-        self._term_display.setLineWrapMode(QTextEdit.NoWrap)
+        self._term_display.setLineWrapMode(QTextEdit.WidgetWidth)
         self._term_display.setStyleSheet(
             "QTextEdit {"
             "  background-color: #0a0a0a; color: #0f0;"
@@ -1138,7 +1211,7 @@ class HudWindow(QMainWindow):
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
-        top_layout.addWidget(viz_frame, stretch=3)
+        top_layout.addWidget(viz_frame, stretch=2)
 
         # -- Keyboard navigation --
         self._sel_idx = 0
@@ -1282,14 +1355,23 @@ class HudWindow(QMainWindow):
                 w.deleteLater()
 
         csv_dir = self._CSV_DIR
-        csv_files = []
+        csv_entries = []  # (display_name, csv_path)
         if os.path.isdir(csv_dir):
-            csv_files = sorted(
-                f for f in os.listdir(csv_dir) if f.lower().endswith('.csv')
-            )
+            # Flat CSVs in the top-level directory
+            csv_entries.extend(sorted(
+                (f, os.path.join(csv_dir, f))
+                for f in os.listdir(csv_dir) if f.lower().endswith('.csv')
+            ))
+            # Subdirectories containing CSVs — show one entry per folder
+            for entry in sorted(os.listdir(csv_dir)):
+                subdir = os.path.join(csv_dir, entry)
+                if os.path.isdir(subdir):
+                    # Find the first CSV in this folder
+                    csvs = sorted(f for f in os.listdir(subdir) if f.lower().endswith('.csv'))
+                    if csvs:
+                        csv_entries.append((f'Folder:  {entry}', os.path.join(subdir, csvs[0])))
 
-        for i, fname in enumerate(csv_files):
-            full_path = os.path.join(csv_dir, fname)
+        for i, (display_name, full_path) in enumerate(csv_entries):
             btn = QPushButton("Load")
             btn.setStyleSheet(button_style)
             btn.setFocusPolicy(Qt.NoFocus)
@@ -1299,7 +1381,7 @@ class HudWindow(QMainWindow):
             self._csv_grid.addWidget(btn, i, 0)
             self._playback_nav_buttons.append((btn, "Load", button_style))
 
-            lbl = QLabel(fname)
+            lbl = QLabel(display_name)
             lbl.setStyleSheet(csv_label_style)
             self._csv_grid.addWidget(lbl, i, 1)
 
@@ -1308,8 +1390,7 @@ class HudWindow(QMainWindow):
 
     def _load_and_play_csv(self, path):
         """Load a CSV and start playback, then return to main page."""
-        if self._pb_state != 'idle':
-            self._stop_playback()
+        self._stop_playback()
         self._load_csv(path)
         self._start_playback()
         self._show_main_page()
@@ -1380,12 +1461,13 @@ class HudWindow(QMainWindow):
                         break
                 break
 
-        # Launch subprocess
+        # Launch subprocess (wrapped for container if connected)
+        exec_cmd = self._wrap_container_cmd(cmd)
         buf = []
         self._process_buffers[f"test:{tid}"] = buf
         try:
             proc = subprocess.Popen(
-                cmd, shell=True,
+                exec_cmd, shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             self._process_objects[f"test:{tid}"] = proc
@@ -1600,13 +1682,14 @@ class HudWindow(QMainWindow):
                 cmd = dev_cmd
                 break
 
-        # Launch real subprocess
+        # Launch real subprocess (wrapped for container if connected)
+        exec_cmd = self._wrap_container_cmd(cmd)
         buf = []
         self._process_buffers[label] = buf
         buf.append(f"$ {cmd}\n")
         try:
             proc = subprocess.Popen(
-                cmd, shell=True,
+                exec_cmd, shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True,
             )
@@ -2003,12 +2086,114 @@ class HudWindow(QMainWindow):
     # Default directory for playback CSVs (relative to this file)
     _CSV_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        '..', 'resource', 'example-playback-csv',
+        'example-playback-csv',
     )
 
     # -----------------------------------------------------------------
     # Playback engine
     # -----------------------------------------------------------------
+    # -- Container connection ------------------------------------------------
+
+    def _on_connect_container(self):
+        """Toggle connection to the Docker container."""
+        if self._container_connected:
+            self._disconnect_container()
+        else:
+            self._connect_container()
+
+    def _connect_container(self):
+        """Check if the container is running and enable container features."""
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--quiet', '--filter', 'status=running',
+                 '--filter', f'name=^/{self._container_name}$'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if not result.stdout.strip():
+                self._gui_log_msg(
+                    f"Container '{self._container_name}' is not running. "
+                    "Start it with ./env/docker/run-container.sh"
+                )
+                return
+        except FileNotFoundError:
+            self._gui_log_msg("Docker not found on this system.")
+            return
+        except subprocess.TimeoutExpired:
+            self._gui_log_msg("Docker command timed out.")
+            return
+
+        self._container_connected = True
+        self._gui_log_msg(f"Connected to container '{self._container_name}'")
+
+        # Update button to show connected state
+        connected_style = (
+            self._connect_style
+            .replace("#1a2a3a", "#1a3a1a")
+            .replace("#2a3a4a", "#2a4a2a")
+            .replace("#0a1a2a", "#0a2a0a")
+        )
+        self.btn_connect.setText("Disconnect Container")
+        self.btn_connect.setStyleSheet(connected_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_connect:
+                self._nav_buttons[i] = (b, "Disconnect Container", connected_style)
+                break
+
+        # Enable container-dependent buttons
+        for btn_ref, base_label in self._container_buttons.items():
+            btn_ref.setEnabled(True)
+            for _b, _l, base_s in self._nav_buttons:
+                if _b is btn_ref:
+                    btn_ref.setStyleSheet(base_s)
+                    break
+        # Turn container dots green
+        for dot in self._container_dots:
+            dot.setStyleSheet(
+                "background-color: #4f4; border-radius: 5px; border: none;"
+            )
+
+    def _disconnect_container(self):
+        """Disconnect from the container and disable container features."""
+        self._container_connected = False
+        self._gui_log_msg(f"Disconnected from container '{self._container_name}'")
+
+        # Restore connect button
+        self.btn_connect.setText("Connect to Container")
+        self.btn_connect.setStyleSheet(self._connect_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_connect:
+                self._nav_buttons[i] = (b, "Connect to Container", self._connect_style)
+                break
+
+        # Disable container-dependent buttons and show warnings
+        for btn_ref, base_label in self._container_buttons.items():
+            btn_ref.setEnabled(False)
+            btn_ref.setStyleSheet(self._disabled_btn_style)
+        # Turn container dots red
+        for dot in self._container_dots:
+            dot.setStyleSheet(
+                "background-color: #f44; border-radius: 5px; border: none;"
+            )
+
+        # Stop any active container modes
+        if self._live_active:
+            self._stop_live_mode()
+
+    def _wrap_container_cmd(self, cmd):
+        """Wrap a command to run inside the Docker container via docker exec."""
+        if not self._container_connected:
+            return cmd
+        return (
+            f"docker exec -u {self._container_user} "
+            f"--workdir {self._container_workdir} "
+            f"{self._container_name} "
+            f"/bin/bash -lc "
+            f"'source /opt/ros/humble/setup.bash && "
+            f"if [ -f {self._container_workdir}/install/setup.bash ]; then "
+            f"source {self._container_workdir}/install/setup.bash; fi && "
+            f"{cmd}'"
+        )
+
     def _on_playback_clicked(self):
         """Show the playback CSV selection page."""
         if self._live_active:
@@ -2124,11 +2309,11 @@ class HudWindow(QMainWindow):
         elapsed_s = elapsed_ns / 1e9
         frame_idx = int(elapsed_s * self._video_fps)
 
-        for cap, ax, canvas, attr, no_txt in [
+        for cap, ax, canvas, attr, no_txt, rotate in [
             (self._camera_cap, self._cam_ax, self._cam_canvas, '_cam_im',
-             self._cam_no_video_txt),
+             self._cam_no_video_txt, False),
             (self._lidar_cap, self._lidar_ax, self._lidar_canvas, '_lidar_im',
-             self._lidar_no_video_txt),
+             self._lidar_no_video_txt, True),
         ]:
             if cap is None or not cap.isOpened():
                 continue
@@ -2137,10 +2322,38 @@ class HudWindow(QMainWindow):
             if not ret:
                 continue
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            if rotate:
+                rgb = np.rot90(rgb, 2)
+                rgb = np.fliplr(rgb)
+                # Crop to top 85 rows (scan semicircle + robot dot)
+                # and add a scale bar strip at the bottom
+                crop = rgb[:85, :]
+                bar_h = 15
+                bar = np.zeros((bar_h, crop.shape[1], 3), dtype=np.uint8)
+                # 70px = 10m from robot center; scale bar centered on robot
+                cx = crop.shape[1] // 2
+                bx0 = cx - 70  # 10m left
+                bx1 = cx + 70  # 10m right
+                bar[3, max(bx0, 0):min(bx1+1, crop.shape[1])] = 200
+                for tick_m, label in [(0, '0'), (5, '5'), (10, '10m')]:
+                    px = int(tick_m * 7)  # 7 px per meter
+                    for side in (-1, 1):
+                        tx = cx + side * px
+                        if 0 <= tx < crop.shape[1]:
+                            bar[1:6, tx] = 200
+                # Labels: 0 at center, 5 and 10m outward on right
+                cv2.putText(bar, '0m', (cx - 5, 13),
+                            cv2.FONT_HERSHEY_PLAIN, 0.6, (200, 200, 200), 1)
+                cv2.putText(bar, '5', (cx + 35 - 3, 13),
+                            cv2.FONT_HERSHEY_PLAIN, 0.6, (200, 200, 200), 1)
+                cv2.putText(bar, '10', (cx + 70 - 7, 13),
+                            cv2.FONT_HERSHEY_PLAIN, 0.6, (200, 200, 200), 1)
+                rgb = np.vstack([crop, bar])
             no_txt.set_visible(False)
             im_handle = getattr(self, attr)
+            vid_aspect = 'equal' if rotate else 'auto'
             if im_handle is None:
-                im_handle = ax.imshow(rgb, aspect='auto')
+                im_handle = ax.imshow(rgb, aspect=vid_aspect)
                 setattr(self, attr, im_handle)
             else:
                 im_handle.set_data(rgb)
@@ -2231,14 +2444,7 @@ class HudWindow(QMainWindow):
             self._pb_timer.stop()
             self._pb_timer = None
         self._release_video_captures()
-        self._cam_im = None
-        self._lidar_im = None
-        self._cam_no_video_txt.set_visible(False)
-        self._lidar_no_video_txt.set_visible(False)
-        self._gps_no_data_txt.set_visible(False)
-        self._cam_canvas.draw_idle()
-        self._lidar_canvas.draw_idle()
-        self._gps_canvas.draw_idle()
+        self._reset_all_plots()
         self._set_btn_label(self.btn_pp, "\u25B6")
         self.btn_pp.setEnabled(False)
         # Restore Playback Mode button to normal style
@@ -2247,6 +2453,71 @@ class HudWindow(QMainWindow):
             dot.setStyleSheet(
                 "background-color: #555; border-radius: 7px; border: none;"
             )
+
+    def _reset_all_plots(self):
+        """Reset all sensor plots back to their default empty state."""
+        # -- Camera --
+        if self._cam_im is not None:
+            self._cam_im.remove()
+            self._cam_im = None
+        self._cam_no_video_txt.set_visible(False)
+        self._cam_live_txt.set_visible(False)
+        self._cam_ax.set_facecolor('#111111')
+        self._cam_canvas.draw_idle()
+
+        # -- Lidar --
+        if self._lidar_im is not None:
+            self._lidar_im.remove()
+            self._lidar_im = None
+        self._lidar_no_video_txt.set_visible(False)
+        self._lidar_live_txt.set_visible(False)
+        self._lidar_ax.set_facecolor('#111111')
+        self._lidar_canvas.draw_idle()
+
+        # -- GPS --
+        self._gps_trail.set_data([], [])
+        self._gps_dot.set_data([], [])
+        self._gps_coord_label.set_text('')
+        if self._gps_map_im is not None:
+            self._gps_map_im.remove()
+            self._gps_map_im = None
+        self._gps_map_img = None
+        self._gps_map_extent = None
+        self._gps_no_data_txt.set_visible(False)
+        self._gps_live_txt.set_visible(False)
+        self._gps_ax.set_facecolor('#111111')
+        self._gps_canvas.draw_idle()
+
+        # -- Encoders (Odom) --
+        if self._odom_scatter is not None:
+            self._odom_scatter.remove()
+            self._odom_scatter = None
+        if self._odom_tri_patch is not None:
+            self._odom_tri_patch.remove()
+            self._odom_tri_patch = None
+        self._odom_dist_label.set_text('')
+        self._odom_live_txt.set_visible(False)
+        self._odom_ax.set_xlim(-5, 5)
+        self._odom_ax.set_ylim(-5, 5)
+        self._odom_canvas.draw_idle()
+
+        # -- Power PCB --
+        self._pwr_line_v.set_data([], [])
+        self._pwr_line_i.set_data([], [])
+        self._pwr_line_p.set_data([], [])
+        self._pwr_v_live_txt.set_visible(False)
+        self._pwr_i_live_txt.set_visible(False)
+        self._pwr_p_live_txt.set_visible(False)
+        self._pwr_val_v.setText("V: --")
+        self._pwr_val_i.setText("I: --")
+        self._pwr_val_p.setText("P: --")
+        self._pwr_v_canvas.draw_idle()
+        self._pwr_i_canvas.draw_idle()
+        self._pwr_p_canvas.draw_idle()
+        self._update_soc(0.0, force=True)
+
+        # -- Clear data buffers --
+        self._clear_buffers()
 
     def _playback_tick(self):
         elapsed_ns = (time.monotonic() - self._pb_wall_start) * 1e9 * self._pb_speed
@@ -2354,11 +2625,11 @@ class HudWindow(QMainWindow):
         if not force and hasattr(self, '_soc_display_pct') and abs(pct - self._soc_display_pct) <= 1:
             return
         self._soc_display_pct = pct
-        empty = max(100 - pct, 0)
         fill = max(pct, 0)
-        # Spacer (index 0) = empty portion, fill widget (index 1) = filled portion
-        self._soc_bar_layout.setStretch(0, empty)
-        self._soc_bar_layout.setStretch(1, fill)
+        empty = max(100 - pct, 0)
+        # Fill widget (index 0) = filled portion, spacer (index 1) = empty portion
+        self._soc_bar_layout.setStretch(0, fill)
+        self._soc_bar_layout.setStretch(1, empty)
         self._soc_label.setText(f"{pct}%")
         # Color: green > 50%, yellow 20-50%, red < 20%
         if fraction > 0.5:
@@ -2865,7 +3136,7 @@ class HudWindow(QMainWindow):
             bev = self._render_lidar_bev(scan)
             self._lidar_live_txt.set_visible(False)
             if self._lidar_im is None:
-                self._lidar_im = self._lidar_ax.imshow(bev, aspect='auto')
+                self._lidar_im = self._lidar_ax.imshow(bev, aspect='equal')
             else:
                 self._lidar_im.set_data(bev)
             self._lidar_canvas.draw_idle()
@@ -2876,7 +3147,7 @@ class HudWindow(QMainWindow):
             self._redraw_plots()
 
     @staticmethod
-    def _render_lidar_bev(scan, size=150):
+    def _render_lidar_bev(scan, size=480):
         """Render a LaserScan as a bird's-eye-view RGB image.
 
         Draws shadow lines (gray), hit dots (green), and robot origin (red)
