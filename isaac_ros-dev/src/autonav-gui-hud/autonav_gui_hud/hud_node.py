@@ -3395,20 +3395,16 @@ if _HAS_ROS:
             )
 
         def _cb_image(self, msg):
+            if not hasattr(self, '_img_cb_count'):
+                self._img_cb_count = 0
+                print(f"[GUI] First camera frame: {msg.width}x{msg.height} enc={msg.encoding} cv_bridge={self._cv_bridge is not None}")
+            self._img_cb_count += 1
             try:
                 if self._cv_bridge is not None:
                     self.latest_image_rgb = self._cv_bridge.imgmsg_to_cv2(
                         msg, desired_encoding='rgb8',
                     )
                 else:
-                    # Manual conversion without cv_bridge
-                    # Log encoding once for debugging
-                    if not hasattr(self, '_img_enc_logged'):
-                        self._img_enc_logged = True
-                        self.get_logger().info(
-                            f'Camera: {msg.width}x{msg.height} enc={msg.encoding} '
-                            f'step={msg.step} data_len={len(msg.data)}'
-                        )
                     channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
                     img = np.frombuffer(msg.data, dtype=np.uint8)
                     img = img.reshape((msg.height, msg.width, channels))
@@ -3419,10 +3415,11 @@ if _HAS_ROS:
                     elif msg.encoding == 'rgba8':
                         img = img[:, :, :3]
                     self.latest_image_rgb = img
+                if self._img_cb_count == 1:
+                    print(f"[GUI] Camera frame decoded OK, shape={self.latest_image_rgb.shape}")
             except Exception as e:
-                if not hasattr(self, '_img_err_logged'):
-                    self._img_err_logged = True
-                    self.get_logger().warn(f'Camera decode error: {e}')
+                if self._img_cb_count <= 3:
+                    print(f"[GUI] Camera decode error: {e}")
 
         def _cb_scan(self, msg):
             self.latest_scan = msg
