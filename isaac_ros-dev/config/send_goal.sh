@@ -21,37 +21,68 @@ Y=$2
 YAW_DEG=${3:-0}
 
 if $RELATIVE; then
-  # Get current pose from tf2
-  TF_OUTPUT=$(timeout 7 ros2 run tf2_ros tf2_echo map base_link 2>&1)
+  # Look up map->base_link directly via tf2_ros Python API.
+  # Retries until a valid transform is available or timeout elapses —
+  # avoids the "bad transform" text that tf2_echo prints during startup.
+  GLOBAL=$(python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
+import math, sys, time
+import rclpy
+from rclpy.node import Node
+from rclpy.duration import Duration
+from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
-  GLOBAL=$(python3 -c "
-import math, re, sys
+dx = float(sys.argv[1])
+dy = float(sys.argv[2])
+dyaw_deg = float(sys.argv[3])
 
-output = '''$TF_OUTPUT'''
+TARGET_FRAME = 'map'
+SOURCE_FRAME = 'base_link'
+TIMEOUT_SEC = 10.0
+POLL_HZ = 10.0
 
-t = re.search(r'Translation: \[([^,]+),\s*([^,]+),\s*([^\]]+)\]', output)
-q = re.search(r'Quaternion \[([^,]+),\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]', output)
+rclpy.init()
+node = Node('send_goal_tf_lookup')
+buf = Buffer()
+TransformListener(buf, node, spin_thread=False)
 
-if not t or not q:
-    print('ERROR: could not parse tf2_echo output', file=sys.stderr)
+deadline = time.monotonic() + TIMEOUT_SEC
+tf = None
+last_err = None
+while time.monotonic() < deadline:
+    rclpy.spin_once(node, timeout_sec=1.0 / POLL_HZ)
+    try:
+        tf = buf.lookup_transform(TARGET_FRAME, SOURCE_FRAME, rclpy.time.Time(),
+                                  timeout=Duration(seconds=0.0))
+        break
+    except (LookupException, ConnectivityException, ExtrapolationException) as e:
+        last_err = e
+        continue
+
+node.destroy_node()
+rclpy.shutdown()
+
+if tf is None:
+    print(f'ERROR: no {TARGET_FRAME}->{SOURCE_FRAME} transform within {TIMEOUT_SEC}s ({last_err})',
+          file=sys.stderr)
     sys.exit(1)
 
-rx, ry = float(t.group(1)), float(t.group(2))
-qz, qw = float(q.group(3)), float(q.group(4))
+rx = tf.transform.translation.x
+ry = tf.transform.translation.y
+qz = tf.transform.rotation.z
+qw = tf.transform.rotation.w
 ryaw = math.atan2(2.0 * qw * qz, 1.0 - 2.0 * qz * qz)
 
-dx, dy, dyaw_deg = $X, $Y, $YAW_DEG
 dyaw = math.radians(dyaw_deg)
-
 goal_x = rx + dx * math.cos(ryaw) - dy * math.sin(ryaw)
 goal_y = ry + dx * math.sin(ryaw) + dy * math.cos(ryaw)
 goal_yaw_deg = math.degrees(ryaw + dyaw)
 
 print(f'{goal_x} {goal_y} {goal_yaw_deg}')
-")
+PYEOF
+)
 
-  if [ $? -ne 0 ]; then
-    echo "Failed to get current pose. Is the robot localized?"
+  if [ $? -ne 0 ] || [ -z "$GLOBAL" ]; then
+    echo "Failed to get current pose. Is the robot localized and /tf publishing?"
     exit 1
   fi
 
