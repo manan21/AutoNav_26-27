@@ -3,8 +3,8 @@ install
 log
 logs
 .vscode
-logs
 __pycache__
 .claude/
+tile_cache/
 .codex
 *.png
