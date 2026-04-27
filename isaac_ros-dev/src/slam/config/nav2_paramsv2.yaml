@@ -127,8 +127,9 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.05
+      ObstacleFootprint.scale: 1.0
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
@@ -151,7 +152,8 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.41
+      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
+      footprint_padding: 0.0
       plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -180,7 +182,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.20
+        inflation_radius: 0.5 # Controller can use footprint so inflation radius is now margin of safety from obstacle edge to footprint edge
 
       always_send_full_costmap: True
 
@@ -192,7 +194,8 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: False
-      robot_radius: 0.41
+      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
+      footprint_padding: 0.0
       resolution: 0.05
       # When static_layer is enabled, the incoming SLAM map defines the global costmap geometry.
       # Therefore, the following width, height, and origin are not used
@@ -234,7 +237,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.40
+        inflation_radius: 0.8 # NavfnPlanner does not know the robot footprint, so inflation radius must cover from obstacle edge to robot center. Furthest point of robot perimeter is 0.76m. We could switch to a planner that uses the footprint.
       always_send_full_costmap: True
 
 map_server:

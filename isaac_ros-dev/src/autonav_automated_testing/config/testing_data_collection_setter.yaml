@@ -9,7 +9,7 @@ data_publisher:
     # /odom                          - Odometry data (nav_msgs/Odometry) - robot position/velocity
     # /tf                            - Transform tree (tf2_msgs/TFMessage) - coordinate frames
     # /tf_static                     - Static transforms (tf2_msgs/TFMessage)
-    # /scan                          - 2D laser scan (sensor_msgs/LaserScan) - from LiDAR
+    # /scan_fullframe                 - 2D laser scan (sensor_msgs/LaserScan) - from LiDAR
     # /cmd_vel                       - Command velocity (geometry_msgs/Twist) - target speeds
     # /goal_pose                     - Navigation goal (geometry_msgs/PoseStamped)
     # /local_costmap/costmap         - Local planning costmap (nav_msgs/OccupancyGrid)
@@ -29,7 +29,7 @@ data_publisher:
     # /encoders                      - Wheel encoders (autonav_interfaces/Encoders) - wheel rotations
     # /depth_camera/points           - Point cloud (sensor_msgs/PointCloud2) - 3D depth data
     # /camera/image_raw              - Camera image (sensor_msgs/Image)
-    # /zed/zed_node/rgb/image_rect_color - ZED camera RGB image
+    # /zed/zed_node/rgb/color/rect/image - ZED camera RGB image
     # /zed/zed_node/depth/depth_registered - ZED depth image
     # /zed/zed_node/point_cloud/cloud_registered - ZED point cloud
     #
@@ -66,7 +66,8 @@ data_publisher:
       "/odom",
       "/encoders",
       "/cmd_vel",
-      "/scan",
+      "/motor_speed",
+      "/scan_fullframe",
       "/zed/zed_node/imu/data",
       "/plan",
       "/electrical/voltage",
@@ -78,19 +79,19 @@ data_publisher:
     t001: ["/gps_fix", "/odom", "/tf", "/encoders", "/cmd_vel"]
     
     # Test 002: Line Compliance - Monitor GPS, IMU, LiDAR, and Encoders for line following
-    t002: ["/gps_fix", "/zed/zed_node/imu/data", "/scan", "/encoders", "/odom", "/cmd_vel", "/line_detection/lines"]
+    t002: ["/gps_fix", "/zed/zed_node/imu/data", "/scan_fullframe", "/encoders", "/odom", "/cmd_vel", "/line_detection/lines"]
     
     # Test 003: Forward Movement
     t003: ["/odom", "/encoders", "/cmd_vel", "/camera/image_raw"]
     
     # Test 004: Object Detection
-    t004: ["/camera/image_raw", "/depth_camera/points", "/scan", "/odom", "/cmd_vel"]
+    t004: ["/camera/image_raw", "/depth_camera/points", "/scan_fullframe", "/odom", "/cmd_vel"]
     
     # Test 005: Path Planning
     t005: ["/global_costmap/costmap", "/local_costmap/costmap", "/plan", "/odom", "/cmd_vel"]
     
     # Test 006: Simulation
-    t006: ["/odom", "/scan", "/tf", "/global_costmap/costmap", "/local_costmap/costmap"]
+    t006: ["/odom", "/scan_fullframe", "/tf", "/global_costmap/costmap", "/local_costmap/costmap"]
     
     # Test 007: Speed
     t007: ["/encoders", "/odom", "/cmd_vel"]
