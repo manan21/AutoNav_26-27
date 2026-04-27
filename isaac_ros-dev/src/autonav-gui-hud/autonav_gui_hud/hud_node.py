@@ -484,7 +484,7 @@ class HudWindow(QMainWindow):
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
-            ("GPS", ["GPS"], "ros2 launch gps_handler gps_publisher.cpp"),
+            ("GPS", ["GPS"], "ros2 run gps_handler gps_publisher"),
             ("Power PCB", ["Power PCB"],
              "ros2 launch autonav_electrical_publisher electrical_publisher.launch.py"),
         ]
