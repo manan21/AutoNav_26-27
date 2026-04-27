@@ -8,5 +8,6 @@ __pycache__
 .claude/
 .codex
 *.png
+!isaac_ros-dev/src/bringup/description/textures/asphalt.png
 .DS_STORE
 *.venv*

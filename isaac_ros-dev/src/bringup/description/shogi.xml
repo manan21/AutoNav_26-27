@@ -1,7 +1,17 @@
 <mujoco model="Shogi">
   <compiler angle="radian" meshdir="meshes/"/>
+  <option timestep="0.002" integrator="RK4"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.25 0.25 0.25" specular="0.2 0.2 0.2"/>
+    <map znear="0.01" zfar="100"/>
+  </visual>
 
   <asset>
+    <texture name="asphalt_texture" type="2d" file="textures/asphalt.png"/>
+    <material name="asphalt" texture="asphalt_texture" texrepeat="24 24" reflectance="0.03"
+              rgba="0.85 0.85 0.82 1"/>
+    <material name="parking_line" rgba="0.92 0.88 0.72 1"/>
     <mesh name="base_link_part1" file="base_link_part1.STL"/>
     <mesh name="base_link_part2" file="base_link_part2.STL"/>
     <mesh name="base_link_part3" file="base_link_part3.STL"/>
@@ -14,11 +24,28 @@
   </asset>
 
   <worldbody>
+    <light name="sun" directional="true" pos="0 0 10" dir="-0.35 -0.45 -1"
+           diffuse="0.7 0.68 0.62" specular="0.15 0.15 0.15"/>
+    <light name="parking_lot_light_left" pos="-5 -4 7" dir="0.6 0.4 -1"
+           diffuse="0.65 0.62 0.55" specular="0.25 0.25 0.2"/>
+    <light name="parking_lot_light_right" pos="5 4 7" dir="-0.6 -0.4 -1"
+           diffuse="0.55 0.58 0.65" specular="0.2 0.22 0.25"/>
+
+    <geom name="asphalt_floor" type="plane" size="20 20 0.1" material="asphalt"
+          friction="0.95 0.03 0.003"/>
+    <geom name="parking_line_center" type="box" pos="0 0 0.003" size="0.04 8 0.002"
+          material="parking_line" contype="0" conaffinity="0"/>
+    <geom name="parking_line_left" type="box" pos="-2.6 0 0.003" size="0.04 8 0.002"
+          material="parking_line" contype="0" conaffinity="0"/>
+    <geom name="parking_line_right" type="box" pos="2.6 0 0.003" size="0.04 8 0.002"
+          material="parking_line" contype="0" conaffinity="0"/>
+    <geom name="parking_stop_line" type="box" pos="0 5 0.004" size="5.5 0.05 0.002"
+          material="parking_line" contype="0" conaffinity="0"/>
 
     <body name="base_link" pos="-0.77894 1.93808 -0.2255">
       <freejoint name="base_freejoint"/>
-      <inertial pos="0.77894 -1.93808 0.55" mass="24.349"
-                diaginertia="0.36047 0.31998 0.18504"/>
+      <inertial pos="0.77894 -1.93808 0.42" mass="24.349"
+                diaginertia="0.65 0.6 0.28"/>
       <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part1"
             contype="0" conaffinity="0"/>
       <geom type="mesh" rgba="0.79216 0.81961 0.93333 1" mesh="base_link_part2"
@@ -27,7 +54,7 @@
             contype="0" conaffinity="0"/>
       <geom name="base_collision" type="box" pos="0.77894 -1.93808 0.45"
             size="0.409 0.542 0.16" rgba="0.2 0.2 0.2 0"
-            friction="0.8 0.02 0.001"/>
+            friction="0.6 0.02 0.001"/>
       <geom pos="0.77904 -2.3725 0.54987" quat="0.707105 -0.707108 0 0" type="mesh"
             rgba="1 1 1 1" mesh="Lidar_Link" contype="0" conaffinity="0"/>
       <geom pos="0.78801 -2.3703 0.65142" quat="0.984807 0.17365 0 0" type="mesh"
@@ -53,7 +80,7 @@
                    damping="0.003" armature="0.001"/>
             <geom name="caster_wheel" type="cylinder" quat="0.707107 0 0.707107 0"
                   size="0.075 0.032" rgba="0.04 0.04 0.04 1"
-                  friction="1.0 0.02 0.002"/>
+                  friction="0.75 0.02 0.002"/>
           </body>
         </body>
       </body>
@@ -64,7 +91,7 @@
               contype="0" conaffinity="0"/>
         <geom name="right_wheel_collision" type="cylinder" pos="-0.04455 0 0"
               quat="0.707107 0 0.707107 0" size="0.113 0.0445"
-              rgba="0.05 0.05 0.05 0" friction="1.6 0.05 0.005"/>
+              rgba="0.05 0.05 0.05 0" friction="1.05 0.03 0.003"/>
       </body>
       <body name="Left_Wheel_Link" pos="0.37276 -1.7127 0.34419" quat="0.644903 0.764264 0 0">
         <inertial pos="0.775343 -2.47012e-05 1.86946e-05" quat="0.638307 0.769782 8.28749e-07 -6.87203e-07" mass="2.05714" diaginertia="0.0144751 0.00793699 0.00793588"/>
@@ -73,17 +100,17 @@
               contype="0" conaffinity="0"/>
         <geom name="left_wheel_collision" type="cylinder" pos="0.7678 0 0"
               quat="0.707107 0 0.707107 0" size="0.113 0.0445"
-              rgba="0.05 0.05 0.05 0" friction="1.6 0.05 0.005"/>
+              rgba="0.05 0.05 0.05 0" friction="1.05 0.03 0.003"/>
       </body>
     </body>
   </worldbody>
 
   <actuator>
-    <velocity name="right_wheel_velocity" joint="Right_Wheel" kv="12"
+    <velocity name="right_wheel_velocity" joint="Right_Wheel" kv="8"
               ctrllimited="true" ctrlrange="-30 30"
-              forcelimited="true" forcerange="-80 80"/>
-    <velocity name="left_wheel_velocity" joint="Left_Wheel" kv="12"
+              forcelimited="true" forcerange="-55 55"/>
+    <velocity name="left_wheel_velocity" joint="Left_Wheel" kv="8"
               ctrllimited="true" ctrlrange="-30 30"
-              forcelimited="true" forcerange="-80 80"/>
+              forcelimited="true" forcerange="-55 55"/>
   </actuator>
 </mujoco>
