@@ -217,7 +217,10 @@ DOCKER_ARGS+=("--device=/dev/roboteq:/dev/roboteq")
 
 DOCKER_ARGS+=("-v" "/dev/serial/by-id:/dev/serial/by-id:ro")
 
-for link in /dev/serial/by-id/usb-Arduino* /dev/serial/by-id/usb-RoboteQ*; do
+for link in \
+  /dev/serial/by-id/usb-Arduino* \
+  /dev/serial/by-id/usb-RoboteQ* \
+  /dev/serial/by-id/usb-Cypress*; do
   if [[ -e "$link" ]]; then
     real_dev="$(readlink -f "$link")"
     DOCKER_ARGS+=("--device=${real_dev}:${real_dev}")
