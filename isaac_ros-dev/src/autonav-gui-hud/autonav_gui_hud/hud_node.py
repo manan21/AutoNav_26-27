@@ -237,6 +237,12 @@ class HudWindow(QMainWindow):
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
         self._gps_buf = {'lat': [], 'lon': []}
         self._odom_buf = {'x': [], 'y': [], 'theta': []}
+
+        # ETA estimation state (mirrors ina226_monitor approach)
+        self._CAPACITY_AH = 20.476       # empirical usable capacity
+        self._ETA_ALPHA = 0.05           # EMA smoothing factor
+        self._ema_eta_hours = None       # smoothed time-remaining estimate
+        self._latest_soc_pct = None      # latest SOC from electrical publisher (0-100)
         self._odom_tri_patch = None
         self._plots_dirty = False
 
@@ -1058,7 +1064,7 @@ class HudWindow(QMainWindow):
         power_layout.addLayout(pwr_p_title_row)
         power_layout.addWidget(self._pwr_p_canvas, stretch=1)
 
-        # SOC fuel gauge bar — horizontal
+        # SOC fuel gauge bar — horizontal bar with info row beneath
         soc_row = QHBoxLayout()
         soc_title = QLabel("SOC")
         soc_title.setStyleSheet("border: none; font-weight: bold; color: #ccc; font-size: 9px;")
@@ -1076,10 +1082,19 @@ class HudWindow(QMainWindow):
         self._soc_bar_layout.addWidget(self._soc_fill, stretch=0)  # fill at 0%
         self._soc_bar_layout.addStretch(1)  # empty space on right
         soc_row.addWidget(self._soc_bar, stretch=1)
+        power_layout.addLayout(soc_row)
+        # SOC info row: percentage left-aligned, ETA right-aligned
+        soc_info_row = QHBoxLayout()
+        soc_info_row.setContentsMargins(0, 0, 0, 0)
         self._soc_label = QLabel("0%")
         self._soc_label.setStyleSheet("border: none; color: #888; font-size: 9px; font-family: monospace;")
-        soc_row.addWidget(self._soc_label)
-        power_layout.addLayout(soc_row)
+        self._eta_label = QLabel("--:--")
+        self._eta_label.setAlignment(Qt.AlignRight)
+        self._eta_label.setStyleSheet("border: none; color: #888; font-size: 9px; font-family: monospace;")
+        soc_info_row.addWidget(self._soc_label)
+        soc_info_row.addStretch(1)
+        soc_info_row.addWidget(self._eta_label)
+        power_layout.addLayout(soc_info_row)
 
         # Add Power PCB below the device status list
         left_col.addWidget(power_cell, stretch=1)
@@ -2170,6 +2185,7 @@ class HudWindow(QMainWindow):
         '/electrical/voltage': 'Power PCB',
         '/electrical/current': 'Power PCB',
         '/electrical/power': 'Power PCB',
+        '/electrical/soc': 'Power PCB',
     }
 
     POWER_WINDOW_S = 3.0
@@ -2452,6 +2468,8 @@ class HudWindow(QMainWindow):
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
         self._gps_buf = {'lat': [], 'lon': []}
         self._odom_buf = {'x': [], 'y': [], 'theta': []}
+        self._ema_eta_hours = None
+        self._latest_soc_pct = None
         self._update_soc(0.0, force=True)
         if self._odom_tri_patch:
             self._odom_tri_patch.remove()
@@ -2760,6 +2778,8 @@ class HudWindow(QMainWindow):
             self._power_buf['I'].append(self._power_buf['I'][-1] if self._power_buf['I'] else 0)
             self._power_buf['P'].append(float(values[0]))
             self._trim_power_buf(t_s)
+        elif topic == '/electrical/soc':
+            self._latest_soc_pct = float(values[0])
         elif topic == '/gps_fix':
             try:
                 lat = float(values[0])
@@ -2792,7 +2812,7 @@ class HudWindow(QMainWindow):
             self._power_buf['P'].popleft()
 
     def _update_soc(self, fraction, force=False):
-        """Update SOC gauge bar. fraction is 0.0–1.0.
+        """Update SOC gauge bar and ETA. fraction is 0.0–1.0.
         Hysteresis: only update display if change > 1% to avoid flicker."""
         pct = int(round(fraction * 100))
         if not force and hasattr(self, '_soc_display_pct') and abs(pct - self._soc_display_pct) <= 1:
@@ -2812,6 +2832,25 @@ class HudWindow(QMainWindow):
         else:
             color = "#f44"
         self._soc_fill.setStyleSheet(f"background-color: {color}; border: none; border-radius: 1px;")
+
+        # Estimated time remaining — EMA-smoothed current draw
+        avg_i = 0.0
+        if self._power_buf['I']:
+            vals = list(self._power_buf['I'])
+            avg_i = sum(abs(v) for v in vals) / len(vals)
+        if avg_i > 0.01:
+            raw_hours = fraction * self._CAPACITY_AH / avg_i
+            if self._ema_eta_hours is None:
+                self._ema_eta_hours = raw_hours
+            else:
+                smoothed = self._ETA_ALPHA * raw_hours + (1 - self._ETA_ALPHA) * self._ema_eta_hours
+                # Monotonic: only allow the displayed estimate to decrease
+                self._ema_eta_hours = min(self._ema_eta_hours, smoothed)
+            h = int(self._ema_eta_hours)
+            m = int((self._ema_eta_hours - h) * 60)
+            self._eta_label.setText(f"{h}h {m:02d}m")
+        else:
+            self._eta_label.setText("--:--")
 
     def _redraw_plots(self):
         # --- Power mini oscilloscopes (fixed Y axes) ---
@@ -2834,9 +2873,13 @@ class HudWindow(QMainWindow):
             self._pwr_val_v.setText(f"V: {self._power_buf['V'][-1]:.2f}")
             self._pwr_val_i.setText(f"I: {self._power_buf['I'][-1]:.2f}")
             self._pwr_val_p.setText(f"P: {self._power_buf['P'][-1]:.2f}")
-            # Derive SOC from voltage (linear 20V–29.4V → 0%–100%)
-            v = self._power_buf['V'][-1]
-            soc = max(0.0, min(1.0, (v - 20.0) / (29.4 - 20.0)))
+            # Use real SOC from electrical publisher if available,
+            # otherwise fall back to voltage-derived estimate
+            if self._latest_soc_pct is not None:
+                soc = max(0.0, min(1.0, self._latest_soc_pct / 100.0))
+            else:
+                v = self._power_buf['V'][-1]
+                soc = max(0.0, min(1.0, (v - 20.0) / (29.4 - 20.0)))
             self._update_soc(soc)
         else:
             self._pwr_v_live_txt.set_visible(True)
@@ -3281,6 +3324,12 @@ class HudWindow(QMainWindow):
             self._live_set_dot_received('Power PCB')
             any_scalar_changed = True
 
+        # --- SOC (from electrical publisher) ---
+        soc_val = node.latest_soc
+        if soc_val is not None:
+            node.latest_soc = None
+            self._latest_soc_pct = soc_val
+
         # --- Camera ---
         img_rgb = node.latest_image_rgb
         if img_rgb is not None:
@@ -3402,6 +3451,7 @@ if _HAS_ROS:
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
+            self.latest_soc = None         # float (0-100%)
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
 
@@ -3427,6 +3477,9 @@ if _HAS_ROS:
             )
             self.create_subscription(
                 Float32, '/electrical/power', self._cb_power, _SENSOR_QOS,
+            )
+            self.create_subscription(
+                Float32, '/electrical/soc', self._cb_soc, _SENSOR_QOS,
             )
 
         def _cb_image(self, msg):
@@ -3463,6 +3516,9 @@ if _HAS_ROS:
 
         def _cb_power(self, msg):
             self.latest_power = msg.data
+
+        def _cb_soc(self, msg):
+            self.latest_soc = msg.data
 
 
 def main(args=None):
