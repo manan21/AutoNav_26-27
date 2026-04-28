@@ -1278,7 +1278,7 @@ class HudWindow(QMainWindow):
 
         # 2 Hz timer to poll process output and refresh terminal
         self._process_poll_timer = QTimer()
-        self._process_poll_timer.setInterval(500)
+        self._process_poll_timer.setInterval(1000)  # 1 Hz process polling
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
@@ -1517,13 +1517,14 @@ class HudWindow(QMainWindow):
             )
             self._process_objects[label] = proc
 
-            def _reader():
+            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
                 try:
                     for line in proc.stdout:
-                        buf.append(line)
+                        if len(_buf) < _max * 2:
+                            _buf.append(line)
                 except Exception:
                     pass
-                buf.append(f"[Build finished with code {proc.returncode}]\n")
+                _buf.append(f"[Build finished with code {proc.returncode}]\n")
             t = threading.Thread(target=_reader, daemon=True)
             t.start()
             self._process_readers[label] = t
@@ -1601,10 +1602,11 @@ class HudWindow(QMainWindow):
             )
             self._process_objects[f"test:{tid}"] = proc
 
-            def _reader():
+            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
                 try:
                     for line in proc.stdout:
-                        buf.append(line)
+                        if len(_buf) < _max * 2:
+                            _buf.append(line)
                 except Exception:
                     pass
             t = threading.Thread(target=_reader, daemon=True)
@@ -1814,10 +1816,12 @@ class HudWindow(QMainWindow):
             self._process_objects[label] = proc
 
             # Daemon reader thread: appends stdout lines to buffer
-            def _reader():
+            # Skips lines when buffer is full to avoid thrashing
+            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
                 try:
                     for line in proc.stdout:
-                        buf.append(line)
+                        if len(_buf) < _max * 2:
+                            _buf.append(line)
                 except Exception:
                     pass
             t = threading.Thread(target=_reader, daemon=True)
@@ -1992,7 +1996,7 @@ class HudWindow(QMainWindow):
         self._term_last_text = ''  # force refresh
         self._refresh_terminal_display()
 
-    _MAX_TERMINAL_LINES = 200  # only show last N lines to avoid lag
+    _MAX_TERMINAL_LINES = 100  # only show last N lines to avoid lag
 
     def _refresh_terminal_display(self):
         """Update the terminal QTextEdit with the selected process's output."""
@@ -2018,7 +2022,7 @@ class HudWindow(QMainWindow):
         sb = self._term_display.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    _MAX_BUF_LINES = 500  # cap per-process buffer to avoid memory growth
+    _MAX_BUF_LINES = 200  # cap per-process buffer to avoid memory growth
 
     def _poll_process_output(self):
         """2 Hz: clean up exited process handles, trim buffers, refresh terminal."""
@@ -2034,7 +2038,9 @@ class HudWindow(QMainWindow):
         for buf in self._process_buffers.values():
             if len(buf) > self._MAX_BUF_LINES:
                 del buf[:-self._MAX_BUF_LINES]
-        self._refresh_terminal_display()
+        # Only refresh terminal if it's actually visible on screen
+        if self._selected_process is not None or not self._process_objects:
+            self._refresh_terminal_display()
 
     def closeEvent(self, event):
         """Terminate all subprocesses and stop all modes on window close."""
@@ -2442,49 +2448,44 @@ class HudWindow(QMainWindow):
         )
 
     def _kill_process(self, proc, label):
-        """Kill a launched process. If connected to a container, read the
-        saved PID and kill it plus all child processes."""
-        if self._container_connected:
-            pid_tag = label.replace(' ', '_').replace('/', '_')
-            try:
-                # Step 1: SIGINT the parent (ros2 launch) — gives it a
-                # chance to shut nodes down gracefully
-                sigint_cmd = (
-                    f"docker exec -u root {self._container_name} "
-                    f"/bin/bash -c "
-                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                    f"kill -INT $PID 2>/dev/null'"
-                )
-                subprocess.run(sigint_cmd, shell=True, timeout=5,
-                               capture_output=True)
-                # Wait for graceful shutdown
+        """Kill a launched process in a background thread so the GUI doesn't freeze."""
+        def _do_kill():
+            if self._container_connected:
+                pid_tag = label.replace(' ', '_').replace('/', '_')
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+                    sigint_cmd = (
+                        f"docker exec -u root {self._container_name} "
+                        f"/bin/bash -c "
+                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                        f"kill -INT $PID 2>/dev/null'"
+                    )
+                    subprocess.run(sigint_cmd, shell=True, timeout=5,
+                                   capture_output=True)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    force_cmd = (
+                        f"docker exec -u root {self._container_name} "
+                        f"/bin/bash -c "
+                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                        f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
+                        f"kill -9 $PID $CHILDREN 2>/dev/null; "
+                        f"rm -f /tmp/gui_pid_{pid_tag}'"
+                    )
+                    subprocess.run(force_cmd, shell=True, timeout=5,
+                                   capture_output=True)
+                except Exception:
                     pass
-
-                # Step 2: Force kill parent + any remaining children
-                force_cmd = (
-                    f"docker exec -u root {self._container_name} "
-                    f"/bin/bash -c "
-                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                    f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
-                    f"kill -9 $PID $CHILDREN 2>/dev/null; "
-                    f"rm -f /tmp/gui_pid_{pid_tag}'"
-                )
-                subprocess.run(force_cmd, shell=True, timeout=5,
-                               capture_output=True)
-            except Exception:
-                pass
-        # Also terminate the local wrapper process
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        threading.Thread(target=_do_kill, daemon=True).start()
 
     def _launch_cmd_for(self, label):
         """Return the raw command string for a device/test label."""
