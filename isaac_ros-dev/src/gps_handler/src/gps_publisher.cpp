@@ -23,7 +23,7 @@ using namespace std::chrono_literals;
 class GPSPublisher : public rclcpp::Node {
 public:
   GPSPublisher()
-  : Node("gps_publisher"), gps_connected(false) {
+  : Node("gps_publisher"), gps_connected(false), consecutive_failures_(0) {
     publisher_ = this->create_publisher<sensor_msgs::msg::NavSatFix>("gps_fix", 50);
     timer_ = this->create_wall_timer(100ms, std::bind(&GPSPublisher::update_gps, this));
   }
@@ -140,30 +140,30 @@ private:
     const std::string &hdop_str = fields[8];
     const std::string &altitude_str = fields[9];
 
-    if (fix_quality_str.empty()) {
-      RCLCPP_WARN(this->get_logger(), "GGA sentence missing fix quality");
-      return false;
-    }
-
-    int fix_quality = std::stoi(fix_quality_str);
-
-    // u-blox / NMEA fix quality:
-    // 0 = invalid
-    // 1 = GPS fix
-    // 2 = DGPS fix
-    // 4 = RTK fixed
-    // 5 = RTK float
-    if (fix_quality <= 0) {
-      RCLCPP_DEBUG(this->get_logger(), "GPS has no valid fix yet");
-      return false;
-    }
-
     if (lat_str.empty() || lat_dir.empty() || lon_str.empty() || lon_dir.empty() || altitude_str.empty()) {
       RCLCPP_WARN(this->get_logger(), "GGA sentence missing coordinate fields");
       return false;
     }
 
     try {
+      // Parse fix quality — inside try block so corrupted data can't crash the node
+      if (fix_quality_str.empty()) {
+        RCLCPP_WARN(this->get_logger(), "GGA sentence missing fix quality");
+        return false;
+      }
+      int fix_quality = std::stoi(fix_quality_str);
+
+      // u-blox / NMEA fix quality:
+      // 0 = invalid
+      // 1 = GPS fix
+      // 2 = DGPS fix
+      // 4 = RTK fixed
+      // 5 = RTK float
+      if (fix_quality <= 0) {
+        RCLCPP_DEBUG(this->get_logger(), "GPS has no valid fix yet");
+        return false;
+      }
+
       double latitude = nmea_to_decimal_degrees(lat_str, lat_dir, true);
       double longitude = nmea_to_decimal_degrees(lon_str, lon_dir, false);
       double altitude = std::stod(altitude_str);
@@ -226,6 +226,13 @@ private:
     }
   }
 
+  void reconnect_gps() {
+    RCLCPP_WARN(this->get_logger(), "GPS connection lost — attempting reconnect...");
+    gps_serial.closeDevice();
+    gps_connected = false;
+    consecutive_failures_ = 0;
+  }
+
   void update_gps() {
     if (!gps_connected) {
       init_gps();
@@ -236,9 +243,18 @@ private:
     int bytes_read = gps_serial.readString(gps_buffer, '\n', 1023, 500);
 
     if (bytes_read <= 0) {
-      RCLCPP_DEBUG(this->get_logger(), "No GPS data received within timeout");
+      consecutive_failures_++;
+      // If no data for 10 consecutive attempts (~5 seconds), reconnect
+      if (consecutive_failures_ >= 10) {
+        reconnect_gps();
+      } else {
+        RCLCPP_DEBUG(this->get_logger(), "No GPS data received within timeout (%d/%d)",
+                     consecutive_failures_, 10);
+      }
       return;
     }
+
+    consecutive_failures_ = 0;  // reset on successful read
 
     std::string gps_data(gps_buffer, bytes_read);
     gps_data = trim_line(gps_data);
@@ -247,7 +263,6 @@ private:
       return;
     }
 
-    // For debugging
     RCLCPP_DEBUG(this->get_logger(), "Current GPS Data: %s", gps_data.c_str());
 
     // Only parse GGA for NavSatFix publishing
@@ -259,6 +274,7 @@ private:
   }
 
   bool gps_connected;
+  int consecutive_failures_;
   serialib gps_serial;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr publisher_;
