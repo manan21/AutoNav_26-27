@@ -834,6 +834,7 @@ class HudWindow(QMainWindow):
         self._dot_to_device["TEST"] = None
 
         left_col = QVBoxLayout()
+        self._left_col = left_col
         left_col.addLayout(status_col)
         left_col.addStretch()
 
@@ -1126,6 +1127,31 @@ class HudWindow(QMainWindow):
             cell.mousePressEvent = lambda event, c=cell: self._toggle_sensor_expand(c)
             cell.setCursor(Qt.PointingHandCursor)
 
+        # Power cell is expandable too (lives outside the grid, in left_col)
+        self._power_cell = power_cell
+        power_cell.mousePressEvent = lambda event, c=power_cell: self._toggle_power_expand(c)
+        power_cell.setCursor(Qt.PointingHandCursor)
+        self._power_expanded = False
+
+        # Sensor frame style for keyboard nav selection
+        self._sensor_frame_style = frame_style
+        self._sensor_sel_style = (
+            "QFrame#sensorCell {"
+            "  border: 2px solid #0af;"
+            "  background-color: #1a2a3a;"
+            "  border-radius: 3px;"
+            "}"
+        )
+
+        # Sensor cells as a nav group for keyboard navigation
+        self._sensor_nav_buttons = [
+            (cam_cell, "Camera", frame_style),
+            (lidar_cell, "Lidar", frame_style),
+            (gps_cell, "GPS", frame_style),
+            (enc_cell, "Encoders", frame_style),
+            (power_cell, "Power PCB", frame_style),
+        ]
+
         sensor_body.addLayout(grid, stretch=1)
 
         # -- Playback time slider --
@@ -1302,13 +1328,14 @@ class HudWindow(QMainWindow):
         self._nav_groups = [
             self._nav_buttons,                                             # group 0
             self._status_nav_buttons,                                      # group 1
-            [(self.pb_slider, "Scrub Bar", self._slider_base_style)],      # group 2
-            [(self.btn_pp, "\u25B6", play_pause_style)],                   # group 3
-            [(self.btn_speed, "1x", speed_btn_style)],                     # group 4
+            self._sensor_nav_buttons,                                      # group 2 (sensor cells)
+            [(self.pb_slider, "Scrub Bar", self._slider_base_style)],      # group 3
+            [(self.btn_pp, "\u25B6", play_pause_style)],                   # group 4
+            [(self.btn_speed, "1x", speed_btn_style)],                     # group 5
         ]
         self._nav_col = 0   # current group
         self._nav_row = 0   # current index within group
-        self._nav_last_row = [0, 0, 0, 0, 0]  # remember row per group
+        self._nav_last_row = [0, 0, 0, 0, 0, 0]  # remember row per group
         self._scrub_mode = False  # True when actively scrubbing with arrows
         self._speed_mode = False  # True when selecting playback speed with arrows
 
@@ -1926,6 +1953,43 @@ class HudWindow(QMainWindow):
             grid.setColumnStretch(0, 1)
             grid.setColumnStretch(1, 0)
 
+    def _toggle_power_expand(self, cell):
+        """Toggle Power PCB cell between expanded and normal in the sensor grid."""
+        grid = self._sensor_grid
+        cells = self._sensor_cells
+        positions = self._sensor_grid_positions
+
+        if self._expanded_cell is cell:
+            # Collapse: restore normal layout
+            self._expanded_cell = None
+            grid.removeWidget(cell)
+            cell.setParent(None)
+            # Re-add sensor cells to grid
+            for c, (r, col) in zip(cells, positions):
+                c.setVisible(True)
+                grid.addWidget(c, r, col)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 1)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+            # Put power back in left col
+            self._left_col.addWidget(cell, stretch=1)
+            self._power_expanded = False
+        else:
+            # Expand: hide grid cells, put power in the grid
+            self._expanded_cell = cell
+            for c in cells:
+                grid.removeWidget(c)
+                c.setVisible(False)
+            # Remove power from left col, add to grid
+            self._left_col.removeWidget(cell)
+            grid.addWidget(cell, 0, 0, 2, 2)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 0)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
+            self._power_expanded = True
+
     def _on_status_dot_clicked(self, name):
         """Toggle device selection — show process output or return to info log."""
         dev_label = self._dot_to_device.get(name)
@@ -2022,6 +2086,11 @@ class HudWindow(QMainWindow):
         widget, _, _ = self._cur_btn()
         return widget is self.btn_speed
 
+    def _is_sensor_selected(self):
+        """Return True if a sensor cell is currently selected."""
+        widget, _, _ = self._cur_btn()
+        return widget in self._sensor_cells or widget is self._power_cell
+
     def keyPressEvent(self, event):
         key = event.key()
 
@@ -2105,6 +2174,12 @@ class HudWindow(QMainWindow):
                 # Enter speed select mode
                 self._speed_mode = True
                 self._update_selection()
+            elif self._is_sensor_selected():
+                cell, _, _ = self._cur_btn()
+                if cell is self._power_cell:
+                    self._toggle_power_expand(cell)
+                else:
+                    self._toggle_sensor_expand(cell)
             else:
                 btn, _, _ = self._cur_btn()
                 if btn.isEnabled():
@@ -2137,6 +2212,11 @@ class HudWindow(QMainWindow):
                         .replace("border: 1px solid #555", "border: 1px solid #0f0")
                         .replace("color: #dcdcdc", "color: #0f0")
                     )
+                elif widget in self._sensor_cells or widget is self._power_cell:
+                    if is_selected:
+                        widget.setStyleSheet(self._sensor_sel_style)
+                    else:
+                        widget.setStyleSheet(self._sensor_frame_style)
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
