@@ -3375,10 +3375,12 @@ class HudWindow(QMainWindow):
     def _render_lidar_bev(scan, size=480):
         """Render a LaserScan as a bird's-eye-view RGB image.
 
-        Draws shadow lines (gray), hit dots (green), and robot origin (red)
-        on a black canvas. Returns an RGB numpy array.
+        Gray background = outside lidar range / unknown.
+        White = driveable (clear path from robot to hit).
+        Black = obstacle shadow (from hit outward to max range).
+        Green dots = hit points. Red dot = robot origin.
         """
-        img = np.full((size, size, 3), 255, dtype=np.uint8)
+        img = np.full((size, size, 3), 128, dtype=np.uint8)  # gray background
         cx, cy = size // 2, size // 2
 
         # Determine scale: fit max range into half the canvas
@@ -3395,12 +3397,17 @@ class HudWindow(QMainWindow):
             a = angles[i]
             if not np.isfinite(r) or r < scan.range_min:
                 continue
-            # End point
+            # Hit point
             ex = int(cx + r * math.cos(a) * scale)
             ey = int(cy - r * math.sin(a) * scale)
-            # Shadow line (gray)
-            _bresenham_line(img, cx, cy, ex, ey, (0, 0, 0))
-            # Hit dot (green) if within valid range
+            # Max range point along same ray
+            sx = int(cx + max_range * math.cos(a) * scale)
+            sy = int(cy - max_range * math.sin(a) * scale)
+            # White line: robot to hit (driveable space)
+            _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+            # Black line: hit to max range (obstacle shadow)
+            _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
+            # Green hit dot
             if r <= scan.range_max:
                 if 0 <= ex < size and 0 <= ey < size:
                     img[ey, ex] = (0, 255, 0)
