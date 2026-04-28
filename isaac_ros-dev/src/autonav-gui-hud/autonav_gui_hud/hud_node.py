@@ -3390,13 +3390,13 @@ class HudWindow(QMainWindow):
         for i in range(len(ranges)):
             r = ranges[i]
             a = angles[i]
-            if r < scan.range_min:
-                continue
+            if not np.isfinite(r) or r < scan.range_min:
+                continue  # NaN/inf = no data, leave as gray
             # Max range endpoint along this ray
             sx = int(cx + max_range * math.cos(a) * scale)
             sy = int(cy - max_range * math.sin(a) * scale)
-            if not np.isfinite(r) or r >= max_range:
-                # No obstacle detected — entire ray is driveable (white)
+            if r >= max_range:
+                # Clear to max range — entire ray is driveable (white)
                 _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
             else:
                 # Hit point
