@@ -7,6 +7,5 @@ ros2 launch sick_scan_xd sick_multiscan.launch.py \
        	udp_receiver_ip:=192.168.0.2 \
 	publish_frame_id:="lidar_footprint" \
 	tf_publish_rate:=0 \
-	host_set_LFPangleRangeFilter:=True \
-	host_LFPangleRangeFilter:="1 -110.0 +110.0 -90.0 +90.0 1" \
+	laserscan_layer_filter:="1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1" \
 
