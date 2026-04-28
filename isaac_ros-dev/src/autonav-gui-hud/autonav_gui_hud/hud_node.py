@@ -3390,20 +3390,23 @@ class HudWindow(QMainWindow):
         for i in range(len(ranges)):
             r = ranges[i]
             a = angles[i]
-            if not np.isfinite(r) or r < scan.range_min:
+            if r < scan.range_min:
                 continue
-            # Hit point
-            ex = int(cx + r * math.cos(a) * scale)
-            ey = int(cy - r * math.sin(a) * scale)
-            # Max range point along same ray
+            # Max range endpoint along this ray
             sx = int(cx + max_range * math.cos(a) * scale)
             sy = int(cy - max_range * math.sin(a) * scale)
-            # White line: robot to hit (driveable space)
-            _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
-            # Black line: hit to max range (obstacle shadow)
-            _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
-            # Green hit dot
-            if r <= scan.range_max:
+            if not np.isfinite(r) or r >= max_range:
+                # No obstacle detected — entire ray is driveable (white)
+                _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
+            else:
+                # Hit point
+                ex = int(cx + r * math.cos(a) * scale)
+                ey = int(cy - r * math.sin(a) * scale)
+                # White line: robot to hit (driveable space)
+                _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+                # Black line: hit to max range (obstacle shadow)
+                _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
+                # Green hit dot
                 if 0 <= ex < size and 0 <= ey < size:
                     img[ey, ex] = (0, 255, 0)
 
