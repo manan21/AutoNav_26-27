@@ -3294,9 +3294,13 @@ class HudWindow(QMainWindow):
         # Restore button style
         self._set_nav_btn_style(self.btn_live, self._pb_button_style)
 
-        # Reset dots
-        for dot in self.status_dots.values():
-            dot.setStyleSheet(self._DOT_OFF)
+        # Reset dots only for sensors that don't have a running process
+        running_labels = set(self._process_objects.keys())
+        for name, dot in self.status_dots.items():
+            # Check if any running process matches this dot's device
+            dev_label = self._dot_to_device.get(name, name)
+            if dev_label not in running_labels:
+                dot.setStyleSheet(self._DOT_OFF)
 
         # Hide live placeholders, clear imshow handles
         self._cam_live_txt.set_visible(False)
