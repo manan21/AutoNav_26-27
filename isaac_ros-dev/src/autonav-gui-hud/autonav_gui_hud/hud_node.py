@@ -143,7 +143,7 @@ def _fetch_map_for_gps(lats, lons, zoom=_GPS_TILE_ZOOM):
     return img, extent
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QFont, QImage, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -264,9 +264,10 @@ class HudWindow(QMainWindow):
         # Video playback state (camera + lidar mp4s)
         self._camera_cap = None   # cv2.VideoCapture
         self._lidar_cap = None    # cv2.VideoCapture
-        self._cam_im = None       # matplotlib imshow handle
-        self._lidar_im = None     # matplotlib imshow handle
+        # Camera/lidar now use QLabel — no matplotlib imshow handles needed
+        # (lidar handle removed — using QLabel now)
         self._video_fps = 30      # must match recorder's VIDEO_FPS
+        self._last_redraw_time = 0  # throttle for live mode plot redraws
 
         # --- Central widget + top-level 3-column layout ---
         central = QWidget()
@@ -875,47 +876,23 @@ class HudWindow(QMainWindow):
             v.addWidget(t)
             return f, v
 
-        # Camera — image canvas for video playback
+        # Camera — QLabel for fast video display (no matplotlib overhead)
         cam_cell, cam_layout = _plot_cell("Camera")
-        self._cam_fig, self._cam_ax, self._cam_canvas = _make_dark_canvas()
-        self._cam_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
-        self._cam_ax.set_facecolor('#111111')
-        self._cam_ax.axis('off')
-        self._cam_no_video_txt = self._cam_ax.text(
-            0.5, 0.5, 'VIDEO NOT AVAILABLE\nFOR THIS SET OF DATA',
-            transform=self._cam_ax.transAxes, fontsize=8, color='#555',
-            ha='center', va='center', family='monospace',
-        )
-        self._cam_no_video_txt.set_visible(False)
-        self._cam_live_txt = self._cam_ax.text(
-            0.5, 0.5, 'NO DATA AVAILABLE\nAT THE MOMENT',
-            transform=self._cam_ax.transAxes, fontsize=8, color='#555',
-            ha='center', va='center', family='monospace',
-        )
-        self._cam_live_txt.set_visible(False)
-        self._cam_canvas.setMinimumSize(50, 50)
-        cam_layout.addWidget(self._cam_canvas, stretch=1)
+        self._cam_label = QLabel()
+        self._cam_label.setStyleSheet("background-color: #111111; border: none;")
+        self._cam_label.setAlignment(Qt.AlignCenter)
+        self._cam_label.setMinimumSize(50, 50)
+        self._cam_label.setScaledContents(True)
+        cam_layout.addWidget(self._cam_label, stretch=1)
 
-        # Lidar — image canvas for video playback
+        # Lidar — QLabel for fast video display (no matplotlib overhead)
         lidar_cell, lidar_layout = _plot_cell("Lidar")
-        self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas()
-        self._lidar_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
-        self._lidar_ax.set_facecolor('#111111')
-        self._lidar_ax.axis('off')
-        self._lidar_no_video_txt = self._lidar_ax.text(
-            0.5, 0.5, 'VIDEO NOT AVAILABLE\nFOR THIS SET OF DATA',
-            transform=self._lidar_ax.transAxes, fontsize=8, color='#555',
-            ha='center', va='center', family='monospace',
-        )
-        self._lidar_no_video_txt.set_visible(False)
-        self._lidar_live_txt = self._lidar_ax.text(
-            0.5, 0.5, 'NO DATA AVAILABLE\nAT THE MOMENT',
-            transform=self._lidar_ax.transAxes, fontsize=8, color='#555',
-            ha='center', va='center', family='monospace',
-        )
-        self._lidar_live_txt.set_visible(False)
-        self._lidar_canvas.setMinimumSize(50, 50)
-        lidar_layout.addWidget(self._lidar_canvas, stretch=1)
+        self._lidar_label = QLabel()
+        self._lidar_label.setStyleSheet("background-color: #111111; border: none;")
+        self._lidar_label.setAlignment(Qt.AlignCenter)
+        self._lidar_label.setMinimumSize(50, 50)
+        self._lidar_label.setScaledContents(True)
+        lidar_layout.addWidget(self._lidar_label, stretch=1)
 
         # GPS — map plot with satellite background (no axis clutter)
         gps_cell, gps_layout = _plot_cell("GPS")
@@ -2411,6 +2388,9 @@ class HudWindow(QMainWindow):
                         odom_ys.append(float(values[1]))
                     except ValueError:
                         pass
+        if not rows:
+            self._gui_log_msg(f"No valid data rows in {os.path.basename(path)}")
+            return
         rows.sort(key=lambda x: x[0])
         t0 = rows[0][0]
         self._pb_rows = [(ts - t0, topic, keys, vals) for ts, topic, keys, vals in rows]
@@ -2437,13 +2417,11 @@ class HudWindow(QMainWindow):
             if os.path.isfile(lidar_mp4):
                 self._lidar_cap = cv2.VideoCapture(lidar_mp4)
 
-        # Show "no video" text when mp4 files are missing
-        has_cam = self._camera_cap is not None
-        has_lidar = self._lidar_cap is not None
-        self._cam_no_video_txt.set_visible(not has_cam)
-        self._lidar_no_video_txt.set_visible(not has_lidar)
-        self._cam_canvas.draw_idle()
-        self._lidar_canvas.draw_idle()
+        # Show "no video" placeholder when mp4 files are missing
+        if self._camera_cap is None:
+            self._cam_label.setText('NO VIDEO')
+        if self._lidar_cap is None:
+            self._lidar_label.setText('NO VIDEO')
 
         # Pre-fetch OSM map tiles for GPS background
         if gps_lats and gps_lons:
@@ -2474,9 +2452,11 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
-        # Clear video imshow handles
-        self._cam_im = None
-        self._lidar_im = None
+        # Clear video labels
+        self._cam_label.clear()
+        self._lidar_label.clear()
+        # Reset status dot tracking
+        self._active_dots = set()
 
     def _release_video_captures(self):
         """Release any open VideoCapture objects."""
@@ -2487,21 +2467,36 @@ class HudWindow(QMainWindow):
             self._lidar_cap.release()
             self._lidar_cap = None
 
+    def _rgb_to_qpixmap(self, rgb):
+        """Convert an RGB numpy array to QPixmap for display in QLabel."""
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
+        return qimg.copy()  # copy so numpy array can be freed
+
     def _update_video_frames(self, elapsed_ns):
-        """Seek both video captures to the correct frame and update canvases."""
+        """Seek both video captures to the correct frame and update QLabels.
+        Uses QPixmap instead of matplotlib for fast rendering on Jetson.
+        Lidar is scaled to camera timebase to compensate for dropped frames."""
         if not _HAS_CV2:
             return
         elapsed_s = elapsed_ns / 1e9
-        frame_idx = int(elapsed_s * self._video_fps)
 
-        for cap, ax, canvas, attr, no_txt, rotate in [
-            (self._camera_cap, self._cam_ax, self._cam_canvas, '_cam_im',
-             self._cam_no_video_txt, False),
-            (self._lidar_cap, self._lidar_ax, self._lidar_canvas, '_lidar_im',
-             self._lidar_no_video_txt, True),
+        # Camera duration is the reference timebase for syncing lidar
+        cam_dur_s = 0
+        if self._camera_cap is not None and self._camera_cap.isOpened():
+            cam_dur_s = int(self._camera_cap.get(cv2.CAP_PROP_FRAME_COUNT)) / self._video_fps
+
+        for cap, label, rotate in [
+            (self._camera_cap, self._cam_label, False),
+            (self._lidar_cap, self._lidar_label, True),
         ]:
             if cap is None or not cap.isOpened():
                 continue
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if rotate and cam_dur_s > 0:
+                frame_idx = min(int((elapsed_s / cam_dur_s) * total), total - 1)
+            else:
+                frame_idx = min(int(elapsed_s * self._video_fps), total - 1)
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, bgr = cap.read()
             if not ret:
@@ -2510,49 +2505,22 @@ class HudWindow(QMainWindow):
             if rotate:
                 rgb = np.rot90(rgb, 2)
                 rgb = np.fliplr(rgb)
-                # Crop bottom 1/3 (behind robot, no data with 180° FOV)
-                h, w = rgb.shape[:2]
+                h = rgb.shape[0]
                 rgb = rgb[:h * 2 // 3, :]
-                # Display with meter-based extent so axes show distance
-                half_m = 10.0  # max range in meters
-                # Full image spans -10 to 10; cropped top 2/3 spans ~+10 down to -3.3
-                y_bottom = -half_m + (2.0 * half_m) / 3.0  # ≈ -3.33
-                extent = [-half_m, half_m, y_bottom, half_m]
-                no_txt.set_visible(False)
-                im_handle = getattr(self, attr)
-                if im_handle is None:
-                    ax.axis('on')
-                    im_handle = ax.imshow(rgb, aspect='equal', extent=extent)
-                    ax.set_xlim(-half_m, half_m)
-                    ax.set_ylim(y_bottom, half_m)
-                    ax.tick_params(axis='both', length=2, pad=2,
-                                  labelsize=6, colors='#888', direction='in')
-                    ax.set_xlabel('m', fontsize=6, color='#888', labelpad=1)
-                    for spine in ax.spines.values():
-                        spine.set_color('#444')
-                    setattr(self, attr, im_handle)
-                else:
-                    im_handle.set_data(rgb)
-                    im_handle.set_extent(extent)
-                canvas.draw_idle()
-                continue
-            no_txt.set_visible(False)
-            im_handle = getattr(self, attr)
-            if im_handle is None:
-                im_handle = ax.imshow(rgb, aspect='equal')
-                setattr(self, attr, im_handle)
-            else:
-                im_handle.set_data(rgb)
-            canvas.draw_idle()
+            # Convert to QImage and display directly — no matplotlib
+            qimg = self._rgb_to_qpixmap(rgb)
+            label.setPixmap(QPixmap.fromImage(qimg))
 
-        # Light up Camera/Lidar dots if videos are playing
+        # Light up Camera/Lidar dots (only if not already lit)
         if self._camera_cap is not None and self._camera_cap.isOpened():
-            dot = self.status_dots.get('Camera')
-            if dot:
-                dot.setStyleSheet(self._DOT_ON)
+            if 'Camera' not in getattr(self, '_active_dots', set()):
+                dot = self.status_dots.get('Camera')
+                if dot:
+                    dot.setStyleSheet(self._DOT_ON)
         if self._lidar_cap is not None and self._lidar_cap.isOpened():
-            dot = self.status_dots.get('Lidar')
-            if dot:
+            if 'Lidar' not in getattr(self, '_active_dots', set()):
+                dot = self.status_dots.get('Lidar')
+                if dot:
                 dot.setStyleSheet(self._DOT_ON)
 
     def _on_play_pause(self):
@@ -2644,22 +2612,12 @@ class HudWindow(QMainWindow):
     def _reset_all_plots(self):
         """Reset all sensor plots back to their default empty state."""
         # -- Camera --
-        if self._cam_im is not None:
-            self._cam_im.remove()
-            self._cam_im = None
-        self._cam_no_video_txt.set_visible(False)
-        self._cam_live_txt.set_visible(False)
-        self._cam_ax.set_facecolor('#111111')
-        self._cam_canvas.draw_idle()
+        self._cam_label.clear()
+        self._cam_label.setStyleSheet("background-color: #111111; border: none;")
 
         # -- Lidar --
-        if self._lidar_im is not None:
-            self._lidar_im.remove()
-            self._lidar_im = None
-        self._lidar_no_video_txt.set_visible(False)
-        self._lidar_live_txt.set_visible(False)
-        self._lidar_ax.set_facecolor('#111111')
-        self._lidar_canvas.draw_idle()
+        self._lidar_label.clear()
+        self._lidar_label.setStyleSheet("background-color: #111111; border: none;")
 
         # -- GPS --
         self._gps_trail.set_data([], [])
@@ -2725,7 +2683,11 @@ class HudWindow(QMainWindow):
             self._plots_dirty = False
             self._pb_redraw_counter = 0
 
-        self._update_video_frames(elapsed_ns)
+        # Throttle video frames to ~15 fps
+        now = time.monotonic()
+        if (now - getattr(self, '_last_video_time', 0)) > 0.066:
+            self._update_video_frames(elapsed_ns)
+            self._last_video_time = now
 
         elapsed_ms = int(elapsed_ns / 1e6)
         duration_ms = int(self._pb_duration_ns / 1e6)
@@ -2751,11 +2713,16 @@ class HudWindow(QMainWindow):
         if not cell_name:
             return
 
-        dot = self.status_dots.get(cell_name)
-        if dot:
-            dot.setStyleSheet(
-                "background-color: #0f0; border-radius: 7px; border: none;"
-            )
+        # Only update dot stylesheet when it changes (setStyleSheet is expensive)
+        if not hasattr(self, '_active_dots'):
+            self._active_dots = set()
+        if cell_name not in self._active_dots:
+            dot = self.status_dots.get(cell_name)
+            if dot:
+                dot.setStyleSheet(
+                    "background-color: #0f0; border-radius: 7px; border: none;"
+                )
+                self._active_dots.add(cell_name)
 
         t_s = rel_ns / 1e9
         self._plots_dirty = True
@@ -2860,14 +2827,23 @@ class HudWindow(QMainWindow):
             self._pwr_i_live_txt.set_visible(False)
             self._pwr_p_live_txt.set_visible(False)
             xlim = (t[-1] - self.POWER_WINDOW_S, t[-1])
+            default_ylims = {'V': (20, 30), 'I': (0, 6), 'P': (0, 100)}
             for line, buf_key, ax, canvas in [
                 (self._pwr_line_v, 'V', self._pwr_v_ax, self._pwr_v_canvas),
                 (self._pwr_line_i, 'I', self._pwr_i_ax, self._pwr_i_canvas),
                 (self._pwr_line_p, 'P', self._pwr_p_ax, self._pwr_p_canvas),
             ]:
-                line.set_data(t, list(self._power_buf[buf_key]))
+                vals = list(self._power_buf[buf_key])
+                line.set_data(t, vals)
                 ax.set_xlim(*xlim)
                 ax.set_xticklabels([])
+                # Auto-scale Y if data exceeds default limits
+                d_lo, d_hi = default_ylims[buf_key]
+                if vals:
+                    v_min, v_max = min(vals), max(vals)
+                    y_lo = min(d_lo, v_min * 0.95) if v_min < d_lo else d_lo
+                    y_hi = max(d_hi, v_max * 1.05) if v_max > d_hi else d_hi
+                    ax.set_ylim(y_lo, y_hi)
                 canvas.draw_idle()
             # Update numeric readouts with latest values
             self._pwr_val_v.setText(f"V: {self._power_buf['V'][-1]:.2f}")
@@ -2908,7 +2884,7 @@ class HudWindow(QMainWindow):
             self._gps_ax.set_ylim(cur_lat - dlat, cur_lat + dlat)
             # Show lat/lon truncated to 4 decimals
             self._gps_coord_label.set_text(
-                f"Lat: {cur_lat:.4f}\nLon: {cur_lon:.4f}"
+                f"Lat: {cur_lat:.8f}\nLon: {cur_lon:.8f}"
             )
             self._gps_canvas.draw_idle()
 
@@ -2925,42 +2901,44 @@ class HudWindow(QMainWindow):
             else:
                 self._odom_scatter.set_data(xs, ys)
 
-            if self._odom_tri_patch:
-                self._odom_tri_patch.remove()
-                self._odom_tri_patch = None
             # Adjust window to fit all current points with padding
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
-            dx = max_x - min_x
-            dy = max_y - min_y
-            span = max(dx, dy) * 1.3
+            span = max(max_x - min_x, max_y - min_y) * 1.3
             span = max(span, 1.0)
             half = span / 2
             cx_view = (min_x + max_x) / 2
             cy_view = (min_y + max_y) / 2
             self._odom_ax.set_xlim(cx_view - half, cx_view + half)
             self._odom_ax.set_ylim(cy_view - half, cy_view + half)
-            # Distance traveled
-            dist = 0.0
-            for i in range(1, len(xs)):
-                dist += math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+            # Distance traveled — vectorized for speed
+            n_pts = len(xs)
+            if n_pts > 1:
+                ax_arr = np.array(xs)
+                ay_arr = np.array(ys)
+                dist = float(np.sum(np.hypot(np.diff(ax_arr), np.diff(ay_arr))))
+            else:
+                dist = 0.0
             self._odom_dist_label.set_text(f"Dist: {dist:.2f} m")
 
             cx, cy = xs[-1], ys[-1]
             theta = thetas[-1] if thetas else 0.0
-            s = span * 0.05
-            s = max(s, 0.1)
+            s = max(span * 0.05, 0.1)
             nose = (cx + s * math.cos(theta),
                     cy + s * math.sin(theta))
             bl = (cx + s * 0.5 * math.cos(theta + 2.5),
                   cy + s * 0.5 * math.sin(theta + 2.5))
             br = (cx + s * 0.5 * math.cos(theta - 2.5),
                   cy + s * 0.5 * math.sin(theta - 2.5))
-            tri = Polygon([nose, bl, br], closed=True,
-                          facecolor='red', edgecolor='white',
-                          linewidth=0.8, zorder=5)
-            self._odom_ax.add_patch(tri)
-            self._odom_tri_patch = tri
+            # Reuse triangle patch instead of remove/recreate
+            if self._odom_tri_patch:
+                self._odom_tri_patch.set_xy([nose, bl, br])
+            else:
+                tri = Polygon([nose, bl, br], closed=True,
+                              facecolor='red', edgecolor='white',
+                              linewidth=0.8, zorder=5)
+                self._odom_ax.add_patch(tri)
+                self._odom_tri_patch = tri
             self._odom_canvas.draw_idle()
 
     def _on_slider_pressed(self):
@@ -3086,12 +3064,10 @@ class HudWindow(QMainWindow):
         self.btn_pp.setEnabled(False)
 
         # Show "NO DATA AVAILABLE" placeholders (hidden when data arrives)
-        self._cam_live_txt.set_visible(True)
-        self._cam_no_video_txt.set_visible(False)
-        self._cam_canvas.draw_idle()
-        self._lidar_live_txt.set_visible(True)
-        self._lidar_no_video_txt.set_visible(False)
-        self._lidar_canvas.draw_idle()
+        self._cam_label.clear()
+        self._cam_label.setText('NO DATA AVAILABLE\nAT THE MOMENT')
+        self._lidar_label.clear()
+        self._lidar_label.setText('NO DATA AVAILABLE\nAT THE MOMENT')
         self._gps_live_txt.set_visible(True)
         self._gps_no_data_txt.set_visible(False)
         # Clear GPS map background for a clean black screen
@@ -3183,10 +3159,8 @@ class HudWindow(QMainWindow):
             dot.setStyleSheet(self._DOT_OFF)
 
         # Hide live placeholders, clear imshow handles
-        self._cam_live_txt.set_visible(False)
-        self._cam_canvas.draw_idle()
-        self._lidar_live_txt.set_visible(False)
-        self._lidar_canvas.draw_idle()
+        self._cam_label.clear()
+        self._lidar_label.clear()
         self._gps_live_txt.set_visible(False)
         self._gps_canvas.draw_idle()
         self._odom_live_txt.set_visible(False)
@@ -3200,9 +3174,6 @@ class HudWindow(QMainWindow):
         self._pwr_v_canvas.draw_idle()
         self._pwr_i_canvas.draw_idle()
         self._pwr_p_canvas.draw_idle()
-
-        self._cam_im = None
-        self._lidar_im = None
 
         # Reset time/frame labels
         self.pb_time_label.setText("0.0s / 0.0s")
@@ -3334,12 +3305,9 @@ class HudWindow(QMainWindow):
         img_rgb = node.latest_image_rgb
         if img_rgb is not None:
             node.latest_image_rgb = None
-            self._cam_live_txt.set_visible(False)
-            if self._cam_im is None:
-                self._cam_im = self._cam_ax.imshow(img_rgb, aspect='equal')
-            else:
-                self._cam_im.set_data(img_rgb)
-            self._cam_canvas.draw_idle()
+            # Display via QLabel/QPixmap — much faster than matplotlib
+            qimg = self._rgb_to_qpixmap(img_rgb)
+            self._cam_label.setPixmap(QPixmap.fromImage(qimg))
             self._live_set_dot_received('Camera')
 
         # --- LiDAR ---
@@ -3347,20 +3315,17 @@ class HudWindow(QMainWindow):
         if scan is not None:
             node.latest_scan = None
             bev = self._render_lidar_bev(scan)
-            # Rotate 90° CCW and flip along Y axis to match robot orientation
             bev = np.rot90(bev, 1)
             bev = np.fliplr(bev)
-            self._lidar_live_txt.set_visible(False)
-            if self._lidar_im is None:
-                self._lidar_im = self._lidar_ax.imshow(bev, aspect='equal')
-            else:
-                self._lidar_im.set_data(bev)
-            self._lidar_canvas.draw_idle()
+            qimg = self._rgb_to_qpixmap(bev)
+            self._lidar_label.setPixmap(QPixmap.fromImage(qimg))
             self._live_set_dot_received('Lidar')
 
-        # --- Redraw scalar plots ---
-        if any_scalar_changed:
+        # --- Redraw scalar plots (throttled to ~5 Hz to save CPU) ---
+        now = time.monotonic()
+        if any_scalar_changed and (now - self._last_redraw_time) > 0.2:
             self._redraw_plots()
+            self._last_redraw_time = now
 
     @staticmethod
     def _render_lidar_bev(scan, size=480):
