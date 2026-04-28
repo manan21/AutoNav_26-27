@@ -142,7 +142,7 @@ def _fetch_map_for_gps(lats, lons, zoom=_GPS_TILE_ZOOM):
     extent = (bnd_lon_min, bnd_lon_max, bnd_lat_min, bnd_lat_max)
     return img, extent
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
@@ -1101,12 +1101,30 @@ class HudWindow(QMainWindow):
         sensor_body.addLayout(left_col)
 
         # -- 2b continued: Sensor grid (Camera, Lidar, GPS, Encoders) --
+        self._sensor_grid = grid
+        self._sensor_cells = [cam_cell, lidar_cell, gps_cell, enc_cell]
+        self._sensor_grid_positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        self._expanded_cell = None
+
         grid.addWidget(cam_cell, 0, 0)
         grid.addWidget(lidar_cell, 0, 1)
         grid.addWidget(gps_cell, 1, 0)
         grid.addWidget(enc_cell, 1, 1)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
+
+        # Click to expand/collapse sensor cells
+        self._canvas_to_cell = {
+            self._cam_canvas: cam_cell,
+            self._lidar_canvas: lidar_cell,
+            self._gps_canvas: gps_cell,
+            self._odom_canvas: enc_cell,
+        }
+        for canvas in self._canvas_to_cell:
+            canvas.installEventFilter(self)
+        for cell in self._sensor_cells:
+            cell.mousePressEvent = lambda event, c=cell: self._toggle_sensor_expand(c)
+            cell.setCursor(Qt.PointingHandCursor)
 
         sensor_body.addLayout(grid, stretch=1)
 
@@ -1869,6 +1887,44 @@ class HudWindow(QMainWindow):
         "  padding: 1px 4px; font-size: 11px;"
         "}"
     )
+
+    def eventFilter(self, obj, event):
+        """Forward mouse clicks on matplotlib canvases to the parent sensor cell."""
+        if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
+            cell = self._canvas_to_cell[obj]
+            self._toggle_sensor_expand(cell)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _toggle_sensor_expand(self, cell):
+        """Toggle a sensor cell between expanded (full grid) and normal size."""
+        grid = self._sensor_grid
+        cells = self._sensor_cells
+        positions = self._sensor_grid_positions
+
+        if self._expanded_cell is cell:
+            # Collapse: restore normal 2x2 layout
+            self._expanded_cell = None
+            grid.removeWidget(cell)
+            for c, (r, col) in zip(cells, positions):
+                c.setVisible(True)
+                grid.addWidget(c, r, col)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 1)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+        else:
+            # Expand: hide others, make this one fill the whole grid
+            self._expanded_cell = cell
+            for c in cells:
+                grid.removeWidget(c)
+                if c is not cell:
+                    c.setVisible(False)
+            grid.addWidget(cell, 0, 0, 2, 2)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 0)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
 
     def _on_status_dot_clicked(self, name):
         """Toggle device selection — show process output or return to info log."""
