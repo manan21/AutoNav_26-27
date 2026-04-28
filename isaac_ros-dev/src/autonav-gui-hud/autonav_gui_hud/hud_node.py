@@ -2971,9 +2971,9 @@ class HudWindow(QMainWindow):
             self._eta_label.setText("--:--")
 
     def _redraw_plots(self):
-        # --- Power mini oscilloscopes (only redraw if power data changed) ---
+        # --- Power mini oscilloscopes ---
         t = list(self._power_buf['t'])
-        if t and getattr(self, '_power_dirty', True):
+        if t:
             self._pwr_v_live_txt.set_visible(False)
             self._pwr_i_live_txt.set_visible(False)
             self._pwr_p_live_txt.set_visible(False)
@@ -3010,10 +3010,10 @@ class HudWindow(QMainWindow):
             self._pwr_i_canvas.draw_idle()
             self._pwr_p_canvas.draw_idle()
 
-        # --- GPS (only redraw if GPS data changed) ---
+        # --- GPS with satellite map ---
         lats = self._gps_buf['lat']
         lons = self._gps_buf['lon']
-        if lons and getattr(self, '_gps_dirty', True):
+        if lons:
             # Faint trail of all previous points
             self._gps_trail.set_data(lons, lats)
             # Current position dot
@@ -3030,11 +3030,11 @@ class HudWindow(QMainWindow):
             )
             self._gps_canvas.draw_idle()
 
-        # --- Odom (only redraw if odom data changed) ---
+        # --- Odom XY with trail line + direction triangle ---
         xs = self._odom_buf['x']
         ys = self._odom_buf['y']
         thetas = self._odom_buf['theta']
-        if xs and getattr(self, '_odom_dirty', True):
+        if xs:
             # Use a simple line instead of scatter (much faster)
             if self._odom_scatter is None:
                 self._odom_scatter, = self._odom_ax.plot(
@@ -3351,9 +3351,6 @@ class HudWindow(QMainWindow):
 
         t_s = time.monotonic() - self._live_t0
         any_scalar_changed = False
-        self._gps_dirty = False
-        self._odom_dirty = False
-        self._power_dirty = False
 
         # --- GPS ---
         gps = node.latest_gps
@@ -3368,7 +3365,6 @@ class HudWindow(QMainWindow):
                 self._gps_buf['lon'] = self._gps_buf['lon'][-self._live_gps_maxlen:]
             self._gps_live_txt.set_visible(False)
             self._live_set_dot_received('GPS')
-            self._gps_dirty = True
             # Fetch map tiles on first point or if position leaves extent
             if self._gps_map_extent is None:
                 img, extent = _fetch_map_for_gps([lat], [lon])
@@ -3419,7 +3415,6 @@ class HudWindow(QMainWindow):
                 self._odom_buf['y'] = self._odom_buf['y'][-self._live_odom_maxlen:]
                 self._odom_buf['theta'] = self._odom_buf['theta'][-self._live_odom_maxlen:]
             self._live_set_dot_received('Encoders')
-            self._odom_dirty = True
             any_scalar_changed = True
 
         # --- Power (Voltage / Current / Power) ---
@@ -3448,7 +3443,6 @@ class HudWindow(QMainWindow):
             self._pwr_i_live_txt.set_visible(False)
             self._pwr_p_live_txt.set_visible(False)
             self._live_set_dot_received('Power PCB')
-            self._power_dirty = True
             any_scalar_changed = True
 
         # --- SOC (from electrical publisher) ---
@@ -3457,10 +3451,9 @@ class HudWindow(QMainWindow):
             node.latest_soc = None
             self._latest_soc_pct = soc_val
 
-        # --- Camera (throttled to ~3 Hz) ---
-        now_cam = time.monotonic()
+        # --- Camera ---
         img_rgb = node.latest_image_rgb
-        if img_rgb is not None and (now_cam - getattr(self, '_last_cam_draw', 0)) > 0.33:
+        if img_rgb is not None:
             node.latest_image_rgb = None
             self._cam_live_txt.set_visible(False)
             if self._cam_im is None:
@@ -3469,11 +3462,10 @@ class HudWindow(QMainWindow):
                 self._cam_im.set_data(img_rgb)
             self._cam_canvas.draw_idle()
             self._live_set_dot_received('Camera')
-            self._last_cam_draw = now_cam
 
-        # --- LiDAR (throttled to ~3 Hz) ---
+        # --- LiDAR ---
         scan = node.latest_scan
-        if scan is not None and (now_cam - getattr(self, '_last_lidar_draw', 0)) > 0.33:
+        if scan is not None:
             node.latest_scan = None
             bev = self._render_lidar_bev(scan)
             bev = np.rot90(bev, 1)
@@ -3485,7 +3477,6 @@ class HudWindow(QMainWindow):
                 self._lidar_im.set_data(bev)
             self._lidar_canvas.draw_idle()
             self._live_set_dot_received('Lidar')
-            self._last_lidar_draw = now_cam
 
         # --- Redraw scalar plots (throttled to ~3 Hz) ---
         now = time.monotonic()
