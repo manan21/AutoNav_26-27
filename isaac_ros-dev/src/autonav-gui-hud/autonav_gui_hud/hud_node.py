@@ -1377,7 +1377,7 @@ class HudWindow(QMainWindow):
         self._update_selection()
 
         self._nav_timer = QTimer()
-        self._nav_timer.setInterval(100)  # 10 Hz animation
+        self._nav_timer.setInterval(250)  # 4 Hz animation
         self._nav_timer.timeout.connect(self._nav_anim_tick)
         self._nav_timer.start()
 
@@ -3259,7 +3259,7 @@ class HudWindow(QMainWindow):
 
         # Start 10 Hz timer
         self._live_timer = QTimer()
-        self._live_timer.setInterval(100)
+        self._live_timer.setInterval(200)  # 5 Hz live updates
         self._live_timer.timeout.connect(self._live_tick)
         self._live_timer.start()
 
@@ -3450,9 +3450,10 @@ class HudWindow(QMainWindow):
             node.latest_soc = None
             self._latest_soc_pct = soc_val
 
-        # --- Camera ---
+        # --- Camera (throttled to ~5 Hz) ---
+        now_cam = time.monotonic()
         img_rgb = node.latest_image_rgb
-        if img_rgb is not None:
+        if img_rgb is not None and (now_cam - getattr(self, '_last_cam_draw', 0)) > 0.2:
             node.latest_image_rgb = None
             self._cam_live_txt.set_visible(False)
             if self._cam_im is None:
@@ -3461,13 +3462,13 @@ class HudWindow(QMainWindow):
                 self._cam_im.set_data(img_rgb)
             self._cam_canvas.draw_idle()
             self._live_set_dot_received('Camera')
+            self._last_cam_draw = now_cam
 
-        # --- LiDAR ---
+        # --- LiDAR (throttled to ~5 Hz) ---
         scan = node.latest_scan
-        if scan is not None:
+        if scan is not None and (now_cam - getattr(self, '_last_lidar_draw', 0)) > 0.2:
             node.latest_scan = None
             bev = self._render_lidar_bev(scan)
-            # Rotate 90° CCW and flip along Y axis to match robot orientation
             bev = np.rot90(bev, 1)
             bev = np.fliplr(bev)
             self._lidar_live_txt.set_visible(False)
@@ -3477,10 +3478,13 @@ class HudWindow(QMainWindow):
                 self._lidar_im.set_data(bev)
             self._lidar_canvas.draw_idle()
             self._live_set_dot_received('Lidar')
+            self._last_lidar_draw = now_cam
 
-        # --- Redraw scalar plots ---
-        if any_scalar_changed:
+        # --- Redraw scalar plots (throttled to ~5 Hz) ---
+        now = time.monotonic()
+        if any_scalar_changed and (now - getattr(self, '_last_live_redraw', 0)) > 0.2:
             self._redraw_plots()
+            self._last_live_redraw = now
 
     @staticmethod
     def _render_lidar_bev(scan, size=480):
