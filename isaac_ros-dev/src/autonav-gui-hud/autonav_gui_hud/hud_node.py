@@ -2512,21 +2512,16 @@ class HudWindow(QMainWindow):
             if rotate:
                 rgb = np.rot90(rgb, 2)
                 rgb = np.fliplr(rgb)
-                # Crop bottom 1/3 (behind robot, no data with 180° FOV)
-                h, w = rgb.shape[:2]
-                rgb = rgb[:h * 2 // 3, :]
-                # Display with meter-based extent so axes show distance
+                # Display full 360° BEV with meter-based extent
                 half_m = 10.0  # max range in meters
-                # Full image spans -10 to 10; cropped top 2/3 spans ~+10 down to -3.3
-                y_bottom = -half_m + (2.0 * half_m) / 3.0  # ≈ -3.33
-                extent = [-half_m, half_m, y_bottom, half_m]
+                extent = [-half_m, half_m, -half_m, half_m]
                 no_txt.set_visible(False)
                 im_handle = getattr(self, attr)
                 if im_handle is None:
                     ax.axis('on')
                     im_handle = ax.imshow(rgb, aspect='equal', extent=extent)
                     ax.set_xlim(-half_m, half_m)
-                    ax.set_ylim(y_bottom, half_m)
+                    ax.set_ylim(-half_m, half_m)
                     ax.tick_params(axis='both', length=2, pad=2,
                                   labelsize=6, colors='#888', direction='in')
                     ax.set_xlabel('m', fontsize=6, color='#888', labelpad=1)
