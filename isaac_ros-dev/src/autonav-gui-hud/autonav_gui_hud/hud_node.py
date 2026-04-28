@@ -2521,7 +2521,7 @@ class HudWindow(QMainWindow):
             if 'Lidar' not in getattr(self, '_active_dots', set()):
                 dot = self.status_dots.get('Lidar')
                 if dot:
-                dot.setStyleSheet(self._DOT_ON)
+                    dot.setStyleSheet(self._DOT_ON)
 
     def _on_play_pause(self):
         if self._pb_state == 'playing':
