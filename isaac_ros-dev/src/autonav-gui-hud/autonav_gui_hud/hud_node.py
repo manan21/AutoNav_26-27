@@ -1517,14 +1517,13 @@ class HudWindow(QMainWindow):
             )
             self._process_objects[label] = proc
 
-            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
+            def _reader():
                 try:
                     for line in proc.stdout:
-                        if len(_buf) < _max * 2:
-                            _buf.append(line)
+                        buf.append(line)
                 except Exception:
                     pass
-                _buf.append(f"[Build finished with code {proc.returncode}]\n")
+                buf.append(f"[Build finished with code {proc.returncode}]\n")
             t = threading.Thread(target=_reader, daemon=True)
             t.start()
             self._process_readers[label] = t
@@ -1602,11 +1601,10 @@ class HudWindow(QMainWindow):
             )
             self._process_objects[f"test:{tid}"] = proc
 
-            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
+            def _reader():
                 try:
                     for line in proc.stdout:
-                        if len(_buf) < _max * 2:
-                            _buf.append(line)
+                        buf.append(line)
                 except Exception:
                     pass
             t = threading.Thread(target=_reader, daemon=True)
@@ -1817,11 +1815,10 @@ class HudWindow(QMainWindow):
 
             # Daemon reader thread: appends stdout lines to buffer
             # Skips lines when buffer is full to avoid thrashing
-            def _reader(_buf=buf, _max=self._MAX_BUF_LINES):
+            def _reader():
                 try:
                     for line in proc.stdout:
-                        if len(_buf) < _max * 2:
-                            _buf.append(line)
+                        buf.append(line)
                 except Exception:
                     pass
             t = threading.Thread(target=_reader, daemon=True)
@@ -2022,7 +2019,7 @@ class HudWindow(QMainWindow):
         sb = self._term_display.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    _MAX_BUF_LINES = 200  # cap per-process buffer to avoid memory growth
+    _MAX_BUF_LINES = 500  # cap per-process buffer to avoid memory growth
 
     def _poll_process_output(self):
         """2 Hz: clean up exited process handles, trim buffers, refresh terminal."""
@@ -2038,9 +2035,7 @@ class HudWindow(QMainWindow):
         for buf in self._process_buffers.values():
             if len(buf) > self._MAX_BUF_LINES:
                 del buf[:-self._MAX_BUF_LINES]
-        # Only refresh terminal if it's actually visible on screen
-        if self._selected_process is not None or not self._process_objects:
-            self._refresh_terminal_display()
+        self._refresh_terminal_display()
 
     def closeEvent(self, event):
         """Terminate all subprocesses and stop all modes on window close."""
