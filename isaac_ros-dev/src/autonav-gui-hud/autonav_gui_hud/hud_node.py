@@ -1127,11 +1127,9 @@ class HudWindow(QMainWindow):
             cell.mousePressEvent = lambda event, c=cell: self._toggle_sensor_expand(c)
             cell.setCursor(Qt.PointingHandCursor)
 
-        # Power cell is expandable too (lives outside the grid, in left_col)
         self._power_cell = power_cell
-        power_cell.mousePressEvent = lambda event, c=power_cell: self._toggle_power_expand(c)
+        power_cell.mousePressEvent = lambda event, c=power_cell: self._toggle_sensor_expand(c)
         power_cell.setCursor(Qt.PointingHandCursor)
-        self._power_expanded = False
 
         # Sensor frame style for keyboard nav selection
         self._sensor_frame_style = frame_style
@@ -1143,13 +1141,15 @@ class HudWindow(QMainWindow):
             "}"
         )
 
-        # Sensor cells as a nav group for keyboard navigation
-        self._sensor_nav_buttons = [
+        # Nav columns for sensor cells — split into left/right columns
+        self._status_nav_buttons.append((power_cell, "Power PCB", frame_style))
+        self._sensor_left_col = [
             (cam_cell, "Camera", frame_style),
-            (lidar_cell, "Lidar", frame_style),
             (gps_cell, "GPS", frame_style),
+        ]
+        self._sensor_right_col = [
+            (lidar_cell, "Lidar", frame_style),
             (enc_cell, "Encoders", frame_style),
-            (power_cell, "Power PCB", frame_style),
         ]
 
         sensor_body.addLayout(grid, stretch=1)
@@ -1323,19 +1323,32 @@ class HudWindow(QMainWindow):
             "  border: 2px solid #0f0; border-radius: 7px;"
             "}"
         )
-        # 2D nav grid: group 0 = OPTIONS, group 1 = status dots,
-        #   group 2 = slider, group 3 = play/pause, group 4 = speed
+        # 4-column, 14-row nav grid:
+        #   Col 0: Connect(r1), Launch(r6), Live(r8), Test(r10), Playback(r12), Quit(r14)
+        #   Col 1: dots(r1-r12), Power PCB plot(r13), Scrub Bar(r14)
+        #   Col 2: Camera(r1), GPS(r13), Play/Pause(r14)
+        #   Col 3: Lidar(r1), Odom(r13), Speed(r14)
+        self._status_nav_buttons.append(
+            (self.pb_slider, "Scrub Bar", self._slider_base_style))
+        self._sensor_left_col.append(
+            (self.btn_pp, "\u25B6", play_pause_style))
+        self._sensor_right_col.append(
+            (self.btn_speed, "1x", speed_btn_style))
         self._nav_groups = [
-            self._nav_buttons,                                             # group 0
-            self._status_nav_buttons,                                      # group 1
-            self._sensor_nav_buttons,                                      # group 2 (sensor cells)
-            [(self.pb_slider, "Scrub Bar", self._slider_base_style)],      # group 3
-            [(self.btn_pp, "\u25B6", play_pause_style)],                   # group 4
-            [(self.btn_speed, "1x", speed_btn_style)],                     # group 5
+            self._nav_buttons,          # col 0
+            self._status_nav_buttons,   # col 1
+            self._sensor_left_col,      # col 2
+            self._sensor_right_col,     # col 3
         ]
-        self._nav_col = 0   # current group
-        self._nav_row = 0   # current index within group
-        self._nav_last_row = [0, 0, 0, 0, 0, 0]  # remember row per group
+        # Logical row numbers for row-matched Left/Right navigation
+        _col0_rows = [1, 6, 8, 10, 12, 14]
+        _col1_rows = list(range(1, len(self._status_nav_buttons) + 1))
+        _col2_rows = [1, 13, 14]
+        _col3_rows = [1, 13, 14]
+        self._nav_logical_rows = [_col0_rows, _col1_rows, _col2_rows, _col3_rows]
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row = [0, 0, 0, 0]
         self._scrub_mode = False  # True when actively scrubbing with arrows
         self._speed_mode = False  # True when selecting playback speed with arrows
 
@@ -1930,9 +1943,11 @@ class HudWindow(QMainWindow):
         positions = self._sensor_grid_positions
 
         if self._expanded_cell is cell:
-            # Collapse: restore normal 2x2 layout
+            # Collapse: restore normal layout
             self._expanded_cell = None
             grid.removeWidget(cell)
+            if cell is self._power_cell:
+                self._left_col.addWidget(cell, stretch=1)
             for c, (r, col) in zip(cells, positions):
                 c.setVisible(True)
                 grid.addWidget(c, r, col)
@@ -1941,54 +1956,19 @@ class HudWindow(QMainWindow):
             grid.setColumnStretch(0, 1)
             grid.setColumnStretch(1, 1)
         else:
-            # Expand: hide others, make this one fill the whole grid
+            # Expand: hide grid cells, make this one fill the whole grid
             self._expanded_cell = cell
             for c in cells:
                 grid.removeWidget(c)
                 if c is not cell:
                     c.setVisible(False)
+            if cell is self._power_cell:
+                self._left_col.removeWidget(cell)
             grid.addWidget(cell, 0, 0, 2, 2)
             grid.setRowStretch(0, 1)
             grid.setRowStretch(1, 0)
             grid.setColumnStretch(0, 1)
             grid.setColumnStretch(1, 0)
-
-    def _toggle_power_expand(self, cell):
-        """Toggle Power PCB cell between expanded and normal in the sensor grid."""
-        grid = self._sensor_grid
-        cells = self._sensor_cells
-        positions = self._sensor_grid_positions
-
-        if self._expanded_cell is cell:
-            # Collapse: restore normal layout
-            self._expanded_cell = None
-            grid.removeWidget(cell)
-            cell.setParent(None)
-            # Re-add sensor cells to grid
-            for c, (r, col) in zip(cells, positions):
-                c.setVisible(True)
-                grid.addWidget(c, r, col)
-            grid.setRowStretch(0, 1)
-            grid.setRowStretch(1, 1)
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 1)
-            # Put power back in left col
-            self._left_col.addWidget(cell, stretch=1)
-            self._power_expanded = False
-        else:
-            # Expand: hide grid cells, put power in the grid
-            self._expanded_cell = cell
-            for c in cells:
-                grid.removeWidget(c)
-                c.setVisible(False)
-            # Remove power from left col, add to grid
-            self._left_col.removeWidget(cell)
-            grid.addWidget(cell, 0, 0, 2, 2)
-            grid.setRowStretch(0, 1)
-            grid.setRowStretch(1, 0)
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 0)
-            self._power_expanded = True
 
     def _on_status_dot_clicked(self, name):
         """Toggle device selection — show process output or return to info log."""
@@ -2087,7 +2067,7 @@ class HudWindow(QMainWindow):
         return widget is self.btn_speed
 
     def _is_sensor_selected(self):
-        """Return True if a sensor cell is currently selected."""
+        """Return True if a sensor cell or power cell is currently selected."""
         widget, _, _ = self._cur_btn()
         return widget in self._sensor_cells or widget is self._power_cell
 
@@ -2141,7 +2121,7 @@ class HudWindow(QMainWindow):
                 self._update_selection()
             return
 
-        # --- Normal navigation ---
+        # --- Normal navigation (4-column, 14-row grid with logical row matching) ---
         group = self._nav_groups[self._nav_col]
         if key == Qt.Key_Up:
             self._nav_row = (self._nav_row - 1) % len(group)
@@ -2151,18 +2131,21 @@ class HudWindow(QMainWindow):
             self._nav_row = (self._nav_row + 1) % len(group)
             self._nav_last_row[self._nav_col] = self._nav_row
             self._update_selection()
-        elif key == Qt.Key_Right:
-            if self._nav_col < len(self._nav_groups) - 1:
-                self._nav_last_row[self._nav_col] = self._nav_row
-                self._nav_col += 1
-                self._nav_row = self._nav_last_row[self._nav_col]
-                self._update_selection()
-        elif key == Qt.Key_Left:
-            if self._nav_col > 0:
-                self._nav_last_row[self._nav_col] = self._nav_row
-                self._nav_col -= 1
-                self._nav_row = self._nav_last_row[self._nav_col]
-                self._update_selection()
+        elif key in (Qt.Key_Right, Qt.Key_Left):
+            n_cols = len(self._nav_groups)
+            new_col = (self._nav_col + (1 if key == Qt.Key_Right else -1)) % n_cols
+            cur_logical = self._nav_logical_rows[self._nav_col][self._nav_row]
+            tgt_rows = self._nav_logical_rows[new_col]
+            # Find best match: closest logical row <= current, prefer upper
+            best_idx = 0
+            for i, lr in enumerate(tgt_rows):
+                if lr <= cur_logical:
+                    best_idx = i
+            self._nav_last_row[self._nav_col] = self._nav_row
+            self._nav_col = new_col
+            self._nav_row = best_idx
+            self._nav_last_row[self._nav_col] = self._nav_row
+            self._update_selection()
         elif key in (Qt.Key_Return, Qt.Key_Enter):
             if self._is_slider_selected():
                 # Enter scrub mode — auto-pause if playing
@@ -2176,10 +2159,7 @@ class HudWindow(QMainWindow):
                 self._update_selection()
             elif self._is_sensor_selected():
                 cell, _, _ = self._cur_btn()
-                if cell is self._power_cell:
-                    self._toggle_power_expand(cell)
-                else:
-                    self._toggle_sensor_expand(cell)
+                self._toggle_sensor_expand(cell)
             else:
                 btn, _, _ = self._cur_btn()
                 if btn.isEnabled():
@@ -2297,8 +2277,8 @@ class HudWindow(QMainWindow):
             self._sel_arrow_l = self._sel_frames_l[self._sel_frame_idx]
             self._sel_arrow_r = self._sel_frames_r[self._sel_frame_idx]
             widget, base_label, _ = self._cur_btn()
-            # Slider doesn't support setText — animation only applies to buttons
-            if widget is not self.pb_slider:
+            # Slider, sensor cells, and power cell don't support setText
+            if widget is not self.pb_slider and widget not in self._sensor_cells and widget is not self._power_cell:
                 widget.setText(
                     f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                 )
