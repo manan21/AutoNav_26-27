@@ -3334,7 +3334,7 @@ class HudWindow(QMainWindow):
         Draws shadow lines (gray), hit dots (green), and robot origin (red)
         on a black canvas. Returns an RGB numpy array.
         """
-        img = np.zeros((size, size, 3), dtype=np.uint8)
+        img = np.full((size, size, 3), 255, dtype=np.uint8)
         cx, cy = size // 2, size // 2
 
         # Determine scale: fit max range into half the canvas
@@ -3355,7 +3355,7 @@ class HudWindow(QMainWindow):
             ex = int(cx + r * math.cos(a) * scale)
             ey = int(cy - r * math.sin(a) * scale)
             # Shadow line (gray)
-            _bresenham_line(img, cx, cy, ex, ey, (40, 40, 40))
+            _bresenham_line(img, cx, cy, ex, ey, (0, 0, 0))
             # Hit dot (green) if within valid range
             if r <= scan.range_max:
                 if 0 <= ex < size and 0 <= ey < size:
