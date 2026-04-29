@@ -3504,11 +3504,18 @@ class HudWindow(QMainWindow):
         angles = np.arange(len(scan.ranges)) * scan.angle_increment + scan.angle_min
         ranges = np.array(scan.ranges, dtype=np.float32)
 
+        # Cap for "no detection" rays: draw white line to this distance
+        no_detect_range = min(10.0, max_range)
+
         for i in range(len(ranges)):
             r = ranges[i]
             a = angles[i]
             if not np.isfinite(r) or r < scan.range_min:
-                continue  # NaN/inf = no data, leave as gray
+                # No valid return — draw a white line to 10 m (or max range)
+                ex = int(cx + no_detect_range * math.cos(a) * scale)
+                ey = int(cy - no_detect_range * math.sin(a) * scale)
+                _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+                continue
             # Max range endpoint along this ray
             sx = int(cx + max_range * math.cos(a) * scale)
             sy = int(cy - max_range * math.sin(a) * scale)
