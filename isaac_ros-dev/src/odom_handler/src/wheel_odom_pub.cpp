@@ -22,8 +22,9 @@ class WheelOdomPublisher : public rclcpp::Node
   public:
     WheelOdomPublisher()
     : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0), 
-    wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0), 
-    left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923)
+    wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0),
+    left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923),
+    left_encoder_scale_(1.0 / 1.016335)
     {
       encoder_subscription_ = this->create_subscription<autonav_interfaces::msg::Encoders>("encoders", 
       10, std::bind(&WheelOdomPublisher::encoder_callback, this, std::placeholders::_1));
@@ -87,7 +88,7 @@ class WheelOdomPublisher : public rclcpp::Node
       prev_right_encoder_count_ = right_encoder_count_;
 
       // Convert encoder ticks to linear displacement (in meters)
-      double left_displacement = (2 * M_PI * wheel_radius_) * (left_delta_ticks / (double)ticks_per_revolution_);
+      double left_displacement = (2 * M_PI * wheel_radius_) * (left_delta_ticks / (double)ticks_per_revolution_) * left_encoder_scale_;
       double right_displacement = (2 * M_PI * wheel_radius_) * (right_delta_ticks / (double)ticks_per_revolution_);
       
       // Compute robot's linear velocity and angular velocity
@@ -200,6 +201,7 @@ class WheelOdomPublisher : public rclcpp::Node
     int prev_left_encoder_count_, prev_right_encoder_count_;  // Previous encoder counts for delta calculation
     int left_encoder_count_, right_encoder_count_; // Left Encoder and Right Encoder count reading from control topic
     const int ticks_per_revolution_;  // Number of encoder ticks per wheel revolution
+    const double left_encoder_scale_; // Correction factor for left encoder over-counting (~2.7%)
     rclcpp::Time last_time_; //Time of the last callback to calculate dt
 
     serialib motorController;
