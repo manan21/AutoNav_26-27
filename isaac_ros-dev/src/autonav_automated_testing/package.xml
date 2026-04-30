@@ -22,6 +22,7 @@
   
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
   <exec_depend>gps_handler</exec_depend>
   <exec_depend>gps_waypoint_handler</exec_depend>
   <exec_depend>bringup</exec_depend>

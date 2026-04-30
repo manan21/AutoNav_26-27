@@ -34,12 +34,13 @@ class BaseAutomator(Node):
         # Data storage
         self.collected_data = []
         
-        # Create log directory and file
-        self.log_dir = Path('/autonav/logs')
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+        # Create per-run log directory:  /autonav/logs/t000_20260422_143000/
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.log_file = self.log_dir / f'{self.test_id}_{timestamp}.csv'
+        self.run_stem = f'{self.test_id}_{timestamp}'
+        self.log_dir = Path('/autonav/logs') / self.run_stem
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        self.log_file = self.log_dir / f'{self.run_stem}.csv'
         
         self.get_logger().info(f'Test log file: {self.log_file}')
         
@@ -48,7 +49,7 @@ class BaseAutomator(Node):
 
         # Common Subscribers
         self.data_sub = self.create_subscription(
-            String, '/data/dump', self.data_callback, 10)
+            String, '/data/dump', self.data_callback, 100)
         self.estop_sub = self.create_subscription(
             String, '/estop', self.estop_callback, 10)
         
@@ -67,8 +68,9 @@ class BaseAutomator(Node):
             '/odom': 'pos_x,pos_y,orient_z',
             '/cmd_vel': 'linear_x,angular_z',
             '/zed/zed_node/imu/data': 'accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,orient_x,orient_y,orient_z',
-            '/scan': 'range_min,range_max,ranges_count',
+            '/scan_fullframe': 'range_min,range_max,ranges_count',
             '/line_detection/lines': 'lines_detected',
+            '/motor_speed': 'speed_setting',
             '/electrical/voltage': 'voltage_V',
             '/electrical/current': 'current_A',
             '/electrical/power': 'power_W'
@@ -227,7 +229,7 @@ class BaseAutomator(Node):
                         topic_name, 
                         "accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,orient_x,orient_y,orient_z"
                     ] + data_values[0:9])
-            elif topic_name == "/scan":
+            elif topic_name == "/scan_fullframe":
                 # LiDAR data - summarize range data
                 if len(data_values) >= 3:
                     formatted_rows.append([
@@ -242,6 +244,13 @@ class BaseAutomator(Node):
                         ros_timestamp,
                         topic_name,
                         "lines_detected"
+                    ] + data_values[0:1])
+            elif topic_name == "/motor_speed":
+                if len(data_values) >= 1:
+                    formatted_rows.append([
+                        ros_timestamp,
+                        topic_name,
+                        "speed_setting"
                     ] + data_values[0:1])
             elif topic_name == "/electrical/voltage":
                 if len(data_values) >= 1:

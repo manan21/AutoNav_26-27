@@ -9,7 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 
 '''
-Launch script for [TEST ID: t000] DAQ Mode automated test.
+Launch script for [TEST ID: t000] AUTO DAQ Mode automated test.
 
 IMPORTANT: This launch file is designed to run ALONGSIDE the DEMO_DAY bringup.
 Run the 7 DEMO_DAY steps first (pre_slam, zed, lidar, slam, lines, nav2, rviz),
@@ -96,7 +96,7 @@ def generate_launch_description():
     )
     test_automater = ExecuteProcess(
         cmd=[
-            'python3', '-u',
+            'python3',
             automater_script_path,
             '--ros-args',
             '-p',
@@ -116,7 +116,7 @@ def generate_launch_description():
     )
     video_recorder = ExecuteProcess(
         cmd=[
-            'python3', '-u',
+            'python3',
             video_recorder_script_path,
             '--ros-args',
             '-p',

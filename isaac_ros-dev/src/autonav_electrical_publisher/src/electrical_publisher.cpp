@@ -49,7 +49,7 @@ private:
     void try_init_ina226() {
         // Try to open I2C if not already open
         if (i2c_fd_ < 0) {
-            if (!open_i2c("/dev/i2c-7", 0x40)) {
+            if (!open_i2c("/dev/i2c-1", 0x40)) {
                 RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                     "INA226 I2C init retry failed — will keep trying");
                 return;
@@ -172,7 +172,7 @@ public:
         // ================================================================
         //
         // Step 1: Open I2C bus and set slave address to 0x40
-        //     if (!open_i2c("/dev/i2c-7", 0x40)) {  // Use i2c-7 for Jetson pins 3/5
+        //     if (!open_i2c("/dev/i2c-1", 0x40)) {  // Use i2c-1 for Jetson pins 27/28
         //         RCLCPP_ERROR(this->get_logger(), "Failed to open I2C for 0x40");
         //         return;
         //     }
@@ -204,7 +204,7 @@ public:
         //   2. Read the data bytes
         //
         // Step 1: Open I2C bus and set slave address to 0x40 (if not already open)
-            if (!open_i2c("/dev/i2c-7", 0x40)) {
+            if (!open_i2c("/dev/i2c-1", 0x40)) {
                 RCLCPP_WARN(this->get_logger(), "I2C init failed — will retry in timer");
             } else {
         //

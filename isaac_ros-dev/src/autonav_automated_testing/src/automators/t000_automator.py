@@ -10,23 +10,35 @@ Behavior:
 - Do no driving automatically, collect data while operator drives robot.
 """
 
+import sys
+
 import rclpy
 from base_automator import BaseAutomator
-from sensor_msgs.msg import Joy, NavSatFix, Imu
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from sensor_msgs.msg import Image, Joy, LaserScan, NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
+
+
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=5,
+)
+
 
 class T000Automator(BaseAutomator):
     def __init__(self):
         super().__init__('t000_automater', 't000', 'DAQ_MODE')
 
-        # State
+        # State — all false by default, updated when messages arrive
         self.odom_online = False
         self.joy_online = False
         self.gps_online = False
         self.imu_online = False
-        self.systems_ready = False
-        self.waiting_for_trigger = False
+        self._cam_rec_online = False
+        self._lidar_rec_online = False
         self.A_BUTTON_INDEX = 0
         self.last_joy_buttons = None
 
@@ -38,42 +50,50 @@ class T000Automator(BaseAutomator):
         self.joy_sub = self.create_subscription(Joy, 'joy', self.joy_callback, 10)
         self.gps_sub = self.create_subscription(NavSatFix, '/gps_fix', self.gps_callback, 10)
         self.imu_sub = self.create_subscription(Imu, '/zed/zed_node/imu/data', self.imu_callback, 10)
+        self.create_subscription(
+            Image, '/zed/zed_node/rgb/color/rect/image',
+            self._cam_rec_cb, SENSOR_QOS,
+        )
+        self.create_subscription(
+            LaserScan, '/scan_fullframe',
+            self._lidar_rec_cb, SENSOR_QOS,
+        )
 
-        # Timers
-        self.status_timer = self.create_timer(1.0, self.check_systems)
-        self.sensor_check_start_time = self.get_clock().now()
-        self.sensor_timeout = 30.0
+        # Status display timer — prints a visible status box every 5 seconds
+        self.status_timer = self.create_timer(5.0, self.print_status)
 
-        self.get_logger().info('T000 Automator initialized - DAQ mode system checks...')
+        self.get_logger().info('T000 Automator initialized — press A to start DAQ')
 
-    # ===== System Checks ===== #
-    def check_systems(self):
-        if self.systems_ready:
-            return
-        elapsed = (self.get_clock().now() - self.sensor_check_start_time).nanoseconds / 1e9
-        self.get_logger().info('=== DAQ Mode Status Check ===')
-        self.get_logger().info(f'Odometry:   {"ONLINE" if self.odom_online else "OFFLINE"}')
-        self.get_logger().info(f'Joystick:   {"ONLINE" if self.joy_online else "OFFLINE"}')
-        self.get_logger().info(f'GPS:        {"ONLINE" if self.gps_online else "OFFLINE"}')
-        self.get_logger().info(f'IMU:        {"ONLINE" if self.imu_online else "OFFLINE"}')
-        self.get_logger().info(f'Elapsed: {elapsed:.1f}s / {self.sensor_timeout}s')
-        self.get_logger().info('================================')
-        if self.odom_online and self.joy_online and self.gps_online and self.imu_online:
-            self.systems_ready = True
-            self.status_timer.cancel()
-            self.get_logger().info('\n' + '!'*50)
-            self.get_logger().info('!!!DAQ MODE READY — Press A to start!!!')
-            self.get_logger().info('!'*50 + '\n')
-            self.waiting_for_trigger = True
-            self.waiting_timer = self.create_timer(2.0, self.print_waiting_message)
-            return
-        if elapsed > self.sensor_timeout:
-            self.get_logger().error('Sensor timeout — odom/joy/gps/imu not online.')
-            self.status_timer.cancel()
+    # ===== Status Display ===== #
+    def _tag(self, online):
+        return 'ONLINE' if online else '------'
 
-    def print_waiting_message(self):
-        if self.waiting_for_trigger and not self.test_started and self.systems_ready:
-            self.get_logger().info("Awaiting DAQ start — Press 'A'")
+    def _daq_state(self):
+        if self.test_started and not self.test_complete:
+            return '** RECORDING **'
+        elif self.test_complete:
+            return 'COMPLETE'
+        return 'IDLE (Press A)'
+
+    def print_status(self):
+        self.get_logger().info(
+            '\n'
+            '######################################\n'
+            '#         T000 DAQ MODE              #\n'
+            '######################################\n'
+            '#  Odom : %-8s  GPS : %-8s #\n'
+            '#  Joy  : %-8s  IMU : %-8s #\n'
+            '#  CamRec : %-6s  LidRec : %-6s #\n'
+            '#  DAQ  : %-28s #\n'
+            '#  A = Start/Stop  Ctrl-C = Save     #\n'
+            '######################################'
+            % (
+                self._tag(self.odom_online), self._tag(self.gps_online),
+                self._tag(self.joy_online), self._tag(self.imu_online),
+                self._tag(self._cam_rec_online), self._tag(self._lidar_rec_online),
+                self._daq_state()
+            )
+        )
 
     # ===== Callbacks ===== #
     def odom_callback(self, msg: Odometry):
@@ -91,6 +111,16 @@ class T000Automator(BaseAutomator):
             self.imu_online = True
             self.get_logger().info('IMU online')
 
+    def _cam_rec_cb(self, msg):
+        if not self._cam_rec_online:
+            self._cam_rec_online = True
+            self.get_logger().info('Camera record online')
+
+    def _lidar_rec_cb(self, msg):
+        if not self._lidar_rec_online:
+            self._lidar_rec_online = True
+            self.get_logger().info('LiDAR record online')
+
     def joy_callback(self, msg: Joy):
         if not self.joy_online:
             self.joy_online = True
@@ -104,8 +134,8 @@ class T000Automator(BaseAutomator):
             prev_val = prev[self.A_BUTTON_INDEX] if len(prev) > self.A_BUTTON_INDEX else 0
             curr_val = curr[self.A_BUTTON_INDEX]
             if curr_val == 1 and prev_val == 0:
-                # Rising edge on A button
-                if not self.test_started and not self.test_complete and self.systems_ready:
+                # Rising edge on A button — no lockout, always allow start/stop
+                if not self.test_started and not self.test_complete:
                     self.get_logger().info('A pressed — starting DAQ mode')
                     try:
                         self.start_test()
