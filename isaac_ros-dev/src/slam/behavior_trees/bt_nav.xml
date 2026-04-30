@@ -1,21 +1,31 @@
 <!--
-  AutoNav custom behavior tree for outdoor GPS waypoint navigation.
+  AutoNav behavior tree — persistent goal pursuit.
+
+  The robot never gives up on a goal.  After exhausting the recovery
+  round-robin (BackUp → GradientEscape → ClearCostmaps → Wait → Spin)
+  it loops back and replans from scratch.  number_of_retries is set
+  high enough that it effectively runs until the goal is reached or
+  a new goal replaces it.
 
   Recovery sequence:
-    1. BackUp — physically retreat from tight spots
-    2. GradientEscape — follow costmap gradient out of high-cost zones
-    3. Clear local + global costmaps — remove ghost obstacles
-    4. Wait — let transient obstacles pass
+    1. BackUp           — reverse out of tight spots
+    2. GradientEscape   — follow costmap gradient away from high cost
+    3. Clear costmaps   — remove ghost obstacles
+    4. Wait 5 s         — let transient obstacles pass
+    5. Spin             — rotate to find a new heading
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="999" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Context"
-              service_name="global_costmap/clear_entirely_global_costmap"/>
+            <Sequence name="PlanRecovery">
+              <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+              <Wait wait_duration="1"/>
+            </Sequence>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
@@ -37,6 +47,7 @@
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
           <Wait wait_duration="5"/>
+          <Spin spin_dist="1.57"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
