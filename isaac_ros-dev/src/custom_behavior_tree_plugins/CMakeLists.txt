@@ -60,6 +60,8 @@ ament_target_dependencies(${lib_name} ${dep_pkgs})
 add_library(autonav_goal_bender_bt_node SHARED
             src/goal_bender.cpp)
 
+target_compile_definitions(autonav_goal_bender_bt_node PRIVATE BT_PLUGIN_EXPORT)
+
 target_include_directories(autonav_goal_bender_bt_node
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
