@@ -15,6 +15,7 @@ namespace gradient_escape
 {
 
 using DriveOnHeadingAction = nav2_msgs::action::DriveOnHeading;
+using nav2_behaviors::Status;
 
 /**
  * @brief NAV2 behavior that escapes high-cost costmap regions.
