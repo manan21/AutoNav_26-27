@@ -24,7 +24,7 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 SENSOR_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -82,6 +82,9 @@ class VideoRecorder(Node):
             self._toggle_cb,
             10,
         )
+
+        # Publish recording events to /data/dump so they appear in the CSV
+        self._dump_pub = self.create_publisher(String, '/data/dump', 100)
 
         self.get_logger().info('VideoRecorder ready — waiting for toggle_collect')
 
@@ -145,7 +148,21 @@ class VideoRecorder(Node):
 
         self.get_logger().info(f'Recording started → {cam_path}, {lidar_path}')
 
+        # Publish actual recording start events to the CSV stream
+        msg = String()
+        msg.data = '/recording/camera,event,START'
+        self._dump_pub.publish(msg)
+        msg.data = '/recording/lidar,event,START'
+        self._dump_pub.publish(msg)
+
     def _stop_recording(self):
+        # Publish actual recording stop events to the CSV stream
+        msg = String()
+        msg.data = '/recording/camera,event,STOP'
+        self._dump_pub.publish(msg)
+        msg.data = '/recording/lidar,event,STOP'
+        self._dump_pub.publish(msg)
+
         self._recording = False
 
         if self._cam_timer is not None:

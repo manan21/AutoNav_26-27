@@ -112,10 +112,6 @@ class BaseAutomator(Node):
         self.toggle_pub.publish(toggle_msg)
         self.get_logger().info('Data collection enabled')
 
-        # Mark video recording start in the CSV so playback can sync
-        self.append_standard_row('/recording/camera', ['START'], 'event')
-        self.append_standard_row('/recording/lidar', ['START'], 'event')
-
         # Schedule test-specific actions after a short delay (one-shot timer)
         def _start_actions_once():
             try:
@@ -141,14 +137,9 @@ class BaseAutomator(Node):
             return
 
         self.get_logger().info(f'Stopping {self.test_name} Test')
-
-        # Mark video recording stop in the CSV before disabling collection
-        self.append_standard_row('/recording/camera', ['STOP'], 'event')
-        self.append_standard_row('/recording/lidar', ['STOP'], 'event')
-
         self.test_complete = True
 
-        # Disable data collection (also stops video_recorder)
+        # Disable data collection
         toggle_msg = Bool()
         toggle_msg.data = False
         self.toggle_pub.publish(toggle_msg)
@@ -281,6 +272,13 @@ class BaseAutomator(Node):
                         ros_timestamp,
                         topic_name,
                         "power_W"
+                    ] + data_values[0:1])
+            elif topic_name in ("/recording/camera", "/recording/lidar"):
+                if len(data_values) >= 1:
+                    formatted_rows.append([
+                        ros_timestamp,
+                        topic_name,
+                        "event"
                     ] + data_values[0:1])
             else:
                 # Generic format for unknown topics
