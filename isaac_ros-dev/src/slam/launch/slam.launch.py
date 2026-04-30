@@ -137,6 +137,19 @@ def generate_launch_description():
         ]
     )
 
+    # Pad the SLAM map so the global costmap always contains the robot + GPS waypoints
+    map_padder = Node(
+        package='map_padder',
+        executable='map_padder_node',
+        name='map_padder',
+        output='screen',
+        parameters=[{
+            'min_width_m': 100.0,
+            'min_height_m': 100.0,
+            'robot_buffer_m': 20.0,
+        }]
+    )
+
     return LaunchDescription([
         # params
         publish_period,
@@ -145,9 +158,10 @@ def generate_launch_description():
         #nodes
         ekf_local,
         slam_toolbox,
+        map_padder,
         #gps_transform,
-        #ekf_global, 
+        #ekf_global,
         #nav2
-        
+
     ])
 

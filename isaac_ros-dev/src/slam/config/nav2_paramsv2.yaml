@@ -7,10 +7,8 @@ bt_navigator:
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 1000
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
-    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
-    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
+    default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
+    default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -206,6 +204,7 @@ global_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
+        map_topic: "/map_padded"
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -278,7 +277,7 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape"]
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
@@ -289,6 +288,8 @@ behavior_server:
       plugin: "nav2_behaviors/Wait"
     assisted_teleop:
       plugin: "nav2_behaviors/AssistedTeleop"
+    gradient_escape:
+      plugin: "gradient_escape::GradientEscape"
     global_frame: odom
     robot_base_frame: base_link
     transform_tolerance: 0.1
@@ -297,6 +298,12 @@ behavior_server:
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
+    # GradientEscape parameters
+    gradient_escape.escape_speed: 0.1
+    gradient_escape.cost_threshold: 127
+    gradient_escape.sample_radius: 0.15
+    gradient_escape.num_samples: 16
+    gradient_escape.timeout: 15.0
 
 robot_state_publisher:
   ros__parameters:
