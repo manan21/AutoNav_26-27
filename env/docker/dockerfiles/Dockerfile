@@ -15,7 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
  && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --no-cache-dir pyserial
+# Pin numpy<2 so pip doesn't upgrade past the 1.x ABI that
+# the system python3-opencv / cv_bridge were compiled against.
+RUN python3 -m pip install --no-cache-dir pyserial "numpy<2"
 
 ENV CMAKE_PREFIX_PATH=/usr/local/zed \
     CPATH=/usr/local/zed/include \

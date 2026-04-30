@@ -142,7 +142,7 @@ def _fetch_map_for_gps(lats, lons, zoom=_GPS_TILE_ZOOM):
     extent = (bnd_lon_min, bnd_lon_max, bnd_lat_min, bnd_lat_max)
     return img, extent
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
@@ -237,6 +237,12 @@ class HudWindow(QMainWindow):
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
         self._gps_buf = {'lat': [], 'lon': []}
         self._odom_buf = {'x': [], 'y': [], 'theta': []}
+
+        # ETA estimation state (mirrors ina226_monitor approach)
+        self._CAPACITY_AH = 20.476       # empirical usable capacity
+        self._ETA_ALPHA = 0.05           # EMA smoothing factor
+        self._ema_eta_hours = None       # smoothed time-remaining estimate
+        self._latest_soc_pct = None      # latest SOC from electrical publisher (0-100)
         self._odom_tri_patch = None
         self._plots_dirty = False
 
@@ -478,7 +484,7 @@ class HudWindow(QMainWindow):
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
-            ("GPS", ["GPS"], "ros2 launch gps_handler gps_publisher.cpp"),
+            ("GPS", ["GPS"], "ros2 run gps_handler gps_publisher"),
             ("Power PCB", ["Power PCB"],
              "ros2 launch autonav_electrical_publisher electrical_publisher.launch.py"),
         ]
@@ -828,6 +834,7 @@ class HudWindow(QMainWindow):
         self._dot_to_device["TEST"] = None
 
         left_col = QVBoxLayout()
+        self._left_col = left_col
         left_col.addLayout(status_col)
         left_col.addStretch()
 
@@ -1058,7 +1065,7 @@ class HudWindow(QMainWindow):
         power_layout.addLayout(pwr_p_title_row)
         power_layout.addWidget(self._pwr_p_canvas, stretch=1)
 
-        # SOC fuel gauge bar — horizontal
+        # SOC fuel gauge bar — horizontal bar with info row beneath
         soc_row = QHBoxLayout()
         soc_title = QLabel("SOC")
         soc_title.setStyleSheet("border: none; font-weight: bold; color: #ccc; font-size: 9px;")
@@ -1076,22 +1083,74 @@ class HudWindow(QMainWindow):
         self._soc_bar_layout.addWidget(self._soc_fill, stretch=0)  # fill at 0%
         self._soc_bar_layout.addStretch(1)  # empty space on right
         soc_row.addWidget(self._soc_bar, stretch=1)
+        power_layout.addLayout(soc_row)
+        # SOC info row: percentage left-aligned, ETA right-aligned
+        soc_info_row = QHBoxLayout()
+        soc_info_row.setContentsMargins(0, 0, 0, 0)
         self._soc_label = QLabel("0%")
         self._soc_label.setStyleSheet("border: none; color: #888; font-size: 9px; font-family: monospace;")
-        soc_row.addWidget(self._soc_label)
-        power_layout.addLayout(soc_row)
+        self._eta_label = QLabel("--:--")
+        self._eta_label.setAlignment(Qt.AlignRight)
+        self._eta_label.setStyleSheet("border: none; color: #888; font-size: 9px; font-family: monospace;")
+        soc_info_row.addWidget(self._soc_label)
+        soc_info_row.addStretch(1)
+        soc_info_row.addWidget(self._eta_label)
+        power_layout.addLayout(soc_info_row)
 
         # Add Power PCB below the device status list
         left_col.addWidget(power_cell, stretch=1)
         sensor_body.addLayout(left_col)
 
         # -- 2b continued: Sensor grid (Camera, Lidar, GPS, Encoders) --
+        self._sensor_grid = grid
+        self._sensor_cells = [cam_cell, lidar_cell, gps_cell, enc_cell]
+        self._sensor_grid_positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        self._expanded_cell = None
+
         grid.addWidget(cam_cell, 0, 0)
         grid.addWidget(lidar_cell, 0, 1)
         grid.addWidget(gps_cell, 1, 0)
         grid.addWidget(enc_cell, 1, 1)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
+
+        # Click to expand/collapse sensor cells
+        self._canvas_to_cell = {
+            self._cam_canvas: cam_cell,
+            self._lidar_canvas: lidar_cell,
+            self._gps_canvas: gps_cell,
+            self._odom_canvas: enc_cell,
+        }
+        for canvas in self._canvas_to_cell:
+            canvas.installEventFilter(self)
+        for cell in self._sensor_cells:
+            cell.mousePressEvent = lambda event, c=cell: self._toggle_sensor_expand(c)
+            cell.setCursor(Qt.PointingHandCursor)
+
+        self._power_cell = power_cell
+        power_cell.mousePressEvent = lambda event, c=power_cell: self._toggle_sensor_expand(c)
+        power_cell.setCursor(Qt.PointingHandCursor)
+
+        # Sensor frame style for keyboard nav selection
+        self._sensor_frame_style = frame_style
+        self._sensor_sel_style = (
+            "QFrame#sensorCell {"
+            "  border: 2px solid #0af;"
+            "  background-color: #1a2a3a;"
+            "  border-radius: 3px;"
+            "}"
+        )
+
+        # Nav columns for sensor cells — split into left/right columns
+        self._status_nav_buttons.append((power_cell, "Power PCB", frame_style))
+        self._sensor_left_col = [
+            (cam_cell, "Camera", frame_style),
+            (gps_cell, "GPS", frame_style),
+        ]
+        self._sensor_right_col = [
+            (lidar_cell, "Lidar", frame_style),
+            (enc_cell, "Encoders", frame_style),
+        ]
 
         sensor_body.addLayout(grid, stretch=1)
 
@@ -1219,7 +1278,7 @@ class HudWindow(QMainWindow):
 
         # 2 Hz timer to poll process output and refresh terminal
         self._process_poll_timer = QTimer()
-        self._process_poll_timer.setInterval(500)
+        self._process_poll_timer.setInterval(1000)  # 1 Hz process polling
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
@@ -1264,18 +1323,32 @@ class HudWindow(QMainWindow):
             "  border: 2px solid #0f0; border-radius: 7px;"
             "}"
         )
-        # 2D nav grid: group 0 = OPTIONS, group 1 = status dots,
-        #   group 2 = slider, group 3 = play/pause, group 4 = speed
+        # 4-column, 14-row nav grid:
+        #   Col 0: Connect(r1), Launch(r6), Live(r8), Test(r10), Playback(r12), Quit(r14)
+        #   Col 1: dots(r1-r12), Power PCB plot(r13), Scrub Bar(r14)
+        #   Col 2: Camera(r1), GPS(r13), Play/Pause(r14)
+        #   Col 3: Lidar(r1), Odom(r13), Speed(r14)
+        self._status_nav_buttons.append(
+            (self.pb_slider, "Scrub Bar", self._slider_base_style))
+        self._sensor_left_col.append(
+            (self.btn_pp, "\u25B6", play_pause_style))
+        self._sensor_right_col.append(
+            (self.btn_speed, "1x", speed_btn_style))
         self._nav_groups = [
-            self._nav_buttons,                                             # group 0
-            self._status_nav_buttons,                                      # group 1
-            [(self.pb_slider, "Scrub Bar", self._slider_base_style)],      # group 2
-            [(self.btn_pp, "\u25B6", play_pause_style)],                   # group 3
-            [(self.btn_speed, "1x", speed_btn_style)],                     # group 4
+            self._nav_buttons,          # col 0
+            self._status_nav_buttons,   # col 1
+            self._sensor_left_col,      # col 2
+            self._sensor_right_col,     # col 3
         ]
-        self._nav_col = 0   # current group
-        self._nav_row = 0   # current index within group
-        self._nav_last_row = [0, 0, 0, 0, 0]  # remember row per group
+        # Logical row numbers for row-matched Left/Right navigation
+        _col0_rows = [1, 6, 8, 10, 12, 14]
+        _col1_rows = list(range(1, len(self._status_nav_buttons) + 1))
+        _col2_rows = [1, 13, 14]
+        _col3_rows = [1, 13, 14]
+        self._nav_logical_rows = [_col0_rows, _col1_rows, _col2_rows, _col3_rows]
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row = [0, 0, 0, 0]
         self._scrub_mode = False  # True when actively scrubbing with arrows
         self._speed_mode = False  # True when selecting playback speed with arrows
 
@@ -1304,7 +1377,7 @@ class HudWindow(QMainWindow):
         self._update_selection()
 
         self._nav_timer = QTimer()
-        self._nav_timer.setInterval(100)  # 10 Hz animation
+        self._nav_timer.setInterval(250)  # 4 Hz animation
         self._nav_timer.timeout.connect(self._nav_anim_tick)
         self._nav_timer.start()
 
@@ -1741,6 +1814,7 @@ class HudWindow(QMainWindow):
             self._process_objects[label] = proc
 
             # Daemon reader thread: appends stdout lines to buffer
+            # Skips lines when buffer is full to avoid thrashing
             def _reader():
                 try:
                     for line in proc.stdout:
@@ -1855,6 +1929,48 @@ class HudWindow(QMainWindow):
         "}"
     )
 
+    def eventFilter(self, obj, event):
+        """Forward mouse clicks on matplotlib canvases to the parent sensor cell."""
+        if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
+            cell = self._canvas_to_cell[obj]
+            self._toggle_sensor_expand(cell)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _toggle_sensor_expand(self, cell):
+        """Toggle a sensor cell between expanded (full grid) and normal size."""
+        grid = self._sensor_grid
+        cells = self._sensor_cells
+        positions = self._sensor_grid_positions
+
+        if self._expanded_cell is cell:
+            # Collapse: restore normal layout
+            self._expanded_cell = None
+            grid.removeWidget(cell)
+            if cell is self._power_cell:
+                self._left_col.addWidget(cell, stretch=1)
+            for c, (r, col) in zip(cells, positions):
+                c.setVisible(True)
+                grid.addWidget(c, r, col)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 1)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
+        else:
+            # Expand: hide grid cells, make this one fill the whole grid
+            self._expanded_cell = cell
+            for c in cells:
+                grid.removeWidget(c)
+                if c is not cell:
+                    c.setVisible(False)
+            if cell is self._power_cell:
+                self._left_col.removeWidget(cell)
+            grid.addWidget(cell, 0, 0, 2, 2)
+            grid.setRowStretch(0, 1)
+            grid.setRowStretch(1, 0)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 0)
+
     def _on_status_dot_clicked(self, name):
         """Toggle device selection — show process output or return to info log."""
         dev_label = self._dot_to_device.get(name)
@@ -1877,7 +1993,7 @@ class HudWindow(QMainWindow):
         self._term_last_text = ''  # force refresh
         self._refresh_terminal_display()
 
-    _MAX_TERMINAL_LINES = 200  # only show last N lines to avoid lag
+    _MAX_TERMINAL_LINES = 100  # only show last N lines to avoid lag
 
     def _refresh_terminal_display(self):
         """Update the terminal QTextEdit with the selected process's output."""
@@ -1951,6 +2067,11 @@ class HudWindow(QMainWindow):
         widget, _, _ = self._cur_btn()
         return widget is self.btn_speed
 
+    def _is_sensor_selected(self):
+        """Return True if a sensor cell or power cell is currently selected."""
+        widget, _, _ = self._cur_btn()
+        return widget in self._sensor_cells or widget is self._power_cell
+
     def keyPressEvent(self, event):
         key = event.key()
 
@@ -2001,7 +2122,7 @@ class HudWindow(QMainWindow):
                 self._update_selection()
             return
 
-        # --- Normal navigation ---
+        # --- Normal navigation (4-column, 14-row grid with logical row matching) ---
         group = self._nav_groups[self._nav_col]
         if key == Qt.Key_Up:
             self._nav_row = (self._nav_row - 1) % len(group)
@@ -2011,18 +2132,21 @@ class HudWindow(QMainWindow):
             self._nav_row = (self._nav_row + 1) % len(group)
             self._nav_last_row[self._nav_col] = self._nav_row
             self._update_selection()
-        elif key == Qt.Key_Right:
-            if self._nav_col < len(self._nav_groups) - 1:
-                self._nav_last_row[self._nav_col] = self._nav_row
-                self._nav_col += 1
-                self._nav_row = self._nav_last_row[self._nav_col]
-                self._update_selection()
-        elif key == Qt.Key_Left:
-            if self._nav_col > 0:
-                self._nav_last_row[self._nav_col] = self._nav_row
-                self._nav_col -= 1
-                self._nav_row = self._nav_last_row[self._nav_col]
-                self._update_selection()
+        elif key in (Qt.Key_Right, Qt.Key_Left):
+            n_cols = len(self._nav_groups)
+            new_col = (self._nav_col + (1 if key == Qt.Key_Right else -1)) % n_cols
+            cur_logical = self._nav_logical_rows[self._nav_col][self._nav_row]
+            tgt_rows = self._nav_logical_rows[new_col]
+            # Find best match: closest logical row <= current, prefer upper
+            best_idx = 0
+            for i, lr in enumerate(tgt_rows):
+                if lr <= cur_logical:
+                    best_idx = i
+            self._nav_last_row[self._nav_col] = self._nav_row
+            self._nav_col = new_col
+            self._nav_row = best_idx
+            self._nav_last_row[self._nav_col] = self._nav_row
+            self._update_selection()
         elif key in (Qt.Key_Return, Qt.Key_Enter):
             if self._is_slider_selected():
                 # Enter scrub mode — auto-pause if playing
@@ -2034,6 +2158,9 @@ class HudWindow(QMainWindow):
                 # Enter speed select mode
                 self._speed_mode = True
                 self._update_selection()
+            elif self._is_sensor_selected():
+                cell, _, _ = self._cur_btn()
+                self._toggle_sensor_expand(cell)
             else:
                 btn, _, _ = self._cur_btn()
                 if btn.isEnabled():
@@ -2066,6 +2193,11 @@ class HudWindow(QMainWindow):
                         .replace("border: 1px solid #555", "border: 1px solid #0f0")
                         .replace("color: #dcdcdc", "color: #0f0")
                     )
+                elif widget in self._sensor_cells or widget is self._power_cell:
+                    if is_selected:
+                        widget.setStyleSheet(self._sensor_sel_style)
+                    else:
+                        widget.setStyleSheet(self._sensor_frame_style)
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -2146,8 +2278,8 @@ class HudWindow(QMainWindow):
             self._sel_arrow_l = self._sel_frames_l[self._sel_frame_idx]
             self._sel_arrow_r = self._sel_frames_r[self._sel_frame_idx]
             widget, base_label, _ = self._cur_btn()
-            # Slider doesn't support setText — animation only applies to buttons
-            if widget is not self.pb_slider:
+            # Slider, sensor cells, and power cell don't support setText
+            if widget is not self.pb_slider and widget not in self._sensor_cells and widget is not self._power_cell:
                 widget.setText(
                     f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                 )
@@ -2170,6 +2302,7 @@ class HudWindow(QMainWindow):
         '/electrical/voltage': 'Power PCB',
         '/electrical/current': 'Power PCB',
         '/electrical/power': 'Power PCB',
+        '/electrical/soc': 'Power PCB',
     }
 
     POWER_WINDOW_S = 3.0
@@ -2310,49 +2443,44 @@ class HudWindow(QMainWindow):
         )
 
     def _kill_process(self, proc, label):
-        """Kill a launched process. If connected to a container, read the
-        saved PID and kill it plus all child processes."""
-        if self._container_connected:
-            pid_tag = label.replace(' ', '_').replace('/', '_')
-            try:
-                # Step 1: SIGINT the parent (ros2 launch) — gives it a
-                # chance to shut nodes down gracefully
-                sigint_cmd = (
-                    f"docker exec -u root {self._container_name} "
-                    f"/bin/bash -c "
-                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                    f"kill -INT $PID 2>/dev/null'"
-                )
-                subprocess.run(sigint_cmd, shell=True, timeout=5,
-                               capture_output=True)
-                # Wait for graceful shutdown
+        """Kill a launched process in a background thread so the GUI doesn't freeze."""
+        def _do_kill():
+            if self._container_connected:
+                pid_tag = label.replace(' ', '_').replace('/', '_')
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+                    sigint_cmd = (
+                        f"docker exec -u root {self._container_name} "
+                        f"/bin/bash -c "
+                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                        f"kill -INT $PID 2>/dev/null'"
+                    )
+                    subprocess.run(sigint_cmd, shell=True, timeout=5,
+                                   capture_output=True)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    force_cmd = (
+                        f"docker exec -u root {self._container_name} "
+                        f"/bin/bash -c "
+                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
+                        f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
+                        f"kill -9 $PID $CHILDREN 2>/dev/null; "
+                        f"rm -f /tmp/gui_pid_{pid_tag}'"
+                    )
+                    subprocess.run(force_cmd, shell=True, timeout=5,
+                                   capture_output=True)
+                except Exception:
                     pass
-
-                # Step 2: Force kill parent + any remaining children
-                force_cmd = (
-                    f"docker exec -u root {self._container_name} "
-                    f"/bin/bash -c "
-                    f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                    f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
-                    f"kill -9 $PID $CHILDREN 2>/dev/null; "
-                    f"rm -f /tmp/gui_pid_{pid_tag}'"
-                )
-                subprocess.run(force_cmd, shell=True, timeout=5,
-                               capture_output=True)
-            except Exception:
-                pass
-        # Also terminate the local wrapper process
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        threading.Thread(target=_do_kill, daemon=True).start()
 
     def _launch_cmd_for(self, label):
         """Return the raw command string for a device/test label."""
@@ -2452,10 +2580,14 @@ class HudWindow(QMainWindow):
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
         self._gps_buf = {'lat': [], 'lon': []}
         self._odom_buf = {'x': [], 'y': [], 'theta': []}
+        self._ema_eta_hours = None
+        self._latest_soc_pct = None
         self._update_soc(0.0, force=True)
         if self._odom_tri_patch:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        # Reset dot tracking
+        self._active_dots = set()
         # Clear video imshow handles
         self._cam_im = None
         self._lidar_im = None
@@ -2492,21 +2624,16 @@ class HudWindow(QMainWindow):
             if rotate:
                 rgb = np.rot90(rgb, 2)
                 rgb = np.fliplr(rgb)
-                # Crop bottom 1/3 (behind robot, no data with 180° FOV)
-                h, w = rgb.shape[:2]
-                rgb = rgb[:h * 2 // 3, :]
-                # Display with meter-based extent so axes show distance
+                # Display full 360° BEV with meter-based extent
                 half_m = 10.0  # max range in meters
-                # Full image spans -10 to 10; cropped top 2/3 spans ~+10 down to -3.3
-                y_bottom = -half_m + (2.0 * half_m) / 3.0  # ≈ -3.33
-                extent = [-half_m, half_m, y_bottom, half_m]
+                extent = [-half_m, half_m, -half_m, half_m]
                 no_txt.set_visible(False)
                 im_handle = getattr(self, attr)
                 if im_handle is None:
                     ax.axis('on')
                     im_handle = ax.imshow(rgb, aspect='equal', extent=extent)
                     ax.set_xlim(-half_m, half_m)
-                    ax.set_ylim(y_bottom, half_m)
+                    ax.set_ylim(-half_m, half_m)
                     ax.tick_params(axis='both', length=2, pad=2,
                                   labelsize=6, colors='#888', direction='in')
                     ax.set_xlabel('m', fontsize=6, color='#888', labelpad=1)
@@ -2733,11 +2860,15 @@ class HudWindow(QMainWindow):
         if not cell_name:
             return
 
-        dot = self.status_dots.get(cell_name)
-        if dot:
-            dot.setStyleSheet(
-                "background-color: #0f0; border-radius: 7px; border: none;"
-            )
+        if not hasattr(self, '_active_dots'):
+            self._active_dots = set()
+        if cell_name not in self._active_dots:
+            dot = self.status_dots.get(cell_name)
+            if dot:
+                dot.setStyleSheet(
+                    "background-color: #0f0; border-radius: 7px; border: none;"
+                )
+                self._active_dots.add(cell_name)
 
         t_s = rel_ns / 1e9
         self._plots_dirty = True
@@ -2760,6 +2891,8 @@ class HudWindow(QMainWindow):
             self._power_buf['I'].append(self._power_buf['I'][-1] if self._power_buf['I'] else 0)
             self._power_buf['P'].append(float(values[0]))
             self._trim_power_buf(t_s)
+        elif topic == '/electrical/soc':
+            self._latest_soc_pct = float(values[0])
         elif topic == '/gps_fix':
             try:
                 lat = float(values[0])
@@ -2792,7 +2925,7 @@ class HudWindow(QMainWindow):
             self._power_buf['P'].popleft()
 
     def _update_soc(self, fraction, force=False):
-        """Update SOC gauge bar. fraction is 0.0–1.0.
+        """Update SOC gauge bar and ETA. fraction is 0.0–1.0.
         Hysteresis: only update display if change > 1% to avoid flicker."""
         pct = int(round(fraction * 100))
         if not force and hasattr(self, '_soc_display_pct') and abs(pct - self._soc_display_pct) <= 1:
@@ -2813,8 +2946,27 @@ class HudWindow(QMainWindow):
             color = "#f44"
         self._soc_fill.setStyleSheet(f"background-color: {color}; border: none; border-radius: 1px;")
 
+        # Estimated time remaining — EMA-smoothed current draw
+        avg_i = 0.0
+        if self._power_buf['I']:
+            vals = list(self._power_buf['I'])
+            avg_i = sum(abs(v) for v in vals) / len(vals)
+        if avg_i > 0.01:
+            raw_hours = fraction * self._CAPACITY_AH / avg_i
+            if self._ema_eta_hours is None:
+                self._ema_eta_hours = raw_hours
+            else:
+                smoothed = self._ETA_ALPHA * raw_hours + (1 - self._ETA_ALPHA) * self._ema_eta_hours
+                # Monotonic: only allow the displayed estimate to decrease
+                self._ema_eta_hours = min(self._ema_eta_hours, smoothed)
+            h = int(self._ema_eta_hours)
+            m = int((self._ema_eta_hours - h) * 60)
+            self._eta_label.setText(f"{h}h {m:02d}m")
+        else:
+            self._eta_label.setText("--:--")
+
     def _redraw_plots(self):
-        # --- Power mini oscilloscopes (fixed Y axes) ---
+        # --- Power mini oscilloscopes ---
         t = list(self._power_buf['t'])
         if t:
             self._pwr_v_live_txt.set_visible(False)
@@ -2834,9 +2986,13 @@ class HudWindow(QMainWindow):
             self._pwr_val_v.setText(f"V: {self._power_buf['V'][-1]:.2f}")
             self._pwr_val_i.setText(f"I: {self._power_buf['I'][-1]:.2f}")
             self._pwr_val_p.setText(f"P: {self._power_buf['P'][-1]:.2f}")
-            # Derive SOC from voltage (linear 20V–29.4V → 0%–100%)
-            v = self._power_buf['V'][-1]
-            soc = max(0.0, min(1.0, (v - 20.0) / (29.4 - 20.0)))
+            # Use real SOC from electrical publisher if available,
+            # otherwise fall back to voltage-derived estimate
+            if self._latest_soc_pct is not None:
+                soc = max(0.0, min(1.0, self._latest_soc_pct / 100.0))
+            else:
+                v = self._power_buf['V'][-1]
+                soc = max(0.0, min(1.0, (v - 20.0) / (29.4 - 20.0)))
             self._update_soc(soc)
         else:
             self._pwr_v_live_txt.set_visible(True)
@@ -2849,7 +3005,7 @@ class HudWindow(QMainWindow):
             self._pwr_i_canvas.draw_idle()
             self._pwr_p_canvas.draw_idle()
 
-        # --- GPS with satellite map, single dot + faint trail (100 ft window) ---
+        # --- GPS with satellite map ---
         lats = self._gps_buf['lat']
         lons = self._gps_buf['lon']
         if lons:
@@ -2882,9 +3038,6 @@ class HudWindow(QMainWindow):
             else:
                 self._odom_scatter.set_data(xs, ys)
 
-            if self._odom_tri_patch:
-                self._odom_tri_patch.remove()
-                self._odom_tri_patch = None
             # Adjust window to fit all current points with padding
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
@@ -2897,10 +3050,13 @@ class HudWindow(QMainWindow):
             cy_view = (min_y + max_y) / 2
             self._odom_ax.set_xlim(cx_view - half, cx_view + half)
             self._odom_ax.set_ylim(cy_view - half, cy_view + half)
-            # Distance traveled
-            dist = 0.0
-            for i in range(1, len(xs)):
-                dist += math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1])
+            # Distance traveled — vectorized for speed
+            if len(xs) > 1:
+                ax_arr = np.array(xs)
+                ay_arr = np.array(ys)
+                dist = float(np.sum(np.hypot(np.diff(ax_arr), np.diff(ay_arr))))
+            else:
+                dist = 0.0
             self._odom_dist_label.set_text(f"Dist: {dist:.2f} m")
 
             cx, cy = xs[-1], ys[-1]
@@ -2913,11 +3069,14 @@ class HudWindow(QMainWindow):
                   cy + s * 0.5 * math.sin(theta + 2.5))
             br = (cx + s * 0.5 * math.cos(theta - 2.5),
                   cy + s * 0.5 * math.sin(theta - 2.5))
-            tri = Polygon([nose, bl, br], closed=True,
-                          facecolor='red', edgecolor='white',
-                          linewidth=0.8, zorder=5)
-            self._odom_ax.add_patch(tri)
-            self._odom_tri_patch = tri
+            if self._odom_tri_patch:
+                self._odom_tri_patch.set_xy([nose, bl, br])
+            else:
+                tri = Polygon([nose, bl, br], closed=True,
+                              facecolor='red', edgecolor='white',
+                              linewidth=0.8, zorder=5)
+                self._odom_ax.add_patch(tri)
+                self._odom_tri_patch = tri
             self._odom_canvas.draw_idle()
 
     def _on_slider_pressed(self):
@@ -3096,7 +3255,7 @@ class HudWindow(QMainWindow):
 
         # Start 10 Hz timer
         self._live_timer = QTimer()
-        self._live_timer.setInterval(100)
+        self._live_timer.setInterval(200)  # 5 Hz live updates
         self._live_timer.timeout.connect(self._live_tick)
         self._live_timer.start()
 
@@ -3135,9 +3294,13 @@ class HudWindow(QMainWindow):
         # Restore button style
         self._set_nav_btn_style(self.btn_live, self._pb_button_style)
 
-        # Reset dots
-        for dot in self.status_dots.values():
-            dot.setStyleSheet(self._DOT_OFF)
+        # Reset dots only for sensors that don't have a running process
+        running_labels = set(self._process_objects.keys())
+        for name, dot in self.status_dots.items():
+            # Check if any running process matches this dot's device
+            dev_label = self._dot_to_device.get(name, name)
+            if dev_label not in running_labels:
+                dot.setStyleSheet(self._DOT_OFF)
 
         # Hide live placeholders, clear imshow handles
         self._cam_live_txt.set_visible(False)
@@ -3281,6 +3444,12 @@ class HudWindow(QMainWindow):
             self._live_set_dot_received('Power PCB')
             any_scalar_changed = True
 
+        # --- SOC (from electrical publisher) ---
+        soc_val = node.latest_soc
+        if soc_val is not None:
+            node.latest_soc = None
+            self._latest_soc_pct = soc_val
+
         # --- Camera ---
         img_rgb = node.latest_image_rgb
         if img_rgb is not None:
@@ -3298,7 +3467,6 @@ class HudWindow(QMainWindow):
         if scan is not None:
             node.latest_scan = None
             bev = self._render_lidar_bev(scan)
-            # Rotate 90° CCW and flip along Y axis to match robot orientation
             bev = np.rot90(bev, 1)
             bev = np.fliplr(bev)
             self._lidar_live_txt.set_visible(False)
@@ -3309,18 +3477,22 @@ class HudWindow(QMainWindow):
             self._lidar_canvas.draw_idle()
             self._live_set_dot_received('Lidar')
 
-        # --- Redraw scalar plots ---
-        if any_scalar_changed:
+        # --- Redraw scalar plots (throttled to ~3 Hz) ---
+        now = time.monotonic()
+        if any_scalar_changed and (now - getattr(self, '_last_live_redraw', 0)) > 0.33:
             self._redraw_plots()
+            self._last_live_redraw = now
 
     @staticmethod
     def _render_lidar_bev(scan, size=480):
         """Render a LaserScan as a bird's-eye-view RGB image.
 
-        Draws shadow lines (gray), hit dots (green), and robot origin (red)
-        on a black canvas. Returns an RGB numpy array.
+        Gray background = outside lidar range / unknown.
+        White = driveable (clear path from robot to hit).
+        Black = obstacle shadow (from hit outward to max range).
+        Green dots = hit points. Red dot = robot origin.
         """
-        img = np.zeros((size, size, 3), dtype=np.uint8)
+        img = np.full((size, size, 3), 128, dtype=np.uint8)  # gray background
         cx, cy = size // 2, size // 2
 
         # Determine scale: fit max range into half the canvas
@@ -3332,18 +3504,29 @@ class HudWindow(QMainWindow):
         angles = np.arange(len(scan.ranges)) * scan.angle_increment + scan.angle_min
         ranges = np.array(scan.ranges, dtype=np.float32)
 
+        # Cap for "no detection" rays: draw white line to this distance
+        no_detect_range = min(10.0, max_range)
+
         for i in range(len(ranges)):
             r = ranges[i]
             a = angles[i]
             if not np.isfinite(r) or r < scan.range_min:
-                continue
-            # End point
-            ex = int(cx + r * math.cos(a) * scale)
-            ey = int(cy - r * math.sin(a) * scale)
-            # Shadow line (gray)
-            _bresenham_line(img, cx, cy, ex, ey, (40, 40, 40))
-            # Hit dot (green) if within valid range
-            if r <= scan.range_max:
+                continue  # NaN/inf = no data, leave as gray
+            # Max range endpoint along this ray
+            sx = int(cx + max_range * math.cos(a) * scale)
+            sy = int(cy - max_range * math.sin(a) * scale)
+            if r >= max_range:
+                # Clear to max range — entire ray is driveable (white)
+                _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
+            else:
+                # Hit point
+                ex = int(cx + r * math.cos(a) * scale)
+                ey = int(cy - r * math.sin(a) * scale)
+                # White line: robot to hit (driveable space)
+                _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+                # Black line: hit to max range (obstacle shadow)
+                _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
+                # Green hit dot
                 if 0 <= ex < size and 0 <= ey < size:
                     img[ey, ex] = (0, 255, 0)
 
@@ -3402,6 +3585,7 @@ if _HAS_ROS:
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
+            self.latest_soc = None         # float (0-100%)
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
 
@@ -3427,6 +3611,9 @@ if _HAS_ROS:
             )
             self.create_subscription(
                 Float32, '/electrical/power', self._cb_power, _SENSOR_QOS,
+            )
+            self.create_subscription(
+                Float32, '/electrical/soc', self._cb_soc, _SENSOR_QOS,
             )
 
         def _cb_image(self, msg):
@@ -3463,6 +3650,9 @@ if _HAS_ROS:
 
         def _cb_power(self, msg):
             self.latest_power = msg.data
+
+        def _cb_soc(self, msg):
+            self.latest_soc = msg.data
 
 
 def main(args=None):
