@@ -37,7 +37,8 @@ LOG_DIR = '/autonav/logs'
 CAM_WIDTH = 640
 CAM_HEIGHT = 360
 LIDAR_SIZE = 480
-VIDEO_FPS = 30
+CAM_FPS = 15
+LIDAR_FPS = 30
 
 
 class VideoRecorder(Node):
@@ -124,9 +125,9 @@ class VideoRecorder(Node):
         stem = os.path.splitext(os.path.basename(csv_path))[0]
         return directory, stem
 
-    def _make_writer(self, path, size):
+    def _make_writer(self, path, size, fps):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        return cv2.VideoWriter(path, fourcc, VIDEO_FPS, size)
+        return cv2.VideoWriter(path, fourcc, fps, size)
 
     def _start_recording(self):
         run_dir, stem = self._find_csv()
@@ -137,13 +138,12 @@ class VideoRecorder(Node):
         cam_path = os.path.join(run_dir, f'{stem}_camera.mp4')
         lidar_path = os.path.join(run_dir, f'{stem}_lidar_bev.mp4')
 
-        self._cam_writer = self._make_writer(cam_path, (CAM_WIDTH, CAM_HEIGHT))
-        self._lidar_writer = self._make_writer(lidar_path, (LIDAR_SIZE, LIDAR_SIZE))
+        self._cam_writer = self._make_writer(cam_path, (CAM_WIDTH, CAM_HEIGHT), CAM_FPS)
+        self._lidar_writer = self._make_writer(lidar_path, (LIDAR_SIZE, LIDAR_SIZE), LIDAR_FPS)
         self._recording = True
 
-        period = 1.0 / VIDEO_FPS
-        self._cam_timer = self.create_timer(period, self._write_camera_frame)
-        self._lidar_timer = self.create_timer(period, self._write_lidar_frame)
+        self._cam_timer = self.create_timer(1.0 / CAM_FPS, self._write_camera_frame)
+        self._lidar_timer = self.create_timer(1.0 / LIDAR_FPS, self._write_lidar_frame)
 
         self.get_logger().info(f'Recording started → {cam_path}, {lidar_path}')
 
