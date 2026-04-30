@@ -194,7 +194,7 @@ global_costmap:
       use_sim_time: False
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
-      resolution: 0.10
+      resolution: 0.25
       # When static_layer is enabled, the incoming SLAM map defines the global costmap geometry.
       # Therefore, the following width, height, and origin are not used
       width: 50
