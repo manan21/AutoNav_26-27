@@ -57,6 +57,7 @@ bt_navigator:
       - nav2_assisted_teleop_cancel_bt_node
       - nav2_drive_on_heading_cancel_bt_node
       - nav2_is_battery_charging_condition_bt_node
+      - autonav_goal_bender_bt_node
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -129,9 +130,9 @@ controller_server:
       BaseObstacle.scale: 0.05
       ObstacleFootprint.scale: 1.0
       PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
+      PathAlign.forward_point_distance: 0.0
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
+      GoalAlign.forward_point_distance: 0.0
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0

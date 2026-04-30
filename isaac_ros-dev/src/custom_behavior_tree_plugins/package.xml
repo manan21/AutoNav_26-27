@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>gradient_escape</name>
+  <name>custom_behavior_tree_plugins</name>
   <version>1.0.0</version>
-  <description>NAV2 behavior plugin that escapes high-cost costmap regions by following the cost gradient</description>
+  <description>Custom NAV2 behavior and BT node plugins for AutoNav</description>
   <maintainer email="nfikes@vt.edu">nfikes</maintainer>
   <license>BSD-3-Clause</license>
 
@@ -21,6 +21,7 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
+  <depend>behaviortree_cpp_v3</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

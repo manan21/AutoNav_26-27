@@ -1,32 +1,39 @@
 <!--
-  AutoNav behavior tree — persistent goal pursuit.
+  AutoNav behavior tree — persistent goal pursuit with GoalBender.
 
-  The robot never gives up on a goal.  After exhausting the recovery
-  round-robin (BackUp → GradientEscape → ClearCostmaps → Wait → Spin)
-  it loops back and replans from scratch.  number_of_retries is set
-  high enough that it effectively runs until the goal is reached or
-  a new goal replaces it.
+  Flow:
+    1. GoalBender checks if the goal is behind the robot
+       - If behind: sets an intermediate waypoint ahead and to the side,
+         arcing the robot toward the real goal
+       - If in front: passes the goal through unchanged
+    2. Compute path to the (possibly bent) goal (replan at 1 Hz)
+    3. Follow the path
+    4. If stuck, cycle through recoveries forever
 
   Recovery sequence:
     1. BackUp           — reverse out of tight spots
     2. GradientEscape   — follow costmap gradient away from high cost
     3. Clear costmaps   — remove ghost obstacles
     4. Wait 5 s         — let transient obstacles pass
-    5. Spin             — rotate to find a new heading
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="999" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
-          <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-            <Sequence name="PlanRecovery">
-              <ClearEntireCostmap name="ClearGlobalCostmap-Context"
-                service_name="global_costmap/clear_entirely_global_costmap"/>
-              <Wait wait_duration="1"/>
-            </Sequence>
-          </RecoveryNode>
+          <Sequence name="BendAndPlan">
+            <!-- Bend goal if it's behind the robot -->
+            <GoalBender input_goal="{goal}" output_goal="{nav_goal}"
+              bend_distance="0.8" angle_threshold="1.57" bend_angle="1.05"/>
+            <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
+              <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
+              <Sequence name="PlanRecovery">
+                <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                  service_name="global_costmap/clear_entirely_global_costmap"/>
+                <Wait wait_duration="1"/>
+              </Sequence>
+            </RecoveryNode>
+          </Sequence>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
           <FollowPath path="{path}" controller_id="FollowPath"/>
@@ -47,7 +54,6 @@
               service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
           <Wait wait_duration="5"/>
-          <Spin spin_dist="1.57"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
