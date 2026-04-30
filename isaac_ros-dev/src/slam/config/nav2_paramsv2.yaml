@@ -303,7 +303,7 @@ behavior_server:
     rotational_acc_lim: 3.2
     # GradientEscape parameters
     gradient_escape.escape_speed: 0.1
-    gradient_escape.cost_threshold: 127
+    gradient_escape.cost_threshold: 127.0
     gradient_escape.sample_radius: 0.15
     gradient_escape.num_samples: 16
     gradient_escape.timeout: 15.0

@@ -31,7 +31,7 @@ void GradientEscape::onConfigure()
   nav2_util::declare_parameter_if_not_declared(
     node, "gradient_escape.escape_speed", rclcpp::ParameterValue(0.1));
   nav2_util::declare_parameter_if_not_declared(
-    node, "gradient_escape.cost_threshold", rclcpp::ParameterValue(127));
+    node, "gradient_escape.cost_threshold", rclcpp::ParameterValue(127.0));
   nav2_util::declare_parameter_if_not_declared(
     node, "gradient_escape.sample_radius", rclcpp::ParameterValue(0.15));
   nav2_util::declare_parameter_if_not_declared(
