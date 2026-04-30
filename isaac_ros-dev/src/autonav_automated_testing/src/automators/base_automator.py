@@ -105,12 +105,16 @@ class BaseAutomator(Node):
         """Start the test - common for all tests"""
         self.get_logger().info(f'Starting {self.test_name} Test')
         self.test_started = True
-        
-        # Enable data collection
+
+        # Enable data collection (also triggers video_recorder)
         toggle_msg = Bool()
         toggle_msg.data = True
         self.toggle_pub.publish(toggle_msg)
         self.get_logger().info('Data collection enabled')
+
+        # Mark video recording start in the CSV so playback can sync
+        self.append_standard_row('/recording/camera', ['START'], 'event')
+        self.append_standard_row('/recording/lidar', ['START'], 'event')
 
         # Schedule test-specific actions after a short delay (one-shot timer)
         def _start_actions_once():
@@ -135,16 +139,21 @@ class BaseAutomator(Node):
         """Stop the test and save data - common for all tests"""
         if self.test_complete:
             return
-        
+
         self.get_logger().info(f'Stopping {self.test_name} Test')
+
+        # Mark video recording stop in the CSV before disabling collection
+        self.append_standard_row('/recording/camera', ['STOP'], 'event')
+        self.append_standard_row('/recording/lidar', ['STOP'], 'event')
+
         self.test_complete = True
-        
-        # Disable data collection
+
+        # Disable data collection (also stops video_recorder)
         toggle_msg = Bool()
         toggle_msg.data = False
         self.toggle_pub.publish(toggle_msg)
         self.get_logger().info('Data collection disabled')
-        
+
         # Save collected data
         self.save_data()
         
