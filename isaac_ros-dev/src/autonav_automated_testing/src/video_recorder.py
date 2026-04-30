@@ -45,8 +45,8 @@ class VideoRecorder(Node):
         super().__init__('video_recorder')
         self._bridge = CvBridge()
 
-        # Latest cached frames from subscriptions
-        self._latest_bgr = None
+        # Latest cached messages from subscriptions (converted lazily in timer)
+        self._latest_img_msg = None
         self._latest_scan = None
 
         # VideoWriter handles
@@ -94,10 +94,9 @@ class VideoRecorder(Node):
         if not self._camera_online:
             self._camera_online = True
             self.get_logger().info('Camera record online')
-        try:
-            self._latest_bgr = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
-        except Exception as e:
-            self.get_logger().warn(f'cv_bridge error: {e}')
+        # Store raw message — conversion happens in the write timer to avoid
+        # blocking the callback (cv_bridge on 1080p is expensive on Jetson)
+        self._latest_img_msg = msg
 
     def _scan_cb(self, msg: LaserScan):
         if not self._lidar_online:
@@ -184,9 +183,13 @@ class VideoRecorder(Node):
     # -- Frame writers ---------------------------------------------------------
 
     def _write_camera_frame(self):
-        if self._latest_bgr is None or self._cam_writer is None:
+        if self._latest_img_msg is None or self._cam_writer is None:
             return
-        img = self._latest_bgr
+        try:
+            img = self._bridge.imgmsg_to_cv2(self._latest_img_msg, 'bgr8')
+        except Exception as e:
+            self.get_logger().warn(f'cv_bridge error: {e}')
+            return
         h, w = img.shape[:2]
         # Center-crop to 16:9 aspect ratio
         target_ratio = CAM_WIDTH / CAM_HEIGHT  # 16:9
