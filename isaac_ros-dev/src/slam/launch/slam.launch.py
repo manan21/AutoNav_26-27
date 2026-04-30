@@ -145,9 +145,6 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'tile_size_m': 1.0,
-            'robot_buffer_tiles': 2,
-            'goal_buffer_tiles': 2,
-            'path_buffer_tiles': 1,
             'output_resolution': 0.10,
         }]
     )
