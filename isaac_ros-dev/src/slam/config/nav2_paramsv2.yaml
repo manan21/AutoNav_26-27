@@ -98,13 +98,13 @@ controller_server:
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: True
-      min_vel_x: -0.10
+      min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.22
+      max_vel_x: 0.44
       max_vel_y: 0.0
-      max_vel_theta: 0.35
+      max_vel_theta: 0.70
       min_speed_xy: 0.0
-      max_speed_xy: 0.22
+      max_speed_xy: 0.44
       min_speed_theta: 0.0
       # Add high threshold velocity for turtlebot 3 issue.
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
@@ -194,7 +194,7 @@ global_costmap:
       use_sim_time: False
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
-      resolution: 0.25
+      resolution: 0.10
       # When static_layer is enabled, the incoming SLAM map defines the global costmap geometry.
       # Therefore, the following width, height, and origin are not used
       width: 50

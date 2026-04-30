@@ -145,7 +145,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'tile_size_m': 1.0,
-            'output_resolution': 0.25,
+            'output_resolution': 0.10,
         }]
     )
 

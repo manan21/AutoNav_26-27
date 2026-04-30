@@ -1,22 +1,14 @@
 """
-Map Padder — seed-and-flood tile expansion.
+Map Padder — seed-and-flood with distance-adaptive density.
 
-World is divided into 1×1 m tiles.  Only tiles of interest (and their
-8 immediate neighbours) are marked traversable.  Everything else in the
-bounding box is lethal (100), so the planner never expands it.
+Near the robot a solid disc of tiles is activated (fine detail for the
+planner to navigate around obstacles).  Beyond that radius only a thin
+corridor of tiles along the path/goal line is activated (coarse but
+fast for distant waypoints).
 
-Seeds (tiles of interest):
-  • Every tile that overlaps SLAM data
-  • The robot's tile
-  • The goal's tile
-  • Every tile the straight line from robot→goal passes through
-  • Every tile the current /plan path passes through
-
-OccupancyGrid is always rectangular, so the output is the tight bounding
-box of all active tiles.  Inactive cells inside the box are lethal — the
-planner treats them as walls, giving the same effect as a non-rectangular
-grid.  A coarser output resolution (default 0.25 m) keeps the bounding
-box small even for distant goals.
+Inactive cells inside the bounding box are set to LETHAL (100) so the
+planner never expands them — functionally equivalent to a non-rectangular
+costmap despite OccupancyGrid being rectangular.
 """
 
 import array
@@ -40,7 +32,9 @@ class MapPadder(Node):
         super().__init__('map_padder')
 
         self.declare_parameter('tile_size_m', 1.0)
-        self.declare_parameter('output_resolution', 0.25)
+        self.declare_parameter('output_resolution', 0.10)
+        self.declare_parameter('near_radius_m', 15.0)     # dense disc radius
+        self.declare_parameter('far_tile_size_m', 3.0)     # coarser tiles beyond disc
         self.declare_parameter('input_topic', '/map')
         self.declare_parameter('output_topic', '/map_padded')
         self.declare_parameter('goal_topic', '/goal_pose')
@@ -48,6 +42,8 @@ class MapPadder(Node):
 
         self._tile = self.get_parameter('tile_size_m').value
         self._out_res = self.get_parameter('output_resolution').value
+        self._near_r = self.get_parameter('near_radius_m').value
+        self._far_tile = self.get_parameter('far_tile_size_m').value
         input_topic = self.get_parameter('input_topic').value
         output_topic = self.get_parameter('output_topic').value
         goal_topic = self.get_parameter('goal_topic').value
@@ -60,14 +56,11 @@ class MapPadder(Node):
         self._latest_map = None
         self._plan_poses = None
 
-        # Cached downsample of SLAM grid + which tiles it covers
         self._ds = None
         self._ds_ox = self._ds_oy = 0.0
         self._ds_w = self._ds_h = 0
         self._ds_res = 0.0
         self._slam_tiles = set()
-
-        # Dedup — skip republish when active tile set is unchanged
         self._prev_active = None
 
         map_qos = QoSProfile(
@@ -81,37 +74,48 @@ class MapPadder(Node):
         self.create_subscription(Path, plan_topic, self._on_plan, 10)
 
         self.get_logger().info(
-            f'Map padder: tile={self._tile}m  res={self._out_res}m  '
-            f'{input_topic}->{output_topic}')
+            f'Map padder: tile={self._tile}m  far_tile={self._far_tile}m  '
+            f'near_r={self._near_r}m  res={self._out_res}m')
 
     # ── tile helpers ─────────────────────────────────────────────────
 
-    def _tile_of(self, x, y):
-        t = self._tile
-        return (math.floor(x / t), math.floor(y / t))
+    def _tile_of(self, x, y, size=None):
+        s = size or self._tile
+        return (math.floor(x / s), math.floor(y / s), s)
 
     @staticmethod
-    def _flood_one_ring(seeds):
-        """Return seeds ∪ 8-neighbours of every seed."""
-        out = set(seeds)
-        for tx, ty in seeds:
-            out.update((
-                (tx - 1, ty - 1), (tx, ty - 1), (tx + 1, ty - 1),
-                (tx - 1, ty),                    (tx + 1, ty),
-                (tx - 1, ty + 1), (tx, ty + 1), (tx + 1, ty + 1),
-            ))
+    def _ring(tiles):
+        """Return tiles ∪ 8-neighbours (same tile size)."""
+        out = set(tiles)
+        for tx, ty, s in tiles:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    out.add((tx + dx, ty + dy, s))
         return out
 
-    def _bresenham_tiles(self, x0, y0, x1, y1):
-        """Walk a line at half-tile steps and collect every tile touched."""
+    def _line_tiles(self, x0, y0, x1, y1, size):
+        """Rasterise a line into tiles of given size."""
         tiles = set()
         d = math.hypot(x1 - x0, y1 - y0)
-        n = max(1, int(d / (self._tile * 0.5)))
+        n = max(1, int(d / (size * 0.5)))
         inv = 1.0 / n
         for i in range(n + 1):
             t = i * inv
             tiles.add(self._tile_of(x0 + t * (x1 - x0),
-                                    y0 + t * (y1 - y0)))
+                                    y0 + t * (y1 - y0), size))
+        return tiles
+
+    def _disc_tiles(self, cx, cy, radius, size):
+        """All tiles of given size within radius of (cx, cy)."""
+        tiles = set()
+        r_tiles = math.ceil(radius / size)
+        ctile = self._tile_of(cx, cy, size)
+        ctx, cty = ctile[0], ctile[1]
+        r_sq = (radius / size) ** 2
+        for dx in range(-r_tiles, r_tiles + 1):
+            for dy in range(-r_tiles, r_tiles + 1):
+                if dx * dx + dy * dy <= r_sq:
+                    tiles.add((ctx + dx, cty + dy, size))
         return tiles
 
     # ── downsample ───────────────────────────────────────────────────
@@ -169,7 +173,11 @@ class MapPadder(Node):
         if slam_res <= 0:
             return
 
-        # ── 0. downsample SLAM (cached) ──────────────────────────────
+        tile_near = self._tile
+        tile_far = self._far_tile
+        near_r = self._near_r
+
+        # ── downsample SLAM (cached) ─────────────────────────────────
         if self._ds is None:
             raw = np.frombuffer(bytearray(msg.data), dtype=np.int8
                                 ).reshape(msg.info.height, msg.info.width)
@@ -184,89 +192,120 @@ class MapPadder(Node):
 
         ds = self._ds
         res = self._ds_res
-        tile = self._tile
 
-        # ── 1. collect seed tiles ────────────────────────────────────
+        # ── 1. seeds ─────────────────────────────────────────────────
         seeds = set()
 
-        #  SLAM tiles (cached)
+        # SLAM tiles (fine, cached)
         if not self._slam_tiles:
-            cpt = max(1, round(tile / res))          # cells per tile
+            cpt = max(1, round(tile_near / res))
             for yr in range(0, self._ds_h, cpt):
                 wy = self._ds_oy + yr * res
                 for xr in range(0, self._ds_w, cpt):
                     wx = self._ds_ox + xr * res
                     blk = ds[yr:yr + cpt, xr:xr + cpt]
                     if np.any(blk != UNKNOWN):
-                        self._slam_tiles.add(self._tile_of(wx, wy))
+                        self._slam_tiles.add(
+                            self._tile_of(wx, wy, tile_near))
         seeds |= self._slam_tiles
 
-        #  Robot
+        # Robot position
         rxy = self._robot_xy()
         if rxy:
-            seeds.add(self._tile_of(*rxy))
+            # Dense disc of fine tiles around robot
+            seeds |= self._disc_tiles(rxy[0], rxy[1], near_r, tile_near)
 
-        #  Goal + line robot→goal
+        # Goal + line to goal
         if self._latest_goal:
             gx, gy = self._latest_goal
-            seeds.add(self._tile_of(gx, gy))
-            if rxy:
-                seeds |= self._bresenham_tiles(rxy[0], rxy[1], gx, gy)
-            else:
-                cx = self._ds_ox + self._ds_w * res / 2
-                cy = self._ds_oy + self._ds_h * res / 2
-                seeds |= self._bresenham_tiles(cx, cy, gx, gy)
+            seeds.add(self._tile_of(gx, gy, tile_far))
 
-        #  Plan path
-        if self._plan_poses:
+            origin = rxy or (self._ds_ox + self._ds_w * res / 2,
+                             self._ds_oy + self._ds_h * res / 2)
+            ox, oy = origin
+
+            # Near portion of the line: fine tiles
+            dist = math.hypot(gx - ox, gy - oy)
+            if dist > 0:
+                # Fraction of the line that's within the near radius
+                near_frac = min(1.0, near_r / dist)
+                mid_x = ox + near_frac * (gx - ox)
+                mid_y = oy + near_frac * (gy - oy)
+
+                if near_frac < 1.0:
+                    # Near segment: fine tiles (already mostly covered by disc)
+                    seeds |= self._line_tiles(
+                        ox, oy, mid_x, mid_y, tile_near)
+                    # Far segment: coarse tiles
+                    seeds |= self._line_tiles(
+                        mid_x, mid_y, gx, gy, tile_far)
+                else:
+                    # Entire line is within near radius
+                    seeds |= self._line_tiles(ox, oy, gx, gy, tile_near)
+
+        # Plan path tiles: near=fine, far=coarse
+        if self._plan_poses and rxy:
+            rx, ry = rxy
+            near_r_sq = near_r * near_r
             for px, py in self._plan_poses:
-                seeds.add(self._tile_of(px, py))
+                d_sq = (px - rx) ** 2 + (py - ry) ** 2
+                if d_sq <= near_r_sq:
+                    seeds.add(self._tile_of(px, py, tile_near))
+                else:
+                    seeds.add(self._tile_of(px, py, tile_far))
 
         # ── 2. flood one ring ────────────────────────────────────────
-        active = self._flood_one_ring(seeds)
+        active = self._ring(seeds)
 
         if active == self._prev_active and self._slam_tiles:
-            return                         # nothing changed
-        self._prev_active = set(active)    # store a copy
+            return
+        self._prev_active = set(active)
 
         if not active:
             return
 
-        # ── 3. bounding box ──────────────────────────────────────────
-        min_tx = min(t[0] for t in active)
-        max_tx = max(t[0] for t in active)
-        min_ty = min(t[1] for t in active)
-        max_ty = max(t[1] for t in active)
+        # ── 3. convert multi-size tiles to cell mask ─────────────────
+        # Find world-space bounding box of all active tiles
+        world_min_x = float('inf')
+        world_min_y = float('inf')
+        world_max_x = float('-inf')
+        world_max_y = float('-inf')
 
-        bb_ox = min_tx * tile
-        bb_oy = min_ty * tile
-        n_tx = max_tx - min_tx + 1
-        n_ty = max_ty - min_ty + 1
-        cpt = max(1, round(tile / res))
-        bb_w = n_tx * cpt
-        bb_h = n_ty * cpt
+        for tx, ty, s in active:
+            x0 = tx * s
+            y0 = ty * s
+            world_min_x = min(world_min_x, x0)
+            world_min_y = min(world_min_y, y0)
+            world_max_x = max(world_max_x, x0 + s)
+            world_max_y = max(world_max_y, y0 + s)
 
-        MAX = 5000
-        if bb_w > MAX or bb_h > MAX:
-            self.get_logger().warn(f'Clamped {bb_w}x{bb_h}')
-            bb_w, bb_h = min(bb_w, MAX), min(bb_h, MAX)
+        # Snap to output resolution
+        bb_ox = math.floor(world_min_x / res) * res
+        bb_oy = math.floor(world_min_y / res) * res
+        bb_w = min(5000, math.ceil((world_max_x - bb_ox) / res))
+        bb_h = min(5000, math.ceil((world_max_y - bb_oy) / res))
 
-        # ── 4. build tile-level active mask, upscale to cell grid ────
-        tmask = np.zeros((n_ty, n_tx), dtype=np.bool_)
-        for tx, ty in active:
-            tmask[ty - min_ty, tx - min_tx] = True
+        if bb_w <= 0 or bb_h <= 0:
+            return
 
-        cmask = np.repeat(np.repeat(tmask, cpt, axis=0),
-                          cpt, axis=1)[:bb_h, :bb_w]
+        # Paint active tiles into a cell-level boolean mask
+        cmask = np.zeros((bb_h, bb_w), dtype=np.bool_)
+        for tx, ty, s in active:
+            # Convert tile world bounds to cell indices
+            x0 = tx * s
+            y0 = ty * s
+            cx0 = max(0, round((x0 - bb_ox) / res))
+            cy0 = max(0, round((y0 - bb_oy) / res))
+            cx1 = min(bb_w, round((x0 + s - bb_ox) / res))
+            cy1 = min(bb_h, round((y0 + s - bb_oy) / res))
+            if cx1 > cx0 and cy1 > cy0:
+                cmask[cy0:cy1, cx0:cx1] = True
 
-        # ── 5. assemble output grid ──────────────────────────────────
-        #   inactive = LETHAL  (planner can't enter)
-        #   active   = UNKNOWN (traversable corridor)
-        #   SLAM     = real data overlaid
+        # ── 4. assemble grid ─────────────────────────────────────────
         grid = np.full((bb_h, bb_w), LETHAL, dtype=np.int8)
         grid[cmask] = UNKNOWN
 
-        # paste SLAM data into the active corridor
+        # Paste SLAM data into active cells
         ox = round((self._ds_ox - bb_ox) / res)
         oy = round((self._ds_oy - bb_oy) / res)
         sy0, sx0 = max(0, -oy), max(0, -ox)
@@ -279,7 +318,7 @@ class MapPadder(Node):
             mask = cmask[dy0:dy0 + ch, dx0:dx0 + cw]
             region[mask] = slam[mask]
 
-        # ── 6. publish ───────────────────────────────────────────────
+        # ── 5. publish ───────────────────────────────────────────────
         out = OccupancyGrid()
         out.header.frame_id = msg.header.frame_id
         out.header.stamp = self.get_clock().now().to_msg()
@@ -293,9 +332,10 @@ class MapPadder(Node):
         out.data = array.array('b', grid.ravel().tobytes())
         self._pub.publish(out)
 
+        n_active = int(cmask.sum())
         self.get_logger().info(
-            f'{len(active)} active tiles  {bb_w}x{bb_h} cells '
-            f'({bb_w * res:.0f}x{bb_h * res:.0f}m @ {res:.2f}m)')
+            f'{len(active)} tiles  {n_active}/{bb_w * bb_h} active cells  '
+            f'{bb_w}x{bb_h} ({bb_w * res:.0f}x{bb_h * res:.0f}m)')
 
 
 def main(args=None):
