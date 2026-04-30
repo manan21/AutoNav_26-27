@@ -194,7 +194,7 @@ global_costmap:
       use_sim_time: False
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
-      resolution: 0.05
+      resolution: 0.10
       # When static_layer is enabled, the incoming SLAM map defines the global costmap geometry.
       # Therefore, the following width, height, and origin are not used
       width: 50
@@ -208,6 +208,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
+        first_map_only: false
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -237,7 +238,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
         inflation_radius: 0.8 # NavfnPlanner does not know the robot footprint, so inflation radius must cover from obstacle edge to robot center. Furthest point of robot perimeter is 0.76m. We could switch to a planner that uses the footprint.
-      always_send_full_costmap: True
+      always_send_full_costmap: False
 
 map_server:
   ros__parameters:
@@ -262,7 +263,7 @@ planner_server:
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.5
-      use_astar: false
+      use_astar: true
       allow_unknown: true
 
 smoother_server:

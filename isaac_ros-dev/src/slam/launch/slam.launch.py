@@ -144,9 +144,11 @@ def generate_launch_description():
         name='map_padder',
         output='screen',
         parameters=[{
-            'min_width_m': 100.0,
-            'min_height_m': 100.0,
-            'robot_buffer_m': 20.0,
+            'tile_size_m': 1.0,
+            'robot_buffer_tiles': 2,
+            'goal_buffer_tiles': 2,
+            'path_buffer_tiles': 1,
+            'output_resolution': 0.10,
         }]
     )
 
