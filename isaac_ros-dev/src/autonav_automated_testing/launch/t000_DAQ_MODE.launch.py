@@ -61,7 +61,7 @@ def generate_launch_description():
         parameters=[{
             'topics_to_monitor': list(topics_to_monitor),
             'test_id': 't000',
-            'publish_rate': 380.0,
+            'publish_rate': 30.0,
             'use_sim_time': LaunchConfiguration('use_sim_time')
         }]
     )
