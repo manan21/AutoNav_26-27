@@ -8,3 +8,4 @@ __pycache__
 tile_cache/
 .codex
 *.png
+ZED_Diagnostic_Results.json
