@@ -252,7 +252,15 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
       }
       if (static_cast<int>(hood_idx.size()) < params_.min_pca_points) continue;
 
-      // Sort z, find first gap > z_ground_band.
+      // Sort z, scan for a wall-sized split. Real lidar layers create
+      // discrete elevation rings; on a tilted surface those rings appear
+      // as z-gaps between hits even though the surface is continuous.
+      // We must NOT split on ring-gap artifacts (which shred a tilted
+      // plate's point set into 1D slices that PCA can't classify) — only
+      // on real walls. So: walk the gaps from low z up, and split at
+      // the first one whose upper cluster span exceeds wall_min_height.
+      // If no such gap exists, treat the whole point set as one
+      // (possibly tilted) surface and let PCA assign a slope angle.
       zs.clear();
       zs.reserve(hood_idx.size());
       for (int i : hood_idx) zs.push_back(rotated[i].z());
@@ -262,26 +270,28 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
       float z_cut = 0.0f;
       for (size_t k = 0; k + 1 < zs.size(); ++k) {
         if (zs[k + 1] - zs[k] > params_.z_ground_band) {
-          z_cut = 0.5f * (zs[k] + zs[k + 1]);
+          const float candidate_cut = 0.5f * (zs[k] + zs[k + 1]);
+          if (zs.back() - candidate_cut <= params_.wall_min_height) {
+            // Upper span is small — likely a ring-gap artifact on a
+            // tilted surface, not a real wall. Keep looking for a
+            // taller upper region further up the column.
+            continue;
+          }
+          // Real wall: split, mark the cell, add upper points to the
+          // non-ground obstacle candidate set.
+          z_cut = candidate_cut;
           has_split = true;
-          // Wall test: upper cluster span > wall_min_height.
-          if (zs.back() - z_cut > params_.wall_min_height) {
-            // Mark this center cell as wall iff it owns any upper-cluster
-            // points (mirrors the simulator's "own_pts_for_wall" check).
-            auto own_it = cell_idx.find(cy * gw + cx);
-            if (own_it != cell_idx.end()) {
-              for (int i : own_it->second) {
-                if (rotated[i].z() > z_cut) {
-                  wall_detected[cy * gw + cx] = 1;
-                  break;
-                }
+          auto own_it = cell_idx.find(cy * gw + cx);
+          if (own_it != cell_idx.end()) {
+            for (int i : own_it->second) {
+              if (rotated[i].z() > z_cut) {
+                wall_detected[cy * gw + cx] = 1;
+                break;
               }
             }
-            // Add upper-cluster points (from anywhere in the 3x3) as
-            // non-ground obstacle candidates.
-            for (int i : hood_idx) {
-              if (rotated[i].z() > z_cut) non_ground_idx.push_back(i);
-            }
+          }
+          for (int i : hood_idx) {
+            if (rotated[i].z() > z_cut) non_ground_idx.push_back(i);
           }
           break;
         }
