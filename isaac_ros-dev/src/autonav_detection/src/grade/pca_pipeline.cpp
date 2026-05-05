@@ -1,0 +1,578 @@
+// Algorithm implementation for grade_detector.
+//
+// Direct port of build_grade_costmap() in lidar_sim_gui.py. Operates
+// entirely in the algorithm's internal frame (z = local up). The ROS
+// wrapper is responsible for any TF transforms in/out.
+//
+// References:
+//   - terrain-grade-layer-plan.md (Steps 1-5)
+//   - /Users/nathanfikes/Projects/Claude-Sandbox/Lidar-Simulation/RULES.md
+//   - lidar_sim_gui.py: surface_normal, _pca_slope_deg, build_grade_costmap
+
+#include "autonav_detection/grade_detector.hpp"
+
+#include <Eigen/Eigenvalues>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace autonav_detection {
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+// Rotation: build R such that R * [0,0,1] = sn. We then operate with R^T
+// to undo the tilt and get a frame where local ground aligns with z.
+Eigen::Matrix3f rotationFromNormal(const Eigen::Vector3f& sn) {
+  const Eigen::Vector3f up(0.0f, 0.0f, 1.0f);
+  const float dot = std::clamp(up.dot(sn.normalized()), -1.0f, 1.0f);
+  if (dot > 0.9999f) {
+    return Eigen::Matrix3f::Identity();
+  }
+  if (dot < -0.9999f) {
+    // 180° flip; pick X as rotation axis.
+    Eigen::Matrix3f R;
+    R << 1, 0,  0,
+         0, -1, 0,
+         0, 0,  -1;
+    return R;
+  }
+  Eigen::Vector3f axis = up.cross(sn).normalized();
+  const float angle = std::acos(dot);
+  return Eigen::AngleAxisf(angle, axis).toRotationMatrix();
+}
+
+}  // namespace
+
+GradeDetector::GradeDetector(const GradeDetectorParams& params)
+    : params_(params) {}
+
+// ───────────────────────────────────────────────────────────────────────
+// Step 1: surface normal from a small disk of low-z points
+// ───────────────────────────────────────────────────────────────────────
+Eigen::Vector3f GradeDetector::computeSurfaceNormal(
+    const std::vector<Eigen::Vector3f>& cloud,
+    bool& valid_out) const {
+  valid_out = false;
+  const float r2 = params_.surface_normal_radius *
+                   params_.surface_normal_radius;
+
+  // Collect points within horizontal radius around (x=0, y=0). Real lidar
+  // returns are dense enough that we don't need to subsample like the sim.
+  std::vector<Eigen::Vector3f> nearby;
+  nearby.reserve(64);
+  for (const auto& p : cloud) {
+    const float d2 = p.x() * p.x() + p.y() * p.y();
+    if (d2 <= r2) {
+      nearby.push_back(p);
+    }
+  }
+  if (nearby.size() < 3) {
+    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+  }
+
+  // Estimate local floor: median of all z in the disk. Robust to a few
+  // wall returns that creep in at the disk's edge.
+  std::vector<float> zs;
+  zs.reserve(nearby.size());
+  for (const auto& p : nearby) zs.push_back(p.z());
+  std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
+  const float z_floor = zs[zs.size() / 2];
+
+  // Keep points within ±z_window of the floor estimate.
+  std::vector<Eigen::Vector3f> ground_pts;
+  ground_pts.reserve(nearby.size());
+  for (const auto& p : nearby) {
+    if (std::abs(p.z() - z_floor) <= params_.surface_normal_z_window) {
+      ground_pts.push_back(p);
+    }
+  }
+  if (ground_pts.size() < 3) {
+    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+  }
+
+  // PCA → smallest-eigvec eigenvector is the surface normal.
+  Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+  for (const auto& p : ground_pts) centroid += p;
+  centroid /= static_cast<float>(ground_pts.size());
+
+  Eigen::Matrix3f cov = Eigen::Matrix3f::Zero();
+  for (const auto& p : ground_pts) {
+    Eigen::Vector3f d = p - centroid;
+    cov += d * d.transpose();
+  }
+  cov /= static_cast<float>(std::max<size_t>(1, ground_pts.size() - 1));
+
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(cov);
+  Eigen::Vector3f normal = es.eigenvectors().col(0);
+  if (normal.z() < 0.0f) normal = -normal;
+  normal.normalize();
+
+  // Safety clamp.
+  const float cos_tilt = std::clamp(normal.z(), 0.0f, 1.0f);
+  const float tilt_deg = std::acos(cos_tilt) * 180.0f / kPi;
+  if (tilt_deg > params_.surface_normal_max_tilt_deg) {
+    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+  }
+
+  valid_out = true;
+  return normal;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Per-cell PCA slope (mirror of _pca_slope_deg in lidar_sim_gui.py)
+// ───────────────────────────────────────────────────────────────────────
+float GradeDetector::computeSlopeDeg(
+    const std::vector<Eigen::Vector3f>& points,
+    const Eigen::Vector3f& ref_normal) const {
+  const int n = static_cast<int>(points.size());
+  if (n < params_.min_pca_points) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+
+  // Reject point sets without spread in at least 2 axes (single-ring,
+  // line-like).
+  Eigen::Vector3f mn = points.front();
+  Eigen::Vector3f mx = points.front();
+  for (const auto& p : points) {
+    mn = mn.cwiseMin(p);
+    mx = mx.cwiseMax(p);
+  }
+  std::array<float, 3> spreads = {mx.x() - mn.x(), mx.y() - mn.y(),
+                                  mx.z() - mn.z()};
+  std::sort(spreads.begin(), spreads.end());
+  if (spreads[1] < 0.10f) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+
+  Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+  for (const auto& p : points) centroid += p;
+  centroid /= static_cast<float>(n);
+
+  Eigen::Matrix3f cov = Eigen::Matrix3f::Zero();
+  for (const auto& p : points) {
+    Eigen::Vector3f d = p - centroid;
+    cov += d * d.transpose();
+  }
+  cov /= static_cast<float>(n - 1);
+
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(cov);
+  const Eigen::Vector3f eigvals = es.eigenvalues();  // ascending
+
+  // Reject 1D (line-like).
+  if (eigvals[1] < eigvals[2] * 0.01f) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  // Reject non-planar (e.g. ramp + adjacent wall mixed in one neighborhood).
+  if (eigvals[2] > 1e-12f &&
+      (eigvals[0] / eigvals[2]) > params_.pca_planarity_max) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+
+  Eigen::Vector3f normal = es.eigenvectors().col(0);
+  const float cos_angle = std::abs(normal.dot(ref_normal)) /
+                          (normal.norm() * ref_normal.norm());
+  return std::acos(std::clamp(cos_angle, 0.0f, 1.0f)) * 180.0f / kPi;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// DBSCAN (O(n²) — plenty fast on the obstacle subset we feed it)
+// ───────────────────────────────────────────────────────────────────────
+std::vector<int> GradeDetector::dbscan(
+    const std::vector<Eigen::Vector3f>& points) const {
+  const int n = static_cast<int>(points.size());
+  std::vector<int> labels(n, -1);  // -1 = noise/unassigned
+  if (n < params_.dbscan_min_samples) return labels;
+
+  const float eps2 = params_.dbscan_eps * params_.dbscan_eps;
+
+  // Precompute neighbor lists.
+  std::vector<std::vector<int>> neighbors(n);
+  for (int i = 0; i < n; ++i) {
+    for (int j = i + 1; j < n; ++j) {
+      const float d2 = (points[i] - points[j]).squaredNorm();
+      if (d2 <= eps2) {
+        neighbors[i].push_back(j);
+        neighbors[j].push_back(i);
+      }
+    }
+    neighbors[i].push_back(i);  // include self in neighborhood count
+  }
+
+  int cluster_id = 0;
+  std::vector<uint8_t> visited(n, 0);
+  for (int i = 0; i < n; ++i) {
+    if (visited[i]) continue;
+    visited[i] = 1;
+    if (static_cast<int>(neighbors[i].size()) < params_.dbscan_min_samples) {
+      continue;  // noise (label remains -1)
+    }
+    // BFS over density-connected core points.
+    labels[i] = cluster_id;
+    std::vector<int> seeds = neighbors[i];
+    for (size_t s = 0; s < seeds.size(); ++s) {
+      const int q = seeds[s];
+      if (!visited[q]) {
+        visited[q] = 1;
+        if (static_cast<int>(neighbors[q].size()) >=
+            params_.dbscan_min_samples) {
+          for (int nb : neighbors[q]) seeds.push_back(nb);
+        }
+      }
+      if (labels[q] < 0) labels[q] = cluster_id;
+    }
+    ++cluster_id;
+  }
+  return labels;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Morphological dilation on a bool-as-uint8 grid (8-connected; mirrors
+// scipy.ndimage.binary_dilation default structure)
+// ───────────────────────────────────────────────────────────────────────
+std::vector<uint8_t> GradeDetector::dilate(const std::vector<uint8_t>& grid,
+                                           int width, int height,
+                                           int iterations) {
+  if (iterations <= 0) return grid;
+  std::vector<uint8_t> a = grid;
+  std::vector<uint8_t> b(grid.size(), 0);
+  for (int it = 0; it < iterations; ++it) {
+    std::fill(b.begin(), b.end(), 0);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        if (!a[y * width + x]) continue;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const int nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+            b[ny * width + nx] = 1;
+          }
+        }
+      }
+    }
+    std::swap(a, b);
+  }
+  return a;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Main entry point — Steps 2-5 of build_grade_costmap orchestrated here
+// ───────────────────────────────────────────────────────────────────────
+void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
+                            GradeDetectorResult& out,
+                            bool populate_grade_map) {
+  out.obstacle_points.clear();
+  out.grade_map.clear();
+  out.surface_normal = Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+  out.surface_normal_valid = false;
+
+  // Step 1: surface normal & rotation.
+  bool sn_valid = false;
+  const Eigen::Vector3f sn = computeSurfaceNormal(cloud_input, sn_valid);
+  out.surface_normal = sn;
+  out.surface_normal_valid = sn_valid;
+
+  if (cloud_input.size() < static_cast<size_t>(params_.min_pca_points)) {
+    return;
+  }
+
+  // Rotate every point into the surface-normal-aligned frame so z is
+  // "height above local ground". Keep originals so we can emit them in
+  // the publication frame (the algorithm only uses rotated for indexing).
+  const Eigen::Matrix3f R = rotationFromNormal(sn);
+  const Eigen::Matrix3f Rt = R.transpose();
+  std::vector<Eigen::Vector3f> rotated(cloud_input.size());
+  for (size_t i = 0; i < cloud_input.size(); ++i) {
+    rotated[i] = Rt * cloud_input[i];
+  }
+
+  // ── Grid setup ──
+  const float res = params_.internal_resolution;
+  const float half = params_.grid_half_size;
+  const int gw = std::max(1, static_cast<int>(2.0f * half / res));
+  const int gh = gw;
+
+  // cell_id → indices of points (rotated/cloud_input share the same indices).
+  std::unordered_map<int, std::vector<int>> cell_idx;
+  cell_idx.reserve(rotated.size() / 4);
+
+  for (size_t i = 0; i < rotated.size(); ++i) {
+    const auto& p = rotated[i];
+    const int cx = static_cast<int>((p.x() + half) / res);
+    const int cy = static_cast<int>((p.y() + half) / res);
+    if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
+    cell_idx[cy * gw + cx].push_back(static_cast<int>(i));
+  }
+
+  if (cell_idx.empty()) return;
+
+  // has_points (for dilation to find "active" 3x3 neighborhoods)
+  std::vector<uint8_t> has_points(static_cast<size_t>(gw) * gh, 0);
+  for (const auto& kv : cell_idx) has_points[kv.first] = 1;
+  std::vector<uint8_t> has_neighbor = dilate(has_points, gw, gh, 1);
+
+  // ── Step 2: ground / wall split, per cell, 3x3 neighborhood ──
+  std::unordered_map<int, std::vector<int>> ground_cell_idx;
+  std::vector<int> non_ground_idx;
+  std::vector<uint8_t> wall_detected(static_cast<size_t>(gw) * gh, 0);
+
+  // Reusable scratch buffers.
+  std::vector<int> hood_idx;
+  std::vector<float> zs;
+  hood_idx.reserve(256);
+  zs.reserve(256);
+
+  for (int cy = 0; cy < gh; ++cy) {
+    for (int cx = 0; cx < gw; ++cx) {
+      if (!has_neighbor[cy * gw + cx]) continue;
+
+      // Gather the 3x3 neighborhood's point indices.
+      hood_idx.clear();
+      for (int ddy = -1; ddy <= 1; ++ddy) {
+        for (int ddx = -1; ddx <= 1; ++ddx) {
+          const int nx = cx + ddx, ny = cy + ddy;
+          if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+          auto it = cell_idx.find(ny * gw + nx);
+          if (it == cell_idx.end()) continue;
+          hood_idx.insert(hood_idx.end(), it->second.begin(),
+                          it->second.end());
+        }
+      }
+      if (static_cast<int>(hood_idx.size()) < params_.min_pca_points) continue;
+
+      // Sort z, find first gap > z_ground_band.
+      zs.clear();
+      zs.reserve(hood_idx.size());
+      for (int i : hood_idx) zs.push_back(rotated[i].z());
+      std::sort(zs.begin(), zs.end());
+
+      bool has_split = false;
+      float z_cut = 0.0f;
+      for (size_t k = 0; k + 1 < zs.size(); ++k) {
+        if (zs[k + 1] - zs[k] > params_.z_ground_band) {
+          z_cut = 0.5f * (zs[k] + zs[k + 1]);
+          has_split = true;
+          // Wall test: upper cluster span > wall_min_height.
+          if (zs.back() - z_cut > params_.wall_min_height) {
+            // Mark this center cell as wall iff it owns any upper-cluster
+            // points (mirrors the simulator's "own_pts_for_wall" check).
+            auto own_it = cell_idx.find(cy * gw + cx);
+            if (own_it != cell_idx.end()) {
+              for (int i : own_it->second) {
+                if (rotated[i].z() > z_cut) {
+                  wall_detected[cy * gw + cx] = 1;
+                  break;
+                }
+              }
+            }
+            // Add upper-cluster points (from anywhere in the 3x3) as
+            // non-ground obstacle candidates.
+            for (int i : hood_idx) {
+              if (rotated[i].z() > z_cut) non_ground_idx.push_back(i);
+            }
+          }
+          break;
+        }
+      }
+
+      // Ground points = own-cell points at or below the split (or all
+      // own-cell points if no split happened).
+      auto own_it = cell_idx.find(cy * gw + cx);
+      if (own_it == cell_idx.end()) continue;
+      std::vector<int>& own_ground = ground_cell_idx[cy * gw + cx];
+      for (int i : own_it->second) {
+        if (!has_split || rotated[i].z() <= z_cut) own_ground.push_back(i);
+      }
+      if (own_ground.empty()) ground_cell_idx.erase(cy * gw + cx);
+    }
+  }
+
+  // ── Step 3: per-cell PCA on 3x3 ground neighborhoods ──
+  const Eigen::Vector3f ref_normal(0.0f, 0.0f, 1.0f);
+  std::vector<float> ms(static_cast<size_t>(gw) * gh,
+                        std::numeric_limits<float>::quiet_NaN());
+
+  std::vector<Eigen::Vector3f> hood_pts;
+  hood_pts.reserve(256);
+
+  for (const auto& kv : ground_cell_idx) {
+    const int k = kv.first;
+    const int cy = k / gw, cx = k % gw;
+    hood_pts.clear();
+    for (int ddy = -1; ddy <= 1; ++ddy) {
+      for (int ddx = -1; ddx <= 1; ++ddx) {
+        const int nx = cx + ddx, ny = cy + ddy;
+        if (nx < 0 || nx >= gw || ny < 0 || ny >= gh) continue;
+        auto it = ground_cell_idx.find(ny * gw + nx);
+        if (it == ground_cell_idx.end()) continue;
+        for (int i : it->second) hood_pts.push_back(rotated[i]);
+      }
+    }
+    if (static_cast<int>(hood_pts.size()) >= params_.min_pca_points) {
+      ms[k] = computeSlopeDeg(hood_pts, ref_normal);
+    }
+  }
+
+  // ── Step 4: spike detection ──
+  const float steep_thresh =
+      params_.traversable_max_deg + params_.pca_noise_margin_deg;
+
+  std::vector<uint8_t> vertical_obs(static_cast<size_t>(gw) * gh, 0);
+
+  for (const auto& kv : cell_idx) {
+    const int k = kv.first;
+    const std::vector<int>& cell_pts = kv.second;
+    if (static_cast<int>(cell_pts.size()) < params_.spike_min_elevated)
+      continue;
+
+    // Skip cells PCA already classified as traversable (with margin).
+    const float m = ms[k];
+    if (!std::isnan(m) && m <= steep_thresh) continue;
+
+    // ground_z = median of bottom 30%.
+    zs.clear();
+    zs.reserve(cell_pts.size());
+    for (int i : cell_pts) zs.push_back(rotated[i].z());
+    std::sort(zs.begin(), zs.end());
+    const int n_ground =
+        std::max(1, static_cast<int>(zs.size()) / 3);
+    const float ground_z = zs[n_ground / 2];
+
+    int elevated = 0;
+    std::vector<int> elevated_idx;
+    elevated_idx.reserve(cell_pts.size());
+    for (int i : cell_pts) {
+      if (rotated[i].z() > ground_z + params_.spike_height) {
+        ++elevated;
+        elevated_idx.push_back(i);
+      }
+    }
+    if (elevated >= params_.spike_min_elevated) {
+      vertical_obs[k] = 1;
+      for (int i : elevated_idx) non_ground_idx.push_back(i);
+    }
+  }
+
+  // Wall + spike adjacency mask: PCA is unreliable nearby.
+  std::vector<uint8_t> obstacle_or_spike(wall_detected.size(), 0);
+  for (size_t i = 0; i < obstacle_or_spike.size(); ++i) {
+    obstacle_or_spike[i] = (wall_detected[i] || vertical_obs[i]) ? 1 : 0;
+  }
+  std::vector<uint8_t> obstacle_adjacent =
+      dilate(obstacle_or_spike, gw, gh, params_.wall_adjacent_dilation);
+
+  // ── Step 5: assemble obstacle candidates and run DBSCAN ──
+  std::vector<Eigen::Vector3f> candidate_pts;
+  std::vector<int> candidate_src_idx;  // parallel: index into cloud_input
+  candidate_pts.reserve(non_ground_idx.size() + 256);
+  candidate_src_idx.reserve(non_ground_idx.size() + 256);
+
+  for (int i : non_ground_idx) {
+    candidate_pts.push_back(rotated[i]);
+    candidate_src_idx.push_back(i);
+  }
+  // Steep ground cells (above threshold but not in wall/spike adjacency).
+  for (const auto& kv : ground_cell_idx) {
+    const int k = kv.first;
+    const float m = ms[k];
+    if (std::isnan(m)) continue;
+    if (m <= steep_thresh) continue;
+    if (m >= params_.pca_max_valid_deg) continue;
+    if (obstacle_adjacent[k]) continue;
+    for (int i : kv.second) {
+      candidate_pts.push_back(rotated[i]);
+      candidate_src_idx.push_back(i);
+    }
+  }
+
+  // obs grid: cells whose final classification is "obstacle"
+  std::vector<uint8_t> obs(static_cast<size_t>(gw) * gh, 0);
+
+  if (static_cast<int>(candidate_pts.size()) >= params_.dbscan_min_samples) {
+    const std::vector<int> labels = dbscan(candidate_pts);
+    // Group by label, count, keep clusters >= min_cluster_size.
+    std::unordered_map<int, std::vector<int>> by_label;
+    for (size_t i = 0; i < labels.size(); ++i) {
+      if (labels[i] < 0) continue;
+      by_label[labels[i]].push_back(static_cast<int>(i));
+    }
+    for (const auto& kv : by_label) {
+      if (static_cast<int>(kv.second.size()) < params_.min_cluster_size)
+        continue;
+      for (int idx : kv.second) {
+        const auto& p = candidate_pts[idx];
+        const int cx = static_cast<int>((p.x() + half) / res);
+        const int cy = static_cast<int>((p.y() + half) / res);
+        if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
+        obs[cy * gw + cx] = 1;
+      }
+    }
+  }
+
+  // Always mark walls + spikes, regardless of DBSCAN.
+  for (size_t i = 0; i < obs.size(); ++i) {
+    obs[i] = (obs[i] || wall_detected[i] || vertical_obs[i]) ? 1 : 0;
+  }
+
+  // PCA override: clear cells PCA confirmed traversable (not in spike/wall
+  // bleed zone, and never clear actual spike cells).
+  std::vector<uint8_t> traversable(obs.size(), 0);
+  for (size_t i = 0; i < ms.size(); ++i) {
+    const float m = ms[i];
+    const bool good = !std::isnan(m) && m <= steep_thresh && !vertical_obs[i];
+    const bool bleed = obstacle_adjacent[i] && !wall_detected[i] &&
+                       !vertical_obs[i];
+    traversable[i] = (good || bleed) ? 1 : 0;
+  }
+  for (size_t i = 0; i < obs.size(); ++i) {
+    if (traversable[i] && !vertical_obs[i]) obs[i] = 0;
+    if (vertical_obs[i]) obs[i] = 1;  // re-mark spikes
+  }
+
+  // ── Emit obstacle points ──
+  // For every cell flagged obstacle, emit ALL points whose rotated-frame
+  // cell falls into that cell (using the original-frame xyz so the
+  // published cloud sits in the correct frame).
+  std::unordered_set<int> emitted;
+  emitted.reserve(cloud_input.size() / 4);
+  for (const auto& kv : cell_idx) {
+    if (!obs[kv.first]) continue;
+    for (int i : kv.second) {
+      if (emitted.insert(i).second) {
+        out.obstacle_points.push_back(cloud_input[i]);
+      }
+    }
+  }
+
+  // ── Optional: build the debug grade map ──
+  if (populate_grade_map) {
+    out.grade_map.assign(static_cast<size_t>(gw) * gh, -1);
+    out.grade_map_width = gw;
+    out.grade_map_height = gh;
+    out.grade_map_resolution = res;
+    out.grade_map_origin_x = -half;
+    out.grade_map_origin_y = -half;
+    for (size_t i = 0; i < obs.size(); ++i) {
+      if (!has_points[i]) continue;  // unknown
+      if (obs[i]) {
+        out.grade_map[i] = 100;  // lethal
+      } else if (!std::isnan(ms[i])) {
+        // Linearly map slope [0, traversable_max_deg] → cost [0, 99].
+        const float frac = ms[i] / std::max(1.0f, params_.traversable_max_deg);
+        const int cost = std::clamp(static_cast<int>(frac * 99.0f), 0, 99);
+        out.grade_map[i] = static_cast<int8_t>(cost);
+      } else {
+        out.grade_map[i] = 0;  // observed, no slope info → free
+      }
+    }
+  }
+}
+
+}  // namespace autonav_detection

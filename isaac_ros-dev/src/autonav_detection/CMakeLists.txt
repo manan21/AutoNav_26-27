@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)  # 3.18+ recommended for CUDA language
-project(line_detection LANGUAGES CXX CUDA)
+project(autonav_detection LANGUAGES CXX CUDA)
 
 # Warnings for host code
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -10,6 +10,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(autonav_interfaces REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -19,29 +21,25 @@ find_package(image_geometry REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
-# ---- CUDA Toolchain (modern) ----
+# ---- CUDA Toolchain (modern; line_detector only) ----
 enable_language(CUDA)
 find_package(CUDAToolkit REQUIRED)
 
 # Jetson Orin Nano is Ampere (SM 87)
-# CMake will pass -gencode flags accordingly; no need to hand-write NVCC flags.
 set(CMAKE_CUDA_ARCHITECTURES 87)
 
-# ---- Sources ----
-file(GLOB SRC_FILES
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu
+# ============================================================
+# Target 1: line_detector  (existing, CUDA-accelerated)
+# ============================================================
+add_executable(line_detector
+  src/line/node.cpp
+  src/line/detection.cpp
+  src/line/cuda.cu
 )
 
-add_executable(line_detector ${SRC_FILES})
-
-# C++ standard
 target_compile_features(line_detector PUBLIC cxx_std_17)
-
-# Position-independent code (shared objects friendliness)
 set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# ---- Includes ----
 target_include_directories(line_detector
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -52,7 +50,6 @@ target_include_directories(line_detector
     $<INSTALL_INTERFACE:include>
 )
 
-# ---- ROS/ament deps ----
 ament_target_dependencies(line_detector
   rclcpp
   autonav_interfaces
@@ -68,11 +65,9 @@ ament_target_dependencies(line_detector
 # ---- Link CUDA & NPP (modern imported targets) ----
 set(_cuda_npp_targets CUDA::cudart CUDA::nppist CUDA::nppc)
 
-# Fallback if CUDAToolkit imported targets don’t define nppist on this CMake/Toolkit combo.
+# Fallback if CUDAToolkit imported targets don't define nppist on this CMake/Toolkit combo.
 foreach(tgt IN LISTS _cuda_npp_targets)
   if(NOT TARGET ${tgt})
-    # Fallback to absolute libraries if necessary (rare on JP6, but safe)
-    # We prefer the canonical aarch64 targets path on Jetson:
     list(APPEND _cuda_fallback_libs
       /usr/local/cuda/targets/aarch64-linux/lib/libcudart.so
       /usr/local/cuda/targets/aarch64-linux/lib/libnppist.so
@@ -85,16 +80,53 @@ endforeach()
 
 if(_use_fallback_libs)
   target_link_libraries(line_detector ${_cuda_fallback_libs})
-  # Bake rpath so the binary finds CUDA libs at runtime
   target_link_options(line_detector PRIVATE -Wl,-rpath,/usr/local/cuda/targets/aarch64-linux/lib)
 else()
   target_link_libraries(line_detector ${_cuda_npp_targets})
-  # Many JetPack images already have loader paths set, but bake rpath for robustness
   target_link_options(line_detector PRIVATE -Wl,-rpath,$<TARGET_FILE_DIR:CUDA::cudart>)
 endif()
 
+# ============================================================
+# Target 2: grade_detector  (NEW; pure C++ + Eigen, no CUDA)
+# Pipeline: subscribe to /cloud_all_fields_fullframe (PointCloud2),
+# run PCA grade detection (Steps 1-5 of terrain-grade-layer-plan.md),
+# publish /scan_pca_filtered_points (PointCloud2, xyz only) for the
+# Nav2 ObstacleLayer to consume.
+# ============================================================
+add_executable(grade_detector
+  src/grade/pca_node.cpp
+  src/grade/pca_pipeline.cpp
+)
+
+target_compile_features(grade_detector PUBLIC cxx_std_17)
+set_target_properties(grade_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_include_directories(grade_detector
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(grade_detector
+  rclcpp
+  sensor_msgs
+  nav_msgs
+  geometry_msgs
+  tf2_ros
+  Eigen3
+)
+
 # ---- Install ----
-install(TARGETS line_detector DESTINATION lib/${PROJECT_NAME})
+install(TARGETS line_detector grade_detector
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+  OPTIONAL
+)
 
 # ---- Tests / Linters ----
 if(BUILD_TESTING)
