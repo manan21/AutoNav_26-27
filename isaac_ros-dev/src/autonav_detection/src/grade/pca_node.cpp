@@ -71,15 +71,6 @@ class GradeDetectorNode : public rclcpp::Node {
         this->declare_parameter<double>("pca_noise_margin_deg", p.pca_noise_margin_deg));
     p.pca_max_valid_deg = static_cast<float>(
         this->declare_parameter<double>("pca_max_valid_deg", p.pca_max_valid_deg));
-    p.surface_normal_samples =
-        this->declare_parameter<int>("surface_normal_samples", p.surface_normal_samples);
-    p.surface_normal_radius = static_cast<float>(
-        this->declare_parameter<double>("surface_normal_radius", p.surface_normal_radius));
-    p.surface_normal_z_window = static_cast<float>(
-        this->declare_parameter<double>("surface_normal_z_window", p.surface_normal_z_window));
-    p.surface_normal_max_tilt_deg = static_cast<float>(
-        this->declare_parameter<double>("surface_normal_max_tilt_deg",
-                                         p.surface_normal_max_tilt_deg));
     p.z_ground_band = static_cast<float>(
         this->declare_parameter<double>("z_ground_band", p.z_ground_band));
     p.wall_min_height = static_cast<float>(

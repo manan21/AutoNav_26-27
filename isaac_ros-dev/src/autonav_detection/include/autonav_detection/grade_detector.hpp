@@ -28,12 +28,6 @@ struct GradeDetectorParams {
   float pca_noise_margin_deg = 1.5f;
   float pca_max_valid_deg = 60.0f;
 
-  // Sensor surface normal (Step 1)
-  int   surface_normal_samples = 15;
-  float surface_normal_radius = 0.5f;
-  float surface_normal_z_window = 0.15f;
-  float surface_normal_max_tilt_deg = 45.0f;
-
   // Ground / wall split (Step 2)
   float z_ground_band = 0.1f;
   float wall_min_height = 0.5f;
@@ -58,10 +52,13 @@ struct GradeDetectorResult {
   // these to /scan_pca_filtered_points and lets Nav2's TF handle the rest.
   std::vector<Eigen::Vector3f> obstacle_points;
 
-  // Detected surface normal (in the algorithm's internal frame, i.e.
-  // base-link-aligned). Mainly for debug/RVIZ.
+  // Reference normal used by the per-cell PCA. The algorithm's internal
+  // frame is base-link-aligned (z = up), so this is hardcoded to (0,0,1).
+  // Kept in the result struct so the ROS wrapper can publish it on
+  // /pca/surface_normal for RVIZ / sanity checks; it no longer represents
+  // a discovered quantity (see compute() comment).
   Eigen::Vector3f surface_normal{0.0f, 0.0f, 1.0f};
-  bool surface_normal_valid = false;
+  bool surface_normal_valid = true;
 
   // Optional debug grid (for /terrain/grade_map). 8-bit signed cost
   // values: -1=unknown, 0=free, 100=lethal. Same indexing convention
@@ -85,8 +82,18 @@ class GradeDetector {
 
   // Main entry. `cloud_internal` is the input cloud already rotated into
   // the algorithm's internal frame (z = local up). The caller is responsible
-  // for that pre-rotation (typically a one-shot TF lookup from the lidar
-  // mount frame to base_link).
+  // for that pre-rotation (a one-shot static TF lookup from the lidar mount
+  // frame to base_link); on this robot the URDF rolls lidar_footprint 180°,
+  // so without that rotation the algorithm would see ground points at +z.
+  //
+  // The chassis is rigidly aligned with the surface beneath it (the wheels
+  // are touching it), and the lidar is rigidly bolted to the chassis. Once
+  // we've absorbed the URDF rotation, the algorithm's internal +z IS the
+  // local ground normal. There is no per-frame "discover the ground plane"
+  // step — that exists in the simulator only because the sim does synthetic
+  // vertical ray-casts that have no analog on a real lidar. On a real
+  // robot, the disk-PCA estimator gets dominated by chassis self-returns
+  // (~38° spurious tilt seen in bring-up). We dropped it.
   //
   // `out.obstacle_points` is filled with points from `cloud_internal`
   // (still in the internal frame); the caller is responsible for rotating
@@ -99,11 +106,6 @@ class GradeDetector {
 
  private:
   GradeDetectorParams params_;
-
-  // Step 1: PCA on a 0.5 m disk of low-z points around the sensor footprint.
-  Eigen::Vector3f computeSurfaceNormal(
-      const std::vector<Eigen::Vector3f>& cloud_internal,
-      bool& valid_out) const;
 
   // Per-cell PCA, returns slope angle in degrees (NaN if not planar / too sparse).
   float computeSlopeDeg(const std::vector<Eigen::Vector3f>& points,

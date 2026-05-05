@@ -36,13 +36,18 @@ grade_detector:
     pca_noise_margin_deg: 1.5
     pca_max_valid_deg: 60.0
 
-    # ── Sensor surface normal (Step 1) ───────────────────────────────────
-    # 15-sample PCA on local ground returns. Replaces 3-point tripod
-    # cross-product (which flips ±30° on a single wall-edge outlier).
-    surface_normal_samples: 15
-    surface_normal_radius: 0.5     # disk radius (m) around sensor footprint
-    surface_normal_z_window: 0.15  # ± window around floor estimate (m)
-    surface_normal_max_tilt_deg: 45.0  # safety clamp; defaults to up if exceeded
+    # ── Sensor surface normal (was Step 1, REMOVED) ──────────────────────
+    # The simulator's surface_normal estimator does synthetic vertical
+    # ray-casts — every sample is a clean ground hit. A real SICK can
+    # only see ground via slanted beams, and within any small disk
+    # around the sensor the dominant returns are the chassis itself,
+    # not ground (saw ~38° spurious forward tilt in bring-up). On a
+    # wheeled robot driving on smooth surfaces the chassis is rigidly
+    # aligned with the local ground plane (the wheels are touching it)
+    # and the lidar is rigidly bolted to the chassis, so once the
+    # static URDF rotation (lidar_footprint → base_link) is applied,
+    # +z IS the local ground normal — no per-frame discovery needed.
+    # The 2× threshold rule still handles the back-slope artifact.
 
     # ── Ground / wall split (Step 2) ─────────────────────────────────────
     z_ground_band: 0.1             # min Z-gap (m) to split ground from wall

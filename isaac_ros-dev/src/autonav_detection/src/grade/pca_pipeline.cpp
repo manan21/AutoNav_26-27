@@ -28,103 +28,10 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-// Rotation: build R such that R * [0,0,1] = sn. We then operate with R^T
-// to undo the tilt and get a frame where local ground aligns with z.
-Eigen::Matrix3f rotationFromNormal(const Eigen::Vector3f& sn) {
-  const Eigen::Vector3f up(0.0f, 0.0f, 1.0f);
-  const float dot = std::clamp(up.dot(sn.normalized()), -1.0f, 1.0f);
-  if (dot > 0.9999f) {
-    return Eigen::Matrix3f::Identity();
-  }
-  if (dot < -0.9999f) {
-    // 180° flip; pick X as rotation axis.
-    Eigen::Matrix3f R;
-    R << 1, 0,  0,
-         0, -1, 0,
-         0, 0,  -1;
-    return R;
-  }
-  Eigen::Vector3f axis = up.cross(sn).normalized();
-  const float angle = std::acos(dot);
-  return Eigen::AngleAxisf(angle, axis).toRotationMatrix();
-}
-
 }  // namespace
 
 GradeDetector::GradeDetector(const GradeDetectorParams& params)
     : params_(params) {}
-
-// ───────────────────────────────────────────────────────────────────────
-// Step 1: surface normal from a small disk of low-z points
-// ───────────────────────────────────────────────────────────────────────
-Eigen::Vector3f GradeDetector::computeSurfaceNormal(
-    const std::vector<Eigen::Vector3f>& cloud,
-    bool& valid_out) const {
-  valid_out = false;
-  const float r2 = params_.surface_normal_radius *
-                   params_.surface_normal_radius;
-
-  // Collect points within horizontal radius around (x=0, y=0). Real lidar
-  // returns are dense enough that we don't need to subsample like the sim.
-  std::vector<Eigen::Vector3f> nearby;
-  nearby.reserve(64);
-  for (const auto& p : cloud) {
-    const float d2 = p.x() * p.x() + p.y() * p.y();
-    if (d2 <= r2) {
-      nearby.push_back(p);
-    }
-  }
-  if (nearby.size() < 3) {
-    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
-  }
-
-  // Estimate local floor: median of all z in the disk. Robust to a few
-  // wall returns that creep in at the disk's edge.
-  std::vector<float> zs;
-  zs.reserve(nearby.size());
-  for (const auto& p : nearby) zs.push_back(p.z());
-  std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
-  const float z_floor = zs[zs.size() / 2];
-
-  // Keep points within ±z_window of the floor estimate.
-  std::vector<Eigen::Vector3f> ground_pts;
-  ground_pts.reserve(nearby.size());
-  for (const auto& p : nearby) {
-    if (std::abs(p.z() - z_floor) <= params_.surface_normal_z_window) {
-      ground_pts.push_back(p);
-    }
-  }
-  if (ground_pts.size() < 3) {
-    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
-  }
-
-  // PCA → smallest-eigvec eigenvector is the surface normal.
-  Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
-  for (const auto& p : ground_pts) centroid += p;
-  centroid /= static_cast<float>(ground_pts.size());
-
-  Eigen::Matrix3f cov = Eigen::Matrix3f::Zero();
-  for (const auto& p : ground_pts) {
-    Eigen::Vector3f d = p - centroid;
-    cov += d * d.transpose();
-  }
-  cov /= static_cast<float>(std::max<size_t>(1, ground_pts.size() - 1));
-
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> es(cov);
-  Eigen::Vector3f normal = es.eigenvectors().col(0);
-  if (normal.z() < 0.0f) normal = -normal;
-  normal.normalize();
-
-  // Safety clamp.
-  const float cos_tilt = std::clamp(normal.z(), 0.0f, 1.0f);
-  const float tilt_deg = std::acos(cos_tilt) * 180.0f / kPi;
-  if (tilt_deg > params_.surface_normal_max_tilt_deg) {
-    return Eigen::Vector3f(0.0f, 0.0f, 1.0f);
-  }
-
-  valid_out = true;
-  return normal;
-}
 
 // ───────────────────────────────────────────────────────────────────────
 // Per-cell PCA slope (mirror of _pca_slope_deg in lidar_sim_gui.py)
@@ -263,7 +170,17 @@ std::vector<uint8_t> GradeDetector::dilate(const std::vector<uint8_t>& grid,
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Main entry point — Steps 2-5 of build_grade_costmap orchestrated here
+// Main entry point — Steps 2-5 of build_grade_costmap orchestrated here.
+//
+// On a wheeled robot driving on smooth surfaces (flat or ramps), the
+// chassis is rigidly aligned with the local ground plane and the lidar
+// is rigidly bolted to the chassis, so once the caller has applied the
+// static URDF rotation (lidar_footprint -> base_link orientation) the
+// algorithm's internal +z axis IS the local ground normal. No per-frame
+// "discover the ground plane" step is needed; the simulator's
+// surface_normal exists only because the sim does synthetic vertical
+// ray-casts that have no analog on a real lidar. Reference normal is
+// hardcoded (0,0,1).
 // ───────────────────────────────────────────────────────────────────────
 void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
                             GradeDetectorResult& out,
@@ -271,27 +188,15 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   out.obstacle_points.clear();
   out.grade_map.clear();
   out.surface_normal = Eigen::Vector3f(0.0f, 0.0f, 1.0f);
-  out.surface_normal_valid = false;
-
-  // Step 1: surface normal & rotation.
-  bool sn_valid = false;
-  const Eigen::Vector3f sn = computeSurfaceNormal(cloud_input, sn_valid);
-  out.surface_normal = sn;
-  out.surface_normal_valid = sn_valid;
+  out.surface_normal_valid = true;
 
   if (cloud_input.size() < static_cast<size_t>(params_.min_pca_points)) {
     return;
   }
 
-  // Rotate every point into the surface-normal-aligned frame so z is
-  // "height above local ground". Keep originals so we can emit them in
-  // the publication frame (the algorithm only uses rotated for indexing).
-  const Eigen::Matrix3f R = rotationFromNormal(sn);
-  const Eigen::Matrix3f Rt = R.transpose();
-  std::vector<Eigen::Vector3f> rotated(cloud_input.size());
-  for (size_t i = 0; i < cloud_input.size(); ++i) {
-    rotated[i] = Rt * cloud_input[i];
-  }
+  // No rotation step. cloud_input is already in the algorithm's internal
+  // frame (z = up) thanks to the caller's TF lookup.
+  const std::vector<Eigen::Vector3f>& rotated = cloud_input;
 
   // ── Grid setup ──
   const float res = params_.internal_resolution;
