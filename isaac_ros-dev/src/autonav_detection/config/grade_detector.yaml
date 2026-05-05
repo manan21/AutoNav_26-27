@@ -70,7 +70,13 @@ grade_detector:
     min_pca_points: 6              # min points in 3x3 neighborhood for PCA
 
     # ── PCA classification (Step 3) ──────────────────────────────────────
-    pca_planarity_max: 0.005       # eigval[0]/eigval[2] cutoff; non-planar → NaN
+    # eigval[0]/eigval[2] cutoff for "planar enough"; non-planar cells → NaN
+    # (skipped). Was 0.005 (simulator default) — too strict for real lidar
+    # noise on moderate-slope plates: ~1.5 cm noise with smaller eigval[2]
+    # at gentler slopes pushes the ratio over the threshold and cells fall
+    # through the slope detector. 0.02 still rejects ramp+wall mixed cells
+    # (those produce ratios near 0.1 because of bi-modal point spread).
+    pca_planarity_max: 0.02
     wall_adjacent_dilation: 2      # cells around walls/spikes excluded from PCA
 
     # ── Spike detection (Step 4) ─────────────────────────────────────────
