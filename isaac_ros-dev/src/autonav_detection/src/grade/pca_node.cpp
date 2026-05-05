@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -119,11 +120,29 @@ class GradeDetectorNode : public rclcpp::Node {
         std::bind(&GradeDetectorNode::cloudCallback, this,
                   std::placeholders::_1));
 
+    // Steady-rate publisher. The callback caches the latest result; the
+    // timer publishes from the cache at exactly publish_rate_hz so the
+    // costmap sees a constant update cadence regardless of input jitter.
+    // If a scan is missed, we re-emit the previous cloud with a fresh
+    // stamp ("duplicate the points for that frame"). Set publish_rate_hz
+    // to 0 to fall back to publish-on-callback (default behavior of the
+    // earlier revisions).
+    publish_rate_hz_ =
+        this->declare_parameter<double>("publish_rate_hz", 20.0);
+    if (publish_rate_hz_ > 0.0) {
+      const auto period_ns =
+          std::chrono::nanoseconds(static_cast<int64_t>(1e9 / publish_rate_hz_));
+      publish_timer_ = this->create_wall_timer(
+          period_ns,
+          std::bind(&GradeDetectorNode::publishTimerTick, this));
+    }
+
     RCLCPP_INFO(this->get_logger(),
                 "grade_detector up. cloud=%s base=%s out=%s "
-                "traversable_max_deg=%.1f",
+                "traversable_max_deg=%.1f publish_rate=%.1f Hz",
                 cloud_topic_.c_str(), base_frame_.c_str(),
-                obstacle_topic_.c_str(), p.traversable_max_deg);
+                obstacle_topic_.c_str(), p.traversable_max_deg,
+                publish_rate_hz_);
   }
 
  private:
@@ -257,25 +276,53 @@ class GradeDetectorNode : public rclcpp::Node {
   void publishObstacleCloud(const sensor_msgs::msg::PointCloud2& src,
                             const GradeDetectorResult& result,
                             const Eigen::Matrix3f& R_back) {
-    auto out = std::make_unique<sensor_msgs::msg::PointCloud2>();
-    out->header = src.header;  // same frame_id (lidar_footprint) + stamp
-    out->height = 1;
-    out->width = static_cast<uint32_t>(result.obstacle_points.size());
-    out->is_dense = true;
-    out->is_bigendian = false;
+    sensor_msgs::msg::PointCloud2 out;
+    out.header = src.header;  // same frame_id (lidar_footprint) + stamp
+    out.height = 1;
+    out.width = static_cast<uint32_t>(result.obstacle_points.size());
+    out.is_dense = true;
+    out.is_bigendian = false;
 
-    sensor_msgs::PointCloud2Modifier mod(*out);
+    sensor_msgs::PointCloud2Modifier mod(out);
     mod.setPointCloud2FieldsByString(1, "xyz");
     mod.resize(result.obstacle_points.size());
 
-    sensor_msgs::PointCloud2Iterator<float> ix(*out, "x");
-    sensor_msgs::PointCloud2Iterator<float> iy(*out, "y");
-    sensor_msgs::PointCloud2Iterator<float> iz(*out, "z");
+    sensor_msgs::PointCloud2Iterator<float> ix(out, "x");
+    sensor_msgs::PointCloud2Iterator<float> iy(out, "y");
+    sensor_msgs::PointCloud2Iterator<float> iz(out, "z");
     for (const auto& p_internal : result.obstacle_points) {
       const Eigen::Vector3f p = R_back * p_internal;
       *ix = p.x(); *iy = p.y(); *iz = p.z();
       ++ix; ++iy; ++iz;
     }
+
+    if (publish_rate_hz_ > 0.0) {
+      // Cache only — the timer will publish at a steady rate, filling
+      // any input gap by re-emitting this cloud with a fresh stamp.
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      cached_cloud_ = std::move(out);
+      has_cached_cloud_ = true;
+    } else {
+      // Legacy: publish-on-callback (rate matches input).
+      auto out_ptr = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(out));
+      obstacle_pub_->publish(std::move(out_ptr));
+    }
+  }
+
+  // Steady-rate timer that pulls the latest cached cloud and publishes
+  // it with a current stamp. If the input has not produced a new scan
+  // since the last tick, this just republishes the previous cloud
+  // ("duplicate the points for that frame") so downstream consumers
+  // (Nav2 ObstacleLayer) see a constant 20 Hz cadence.
+  void publishTimerTick() {
+    sensor_msgs::msg::PointCloud2 cloud;
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      if (!has_cached_cloud_) return;
+      cloud = cached_cloud_;
+    }
+    cloud.header.stamp = this->now();
+    auto out = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(cloud));
     obstacle_pub_->publish(std::move(out));
   }
 
@@ -326,6 +373,15 @@ class GradeDetectorNode : public rclcpp::Node {
   std::string cached_frame_;
   Eigen::Matrix3f R_cached_ = Eigen::Matrix3f::Identity();
   bool rotation_cached_ = false;
+
+  // Steady-rate publish regulator. Callback caches into cached_cloud_;
+  // publish_timer_ pulls from cache and emits with a fresh stamp so the
+  // costmap sees a constant cadence regardless of input jitter.
+  double publish_rate_hz_ = 20.0;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
+  std::mutex cache_mutex_;
+  sensor_msgs::msg::PointCloud2 cached_cloud_;
+  bool has_cached_cloud_ = false;
 };
 
 }  // namespace autonav_detection
