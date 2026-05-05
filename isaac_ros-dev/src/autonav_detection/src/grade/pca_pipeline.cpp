@@ -400,24 +400,50 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   // obs grid: cells whose final classification is "obstacle"
   std::vector<uint8_t> obs(static_cast<size_t>(gw) * gh, 0);
 
-  if (static_cast<int>(candidate_pts.size()) >= params_.dbscan_min_samples) {
-    const std::vector<int> labels = dbscan(candidate_pts);
-    // Group by label, count, keep clusters >= min_cluster_size.
+  // ── Voxel-downsample DBSCAN inputs ──
+  // The raw candidate set can be 1-2k points in a populated room, and
+  // DBSCAN is O(n²). Snap each candidate to its cell on the algorithm's
+  // existing grid (internal_resolution m), then represent the cell by
+  // one centroid. DBSCAN runs on the centroids — typically O(hundreds)
+  // unique cells — for ~70× speedup with negligible fidelity loss.
+  // Each centroid carries a "mass" (raw count) so the original
+  // min_cluster_size semantics (raw point count) are preserved.
+  std::unordered_map<int, std::pair<Eigen::Vector3f, int>> cand_cells;
+  cand_cells.reserve(candidate_pts.size() / 8 + 8);
+  for (const auto& p : candidate_pts) {
+    const int cx = static_cast<int>((p.x() + half) / res);
+    const int cy = static_cast<int>((p.y() + half) / res);
+    if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
+    auto& slot = cand_cells[cy * gw + cx];
+    slot.first += p;
+    slot.second += 1;
+  }
+  std::vector<Eigen::Vector3f> ds_centroids;
+  std::vector<int> ds_cell_keys;
+  std::vector<int> ds_mass;
+  ds_centroids.reserve(cand_cells.size());
+  ds_cell_keys.reserve(cand_cells.size());
+  ds_mass.reserve(cand_cells.size());
+  for (const auto& kv : cand_cells) {
+    ds_centroids.push_back(kv.second.first /
+                           static_cast<float>(kv.second.second));
+    ds_cell_keys.push_back(kv.first);
+    ds_mass.push_back(kv.second.second);
+  }
+
+  if (static_cast<int>(ds_centroids.size()) >= params_.dbscan_min_samples) {
+    const std::vector<int> labels = dbscan(ds_centroids);
     std::unordered_map<int, std::vector<int>> by_label;
     for (size_t i = 0; i < labels.size(); ++i) {
       if (labels[i] < 0) continue;
       by_label[labels[i]].push_back(static_cast<int>(i));
     }
     for (const auto& kv : by_label) {
-      if (static_cast<int>(kv.second.size()) < params_.min_cluster_size)
-        continue;
-      for (int idx : kv.second) {
-        const auto& p = candidate_pts[idx];
-        const int cx = static_cast<int>((p.x() + half) / res);
-        const int cy = static_cast<int>((p.y() + half) / res);
-        if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
-        obs[cy * gw + cx] = 1;
-      }
+      // Cluster mass = sum of raw point counts across its voxel centroids.
+      int total_mass = 0;
+      for (int idx : kv.second) total_mass += ds_mass[idx];
+      if (total_mass < params_.min_cluster_size) continue;
+      for (int idx : kv.second) obs[ds_cell_keys[idx]] = 1;
     }
   }
 

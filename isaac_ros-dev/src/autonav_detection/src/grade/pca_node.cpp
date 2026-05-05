@@ -91,6 +91,8 @@ class GradeDetectorNode : public rclcpp::Node {
         this->declare_parameter<int>("dbscan_min_samples", p.dbscan_min_samples);
     p.min_cluster_size =
         this->declare_parameter<int>("min_cluster_size", p.min_cluster_size);
+    p.front_arc_only =
+        this->declare_parameter<bool>("front_arc_only", p.front_arc_only);
 
     detector_ = std::make_unique<GradeDetector>(p);
 
@@ -140,14 +142,20 @@ class GradeDetectorNode : public rclcpp::Node {
 
     const size_t n = static_cast<size_t>(msg->width) *
                      static_cast<size_t>(msg->height);
+    const bool front_only = detector_->params().front_arc_only;
     std::vector<Eigen::Vector3f> cloud_internal;
-    cloud_internal.reserve(n);
+    cloud_internal.reserve(front_only ? n / 2 : n);
     for (; it_x != it_x.end(); ++it_x, ++it_y, ++it_z) {
       const float x = *it_x;
       const float y = *it_y;
       const float z = *it_z;
       if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
-      cloud_internal.push_back(R_to_base * Eigen::Vector3f(x, y, z));
+      const Eigen::Vector3f p_internal = R_to_base * Eigen::Vector3f(x, y, z);
+      // Front-arc clamp: drop everything behind the lidar (x<0 in the
+      // base-link-aligned internal frame). Halves the point count and
+      // keeps DBSCAN tractable. Disable via front_arc_only:false.
+      if (front_only && p_internal.x() < 0.0f) continue;
+      cloud_internal.push_back(p_internal);
     }
 
     if (cloud_internal.empty()) {

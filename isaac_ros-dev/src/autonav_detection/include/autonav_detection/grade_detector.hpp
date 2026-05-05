@@ -28,6 +28,13 @@ struct GradeDetectorParams {
   float pca_noise_margin_deg = 1.5f;
   float pca_max_valid_deg = 60.0f;
 
+  // Front-arc filter. When true, only points with x >= 0 in the
+  // algorithm's internal frame (forward of the lidar) are processed.
+  // Cuts candidate count ~50%, eliminates the back half from cluttering
+  // DBSCAN, and matches what downstream consumers (LaserScan-derived
+  // costmap layers) effectively use anyway.
+  bool front_arc_only = true;
+
   // Ground / wall split (Step 2)
   float z_ground_band = 0.1f;
   float wall_min_height = 0.5f;

@@ -36,6 +36,14 @@ grade_detector:
     pca_noise_margin_deg: 1.5
     pca_max_valid_deg: 60.0
 
+    # Front-arc clamp. When true, only points with x >= 0 in the
+    # base-link-aligned internal frame (forward of the lidar) are fed
+    # to the algorithm. Halves the candidate set, eliminates back-half
+    # clutter from DBSCAN, and matches what downstream LaserScan-based
+    # consumers effectively use anyway. Set false to process the full
+    # 360° scan (e.g. for debugging).
+    front_arc_only: true
+
     # ── Sensor surface normal (was Step 1, REMOVED) ──────────────────────
     # The simulator's surface_normal estimator does synthetic vertical
     # ray-casts — every sample is a clean ground hit. A real SICK can
