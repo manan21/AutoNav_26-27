@@ -118,9 +118,6 @@ class GradeDetector {
   float computeSlopeDeg(const std::vector<Eigen::Vector3f>& points,
                         const Eigen::Vector3f& ref_normal) const;
 
-  // Cluster points; returns label per point (-1 = noise).
-  std::vector<int> dbscan(const std::vector<Eigen::Vector3f>& points) const;
-
   // Bool-grid morphological dilation (4-connected, in-place semantics via copy).
   static std::vector<uint8_t> dilate(const std::vector<uint8_t>& grid,
                                      int width, int height, int iterations);

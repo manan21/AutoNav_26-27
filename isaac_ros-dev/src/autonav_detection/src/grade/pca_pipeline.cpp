@@ -90,55 +90,10 @@ float GradeDetector::computeSlopeDeg(
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// DBSCAN (O(n²) — plenty fast on the obstacle subset we feed it)
+// (Old O(n²) DBSCAN deleted — replaced by an inline grid-indexed version
+// inside compute(). The centroid set is bound to the algorithm's cell
+// grid, so neighbor lookups become a small fixed-window scan.)
 // ───────────────────────────────────────────────────────────────────────
-std::vector<int> GradeDetector::dbscan(
-    const std::vector<Eigen::Vector3f>& points) const {
-  const int n = static_cast<int>(points.size());
-  std::vector<int> labels(n, -1);  // -1 = noise/unassigned
-  if (n < params_.dbscan_min_samples) return labels;
-
-  const float eps2 = params_.dbscan_eps * params_.dbscan_eps;
-
-  // Precompute neighbor lists.
-  std::vector<std::vector<int>> neighbors(n);
-  for (int i = 0; i < n; ++i) {
-    for (int j = i + 1; j < n; ++j) {
-      const float d2 = (points[i] - points[j]).squaredNorm();
-      if (d2 <= eps2) {
-        neighbors[i].push_back(j);
-        neighbors[j].push_back(i);
-      }
-    }
-    neighbors[i].push_back(i);  // include self in neighborhood count
-  }
-
-  int cluster_id = 0;
-  std::vector<uint8_t> visited(n, 0);
-  for (int i = 0; i < n; ++i) {
-    if (visited[i]) continue;
-    visited[i] = 1;
-    if (static_cast<int>(neighbors[i].size()) < params_.dbscan_min_samples) {
-      continue;  // noise (label remains -1)
-    }
-    // BFS over density-connected core points.
-    labels[i] = cluster_id;
-    std::vector<int> seeds = neighbors[i];
-    for (size_t s = 0; s < seeds.size(); ++s) {
-      const int q = seeds[s];
-      if (!visited[q]) {
-        visited[q] = 1;
-        if (static_cast<int>(neighbors[q].size()) >=
-            params_.dbscan_min_samples) {
-          for (int nb : neighbors[q]) seeds.push_back(nb);
-        }
-      }
-      if (labels[q] < 0) labels[q] = cluster_id;
-    }
-    ++cluster_id;
-  }
-  return labels;
-}
 
 // ───────────────────────────────────────────────────────────────────────
 // Morphological dilation on a bool-as-uint8 grid (8-connected; mirrors
@@ -451,7 +406,73 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   }
 
   if (static_cast<int>(ds_centroids.size()) >= params_.dbscan_min_samples) {
-    const std::vector<int> labels = dbscan(ds_centroids);
+    // ── Grid-indexed DBSCAN ──
+    // Centroids live on the algorithm's existing cell grid (one per
+    // non-empty cell), so neighbor queries become a bounded cell-window
+    // scan instead of an O(n²) all-pairs comparison. With eps = 0.30 m
+    // and internal_resolution = 0.10 m, we look up to ±3 cells around
+    // each centroid (a 7×7 window). Total work: O(n · w²) with w small
+    // and constant.
+    std::unordered_map<int, int> cell_to_centroid;
+    cell_to_centroid.reserve(ds_centroids.size() * 2);
+    for (size_t i = 0; i < ds_cell_keys.size(); ++i) {
+      cell_to_centroid[ds_cell_keys[i]] = static_cast<int>(i);
+    }
+    const int eps_cells =
+        std::max(1, static_cast<int>(std::ceil(params_.dbscan_eps / res)));
+    const float eps2 = params_.dbscan_eps * params_.dbscan_eps;
+
+    // Precompute neighbor lists. Self is included via the dx=dy=0 case
+    // (squaredNorm = 0 ≤ eps²), preserving sklearn-compatible semantics
+    // where min_samples counts the point itself.
+    std::vector<std::vector<int>> neighbors(ds_centroids.size());
+    for (size_t i = 0; i < ds_centroids.size(); ++i) {
+      const int k = ds_cell_keys[i];
+      const int cy = k / gw, cx = k % gw;
+      auto& nbi = neighbors[i];
+      for (int dy = -eps_cells; dy <= eps_cells; ++dy) {
+        const int ny = cy + dy;
+        if (ny < 0 || ny >= gh) continue;
+        for (int dx = -eps_cells; dx <= eps_cells; ++dx) {
+          const int nx = cx + dx;
+          if (nx < 0 || nx >= gw) continue;
+          auto it = cell_to_centroid.find(ny * gw + nx);
+          if (it == cell_to_centroid.end()) continue;
+          const int j = it->second;
+          if ((ds_centroids[i] - ds_centroids[j]).squaredNorm() <= eps2) {
+            nbi.push_back(j);
+          }
+        }
+      }
+    }
+
+    // BFS over density-connected core points.
+    std::vector<int> labels(ds_centroids.size(), -1);
+    std::vector<uint8_t> visited(ds_centroids.size(), 0);
+    int cluster_id = 0;
+    for (size_t i = 0; i < ds_centroids.size(); ++i) {
+      if (visited[i]) continue;
+      visited[i] = 1;
+      if (static_cast<int>(neighbors[i].size()) < params_.dbscan_min_samples) {
+        continue;  // noise
+      }
+      labels[i] = cluster_id;
+      std::vector<int> seeds = neighbors[i];
+      for (size_t s = 0; s < seeds.size(); ++s) {
+        const int q = seeds[s];
+        if (!visited[q]) {
+          visited[q] = 1;
+          if (static_cast<int>(neighbors[q].size()) >=
+              params_.dbscan_min_samples) {
+            for (int nb : neighbors[q]) seeds.push_back(nb);
+          }
+        }
+        if (labels[q] < 0) labels[q] = cluster_id;
+      }
+      ++cluster_id;
+    }
+
+    // Cluster mass check + mark cells.
     std::unordered_map<int, std::vector<int>> by_label;
     for (size_t i = 0; i < labels.size(); ++i) {
       if (labels[i] < 0) continue;
