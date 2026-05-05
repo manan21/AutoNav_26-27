@@ -147,9 +147,6 @@ class GradeDetectorNode : public rclcpp::Node {
 
  private:
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-    using clk = std::chrono::steady_clock;
-    const auto t_callback_start = clk::now();
-
     // ── TF: rotate input cloud's frame into base_link orientation ──
     Eigen::Matrix3f R_to_base = Eigen::Matrix3f::Identity();
     if (!ensureRotationToBase(msg->header.frame_id, R_to_base)) {
@@ -180,10 +177,6 @@ class GradeDetectorNode : public rclcpp::Node {
       cloud_internal.push_back(p_internal);
     }
 
-    const auto t_input_done = clk::now();
-    const long input_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                              t_input_done - t_callback_start).count();
-
     if (cloud_internal.empty()) {
       RCLCPP_DEBUG(this->get_logger(), "Empty cloud after filtering NaNs.");
       return;
@@ -191,33 +184,7 @@ class GradeDetectorNode : public rclcpp::Node {
 
     // ── Run detector ──
     GradeDetectorResult result;
-    const auto t_compute_start = clk::now();
     detector_->compute(cloud_internal, result, publish_grade_map_);
-    const auto t_compute_end = clk::now();
-    const long total_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                              t_compute_end - t_callback_start).count();
-    const long compute_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                                t_compute_end - t_compute_start).count();
-
-    // Per-step timing breakdown, logged once per second so we can see
-    // which stage dominates the callback budget.
-    const auto& tm = result.timing;
-    RCLCPP_INFO_THROTTLE(
-        this->get_logger(), *this->get_clock(), 1000,
-        "[grade_detector %ld us] in=%zu cells=%zu ground=%zu cand=%zu cent=%zu | "
-        "input=%ld bin=%ld split=%ld pca=%ld spike=%ld dsprep=%ld dbscan=%ld "
-        "ovr=%ld emit=%ld map=%ld out_pts=%zu",
-        total_us, tm.n_input, tm.n_populated_cells, tm.n_ground_cells,
-        tm.n_candidates, tm.n_centroids,
-        input_us, tm.cell_binning_us, tm.ground_split_us, tm.pca_us,
-        tm.spike_us, tm.dbscan_prep_us, tm.dbscan_us, tm.override_us,
-        tm.emit_us, tm.grade_map_us, result.obstacle_points.size());
-
-    if (compute_us > 60000) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                           "Pipeline %ld us (>60 ms RULES.md #8 budget) on %zu pts",
-                           compute_us, cloud_internal.size());
-    }
 
     // ── Publish obstacle cloud (transformed back to the input frame) ──
     publishObstacleCloud(*msg, result, R_back);

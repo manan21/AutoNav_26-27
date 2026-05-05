@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -159,10 +158,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   // frame (z = up) thanks to the caller's TF lookup.
   const std::vector<Eigen::Vector3f>& rotated = cloud_input;
 
-  using clk = std::chrono::steady_clock;
-  auto t0 = clk::now();
-  out.timing.n_input = rotated.size();
-
   // ── Grid setup ──
   const float res = params_.internal_resolution;
   const float half = params_.grid_half_size;
@@ -183,16 +178,10 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
 
   if (cell_idx.empty()) return;
 
-  out.timing.n_populated_cells = cell_idx.size();
-
   // has_points (for dilation to find "active" 3x3 neighborhoods)
   std::vector<uint8_t> has_points(static_cast<size_t>(gw) * gh, 0);
   for (const auto& kv : cell_idx) has_points[kv.first] = 1;
   std::vector<uint8_t> has_neighbor = dilate(has_points, gw, gh, 1);
-
-  auto t1 = clk::now();
-  out.timing.cell_binning_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
   // ── Step 2: ground / wall split, per cell, 3x3 neighborhood ──
   std::unordered_map<int, std::vector<int>> ground_cell_idx;
@@ -280,11 +269,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
     }
   }
 
-  auto t2 = clk::now();
-  out.timing.ground_split_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-  out.timing.n_ground_cells = ground_cell_idx.size();
-
   // ── Step 3: per-cell PCA on 3x3 ground neighborhoods ──
   const Eigen::Vector3f ref_normal(0.0f, 0.0f, 1.0f);
   std::vector<float> ms(static_cast<size_t>(gw) * gh,
@@ -310,10 +294,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
       ms[k] = computeSlopeDeg(hood_pts, ref_normal);
     }
   }
-
-  auto t3 = clk::now();
-  out.timing.pca_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
 
   // ── Step 4: spike detection ──
   const float steep_thresh =
@@ -363,10 +343,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   std::vector<uint8_t> obstacle_adjacent =
       dilate(obstacle_or_spike, gw, gh, params_.wall_adjacent_dilation);
 
-  auto t4 = clk::now();
-  out.timing.spike_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
-
   // ── Step 5: assemble obstacle candidates and run DBSCAN ──
   std::vector<Eigen::Vector3f> candidate_pts;
   std::vector<int> candidate_src_idx;  // parallel: index into cloud_input
@@ -390,8 +366,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
       candidate_src_idx.push_back(i);
     }
   }
-
-  out.timing.n_candidates = candidate_pts.size();
 
   // obs grid: cells whose final classification is "obstacle"
   std::vector<uint8_t> obs(static_cast<size_t>(gw) * gh, 0);
@@ -435,11 +409,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
     ds_cell_keys.push_back(kv.first);
     ds_mass.push_back(kv.second.count);
   }
-
-  out.timing.n_centroids = ds_centroids.size();
-  auto t5 = clk::now();
-  out.timing.dbscan_prep_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t5 - t4).count();
 
   if (static_cast<int>(ds_centroids.size()) >= params_.dbscan_min_samples) {
     // ── Grid-indexed DBSCAN ──
@@ -523,10 +492,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
     }
   }
 
-  auto t6 = clk::now();
-  out.timing.dbscan_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t6 - t5).count();
-
   // Always mark walls + spikes, regardless of DBSCAN.
   for (size_t i = 0; i < obs.size(); ++i) {
     obs[i] = (obs[i] || wall_detected[i] || vertical_obs[i]) ? 1 : 0;
@@ -547,10 +512,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
     if (vertical_obs[i]) obs[i] = 1;  // re-mark spikes
   }
 
-  auto t7 = clk::now();
-  out.timing.override_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t7 - t6).count();
-
   // ── Emit obstacle points ──
   // For every cell flagged obstacle, emit ALL points whose rotated-frame
   // cell falls into that cell (using the original-frame xyz so the
@@ -565,10 +526,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
       }
     }
   }
-
-  auto t8 = clk::now();
-  out.timing.emit_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(t8 - t7).count();
 
   // ── Optional: build the debug grade map ──
   if (populate_grade_map) {
@@ -591,9 +548,6 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
         out.grade_map[i] = 0;  // observed, no slope info → free
       }
     }
-    auto t9 = clk::now();
-    out.timing.grade_map_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(t9 - t8).count();
   }
 }
 

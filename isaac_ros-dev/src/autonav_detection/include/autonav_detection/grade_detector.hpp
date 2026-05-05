@@ -54,33 +54,10 @@ struct GradeDetectorParams {
   int   min_cluster_size = 15;
 };
 
-// Per-step wall-clock timings (microseconds) populated by compute() each
-// frame. Used by the ROS wrapper to log a once-per-second breakdown so we
-// can see which stage dominates the callback budget.
-struct TimingInfo {
-  long cell_binning_us = 0;
-  long ground_split_us = 0;
-  long pca_us = 0;
-  long spike_us = 0;
-  long dbscan_prep_us = 0;   // voxel-downsample of candidates
-  long dbscan_us = 0;        // grid-indexed neighbor lookup + BFS
-  long override_us = 0;      // PCA-traversable bleed override
-  long emit_us = 0;          // build obstacle_points
-  long grade_map_us = 0;     // optional grade-map fill (0 if disabled)
-  size_t n_input = 0;
-  size_t n_populated_cells = 0;
-  size_t n_ground_cells = 0;
-  size_t n_candidates = 0;
-  size_t n_centroids = 0;
-};
-
 struct GradeDetectorResult {
   // Obstacle points in the SAME frame as the input cloud. Caller publishes
   // these to /scan_pca_filtered_points and lets Nav2's TF handle the rest.
   std::vector<Eigen::Vector3f> obstacle_points;
-
-  // Per-step timings (only meaningful after compute() returns).
-  TimingInfo timing;
 
   // Reference normal used by the per-cell PCA. The algorithm's internal
   // frame is base-link-aligned (z = up), so this is hardcoded to (0,0,1).

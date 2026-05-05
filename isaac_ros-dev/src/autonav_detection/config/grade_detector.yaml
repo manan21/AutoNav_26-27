@@ -86,11 +86,9 @@ grade_detector:
     # ── DBSCAN clustering (Step 5) ───────────────────────────────────────
     dbscan_eps: 0.3                # neighborhood radius (m)
     dbscan_min_samples: 3          # min points to form a core point
-    # Discard clusters with total raw-point mass below this. Was 15 —
-    # carried over from the simulator where synthetic vertical ray-casts
-    # gave dense uniform coverage. Real lidar puts most returns on
-    # ground rings; small distant objects often have only 8-12 raw
-    # points total and were getting filtered as noise. Voxel-downsample
-    # plus dbscan_min_samples already handles single-point flukes, so
-    # this can run lean.
-    min_cluster_size: 5
+    # Discard clusters with total raw-point mass below this. Was 15 in
+    # the simulator (synthetic dense coverage), then 5 during initial
+    # bring-up; settled at 10 after observing some noise pixels passing
+    # through with low coverage. Voxel-downsample plus dbscan_min_samples
+    # still handles single-point flukes; this just drops sparse stragglers.
+    min_cluster_size: 10
