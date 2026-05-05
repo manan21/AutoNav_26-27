@@ -405,18 +405,27 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   // DBSCAN is O(n²). Snap each candidate to its cell on the algorithm's
   // existing grid (internal_resolution m), then represent the cell by
   // one centroid. DBSCAN runs on the centroids — typically O(hundreds)
-  // unique cells — for ~70× speedup with negligible fidelity loss.
+  // unique cells — for a large speedup with negligible fidelity loss.
   // Each centroid carries a "mass" (raw count) so the original
   // min_cluster_size semantics (raw point count) are preserved.
-  std::unordered_map<int, std::pair<Eigen::Vector3f, int>> cand_cells;
+  //
+  // NOTE: must NOT use std::pair<Eigen::Vector3f, int> — Eigen's default
+  // ctor leaves Vector3f uninitialized, so the first point added to a
+  // cell would get summed with garbage and the centroid would be wrong.
+  // Use a named struct with explicit zero-init.
+  struct CellAccum {
+    Eigen::Vector3f sum = Eigen::Vector3f::Zero();
+    int count = 0;
+  };
+  std::unordered_map<int, CellAccum> cand_cells;
   cand_cells.reserve(candidate_pts.size() / 8 + 8);
   for (const auto& p : candidate_pts) {
     const int cx = static_cast<int>((p.x() + half) / res);
     const int cy = static_cast<int>((p.y() + half) / res);
     if (cx < 0 || cx >= gw || cy < 0 || cy >= gh) continue;
     auto& slot = cand_cells[cy * gw + cx];
-    slot.first += p;
-    slot.second += 1;
+    slot.sum += p;
+    slot.count += 1;
   }
   std::vector<Eigen::Vector3f> ds_centroids;
   std::vector<int> ds_cell_keys;
@@ -425,10 +434,10 @@ void GradeDetector::compute(const std::vector<Eigen::Vector3f>& cloud_input,
   ds_cell_keys.reserve(cand_cells.size());
   ds_mass.reserve(cand_cells.size());
   for (const auto& kv : cand_cells) {
-    ds_centroids.push_back(kv.second.first /
-                           static_cast<float>(kv.second.second));
+    ds_centroids.push_back(kv.second.sum /
+                           static_cast<float>(kv.second.count));
     ds_cell_keys.push_back(kv.first);
-    ds_mass.push_back(kv.second.second);
+    ds_mass.push_back(kv.second.count);
   }
 
   if (static_cast<int>(ds_centroids.size()) >= params_.dbscan_min_samples) {

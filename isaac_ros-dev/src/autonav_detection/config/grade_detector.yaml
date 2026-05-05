@@ -34,7 +34,14 @@ grade_detector:
     # ramp is 15% (~8.5°), so 30% (~16.7°) gives full headroom.
     traversable_max_deg: 16.7
     pca_noise_margin_deg: 1.5
-    pca_max_valid_deg: 60.0
+    # Cells whose PCA grade exceeds this are dropped as "PCA noise". Was
+    # 60.0 — that opened a dead zone (60–90°) where steep ramps fell
+    # through both the slope detector and the wall detector, registering
+    # as passable until they got near-vertical and the z-gap split
+    # caught them. Real defenses against bad PCA fits are the 1D
+    # rejection (eigvals[1] < eigvals[2]·0.01) and the planarity check
+    # (eigvals[0]/eigvals[2] > pca_planarity_max), which still fire.
+    pca_max_valid_deg: 89.0
 
     # Front-arc clamp. When true, only points with x >= 0 in the
     # base-link-aligned internal frame (forward of the lidar) are fed
