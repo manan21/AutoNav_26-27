@@ -113,7 +113,19 @@ set_target_properties(grade_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # positive — Eigen's eigen_packet_wrapper isn't actually non-trivial in
 # any meaningful sense, but GCC flags the memcpy. Suppress for this
 # target only.
-target_compile_options(grade_detector PRIVATE -Wno-class-memaccess)
+#
+# Force -O3 + -DNDEBUG regardless of the workspace's CMAKE_BUILD_TYPE.
+# The per-cell PCA in pca_pipeline.cpp is the hottest loop in the
+# perception stack and depends entirely on Eigen's templated math
+# being inlined — without -O3 it runs ~50-100× slower (measured 228 ms
+# per scan unoptimized vs ~5 ms expected). colcon's default build type
+# is empty, which means GCC defaults to -O0; we never want that for
+# this target.
+target_compile_options(grade_detector PRIVATE
+  -Wno-class-memaccess
+  -O3
+  -DNDEBUG
+)
 
 target_include_directories(grade_detector
   PRIVATE
