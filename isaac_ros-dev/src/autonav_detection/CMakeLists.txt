@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.18)  # 3.18+ recommended for CUDA language
 project(autonav_detection LANGUAGES CXX CUDA)
 
-# Warnings for host code
+# Warnings for host code only. -Wpedantic chokes on the auto-generated
+# stub.c / cudafe1.cpp files NVCC produces for CUDA targets ("style of
+# line directive is a GCC extension"), so scope these to CXX language
+# only — NVCC compilation passes won't see them.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+  )
 endif()
 
 # ---- ROS & deps ----
@@ -39,13 +46,6 @@ add_executable(line_detector
 
 target_compile_features(line_detector PUBLIC cxx_std_17)
 set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-# nvcc's host preprocessor emits non-standard `# N "file"` line markers
-# that trip -Wpedantic on the host pass. Suppress only for CUDA compile
-# units; -Wpedantic still applies to plain C++ in this target.
-target_compile_options(line_detector PRIVATE
-  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-pedantic>
-)
 
 target_include_directories(line_detector
   PRIVATE
