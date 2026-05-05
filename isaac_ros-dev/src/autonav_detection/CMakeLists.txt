@@ -40,6 +40,13 @@ add_executable(line_detector
 target_compile_features(line_detector PUBLIC cxx_std_17)
 set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# nvcc's host preprocessor emits non-standard `# N "file"` line markers
+# that trip -Wpedantic on the host pass. Suppress only for CUDA compile
+# units; -Wpedantic still applies to plain C++ in this target.
+target_compile_options(line_detector PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-pedantic>
+)
+
 target_include_directories(line_detector
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -100,6 +107,13 @@ add_executable(grade_detector
 
 target_compile_features(grade_detector PUBLIC cxx_std_17)
 set_target_properties(grade_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Eigen 3.4 on aarch64 (Jetson) emits -Wclass-memaccess warnings from
+# its own NEON intrinsics (PacketMath.h), not our code. Known false
+# positive — Eigen's eigen_packet_wrapper isn't actually non-trivial in
+# any meaningful sense, but GCC flags the memcpy. Suppress for this
+# target only.
+target_compile_options(grade_detector PRIVATE -Wno-class-memaccess)
 
 target_include_directories(grade_detector
   PRIVATE
