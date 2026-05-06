@@ -82,7 +82,7 @@
     </visual>
   </link>
   <joint name="GPS" type="fixed">
-    <origin xyz="-0.212200 -0.000105 0.661610" rpy="1.570796 0.000004 0" />
+    <origin xyz="-0.212200 -0.000105 0.661610" rpy="0 0.000004 0" />
     <parent link="base_link" />
     <child link="gps_footprint" />
   </joint>
