@@ -24,10 +24,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/base_link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -38,10 +34,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/base_link.STL" />
-      </geometry>
     </collision>
   </link>
   <link
@@ -77,10 +69,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Caster_link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -91,10 +79,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Caster_link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
@@ -135,10 +119,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Lidar_Link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -149,10 +129,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Lidar_Link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
@@ -188,10 +164,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Camera_Link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -202,10 +174,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Camera_Link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
@@ -241,10 +209,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/GPS_Link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -255,10 +219,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/GPS_Link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
@@ -294,10 +254,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Right_Wheel_Link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -308,10 +264,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Right_Wheel_Link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
@@ -352,10 +304,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Left_Wheel_Link.STL" />
-      </geometry>
       <material
         name="">
         <color
@@ -366,10 +314,6 @@
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://bringup/description/meshes/Left_Wheel_Link.STL" />
-      </geometry>
     </collision>
   </link>
   <joint
