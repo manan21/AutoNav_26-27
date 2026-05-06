@@ -1,12 +1,22 @@
 import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
+
+
+# Workspace-relative path to the readiness helpers. Both shell scripts and
+# this launch file rely on this single copy.
+WAIT_FOR_TOPIC_PY = '/autonav/isaac_ros-dev/config/lib/wait_for_topic.py'
 
 
 '''
@@ -149,16 +159,53 @@ def generate_launch_description():
         }]
     )
 
+    # Block slam_toolbox + map_padder until /scan_fullframe is actually
+    # publishing. Without this gate, slam_toolbox can latch a "no data"
+    # state if it starts before the SICK driver / network is up, and
+    # never recovers even after scans begin flowing.
+    wait_for_scan = ExecuteProcess(
+        cmd=[
+            'python3', WAIT_FOR_TOPIC_PY,
+            '/scan_fullframe',
+            '--type', 'sensor_msgs/msg/LaserScan',
+            '--qos', 'sensor',
+            '--timeout', '120',
+        ],
+        output='screen',
+    )
+    start_when_scan_ready = RegisterEventHandler(
+        OnProcessExit(
+            target_action=wait_for_scan,
+            on_exit=[slam_toolbox, map_padder],
+        )
+    )
+
+    # Once /map_padded has its first sample, print the GUI readiness sentinel
+    # so the HUD can flip the SLAM dot green and start the next queued device.
+    gui_ready_emit = ExecuteProcess(
+        cmd=[
+            'bash', '-c',
+            f'python3 {WAIT_FOR_TOPIC_PY} /map_padded '
+            f'--type nav_msgs/msg/OccupancyGrid '
+            f'--qos transient_local --timeout 120 '
+            f'&& echo "[GUI_READY] SLAM" '
+            f'|| echo "[GUI_READY_TIMEOUT] SLAM" >&2',
+        ],
+        output='screen',
+    )
 
     return LaunchDescription([
         # params
         publish_period,
         use_sim_time,
         nav2_params,
-        #nodes
+        # nodes — ekf_local has no lidar dependency, start it immediately
         ekf_local,
-        slam_toolbox,
-        map_padder,
+        # gate slam_toolbox + map_padder on /scan_fullframe
+        wait_for_scan,
+        start_when_scan_ready,
+        # readiness handshake for the HUD (parallel; emits when /map_padded fires)
+        gui_ready_emit,
         #gps_transform,
         #ekf_global,
         #nav2

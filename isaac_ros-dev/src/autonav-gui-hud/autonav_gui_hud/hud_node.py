@@ -476,24 +476,48 @@ class HudWindow(QMainWindow):
         self._toggle_on_style = toggle_on_style
 
         # Device definitions: (button label, status_dot key(s), real command)
+        # Every command goes through a script that prints "[GUI_READY] <label>"
+        # once its readiness condition (a topic publishing) is met. The HUD
+        # blocks the queue on that sentinel — see READY_SENTINEL below.
         self._launch_devices = [
             ("Pre-SLAM", ["Encoders", "Arduino", "Motor Ctrl", "CONTROL"],
-             "ros2 launch bringup pre_slam.launch.py"),
+             "./config/run-pre-slam.sh"),
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
-            ("GPS", ["GPS"], "ros2 run gps_handler gps_publisher"),
-            ("Power PCB", ["Power PCB"],
-             "ros2 launch autonav_electrical_publisher electrical_publisher.launch.py"),
+            ("GPS", ["GPS"], "./config/run-gps.sh"),
+            ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
 
         self._launch_nav_buttons = []  # same tuple format as _nav_buttons
         self._launch_states = {}   # label -> False | 'starting' | True
         self._flash_timers = {}    # label -> QTimer (flashing animation)
-        self._startup_timers = {}  # label -> QTimer (single-shot delay)
+        self._startup_timers = {}  # label -> QTimer (readiness poll)
         self._launch_queue = []    # list of labels waiting to start
+        self._ready_events = {}    # label -> bool (set when [GUI_READY] seen on stdout)
+        self._startup_deadlines = {}  # label -> monotonic seconds; readiness must arrive by then
+
+        # Scripts/launches that opt into the readiness handshake print this
+        # token on stdout when they reach steady state. The reader thread
+        # flips _ready_events[label] true; _check_startup waits on that.
+        self.READY_SENTINEL = "[GUI_READY]"
+
+        # Per-device readiness timeout (seconds). Devices not listed here
+        # use DEFAULT_READY_TIMEOUT. If the sentinel never arrives within
+        # the window, the device is marked failed and the queue advances.
+        self.DEFAULT_READY_TIMEOUT = 60.0
+        self._ready_timeouts = {
+            "Pre-SLAM":  60.0,
+            "Camera":    45.0,
+            "Lidar":     45.0,
+            "SLAM":      120.0,  # waits for /scan_fullframe + first /map_padded
+            "NAV2":      90.0,
+            "GPS":       300.0,  # outdoor GPS lock can take minutes
+            "Power PCB": 30.0,
+            "LINE DETECT": 45.0,
+        }
 
         cmd_label_style = (
             "border: none; color: #888; font-size: 10px;"
@@ -1707,10 +1731,12 @@ class HudWindow(QMainWindow):
             for key in dot_keys:
                 if key in self.status_dots:
                     self.status_dots[key].setStyleSheet(self._DOT_OFF)
-            # Cancel timers
+            # Cancel timers and reset readiness state
             if label in self._startup_timers:
                 self._startup_timers[label].stop()
                 del self._startup_timers[label]
+            self._startup_deadlines.pop(label, None)
+            self._ready_events.pop(label, None)
             if label in self._flash_timers:
                 self._flash_timers[label].stop()
                 del self._flash_timers[label]
@@ -1767,6 +1793,9 @@ class HudWindow(QMainWindow):
         self._gui_log_msg(f"Launching: {label}")
         dot_keys = self._dot_keys_for(label)
         self._launch_states[label] = 'starting'
+        self._ready_events[label] = False
+        timeout = self._ready_timeouts.get(label, self.DEFAULT_READY_TIMEOUT)
+        self._startup_deadlines[label] = time.monotonic() + timeout
         # Restore button text (may have been "Waiting")
         for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
             if blabel == label:
@@ -1813,12 +1842,17 @@ class HudWindow(QMainWindow):
             )
             self._process_objects[label] = proc
 
-            # Daemon reader thread: appends stdout lines to buffer
-            # Skips lines when buffer is full to avoid thrashing
+            # Daemon reader thread: appends stdout lines to buffer and
+            # watches for the readiness sentinel printed by the launch script.
+            sentinel = self.READY_SENTINEL
+            ready_events = self._ready_events
+
             def _reader():
                 try:
                     for line in proc.stdout:
                         buf.append(line)
+                        if sentinel in line:
+                            ready_events[label] = True
                 except Exception:
                     pass
             t = threading.Thread(target=_reader, daemon=True)
@@ -1829,10 +1863,10 @@ class HudWindow(QMainWindow):
             self._finish_device_startup(label, success=False)
             return
 
-        # After 1.5s, check if process is still running (success) or exited (failure)
+        # Poll every 250ms: succeed when [GUI_READY] arrives on stdout,
+        # fail when the process exits or the readiness deadline passes.
         startup_timer = QTimer()
-        startup_timer.setSingleShot(True)
-        startup_timer.setInterval(1500)
+        startup_timer.setInterval(250)
         startup_timer.timeout.connect(lambda: self._check_startup(label))
         startup_timer.start()
         self._startup_timers[label] = startup_timer
@@ -1864,24 +1898,52 @@ class HudWindow(QMainWindow):
         self._update_queue_label()
 
     def _check_startup(self, label):
-        """Called 1.5s after launch: check if process still running."""
-        if label in self._startup_timers:
-            del self._startup_timers[label]
+        """Polled every 250ms while a device is 'starting'.
+
+        Outcomes:
+          ready sentinel seen → green, advance queue.
+          process exited     → red,   advance queue.
+          deadline passed    → red,   advance queue (process keeps running
+                                       so the user can inspect logs and
+                                       turn it off manually).
+        """
         if self._launch_states.get(label) != 'starting':
+            self._stop_startup_timer(label)
             return
-        proc = self._process_objects.get(label)
-        if proc is None:
+
+        # 1. readiness handshake fired
+        if self._ready_events.get(label):
+            self._stop_startup_timer(label)
             self._finish_device_startup(label, success=True)
             return
-        if proc.poll() is not None:
-            # Process already exited — note it in the buffer
+
+        # 2. process exited before signaling ready
+        proc = self._process_objects.get(label)
+        if proc is not None and proc.poll() is not None:
             buf = self._process_buffers.get(label)
             if buf is not None:
                 buf.append(f"[Process exited with code {proc.returncode}]\n")
             self._process_objects.pop(label, None)
             self._process_readers.pop(label, None)
-        # Always mark as success so dots go green
-        self._finish_device_startup(label, success=True)
+            self._stop_startup_timer(label)
+            self._finish_device_startup(label, success=False)
+            return
+
+        # 3. readiness deadline passed
+        deadline = self._startup_deadlines.get(label)
+        if deadline is not None and time.monotonic() >= deadline:
+            buf = self._process_buffers.get(label)
+            if buf is not None:
+                buf.append(f"[Readiness timeout — no {self.READY_SENTINEL} after "
+                           f"{self._ready_timeouts.get(label, self.DEFAULT_READY_TIMEOUT):.0f}s]\n")
+            self._stop_startup_timer(label)
+            self._finish_device_startup(label, success=False)
+
+    def _stop_startup_timer(self, label):
+        timer = self._startup_timers.pop(label, None)
+        if timer is not None:
+            timer.stop()
+        self._startup_deadlines.pop(label, None)
 
     def _finish_device_startup(self, label, success):
         """Stop flashing, set dots green or gray, update button style, process queue."""
