@@ -1,15 +1,11 @@
 /**
  * Cuda kernels for fast Line detection processing
- * 
+ *
+ * Tunable knobs (half_window, sigma_threshold, mew_threshold) are passed
+ * in from the host as kernel arguments — they live in line_detector.yaml
+ * and are read by node.cpp via declare_parameter.
  */
-#include "line_detection/cuda.cuh"
-
-// the window has to be odd
-#define HALF_WINDOW_SIZE 3 // this produces a window of n * 2 + 1 size
-#define WINDOW_SIZE  2 * HALF_WINDOW_SIZE + 1
-#define WINDOW_SIZE_SQ  (WINDOW_SIZE) * (WINDOW_SIZE)
-#define SIGMA_THRESHOLD  5
-#define MEW_THRESHOLD 200
+#include "autonav_detection/cuda.cuh"
 
 
 // dim3 block (16,16,1)
@@ -21,8 +17,11 @@ __global__ void __cerias_kernel (
         uint8_t *brightness_mask,
         int2 *output,
         int *counter,
-        int width, int height
-    ) 
+        int width, int height,
+        int half_window,
+        float sigma_threshold,
+        float mew_threshold
+    )
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -33,11 +32,11 @@ __global__ void __cerias_kernel (
         return;
 
     // assemble the window
-    // add 1 to account for extra row/col, but not to 
-    int x1 = max(0, x - HALF_WINDOW_SIZE);
-    int y1 = max(0, y - HALF_WINDOW_SIZE);
-    int x2 = min(width - 1, x + HALF_WINDOW_SIZE) + 1;
-    int y2 = min(height - 1, y + HALF_WINDOW_SIZE) + 1;
+    // add 1 to account for extra row/col, but not to
+    int x1 = max(0, x - half_window);
+    int y1 = max(0, y - half_window);
+    int x2 = min(width - 1, x + half_window) + 1;
+    int y2 = min(height - 1, y + half_window) + 1;
 
     // get intensity std. div of pixels in the window
 
@@ -53,20 +52,16 @@ __global__ void __cerias_kernel (
 
     float num_pixels = float((x2 - x1) * (y2 - y1));
 
-    //printf("intensity: %f, squared: %f, num pixels: %f\n",sum_intensity, sum_intensity_sq, num_pixels);
-
     float mew = sum_intensity / num_pixels;
 
     float sigma = sqrt( (sum_intensity_sq - (sum_intensity * sum_intensity)/ num_pixels) / (num_pixels));
 
-    if (sigma < SIGMA_THRESHOLD && mew > MEW_THRESHOLD) {
+    if (sigma < sigma_threshold && mew > mew_threshold) {
 
         int index = atomicAdd(counter, 1);
         output[index] = make_int2(x, y);
 
     }
-
-    //printf("x: %d, y: %d, std dev: %f, mew: %f\n", x,y,sigma, mew);
 
 }
 
@@ -76,10 +71,13 @@ extern "C" void cerias_kernel(float * gray_img,
                              uint8_t * mask,
                              int2 * output,
                              int * counter,
-                             int width, int height) 
+                             int width, int height,
+                             int half_window,
+                             float sigma_threshold,
+                             float mew_threshold)
 {
 
-    
+
     dim3 block(16, 16);
     dim3 grid(
         (width + block.x - 1) / block.x,
@@ -87,18 +85,17 @@ extern "C" void cerias_kernel(float * gray_img,
     );
 
     __cerias_kernel<<<grid, block>>>(
-        
+
         gray_img,
         integral, integral_sq,
         mask,
         output, counter,
-        width, height
+        width, height,
+        half_window,
+        sigma_threshold,
+        mew_threshold
 
     );
 
 
 }
-
-                            
-
-

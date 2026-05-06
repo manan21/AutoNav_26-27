@@ -1,0 +1,5 @@
+<library path="gradient_escape_core">
+  <class type="gradient_escape::GradientEscape" base_class_type="nav2_core::Behavior">
+    <description>Escapes high-cost costmap regions by following the cost gradient downhill</description>
+  </class>
+</library>

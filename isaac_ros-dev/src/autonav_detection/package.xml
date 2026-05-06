@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>line_detection</name>
+  <name>autonav_detection</name>
   <version>0.0.0</version>
-  <description>creates a line detection service that taps the camera and returns line points</description>
+  <description>AutoNav perception detectors: camera-based line detector and LiDAR-based PCA grade detector. Both run as separate executables sharing this package.</description>
   <maintainer email="jb5@vt.edu">joe</maintainer>
   <license>TODO: License declaration</license>
 
@@ -11,6 +11,8 @@
 
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>autonav_interfaces</depend>
   <depend>cv_bridge</depend>
   <depend>tf2_ros</depend>

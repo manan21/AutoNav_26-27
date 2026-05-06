@@ -1,10 +1,13 @@
 import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+)
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 
@@ -137,17 +140,36 @@ def generate_launch_description():
         ]
     )
 
+    # Pad the SLAM map so the global costmap always contains the robot + GPS waypoints
+    map_padder = Node(
+        package='map_padder',
+        executable='map_padder_node',
+        name='map_padder',
+        output='screen',
+        parameters=[{
+            'tile_size_m': 1.0,
+            'output_resolution': 0.10,
+        }]
+    )
+
+    gui_ready_emit = ExecuteProcess(
+        cmd=['bash', '-c', 'sleep 5 && echo "[GUI_READY] SLAM"'],
+        output='screen',
+    )
+
     return LaunchDescription([
         # params
         publish_period,
         use_sim_time,
         nav2_params,
-        #nodes
+        # nodes
         ekf_local,
         slam_toolbox,
+        map_padder,
+        gui_ready_emit,
         #gps_transform,
-        #ekf_global, 
+        #ekf_global,
         #nav2
-        
+
     ])
 
