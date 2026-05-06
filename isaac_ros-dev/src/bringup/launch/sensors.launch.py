@@ -36,12 +36,19 @@ def generate_launch_description():
     print(f"zed: {zed_pkg}")
     #print(f"sick: {sick_pkg}")
 
+    zed_override_path = os.path.join(
+        get_package_share_directory('bringup'),
+        'config',
+        'zed_override.yaml'
+    )
+
     zed = IncludeLaunchDescription(
             PythonLaunchDescriptionSource ([zed_pkg]),
             launch_arguments={
                 'camera_model': LaunchConfiguration('camera_model'),
                 'publish_tf': 'false',
                 'publish_map_tf': 'false',
+                'ros_params_override_path': zed_override_path,
             }.items()
     )
 

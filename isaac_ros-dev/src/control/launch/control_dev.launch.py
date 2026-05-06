@@ -32,7 +32,7 @@ def generate_launch_description():
     joy = Node(
             package='joy',
             executable='joy_node',
-            name='joy_node'
+            name='joy',
         )
 
     control = Node(
