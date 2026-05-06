@@ -22,7 +22,15 @@
 #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 
 namespace lines {
-std::pair<int2*, int*> detect_line_pixels(const cv::Mat&);
+// Tunables: brightness_threshold gates the pre-mask; half_window /
+// sigma_threshold / mew_threshold drive the CERIAS kernel. Defaults are
+// the historical compile-time values (220 / 3 / 5.0 / 200.0). All four
+// live in line_detector.yaml and are wired through node.cpp.
+std::pair<int2*, int*> detect_line_pixels(const cv::Mat & image,
+                                          double brightness_threshold = 220.0,
+                                          int    half_window = 3,
+                                          float  sigma_threshold = 5.0f,
+                                          float  mew_threshold = 200.0f);
 }
 std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img);
 
