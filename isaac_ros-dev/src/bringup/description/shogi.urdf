@@ -48,7 +48,7 @@
     </visual>
   </link>
   <joint name="Lidar" type="fixed">
-    <origin xyz="0.659800 0.000105 0.205680" rpy="-1.570800 0 1.570796" />
+    <origin xyz="0.659800 0.000105 0.205680" rpy="-3.141593 -0.000004 0" />
     <parent link="base_link" />
     <child link="lidar_footprint" />
   </joint>
@@ -65,7 +65,7 @@
     </visual>
   </link>
   <joint name="Camera" type="fixed">
-    <origin xyz="0.657600 0.009075 0.307230" rpy="0.349070 0 1.570796" />
+    <origin xyz="0.657600 0.009075 0.307230" rpy="0 0.349070 0" />
     <parent link="base_link" />
     <child link="zed_camera_link" />
   </joint>
