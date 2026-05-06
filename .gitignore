@@ -8,3 +8,5 @@ __pycache__
 .claude/
 .codex
 *.png
+*.venv*
+.DS_STORE
