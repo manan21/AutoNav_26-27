@@ -26,7 +26,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/base_link.STL" />
+          filename="package://bringup/description/meshes/base_link.STL" />
       </geometry>
       <material
         name="">
@@ -40,10 +40,23 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/base_link.STL" />
+          filename="package://bringup/description/meshes/base_link.STL" />
       </geometry>
     </collision>
   </link>
+  <link
+    name="base_footprint" />
+  <joint
+    name="base_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="base_footprint" />
+  </joint>
   <link
     name="Caster_link">
     <inertial>
@@ -66,7 +79,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Caster_link.STL" />
+          filename="package://bringup/description/meshes/Caster_link.STL" />
       </geometry>
       <material
         name="">
@@ -80,7 +93,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Caster_link.STL" />
+          filename="package://bringup/description/meshes/Caster_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -103,7 +116,7 @@
       velocity="0" />
   </joint>
   <link
-    name="Lidar_Link">
+    name="lidar_footprint">
     <inertial>
       <origin
         xyz="1.96457043762921E-05 0.0467687293138118 0.000363391955355841"
@@ -124,7 +137,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Lidar_Link.STL" />
+          filename="package://bringup/description/meshes/Lidar_Link.STL" />
       </geometry>
       <material
         name="">
@@ -138,7 +151,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Lidar_Link.STL" />
+          filename="package://bringup/description/meshes/Lidar_Link.STL" />
       </geometry>
     </collision>
   </link>
@@ -151,12 +164,12 @@
     <parent
       link="base_link" />
     <child
-      link="Lidar_Link" />
+      link="lidar_footprint" />
     <axis
       xyz="0 0 0" />
   </joint>
   <link
-    name="Camera_Link">
+    name="zed_camera_link">
     <inertial>
       <origin
         xyz="-0.00896758927919017 -0.0324872975393564 -0.00279715757184507"
@@ -177,7 +190,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Camera_Link.STL" />
+          filename="package://bringup/description/meshes/Camera_Link.STL" />
       </geometry>
       <material
         name="">
@@ -191,7 +204,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Camera_Link.STL" />
+          filename="package://bringup/description/meshes/Camera_Link.STL" />
       </geometry>
     </collision>
   </link>
@@ -204,12 +217,12 @@
     <parent
       link="base_link" />
     <child
-      link="Camera_Link" />
+      link="zed_camera_link" />
     <axis
       xyz="0 0 0" />
   </joint>
   <link
-    name="GPS_Link">
+    name="gps_footprint">
     <inertial>
       <origin
         xyz="0 0.0287644249289596 0"
@@ -230,7 +243,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/GPS_Link.STL" />
+          filename="package://bringup/description/meshes/GPS_Link.STL" />
       </geometry>
       <material
         name="">
@@ -244,7 +257,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/GPS_Link.STL" />
+          filename="package://bringup/description/meshes/GPS_Link.STL" />
       </geometry>
     </collision>
   </link>
@@ -257,12 +270,12 @@
     <parent
       link="base_link" />
     <child
-      link="GPS_Link" />
+      link="gps_footprint" />
     <axis
       xyz="0 0 0" />
   </joint>
   <link
-    name="Right_Wheel_Link">
+    name="right_wheel_link">
     <inertial>
       <origin
         xyz="-0.0370066062754182 -2.4700837625069E-05 1.8694560322885E-05"
@@ -283,7 +296,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Right_Wheel_Link.STL" />
+          filename="package://bringup/description/meshes/Right_Wheel_Link.STL" />
       </geometry>
       <material
         name="">
@@ -297,7 +310,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Right_Wheel_Link.STL" />
+          filename="package://bringup/description/meshes/Right_Wheel_Link.STL" />
       </geometry>
     </collision>
   </link>
@@ -310,7 +323,7 @@
     <parent
       link="base_link" />
     <child
-      link="Right_Wheel_Link" />
+      link="right_wheel_link" />
     <axis
       xyz="1 0 0" />
     <limit
@@ -320,7 +333,7 @@
       velocity="0" />
   </joint>
   <link
-    name="Left_Wheel_Link">
+    name="left_wheel_link">
     <inertial>
       <origin
         xyz="0.775342995310213 -2.4701159076046E-05 1.86946183691195E-05"
@@ -341,7 +354,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Left_Wheel_Link.STL" />
+          filename="package://bringup/description/meshes/Left_Wheel_Link.STL" />
       </geometry>
       <material
         name="">
@@ -355,7 +368,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/Left_Wheel_Link.STL" />
+          filename="package://bringup/description/meshes/Left_Wheel_Link.STL" />
       </geometry>
     </collision>
   </link>
@@ -368,7 +381,7 @@
     <parent
       link="base_link" />
     <child
-      link="Left_Wheel_Link" />
+      link="left_wheel_link" />
     <axis
       xyz="1 0 0" />
     <limit
