@@ -8,6 +8,7 @@
 #include "autonav_interfaces/msg/encoders.hpp"
 #include "autonav_interfaces/srv/configure_control.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 #include <iostream>
 #include <string>
@@ -66,6 +67,7 @@ class ControlNode : public rclcpp::Node {
 
     // publisher for encoder values
      rclcpp::Publisher<autonav_interfaces::msg::Encoders>::SharedPtr encodersPub;
+     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr autonomous_mode_pub_;
      rclcpp::Subscription<std_msgs::msg::String>::SharedPtr estop_sub_;
      rclcpp::TimerBase::SharedPtr encoder_timer_;
 
@@ -95,6 +97,13 @@ class ControlNode : public rclcpp::Node {
             } else {
                 char mode[8] = "MANUAL\n";
                 arduinoSerial.writeString(mode);
+            }
+
+            // Publish mode so NAV2 / GPS waypoint handler know the state
+            if (autonomous_mode_pub_) {
+                std_msgs::msg::Bool mode_msg;
+                mode_msg.data = autonomousMode;
+                autonomous_mode_pub_->publish(mode_msg);
             }
         }
 
@@ -299,6 +308,14 @@ class ControlNode : public rclcpp::Node {
         // ESTOP CALLBACK
 	
         
+        // Publish autonomous mode state so NAV2 / GPS waypoint handler can react
+        autonomous_mode_pub_ = this->create_publisher<std_msgs::msg::Bool>("/autonomous_mode", 10);
+        {
+            std_msgs::msg::Bool mode_msg;
+            mode_msg.data = autonomousMode;
+            autonomous_mode_pub_->publish(mode_msg);
+        }
+
         // ----- HARD GUARD FOR ENCODER PUBLISHER -----
         auto existing_pubs = this->get_publishers_info_by_topic(encoder_topic, false);
 
