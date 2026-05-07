@@ -47,7 +47,7 @@
 #include "rclcpp/parameter_events_filter.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
-template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
+#include <cmath>
 
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
@@ -71,6 +71,14 @@ bool within_bounds(T value, T min, T max) {
 
 namespace line_layer
 {
+
+std::size_t LineLayer::RememberedCellKeyHash::operator()(
+  const RememberedCellKey & key) const noexcept
+{
+  const auto x_hash = std::hash<long long>{}(key.x);
+  const auto y_hash = std::hash<long long>{}(key.y);
+  return x_hash ^ (y_hash + 0x9e3779b97f4a7c15ULL + (x_hash << 6) + (x_hash >> 2));
+}
 
 LineLayer::LineLayer()
 : last_min_x_(0.0),
@@ -123,22 +131,73 @@ LineLayer::onInitialize()
   RCLCPP_INFO(rclcpp::get_logger("nav_costmap_2d"), "hello from line land");
   
 }
-/// @brief I just accidentally did this wtf.... this is a line callback that mimics the cool other costmap plugins
-/// @param message 
-/// @param buffer 
 void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message) {
 
       #ifdef DEBUG_
       RCLCPP_INFO(rclcpp::get_logger("nav_costmap_2d"), "CALM LUH CALLBACK");
       #endif
-      auto line = std::make_shared<autonav_interfaces::msg::LinePoints>(); 
-      line->header = message->header;
-      line->points = message->points;
+      auto node = node_.lock();
+      if (!node) {
+        return;
+      }
 
-      buffer_.buffer(line);
-      current_ = false;
-      need_recalculation_ = true;
+      if (!message) {
+        return;
+      }
 
+      if (message->points.empty()) {
+        RCLCPP_DEBUG_THROTTLE(
+          rclcpp::get_logger("nav_costmap_2d"), *node->get_clock(), 2000,
+          "line_layer received empty line message; keeping remembered lines");
+        return;
+      }
+
+      auto transformed_points = transformPointsToGlobalFrame(*message);
+      if (!transformed_points) {
+        return;
+      }
+
+      std::size_t added_points = 0;
+      {
+        std::lock_guard<std::mutex> lock(remembered_lines_mutex_);
+        for (const auto & point : *transformed_points) {
+          if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+            continue;
+          }
+
+          auto key = rememberedCellKey(point);
+          if (remembered_line_cells_.insert(key).second) {
+            remembered_line_points_.push_back(point);
+            ++added_points;
+          }
+        }
+      }
+
+      if (added_points > 0) {
+        current_ = false;
+        need_recalculation_ = true;
+        RCLCPP_DEBUG_THROTTLE(
+          rclcpp::get_logger("nav_costmap_2d"), *node->get_clock(), 2000,
+          "line_layer remembered %zu new line cells", added_points);
+      }
+
+}
+
+LineLayer::RememberedCellKey LineLayer::rememberedCellKey(
+  const geometry_msgs::msg::Vector3 & point) const
+{
+  const double resolution = resolution_ > 0.0 ? resolution_ : 0.05;
+  return {
+    static_cast<long long>(std::floor(point.x / resolution)),
+    static_cast<long long>(std::floor(point.y / resolution))
+  };
+}
+
+void LineLayer::clearRememberedLines()
+{
+  std::lock_guard<std::mutex> lock(remembered_lines_mutex_);
+  remembered_line_points_.clear();
+  remembered_line_cells_.clear();
 }
 
 std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPointsToGlobalFrame(
@@ -302,6 +361,10 @@ LineLayer::updateBounds(
   double robot_x, double robot_y, double /*robot_yaw*/, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
+  if (rolling_window_) {
+    updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
+  }
+
   if (!rolling_window_) {
     last_min_x_ = origin_x_;
     last_min_y_ = origin_y_;
@@ -315,47 +378,15 @@ LineLayer::updateBounds(
     return;
   }
 
-  if (need_recalculation_) {
-    
-    updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
-
-    
-
-    last_min_x_ = *min_x;
-    last_min_y_ = *min_y;
-    last_max_x_ = *max_x;
-    last_max_y_ = *max_y;
-    // For some reason when I make these -<double>::max() it does not
-    // work with Costmap2D::worldToMapEnforceBounds(), so I'm using
-    // -<float>::max() instead.
-    //*min_x = -std::numeric_limits<float>::max();
-    //*min_y = -std::numeric_limits<float>::max();
-    //*max_x = std::numeric_limits<float>::max();
-    //*max_y = std::numeric_limits<float>::max();
-
-      // Set a 20x20 meter area around the robot
-    double half_size = 10.0; // 10 meters in each direction = 20x20 total
-    
-    *min_x = std::min(*min_x, robot_x - half_size);
-    *min_y = std::min(*min_y, robot_y - half_size);
-    *max_x = std::max(*max_x, robot_x + half_size);
-    *max_y = std::max(*max_y, robot_y + half_size);
-
-    need_recalculation_ = false;
-  } else {
-    double tmp_min_x = last_min_x_;
-    double tmp_min_y = last_min_y_;
-    double tmp_max_x = last_max_x_;
-    double tmp_max_y = last_max_y_;
-    last_min_x_ = *min_x;
-    last_min_y_ = *min_y;
-    last_max_x_ = *max_x;
-    last_max_y_ = *max_y;
-    *min_x = std::min(tmp_min_x, *min_x);
-    *min_y = std::min(tmp_min_y, *min_y);
-    *max_x = std::max(tmp_max_x, *max_x);
-    *max_y = std::max(tmp_max_y, *max_y);
-  }
+  last_min_x_ = origin_x_;
+  last_min_y_ = origin_y_;
+  last_max_x_ = origin_x_ + getSizeInMetersX();
+  last_max_y_ = origin_y_ + getSizeInMetersY();
+  *min_x = std::min(*min_x, last_min_x_);
+  *min_y = std::min(*min_y, last_min_y_);
+  *max_x = std::max(*max_x, last_max_x_);
+  *max_y = std::max(*max_y, last_max_y_);
+  need_recalculation_ = false;
 }
 
 // The method is called when footprint was changed.
@@ -419,53 +450,21 @@ LineLayer::updateCosts(
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
 
-  auto clear_layer = [&]() {
-    resetMaps();
-    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
-    current_ = true;
-    if (publish_costmap_) {
-      publishCostmap();
-    }
-  };
-
   #ifdef DEBUG_n
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (min_x: %d), (min_y: %d), (max_x: %d), (max_y: %d)",min_i, max_i, min_j, max_j );
   #endif
 
-  // joe was here
-
-  // std::vector<geometry_msgs::msg::Vector3> points;
   #ifdef DEBUG_n
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "HEEEEEEEEEEEELP HEEEELP ME HEEEEEEEEEELP");
   #endif
 
-  auto last = buffer_.read();
-  if (!last ){
-    RCLCPP_DEBUG_THROTTLE(
-      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
-      "line_layer buffer empty; waiting for line points");
-    clear_layer();
-    return;
-  }
-  auto last_msg = *last;
-  if (!last_msg) {
-    RCLCPP_WARN_THROTTLE(
-      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
-      "line_layer received an empty buffered message");
-    clear_layer();
-    return;
+  std::vector<geometry_msgs::msg::Vector3> points;
+  {
+    std::lock_guard<std::mutex> lock(remembered_lines_mutex_);
+    points = remembered_line_points_;
   }
 
-  auto transformed_points = transformPointsToGlobalFrame(*last_msg);
-  if (!transformed_points) {
-    clear_layer();
-    return;
-  }
-
-  // Clear the previous line layer state only when we have a usable message.
   resetMaps();
-
-  const std::vector<geometry_msgs::msg::Vector3> & points = *transformed_points;
 
   #ifdef DEBUG_2
   RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "line point len: %zu", points.size());
@@ -489,6 +488,9 @@ LineLayer::updateCosts(
     unsigned int my = 0;
     if (!master_grid.worldToMap(x, y, mx, my)) {
       // Point lies outside this costmap window.
+      continue;
+    }
+    if (mx >= size_x_ || my >= size_y_) {
       continue;
     }
 

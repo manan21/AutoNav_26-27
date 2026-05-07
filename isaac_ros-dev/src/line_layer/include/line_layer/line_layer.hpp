@@ -49,16 +49,17 @@
 #include "nav2_costmap_2d/costmap_2d.hpp"
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "nav2_costmap_2d/costmap_layer.hpp"
-#include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
-#include "nav2_costmap_2d/observation_buffer.hpp"
-#include "line_layer/line_buffer.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <functional>
+#include <mutex>
 #include <optional>
+#include <unordered_set>
+#include <vector>
 
 namespace line_layer
 {
@@ -81,6 +82,7 @@ public:
   virtual void reset()
   {
     resetMaps();
+    clearRememberedLines();
     current_ = false;
     need_recalculation_ = true;
   }
@@ -101,6 +103,7 @@ private:
   double transform_tolerance_;
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
+  void clearRememberedLines();
 
   // Size of gradient in cells
   int GRADIENT_SIZE = 20;
@@ -112,13 +115,29 @@ private:
   std::string line_topic_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-  // turns out you can type anything you want in a comment
-  // poop
 
-  // when the wrapper sucks so you write a chiller one
-  LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>> buffer_;
+  struct RememberedCellKey
+  {
+    long long x;
+    long long y;
+
+    bool operator==(const RememberedCellKey & other) const
+    {
+      return x == other.x && y == other.y;
+    }
+  };
+
+  struct RememberedCellKeyHash
+  {
+    std::size_t operator()(const RememberedCellKey & key) const noexcept;
+  };
+
+  mutable std::mutex remembered_lines_mutex_;
+  std::vector<geometry_msgs::msg::Vector3> remembered_line_points_;
+  std::unordered_set<RememberedCellKey, RememberedCellKeyHash> remembered_line_cells_;
 
   void linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message);
+  RememberedCellKey rememberedCellKey(const geometry_msgs::msg::Vector3 & point) const;
   std::optional<std::vector<geometry_msgs::msg::Vector3>> transformPointsToGlobalFrame(
     const autonav_interfaces::msg::LinePoints & message);
 };
