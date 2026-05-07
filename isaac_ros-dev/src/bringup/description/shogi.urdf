@@ -98,10 +98,11 @@
       </material>
     </visual>
   </link>
-  <joint name="Right_Wheel" type="fixed">
+  <joint name="Right_Wheel" type="continuous">
     <origin xyz="0 -0.361630 0" rpy="2.749800 0 -1.570804" />
     <parent link="base_link" />
     <child link="right_wheel_link" />
+    <axis xyz="1 0 0" />
   </joint>
 
   <link name="left_wheel_link">
@@ -115,9 +116,10 @@
       </material>
     </visual>
   </link>
-  <joint name="Left_Wheel" type="fixed">
+  <joint name="Left_Wheel" type="continuous">
     <origin xyz="0 0.361630 0" rpy="1.739800 0 1.570796" />
     <parent link="base_link" />
     <child link="left_wheel_link" />
+    <axis xyz="1 0 0" />
   </joint>
 </robot>
