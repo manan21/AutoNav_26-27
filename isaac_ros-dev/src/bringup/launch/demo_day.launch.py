@@ -81,7 +81,7 @@ def generate_launch_description():
     )
 
     line_detection = Node(
-        package="line_detection",
+        package="autonav_detection",
         executable="line_detector",
         name="line_detection_node",
         output="screen",
@@ -98,6 +98,24 @@ def generate_launch_description():
             "tf_lookup_timeout_ms": 100,
             "line_hold_timeout_ms": 750,
         }],
+    )
+
+    # nav2_paramsv2.yaml's obstacle_layer subscribes to
+    # /scan_pca_filtered_points (NOT /scan_fullframe), so demo day must
+    # also start grade_detector or Nav2 will see no obstacle source.
+    grade_detection = Node(
+        package="autonav_detection",
+        executable="grade_detector",
+        name="grade_detector",
+        output="screen",
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare("autonav_detection"),
+                "config",
+                "grade_detector.yaml",
+            ]),
+            {"use_sim_time": LaunchConfiguration("use_sim_time")},
+        ],
     )
 
     nav2 = IncludeLaunchDescription(
@@ -122,5 +140,6 @@ def generate_launch_description():
         sensors,
         slam,
         line_detection,
+        grade_detection,
         nav2,
     ])

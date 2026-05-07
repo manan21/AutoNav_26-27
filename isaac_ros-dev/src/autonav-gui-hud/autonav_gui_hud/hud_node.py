@@ -485,7 +485,7 @@ class HudWindow(QMainWindow):
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
-            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("DETECT", ["LINE DETECT", "PCA GRADE"], "./config/run-detect.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
@@ -840,7 +840,7 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT"]
+        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA GRADE"]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
