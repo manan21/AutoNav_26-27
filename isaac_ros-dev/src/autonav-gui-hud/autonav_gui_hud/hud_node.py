@@ -516,7 +516,7 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "LINE DETECT": 45.0,
+            "DETECT": 45.0,
         }
 
         cmd_label_style = (
