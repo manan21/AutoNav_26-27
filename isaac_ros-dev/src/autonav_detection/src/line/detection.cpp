@@ -1,4 +1,4 @@
-#include "line_detection/detection.hpp"
+#include "autonav_detection/detection.hpp"
 #include <algorithm>
 #include <vector>
 
@@ -91,7 +91,11 @@ std::pair<int2 *, int *> filter_line_components(
  * Thus, we are happy to map these pixels as obstacles on the map, since the robot will avoid them anyways. 
  * 
  */
-std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
+std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
+                                                  double brightness_threshold,
+                                                  int    half_window,
+                                                  float  sigma_threshold,
+                                                  float  mew_threshold) {
 
     // convert to grayscale
     cv::Mat gray_img;
@@ -135,8 +139,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
 
     // get mask
     cv::Mat mask;
-    double threshold = 220;
-    cv::threshold(gray_img, mask, threshold, 255, cv::THRESH_BINARY);
+    cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
 
@@ -309,7 +312,10 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image) {
         integral, integral_sq,
         device_mask,
         output, counter,
-        width, height
+        width, height,
+        half_window,
+        sigma_threshold,
+        mew_threshold
     );
 
     // Check for kernel launch errors

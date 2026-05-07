@@ -1,0 +1,55 @@
+# line_detector parameters.
+#
+# Two groups of knobs live here:
+#   1. I/O & timing — camera topic, depth topic, target frame, publish/hold
+#      cadence. Previously lived as -p flags in run-lines.sh.
+#   2. CERIAS line-pixel detector tunables — half_window_size, sigma_threshold,
+#      mew_threshold (CUDA kernel knobs) and brightness_threshold (host-side
+#      pre-mask). Previously hardcoded as #defines in cuda.cu and a magic
+#      `220` literal in detection.cpp; now plumbed through node.cpp.
+#
+# The detector marks a pixel as a line iff its neighborhood (a
+# (2*half_window_size + 1) ^ 2 window) is bright on average AND has low
+# variance — i.e. it sits on a smooth, evenly lit white surface.
+
+lines:
+  ros__parameters:
+    # ── I/O & timing ─────────────────────────────────────────────────────
+    camera_topic: "/zed/zed_node/rgb/color/rect/image"
+    depth_camera_topic: "/zed/zed_node/depth/depth_registered"
+    camera_info_topic: "/zed/zed_node/rgb/color/rect/camera_info"
+    line_points_topic: "/line_points"
+    target_frame: "map"
+    enable_timer: true
+    publish_interval_ms: 250          # min 50; controls publish cadence
+    max_rgb_depth_delta_ms: 120       # RGB/depth sync window
+    tf_lookup_timeout_ms: 100
+    line_hold_timeout_ms: 0           # 0 = never reuse stale line set
+
+    # ── CERIAS line-pixel detector ───────────────────────────────────────
+    # Stage 1: host-side binary mask. Pixels brighter than this are
+    # candidates for the kernel; everything else is dropped before GPU
+    # work. Range 0-255. ↑ keeps only the whitest pixels (misses dirty
+    # lines); ↓ admits more candidates (more GPU work, more false alarms).
+    brightness_threshold: 220.0
+
+    # Stage 2: GPU CERIAS kernel. Half-width of the local statistics
+    # window — full window = (2*N + 1)^2 = 7x7 by default. ↑ smooths over
+    # more area (better noise rejection, but loses thin or short line
+    # segments); ↓ tightens the local stat (catches finer structure but
+    # admits more single-pixel noise).
+    half_window_size: 3
+
+    # Local stddev cap. A pixel passes only if its window stddev is BELOW
+    # this. Lines on smooth painted surfaces have low variance; rough
+    # textured terrain (mulch, gravel) has high variance and gets
+    # rejected. ↑ admits more textured surfaces as "line"; ↓ stricter,
+    # rejects edges of dirty lines.
+    sigma_threshold: 5.0
+
+    # Local mean floor. A pixel passes only if its window mean is ABOVE
+    # this. Caps darker grays/asphalt from masquerading as lines after
+    # the brightness pre-mask survives them. ↑ requires brighter
+    # neighborhoods (cleaner lines only); ↓ admits dimmer near-line
+    # surfaces. Range 0-255.
+    mew_threshold: 200.0

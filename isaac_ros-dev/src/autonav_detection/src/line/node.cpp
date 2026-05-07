@@ -1,4 +1,4 @@
-#include "line_detection/detection.hpp"
+#include "autonav_detection/detection.hpp"
 #include <sensor_msgs/msg/image.hpp>
 #include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
@@ -39,7 +39,14 @@ public:
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("line_hold_timeout_ms", 0);
-		
+
+		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
+		// in cuda.cu; now plumbed through line_detector.yaml).
+		this->declare_parameter("brightness_threshold", 220.0);  // 0-255 grayscale
+		this->declare_parameter("half_window_size", 3);          // window = 2N+1
+		this->declare_parameter("sigma_threshold", 5.0);         // local stddev cap
+		this->declare_parameter("mew_threshold", 200.0);         // local mean floor
+
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
 		std::string camera_info_topic = this->get_parameter("camera_info_topic").as_string();
@@ -50,6 +57,10 @@ public:
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
+		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
+		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
+		sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
+		mew_threshold_ = static_cast<float>(this->get_parameter("mew_threshold").as_double());
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -62,6 +73,9 @@ public:
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(),
+			"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
+			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics
@@ -138,6 +152,10 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
+	double  brightness_threshold_ = 220.0;
+	int     half_window_size_ = 3;
+	float   sigma_threshold_ = 5.0f;
+	float   mew_threshold_ = 200.0f;
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
@@ -578,7 +596,9 @@ void LineDetectorNode::line_service(
 	}
 
 	// Detect lines
-	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image);
+	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image,
+				brightness_threshold_, half_window_size_,
+				sigma_threshold_, mew_threshold_);
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
 
@@ -653,7 +673,9 @@ void LineDetectorNode::line_callback()
 	// Detect lines
 	std::pair<int2*,int*> line_pair;
 	try {
-		line_pair = lines::detect_line_pixels(cv_ptr->image);
+		line_pair = lines::detect_line_pixels(cv_ptr->image,
+				brightness_threshold_, half_window_size_,
+				sigma_threshold_, mew_threshold_);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Line detection failed: %s", e.what());
 		publishHeldOrEmpty("line detection failure");

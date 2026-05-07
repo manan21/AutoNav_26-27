@@ -1,0 +1,94 @@
+# grade_detector hyperparameters.
+#
+# Defaults below match the simulator-validated values from
+# /Users/nathanfikes/Projects/Claude-Sandbox/Lidar-Simulation/src/lidar_sim_gui.py
+# (15 agents x 3 grade thresholds x 100% pass rate).
+#
+# Algorithm reference: terrain-grade-layer-plan.md, alternative deployment
+# (lines 655-902). Steps 1-5 of the slope_layer pipeline run inside this
+# node; Steps 6-7 (projection, inflation) are handled by Nav2's stock
+# nav2_costmap_2d::ObstacleLayer subscribing to /scan_pca_filtered_points.
+#
+# RULES.md #1: All slope math is performed in the SENSOR FRAME against
+# the LiDAR-derived surface normal. Do NOT add IMU / world-up references.
+# RULES.md #8: Whole pipeline must complete in <60 ms.
+
+grade_detector:
+  ros__parameters:
+    # ── I/O ──────────────────────────────────────────────────────────────
+    cloud_topic: "/cloud_all_fields_fullframe"     # SICK multiScan PointCloud2
+    obstacle_topic: "/scan_pca_filtered_points"    # → Nav2 ObstacleLayer
+    grade_map_topic: "/terrain/grade_map"          # debug (OccupancyGrid)
+    surface_normal_topic: "/pca/surface_normal"    # debug (Vector3Stamped)
+    publish_grade_map: true
+    publish_surface_normal: true
+
+    # ── Costmap geometry (sensor-frame local grid) ───────────────────────
+    internal_resolution: 0.10      # fine grid cell (m) for point binning
+    grid_half_size: 8.0            # local grid extent (±m around sensor)
+
+    # ── Grade threshold ───────────────────────────────────────────────────
+    # Set to ~2x the steepest ramp the robot is expected to climb. The
+    # back-slope on the descending side reads as ~2*alpha in the sensor's
+    # tilted frame, so 2x headroom keeps it below the cutoff. Competition
+    # ramp is 15% (~8.5°), so 30% (~16.7°) gives full headroom.
+    traversable_max_deg: 16.7
+    pca_noise_margin_deg: 1.5
+    # Cells whose PCA grade exceeds this are dropped as "PCA noise". Was
+    # 60.0 — that opened a dead zone (60–90°) where steep ramps fell
+    # through both the slope detector and the wall detector, registering
+    # as passable until they got near-vertical and the z-gap split
+    # caught them. Real defenses against bad PCA fits are the 1D
+    # rejection (eigvals[1] < eigvals[2]·0.01) and the planarity check
+    # (eigvals[0]/eigvals[2] > pca_planarity_max), which still fire.
+    pca_max_valid_deg: 89.0
+
+    # Front-arc clamp. When true, only points with x >= 0 in the
+    # base-link-aligned internal frame (forward of the lidar) are fed
+    # to the algorithm. Halves the candidate set, eliminates back-half
+    # clutter from DBSCAN, and matches what downstream LaserScan-based
+    # consumers effectively use anyway. Set false to process the full
+    # 360° scan (e.g. for debugging).
+    front_arc_only: true
+
+    # ── Sensor surface normal (was Step 1, REMOVED) ──────────────────────
+    # The simulator's surface_normal estimator does synthetic vertical
+    # ray-casts — every sample is a clean ground hit. A real SICK can
+    # only see ground via slanted beams, and within any small disk
+    # around the sensor the dominant returns are the chassis itself,
+    # not ground (saw ~38° spurious forward tilt in bring-up). On a
+    # wheeled robot driving on smooth surfaces the chassis is rigidly
+    # aligned with the local ground plane (the wheels are touching it)
+    # and the lidar is rigidly bolted to the chassis, so once the
+    # static URDF rotation (lidar_footprint → base_link) is applied,
+    # +z IS the local ground normal — no per-frame discovery needed.
+    # The 2× threshold rule still handles the back-slope artifact.
+
+    # ── Ground / wall split (Step 2) ─────────────────────────────────────
+    z_ground_band: 0.1             # min Z-gap (m) to split ground from wall
+    wall_min_height: 0.5           # min upper-cluster vertical span to call wall
+    min_pca_points: 6              # min points in 3x3 neighborhood for PCA
+
+    # ── PCA classification (Step 3) ──────────────────────────────────────
+    # eigval[0]/eigval[2] cutoff for "planar enough"; non-planar cells → NaN
+    # (skipped). Was 0.005 (simulator default) — too strict for real lidar
+    # noise on moderate-slope plates: ~1.5 cm noise with smaller eigval[2]
+    # at gentler slopes pushes the ratio over the threshold and cells fall
+    # through the slope detector. 0.02 still rejects ramp+wall mixed cells
+    # (those produce ratios near 0.1 because of bi-modal point spread).
+    pca_planarity_max: 0.02
+    wall_adjacent_dilation: 2      # cells around walls/spikes excluded from PCA
+
+    # ── Spike detection (Step 4) ─────────────────────────────────────────
+    spike_height: 0.15             # min height (m) above local ground
+    spike_min_elevated: 2          # min elevated points to flag as spike
+
+    # ── DBSCAN clustering (Step 5) ───────────────────────────────────────
+    dbscan_eps: 0.3                # neighborhood radius (m)
+    dbscan_min_samples: 3          # min points to form a core point
+    # Discard clusters with total raw-point mass below this. Was 15 in
+    # the simulator (synthetic dense coverage), then 5 during initial
+    # bring-up; settled at 10 after observing some noise pixels passing
+    # through with low coverage. Voxel-downsample plus dbscan_min_samples
+    # still handles single-point flukes; this just drops sparse stragglers.
+    min_cluster_size: 10
