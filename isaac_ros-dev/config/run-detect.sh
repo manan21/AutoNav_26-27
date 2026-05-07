@@ -4,4 +4,11 @@
 # the package-share config/ directory; override at the command line via:
 #   ./config/run-detect.sh enable_grade:=false
 #   ./config/run-detect.sh grade_detector_params:=/path/to/custom.yaml
-ros2 launch autonav_detection detection.launch.py "$@"
+ros2 launch autonav_detection detection.launch.py "$@" &
+launchpid=$!
+trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
+
+sleep 5
+echo "[GUI_READY] DETECT"
+
+wait "$launchpid"
