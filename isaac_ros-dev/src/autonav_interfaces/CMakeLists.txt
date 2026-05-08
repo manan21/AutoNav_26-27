@@ -26,6 +26,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 	srv/ConfigureControl.srv
   msg/LinePoints.msg
 	srv/AnvLines.srv
+	srv/GpsToLocal.srv
+	srv/LocalToGps.srv
+	action/NavigateToWaypoint.action
 	DEPENDENCIES geometry_msgs std_msgs
 )
 
