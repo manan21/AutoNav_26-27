@@ -770,11 +770,24 @@ class GpsHandlerNode(Node):
         on the EKF heading. Estimator-side only — no controller side
         effect (Rule 7). Sim 2044-2077.
 
+        Runs pre-bootstrap as well as post-bootstrap. Pre-bootstrap
+        this is the safety net that catches a robot driving in the
+        wrong direction because θ is still at its default (0) and the
+        odom +Y axis isn't aligned with ENU north. The raw GPS
+        ``d_goal`` calculation doesn't depend on EKF state, and
+        ``_force_heading_resync`` calls ``closed_form_theta_window``
+        which only needs 3 m of GPS baseline — well below the 5 m
+        bootstrap threshold — so it can correct θ partway through
+        the bootstrap drive instead of letting the robot run all the
+        way to a phantom goal. Envelope suspension here is a no-op
+        pre-bootstrap (the smoother isn't initialized yet); only the
+        force-resync side effect matters.
+
         We do NOT port the STUCK branch (lines 2020-2031 +
         forward-thrust override 2262-2263); NAV2's bt_nav.xml has
         BackUp / GradientEscape / ClearCostmaps / Wait recoveries.
         """
-        if self._active is None or not self._bootstrap_done:
+        if self._active is None:
             return
         if self._last_gps_xy is None:
             return
