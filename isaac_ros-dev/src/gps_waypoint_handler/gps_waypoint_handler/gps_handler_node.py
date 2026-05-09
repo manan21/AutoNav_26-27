@@ -1302,18 +1302,25 @@ class GpsHandlerNode(Node):
                     STOP_REFINE_K * STOP_REFINE_SIGMA_GPS_M
                 )
 
-                # Liveness checks. GPS-stale only matters for GPS goals;
-                # LOCAL goals don't need /gps_fix to track arrival in map.
-                if (
+                # Liveness telemetry. We deliberately do NOT abort on
+                # GPS staleness — operator policy is "goals run until
+                # finished." If /gps_fix goes silent the EKF coasts on
+                # odometry; the action surfaces the staleness via
+                # ``feedback.gps_connected`` so callers can see it
+                # without terminating the goal.
+                _gps_stale = (
                     active.goal_type == NavigateToWaypoint.Goal.GOAL_TYPE_GPS
                     and last_gps_stamp is not None
                     and (self._now_s() - last_gps_stamp)
                     > self._gps_stale_timeout_s
-                ):
-                    return self._terminate(
-                        goal_handle,
-                        NavigateToWaypoint.Result.STATUS_GPS_LOST,
-                        f"/gps_fix stale > {self._gps_stale_timeout_s:.1f} s",
+                )
+                if _gps_stale:
+                    # Throttle the warn so a long stale window doesn't
+                    # spam — once per stale-timeout window is enough.
+                    self.get_logger().warn(
+                        f"/gps_fix stale > {self._gps_stale_timeout_s:.1f} s "
+                        f"(continuing; goal will not abort)",
+                        throttle_duration_sec=self._gps_stale_timeout_s,
                     )
 
                 # Feedback.
