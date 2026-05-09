@@ -351,13 +351,21 @@ class GpsHandlerNode(Node):
         # ── Subscriptions ───────────────────────────────────────────
         # /gps_fix: most hardware GPS drivers publish BEST_EFFORT — use
         # the canonical sensor-data profile so we don't silently drop
-        # every message via a reliability mismatch.
+        # every message via a reliability mismatch. The publisher
+        # (gps_publisher.cpp) is configured with the same SensorDataQoS
+        # so DDS matches deterministically across pub respawns.
+        #
+        # The /gps_fix sub lives in its OWN ReentrantCallbackGroup so
+        # high-rate odom callbacks in ``_estimator_cbg`` cannot starve
+        # the GPS callback under load. Shared state is still protected
+        # by ``self._lock`` (snapshot/short-critical-section pattern).
+        self._gps_cbg = ReentrantCallbackGroup()
         self.create_subscription(
             NavSatFix,
             "/gps_fix",
             self._gps_callback,
             qos_profile_sensor_data,
-            callback_group=self._estimator_cbg,
+            callback_group=self._gps_cbg,
         )
         # /odometry/filtered: robot_localization's ekf_filter_node
         # publishes RELIABLE depth=1, so match that exactly.

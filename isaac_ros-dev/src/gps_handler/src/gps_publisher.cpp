@@ -24,7 +24,14 @@ class GPSPublisher : public rclcpp::Node {
 public:
   GPSPublisher()
   : Node("gps_publisher"), gps_connected(false), consecutive_failures_(0) {
-    publisher_ = this->create_publisher<sensor_msgs::msg::NavSatFix>("gps_fix", 50);
+    // SensorDataQoS = BEST_EFFORT, KEEP_LAST, depth=5. Matches the
+    // subscriber's qos_profile_sensor_data exactly. With the previous
+    // RELIABLE/depth=50 + sensor_data sub combination, FastDDS would
+    // register the subscription on the node but never establish DDS
+    // routing — `ros2 topic info` showed 0 subscribers while
+    // `ros2 node info` listed the sub. EKF received zero updates.
+    publisher_ = this->create_publisher<sensor_msgs::msg::NavSatFix>(
+        "gps_fix", rclcpp::SensorDataQoS());
     timer_ = this->create_wall_timer(100ms, std::bind(&GPSPublisher::update_gps, this));
     stats_timer_ = this->create_wall_timer(
         30s, std::bind(&GPSPublisher::log_stats, this));
