@@ -1495,17 +1495,26 @@ class GpsHandlerNode(Node):
 
         # rclpy_action's ServerGoalHandle has only succeed() / abort()
         # / canceled() — no preempted(). STATUS_PREEMPTED is an
-        # action-message enum, not a state-machine state, so for both
-        # client-cancel and internal-preempt we transition to
-        # CANCELED and let ``result.terminal_status`` distinguish.
+        # action-message enum, not a state-machine state, so we use
+        # ``terminal_status`` in the Result to carry the preempt
+        # semantics and pick a state-machine transition that's
+        # actually legal from EXECUTING.
+        #
+        # Critical: ``goal_handle.canceled()`` is ONLY valid from the
+        # CANCELING state, which the handle only enters when a CLIENT
+        # invokes cancel_goal. For *internal* preemption (a newer goal
+        # arrived) the handle is still in EXECUTING — calling
+        # ``canceled()`` then throws ``invalid transition from state
+        # EXECUTING with event CANCELED`` and bubbles up as the
+        # ``execute_callback exception`` we saw repeating every ~5 s.
+        # Use ``goal_handle.is_cancel_requested`` to disambiguate.
         if result.succeeded:
             goal_handle.succeed()
-        elif status in (
-            NavigateToWaypoint.Result.STATUS_CANCELED,
-            NavigateToWaypoint.Result.STATUS_PREEMPTED,
-        ):
+        elif goal_handle.is_cancel_requested:
+            # client cancel — handle is already in CANCELING
             goal_handle.canceled()
         else:
+            # internal preempt or abort — handle is in EXECUTING
             goal_handle.abort()
 
         # Release any newer goal that's waiting in its preempt branch.
