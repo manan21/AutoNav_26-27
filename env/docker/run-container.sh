@@ -10,6 +10,17 @@ CONTAINER_WORKDIR="/autonav"
 ENTRYPOINT="/usr/local/bin/scripts/entrypoint.sh"
 SCRIPT_DIR="$(dirname ${BASH_SOURCE[0]})"
 
+# FLAGS
+NO_ATTACH=0
+_FILTERED_ARGS=()
+for _arg in "$@"; do
+    case "$_arg" in
+        --no-attach) NO_ATTACH=1 ;;
+        *) _FILTERED_ARGS+=("$_arg") ;;
+    esac
+done
+set -- "${_FILTERED_ARGS[@]}"
+
 # DETECT PLATFORM
 PLATFORM=$(uname -m)
 
@@ -357,17 +368,27 @@ wait_for_container_user() {
 
 # RE-USE EXISTING CONTAINER
 if [ "$(docker ps -a --quiet --filter status=running --filter name=^/${CONTAINER_NAME}$)" ]; then
-    echo "Container $CONTAINER_NAME is already running. Attaching..."
+    echo "Container $CONTAINER_NAME is already running."
     wait_for_container_user
+    if [[ $NO_ATTACH -eq 1 ]]; then
+        echo "--no-attach set; leaving container running detached."
+        exit 0
+    fi
+    echo "Attaching..."
     attach_shell "$@"
     exit 0
 fi
 
 # Check if container exists but is stopped
 if [ "$(docker ps -a --quiet --filter status=exited --filter name=^/${CONTAINER_NAME}$)" ]; then
-    echo "Container $CONTAINER_NAME exists but is stopped. Starting and attaching..."
+    echo "Container $CONTAINER_NAME exists but is stopped. Starting..."
     docker start "$CONTAINER_NAME" >/dev/null
     wait_for_container_user
+    if [[ $NO_ATTACH -eq 1 ]]; then
+        echo "--no-attach set; leaving container running detached."
+        exit 0
+    fi
+    echo "Attaching..."
     attach_shell "$@"
     exit 0
 fi
@@ -391,4 +412,8 @@ docker run -d \
     sleep infinity >/dev/null
 
 wait_for_container_user
+if [[ $NO_ATTACH -eq 1 ]]; then
+    echo "--no-attach set; leaving container running detached."
+    exit 0
+fi
 attach_shell "$@"
