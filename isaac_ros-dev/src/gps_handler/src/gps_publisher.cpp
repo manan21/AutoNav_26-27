@@ -82,6 +82,37 @@ private:
            line.rfind("$GPGGA", 0) == 0;
   }
 
+  bool is_rmc_sentence(const std::string &line) {
+    return line.rfind("$GNRMC", 0) == 0 ||
+           line.rfind("$GPRMC", 0) == 0;
+  }
+
+  // Validate NMEA-0183 checksum: XOR of every char between '$' and '*',
+  // compared to the two-hex-digit value following '*'. Returns false if
+  // the checksum is missing, malformed, or doesn't match. We use this
+  // to silently drop the byte-corrupted frames that show up at 38400
+  // baud under heavy multi-constellation NMEA traffic.
+  bool nmea_checksum_ok(const std::string &sentence) {
+    if (sentence.empty() || sentence[0] != '$') return false;
+    size_t star_pos = sentence.find('*');
+    if (star_pos == std::string::npos) return false;
+    if (star_pos + 2 >= sentence.size()) return false;
+
+    std::string cs_hex = sentence.substr(star_pos + 1, 2);
+    int expected = 0;
+    try {
+      expected = std::stoi(cs_hex, nullptr, 16);
+    } catch (const std::exception &) {
+      return false;
+    }
+
+    int computed = 0;
+    for (size_t i = 1; i < star_pos; ++i) {
+      computed ^= static_cast<unsigned char>(sentence[i]);
+    }
+    return computed == expected;
+  }
+
   double nmea_to_decimal_degrees(const std::string &value, const std::string &direction, bool is_latitude) {
     if (value.empty() || direction.empty()) {
       throw std::runtime_error("Empty NMEA coordinate field");
@@ -226,6 +257,66 @@ private:
     }
   }
 
+  // RMC fallback: same lat/lon, no altitude/HDOP/sats. Used when the
+  // matching GGA frame is byte-corrupted but its RMC neighbor survives.
+  bool parse_rmc_and_publish(const std::string &line) {
+    std::vector<std::string> fields = split(line, ',');
+
+    // RMC minimum useful fields:
+    // 0 = $GNRMC / $GPRMC
+    // 1 = UTC time
+    // 2 = status (A=valid, V=void)
+    // 3 = latitude
+    // 4 = N/S
+    // 5 = longitude
+    // 6 = E/W
+    if (fields.size() < 7) {
+      RCLCPP_WARN(this->get_logger(), "Malformed RMC sentence: %s", line.c_str());
+      return false;
+    }
+
+    fields.back() = strip_checksum(fields.back());
+
+    const std::string &status = fields[2];
+    const std::string &lat_str = fields[3];
+    const std::string &lat_dir = fields[4];
+    const std::string &lon_str = fields[5];
+    const std::string &lon_dir = fields[6];
+
+    if (status != "A") {
+      RCLCPP_DEBUG(this->get_logger(), "RMC status not active (V) — no fix yet");
+      return false;
+    }
+    if (lat_str.empty() || lat_dir.empty() || lon_str.empty() || lon_dir.empty()) {
+      return false;
+    }
+
+    try {
+      double latitude = nmea_to_decimal_degrees(lat_str, lat_dir, true);
+      double longitude = nmea_to_decimal_degrees(lon_str, lon_dir, false);
+
+      sensor_msgs::msg::NavSatFix gps_msg;
+      gps_msg.header.stamp = this->now();
+      gps_msg.header.frame_id = "gps_footprint";
+      gps_msg.latitude = latitude;
+      gps_msg.longitude = longitude;
+      gps_msg.altitude = 0.0;  // RMC carries no altitude
+      gps_msg.status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
+      gps_msg.status.status = sensor_msgs::msg::NavSatStatus::STATUS_FIX;
+      gps_msg.position_covariance = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+      gps_msg.position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
+      publisher_->publish(gps_msg);
+
+      RCLCPP_DEBUG(this->get_logger(),
+                   "Published GPS fix (RMC): lat=%.8f lon=%.8f", latitude, longitude);
+      return true;
+    } catch (const std::exception &e) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to parse RMC sentence: %s | line: %s", e.what(), line.c_str());
+      return false;
+    }
+  }
+
   void reconnect_gps() {
     RCLCPP_WARN(this->get_logger(), "GPS connection lost — attempting reconnect...");
     gps_serial.closeDevice();
@@ -257,20 +348,42 @@ private:
     consecutive_failures_ = 0;  // reset on successful read
 
     std::string gps_data(gps_buffer, bytes_read);
-    gps_data = trim_line(gps_data);
-
     if (gps_data.empty()) {
       return;
     }
 
     RCLCPP_DEBUG(this->get_logger(), "Current GPS Data: %s", gps_data.c_str());
 
-    // Only parse GGA for NavSatFix publishing
-    if (!is_gga_sentence(gps_data)) {
-      return;
-    }
+    // Split on '$' so concatenated sentences (a known UART-overrun
+    // symptom at this baud) are processed independently. Each fragment
+    // has its checksum verified — bad/missing-checksum fragments are
+    // dropped silently rather than warned, since they're the corrupted
+    // ones we explicitly want to discard.
+    size_t pos = 0;
+    while ((pos = gps_data.find('$', pos)) != std::string::npos) {
+      size_t next = gps_data.find('$', pos + 1);
+      std::string sentence = (next == std::string::npos)
+          ? gps_data.substr(pos)
+          : gps_data.substr(pos, next - pos);
+      sentence = trim_line(sentence);
 
-    parse_gga_and_publish(gps_data);
+      if (next == std::string::npos) {
+        pos = std::string::npos;
+      } else {
+        pos = next;
+      }
+
+      if (sentence.empty() || !nmea_checksum_ok(sentence)) {
+        continue;
+      }
+
+      if (is_gga_sentence(sentence)) {
+        parse_gga_and_publish(sentence);
+      } else if (is_rmc_sentence(sentence)) {
+        parse_rmc_and_publish(sentence);
+      }
+      // Other sentence types (GSA, GSV, GLL, VTG, TXT) are ignored.
+    }
   }
 
   bool gps_connected;
