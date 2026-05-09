@@ -153,6 +153,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSlider,
     QStackedWidget,
     QStyle,
@@ -423,6 +424,13 @@ class HudWindow(QMainWindow):
         lbl_indep.setAlignment(Qt.AlignCenter)
         lbl_indep.setStyleSheet(group_label_style)
         options_layout.addWidget(lbl_indep)
+
+        self.btn_developer = QPushButton("Developer")
+        self.btn_developer.setStyleSheet(button_style)
+        self.btn_developer.setFocusPolicy(Qt.NoFocus)
+        self.btn_developer.clicked.connect(self._show_developer_page)
+        options_layout.addWidget(self.btn_developer)
+        self._nav_buttons.append((self.btn_developer, "Developer", button_style))
 
         self.btn_playback = QPushButton("Playback Mode")
         self.btn_playback.setStyleSheet(button_style)
@@ -771,6 +779,156 @@ class HudWindow(QMainWindow):
         )
 
         self._options_stack.addWidget(page_test)  # index 3
+
+        # --- Page 4: Developer (git + container lifecycle) ---
+        # GUI runs natively on the Jetson; all commands here run on the host.
+        self._dev_host_repo = os.path.expanduser('~/AutoNav_25-26')
+        self._dev_run_script = os.path.join(
+            self._dev_host_repo, 'env/docker/run-container.sh'
+        )
+        self._dev_container_running = False
+        self._dev_branch_rows = []  # (QPushButton, QLabel) per branch
+
+        page_dev = QWidget()
+        dev_layout = QVBoxLayout(page_dev)
+        dev_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_dev = QLabel("DEVELOPER")
+        lbl_dev.setFont(section_title_font)
+        lbl_dev.setAlignment(Qt.AlignCenter)
+        lbl_dev.setStyleSheet(section_title_style)
+        dev_layout.addWidget(lbl_dev)
+
+        # Current branch header
+        self._dev_branch_label = QLabel("Current branch: …")
+        self._dev_branch_label.setAlignment(Qt.AlignCenter)
+        self._dev_branch_label.setStyleSheet(
+            "border: none; color: #0af; font-size: 11px;"
+            " font-family: monospace;"
+        )
+        dev_layout.addWidget(self._dev_branch_label)
+
+        # Status / output line (errors, pull results, etc.)
+        self._dev_status_label = QLabel("")
+        self._dev_status_label.setAlignment(Qt.AlignCenter)
+        self._dev_status_label.setWordWrap(True)
+        self._dev_status_label.setStyleSheet(
+            "border: none; color: #888; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        dev_layout.addWidget(self._dev_status_label)
+
+        self._dev_nav_buttons = []  # same tuple format as other pages
+
+        dev_btn_compact = (
+            "QPushButton {"
+            "  background-color: #2a2a2a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 4px;"
+            "  padding: 8px 4px; font-size: 11px;"
+            "}"
+            "QPushButton:hover { background-color: #3a3a3a; }"
+            "QPushButton:pressed { background-color: #1a1a1a; }"
+        )
+        self._dev_btn_style = dev_btn_compact
+
+        # Container start/stop section
+        lbl_container = QLabel("CONTAINER")
+        lbl_container.setAlignment(Qt.AlignCenter)
+        lbl_container.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_container)
+
+        container_row = QHBoxLayout()
+        container_row.setSpacing(6)
+        self._dev_container_dot = QLabel()
+        self._dev_container_dot.setFixedSize(10, 10)
+        self._dev_container_dot.setStyleSheet(
+            "background-color: #f44; border-radius: 5px; border: none;"
+        )
+        self._dev_container_btn = QPushButton("Start Container")
+        self._dev_container_btn.setStyleSheet(dev_btn_compact)
+        self._dev_container_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_container_btn.clicked.connect(self._dev_toggle_container)
+        container_row.addWidget(self._dev_container_dot)
+        container_row.addWidget(self._dev_container_btn, stretch=1)
+        dev_layout.addLayout(container_row)
+        self._dev_nav_buttons.append(
+            (self._dev_container_btn, "Container", dev_btn_compact)
+        )
+
+        # Separator
+        sep_a = QFrame()
+        sep_a.setFrameShape(QFrame.HLine)
+        sep_a.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_a.setFixedHeight(1)
+        dev_layout.addWidget(sep_a)
+
+        # Git pull
+        lbl_git = QLabel("GIT")
+        lbl_git.setAlignment(Qt.AlignCenter)
+        lbl_git.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_git)
+
+        self._dev_pull_btn = QPushButton("git pull")
+        self._dev_pull_btn.setStyleSheet(dev_btn_compact)
+        self._dev_pull_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_pull_btn.clicked.connect(self._dev_git_pull)
+        dev_layout.addWidget(self._dev_pull_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_pull_btn, "git pull", dev_btn_compact)
+        )
+
+        # Branch list header + refresh
+        branch_header = QHBoxLayout()
+        lbl_branches = QLabel("Switch branch")
+        lbl_branches.setStyleSheet(
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        branch_header.addWidget(lbl_branches, stretch=1)
+        self._dev_refresh_btn = QPushButton("Refresh")
+        self._dev_refresh_btn.setStyleSheet(dev_btn_compact)
+        self._dev_refresh_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_refresh_btn.setFixedWidth(80)
+        self._dev_refresh_btn.clicked.connect(self._dev_refresh_branches)
+        branch_header.addWidget(self._dev_refresh_btn)
+        dev_layout.addLayout(branch_header)
+        self._dev_nav_buttons.append(
+            (self._dev_refresh_btn, "Refresh", dev_btn_compact)
+        )
+
+        # Scrollable branch grid: button left, ahead/behind label right
+        self._dev_branch_grid = QGridLayout()
+        self._dev_branch_grid.setSpacing(4)
+        branch_holder = QWidget()
+        branch_holder.setLayout(self._dev_branch_grid)
+        branch_scroll = QScrollArea()
+        branch_scroll.setWidgetResizable(True)
+        branch_scroll.setWidget(branch_holder)
+        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        branch_scroll.setMinimumHeight(180)
+        dev_layout.addWidget(branch_scroll, stretch=1)
+
+        # Exit Developer button at the bottom
+        exit_dev_style = (
+            button_style.replace("#2a2a2a", "#4a1a1a")
+                        .replace("#3a3a3a", "#6a2a2a")
+                        .replace("#1a1a1a", "#300a0a")
+        )
+        btn_exit_dev = QPushButton("Exit Developer")
+        btn_exit_dev.setStyleSheet(exit_dev_style)
+        btn_exit_dev.setFocusPolicy(Qt.NoFocus)
+        btn_exit_dev.clicked.connect(self._show_main_page)
+        dev_layout.addWidget(btn_exit_dev)
+        self._dev_nav_buttons.append(
+            (btn_exit_dev, "Exit Developer", exit_dev_style)
+        )
+
+        self._options_stack.addWidget(page_dev)  # index 4
+
+        # Poll container status once a second whenever the dev page is up
+        self._dev_status_timer = QTimer(self)
+        self._dev_status_timer.setInterval(1000)
+        self._dev_status_timer.timeout.connect(self._dev_update_container_status)
 
         top_layout.addWidget(options_frame, stretch=2)
 
@@ -1518,6 +1676,10 @@ class HudWindow(QMainWindow):
         self._nav_col = 0
         self._nav_row = 0
         self._nav_last_row[0] = 0
+        # Stop the dev page's container-status poll if it was running
+        timer = getattr(self, '_dev_status_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
         self._update_selection()
 
     # -- Test Mode sub-page ---------------------------------------------------
@@ -1575,6 +1737,277 @@ class HudWindow(QMainWindow):
         self._nav_row = 0
         self._nav_last_row[0] = 0
         self._update_selection()
+
+    # -- Developer sub-page ---------------------------------------------------
+
+    def _show_developer_page(self):
+        """Switch OPTIONS column to the Developer sub-page."""
+        self._options_stack.setCurrentIndex(4)
+        self._nav_groups[0] = self._dev_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+        self._dev_update_container_status()
+        self._dev_status_timer.start()
+
+    def _dev_run_git(self, args, timeout=15):
+        """Run a git command in the host repo. Returns (rc, stdout, stderr)."""
+        try:
+            r = subprocess.run(
+                ['git', '-C', self._dev_host_repo] + list(args),
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return r.returncode, r.stdout.strip(), r.stderr.strip()
+        except FileNotFoundError:
+            return 127, '', 'git not found on PATH'
+        except subprocess.TimeoutExpired:
+            return 124, '', f'git {args[0] if args else ""} timed out'
+        except Exception as e:
+            return 1, '', f'{e}'
+
+    def _dev_update_branch_label(self):
+        rc, out, err = self._dev_run_git(['branch', '--show-current'])
+        if rc == 0 and out:
+            self._dev_branch_label.setText(f"Current branch: {out}")
+        else:
+            self._dev_branch_label.setText(
+                f"Current branch: ? ({err or 'unknown'})"
+            )
+
+    def _dev_set_status(self, text, color='#888'):
+        self._dev_status_label.setStyleSheet(
+            f"border: none; color: {color}; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        self._dev_status_label.setText(text)
+
+    def _dev_git_pull(self):
+        self._dev_set_status("Running git pull --ff-only…", color='#ff0')
+        QApplication.processEvents()
+        rc, out, err = self._dev_run_git(['pull', '--ff-only'], timeout=60)
+        if rc == 0:
+            summary = out.splitlines()[-1] if out else 'Up to date'
+            self._dev_set_status(f"Pull OK: {summary}", color='#0f0')
+        else:
+            msg = (err or out or 'unknown error').splitlines()[-1]
+            self._dev_set_status(f"Pull failed: {msg}", color='#f44')
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+
+    def _dev_refresh_branches(self):
+        # Clear the grid
+        while self._dev_branch_grid.count():
+            item = self._dev_branch_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._dev_branch_rows = []
+
+        # Drop any non-branch buttons (Container, git pull, Refresh, Exit)
+        # from nav so re-built branch buttons don't leave dangling refs.
+        keep_labels = {"Container", "git pull", "Refresh", "Exit Developer"}
+        self._dev_nav_buttons = [
+            entry for entry in self._dev_nav_buttons if entry[1] in keep_labels
+        ]
+
+        # Quiet fetch so ahead/behind reflects the latest remote.
+        self._dev_run_git(['fetch', '--quiet'], timeout=20)
+
+        # List local branches
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/heads/'
+        ])
+        branches = [b for b in (out or '').splitlines() if b]
+
+        rc_cur, current, _ = self._dev_run_git(['branch', '--show-current'])
+        current = current if rc_cur == 0 else ''
+
+        on_style = (
+            self._dev_btn_style
+            .replace("border: 1px solid #555", "border: 1px solid #0f0")
+            .replace("color: #dcdcdc", "color: #0f0")
+        )
+
+        ab_style = (
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace;"
+        )
+
+        # Find the index of the Refresh row in nav so branch buttons land
+        # before the Exit button (last). Simplest: rebuild order:
+        # [Container, git pull, Refresh, <branches…>, Exit Developer]
+        head_entries = [e for e in self._dev_nav_buttons if e[1] != "Exit Developer"]
+        exit_entry = next(
+            (e for e in self._dev_nav_buttons if e[1] == "Exit Developer"), None
+        )
+
+        new_branch_entries = []
+        for i, branch in enumerate(branches):
+            btn = QPushButton(branch)
+            style = on_style if branch == current else self._dev_btn_style
+            btn.setStyleSheet(style)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(
+                lambda checked=False, b=branch: self._dev_switch_branch(b)
+            )
+            self._dev_branch_grid.addWidget(btn, i, 0)
+
+            ab_text = self._dev_ahead_behind(branch)
+            ab_lbl = QLabel(ab_text)
+            ab_lbl.setStyleSheet(ab_style)
+            self._dev_branch_grid.addWidget(ab_lbl, i, 1)
+
+            self._dev_branch_rows.append((btn, ab_lbl))
+            new_branch_entries.append((btn, branch, style))
+
+        self._dev_branch_grid.setColumnStretch(0, 0)
+        self._dev_branch_grid.setColumnStretch(1, 1)
+
+        self._dev_nav_buttons = head_entries + new_branch_entries + (
+            [exit_entry] if exit_entry else []
+        )
+
+    def _dev_ahead_behind(self, branch):
+        rc, out, _err = self._dev_run_git([
+            'rev-list', '--left-right', '--count',
+            f'{branch}...origin/{branch}',
+        ])
+        if rc != 0 or not out:
+            return "(no upstream)"
+        try:
+            ahead_str, behind_str = out.split()
+            ahead, behind = int(ahead_str), int(behind_str)
+        except ValueError:
+            return ""
+        if ahead == 0 and behind == 0:
+            return "in sync"
+        parts = []
+        if ahead:
+            parts.append(f"↑{ahead}")
+        if behind:
+            parts.append(f"↓{behind}")
+        return " ".join(parts)
+
+    def _dev_switch_branch(self, branch):
+        rc_cur, current, _ = self._dev_run_git(['branch', '--show-current'])
+        if rc_cur == 0 and current == branch:
+            self._dev_set_status(f"Already on {branch}", color='#888')
+            return
+
+        # Auto-stash if dirty so the user's in-progress edits follow them.
+        rc_st, st_out, _ = self._dev_run_git(['status', '--porcelain'])
+        stashed = False
+        if rc_st == 0 and st_out:
+            self._dev_set_status("Stashing local changes…", color='#ff0')
+            QApplication.processEvents()
+            rc_s, _o, err_s = self._dev_run_git(
+                ['stash', 'push', '-u', '-m', 'auto-stash from GUI']
+            )
+            if rc_s != 0:
+                self._dev_set_status(
+                    f"Stash failed: {(err_s or 'unknown').splitlines()[-1]}",
+                    color='#f44',
+                )
+                return
+            stashed = True
+
+        self._dev_set_status(f"Switching to {branch}…", color='#ff0')
+        QApplication.processEvents()
+        rc_sw, _o, err_sw = self._dev_run_git(['switch', branch])
+        if rc_sw != 0:
+            tail = (err_sw or 'unknown error').splitlines()[-1]
+            self._dev_set_status(f"Switch failed: {tail}", color='#f44')
+            if stashed:
+                self._dev_run_git(['stash', 'pop'])
+            return
+
+        if stashed:
+            rc_p, _o, err_p = self._dev_run_git(['stash', 'pop'])
+            if rc_p != 0:
+                self._dev_set_status(
+                    f"On {branch}; stash pop conflict — resolve manually",
+                    color='#ff0',
+                )
+            else:
+                self._dev_set_status(
+                    f"On {branch}; stashed changes restored", color='#0f0'
+                )
+        else:
+            self._dev_set_status(f"On {branch}", color='#0f0')
+
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+
+    def _dev_toggle_container(self):
+        if self._dev_container_running:
+            self._dev_set_status(
+                f"Stopping container {self._container_name}…", color='#ff0'
+            )
+            QApplication.processEvents()
+            try:
+                r = subprocess.run(
+                    ['docker', 'stop', self._container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.returncode == 0:
+                    self._dev_set_status("Container stopped", color='#0f0')
+                else:
+                    msg = (r.stderr or r.stdout or 'unknown').splitlines()[-1]
+                    self._dev_set_status(f"Stop failed: {msg}", color='#f44')
+            except Exception as e:
+                self._dev_set_status(f"Stop failed: {e}", color='#f44')
+        else:
+            if not os.path.isfile(self._dev_run_script):
+                self._dev_set_status(
+                    f"Missing script: {self._dev_run_script}", color='#f44'
+                )
+                return
+            self._dev_set_status(
+                f"Starting container {self._container_name}…", color='#ff0'
+            )
+            QApplication.processEvents()
+            try:
+                # Detached run-container.sh; --no-attach keeps it from
+                # waiting for an interactive shell.
+                subprocess.Popen(
+                    ['bash', self._dev_run_script, '--no-attach'],
+                    cwd=self._dev_host_repo,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                self._dev_set_status(
+                    "Container start initiated", color='#0f0'
+                )
+            except Exception as e:
+                self._dev_set_status(f"Start failed: {e}", color='#f44')
+        # Status will update on the next 1s poll
+        self._dev_update_container_status()
+
+    def _dev_update_container_status(self):
+        try:
+            r = subprocess.run(
+                ['docker', 'ps', '--quiet', '--filter', 'status=running',
+                 '--filter', f'name=^/{self._container_name}$'],
+                capture_output=True, text=True, timeout=3,
+            )
+            running = bool(r.stdout.strip())
+        except Exception:
+            running = False
+        self._dev_container_running = running
+        if running:
+            self._dev_container_dot.setStyleSheet(
+                "background-color: #4f4; border-radius: 5px; border: none;"
+            )
+            self._dev_container_btn.setText("Stop Container")
+        else:
+            self._dev_container_dot.setStyleSheet(
+                "background-color: #f44; border-radius: 5px; border: none;"
+            )
+            self._dev_container_btn.setText("Start Container")
 
     def _toggle_test(self, tid):
         """Start or stop a test by its ID."""
@@ -2462,6 +2895,62 @@ class HudWindow(QMainWindow):
         # Stop any active container modes
         if self._live_active:
             self._stop_live_mode()
+
+        # Reset launch panel: any green/yellow buttons must return to gray
+        # since their in-container processes are dead with the container.
+        self._reset_all_launch_states()
+
+    def _reset_all_launch_states(self):
+        """Clear launch-page state when the container drops away.
+        Cancels timers, kills any tracked host-side wrappers, resets every
+        device to gray. Called from _disconnect_container so launch buttons
+        do not stay locked green after the container stops."""
+        for label in list(self._launch_states.keys()):
+            if not self._launch_states.get(label):
+                continue
+            self._launch_states[label] = False
+            # Status dots back to off
+            for key in self._dot_keys_for(label):
+                if key in self.status_dots:
+                    self.status_dots[key].setStyleSheet(self._DOT_OFF)
+            # Cancel readiness/flash timers
+            t = self._startup_timers.pop(label, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            self._startup_deadlines.pop(label, None)
+            self._ready_events.pop(label, None)
+            t = self._flash_timers.pop(label, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            # Kill the host-side wrapper subprocess (the in-container
+            # children are already gone with the container).
+            proc = self._process_objects.pop(label, None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                buf = self._process_buffers.get(label)
+                if buf is not None:
+                    buf.append("[Process ended: container disconnected]\n")
+            self._process_readers.pop(label, None)
+            # Restore button text + style
+            for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
+                if blabel == label:
+                    btn.setText(label)
+                    btn.setStyleSheet(self._launch_btn_style)
+                    self._launch_nav_buttons[i] = (btn, blabel, self._launch_btn_style)
+                    break
+        # Empty the queue and refresh the queue label
+        self._launch_queue.clear()
+        self._update_queue_label()
+        self._refresh_terminal_display()
 
     def _check_container_health(self):
         """Periodic check: if connected, verify the container is still running."""
