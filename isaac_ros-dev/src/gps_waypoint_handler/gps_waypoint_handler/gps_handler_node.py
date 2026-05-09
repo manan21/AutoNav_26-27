@@ -144,6 +144,22 @@ MOVING_AWAY_MIN_HISTORY_TICKS: int = 25
 # half-filled window right after _dist_history is cleared.
 MOVING_AWAY_WINDOW_COVERAGE: float = 0.8
 
+# Local-vs-world divergence detector — second trip wire next to
+# moving-away. Moving-away catches *radial* drift (raw GPS distance
+# growing). It misses *tangential* drift, where the robot moves
+# perpendicular to the goal radial: raw GPS distance barely changes
+# while the EKF-believed distance can collapse rapidly because θ is
+# wrong and the predict step rotates odom motion into a fictitious
+# "toward goal" direction. This detector compares cumulative progress
+# in EKF-frame distance vs raw-GPS-frame distance since goal
+# acceptance — when local progress runs ahead of world progress by
+# more than ``LOCAL_VS_WORLD_DIVERGENCE_M`` and we've accumulated
+# at least ``LOCAL_VS_WORLD_MIN_LOCAL_PROGRESS_M`` of EKF progress,
+# θ is wrong and we force a heading resync.
+LOCAL_VS_WORLD_DIVERGENCE_M: float = 5.0
+LOCAL_VS_WORLD_MIN_LOCAL_PROGRESS_M: float = 5.0
+LOCAL_VS_WORLD_COOLDOWN_S: float = 5.0
+
 # History trim (§7 GPS_HISTORY_LEN)
 GPS_HISTORY_LEN: int = 400
 
@@ -240,6 +256,14 @@ class _ActiveGoal:
     last_published_goal_world: Optional[Tuple[float, float]] = None
     last_published_goal_map: Optional[Tuple[float, float]] = None
     last_published_theta: Optional[float] = None
+    # Local-vs-world divergence detector baselines. Lazy-initialized
+    # on the first odom tick that has both a valid EKF position and a
+    # valid raw GPS sample — they can't be set at goal acceptance
+    # because GPS may not have arrived yet. Cumulative progress is
+    # measured against these two baselines until the goal terminates
+    # or a divergence event resets them.
+    local_d_start: Optional[float] = None
+    world_d_start: Optional[float] = None
     # Preempt-with-cancel signaling (§5.14, §13 anti-patterns).
     #   ``preempt_requested`` is set by a *newer* goal's execute_callback
     #   when it wants to take over. The prior goal's own execute_callback
@@ -334,6 +358,8 @@ class GpsHandlerNode(Node):
         self._dist_history: Deque[Tuple[float, float]] = deque(maxlen=512)
         self._moving_away_event_count: int = 0
         self._cand_reject_count: int = 0
+        # Local-vs-world divergence detector cooldown timestamp.
+        self._divergence_cooldown_until_s: float = 0.0
 
         # Active-goal slot.
         self._active: Optional[_ActiveGoal] = None
@@ -587,6 +613,7 @@ class GpsHandlerNode(Node):
             # ── Self-correction layers ─────────────────────────────
             self._update_candidate_smoother()
             self._update_moving_away()
+            self._update_local_world_divergence()
 
     def _gps_callback(self, msg: NavSatFix) -> None:
         """Convert the fix to local meters around the datum, append to
@@ -826,6 +853,74 @@ class GpsHandlerNode(Node):
             self._moving_away_event_count += 1
             # Per §13 #15: do NOT reset the smoother.
             self._force_heading_resync()
+
+    def _update_local_world_divergence(self) -> None:
+        """Lock held. Cross-check EKF-believed distance-to-goal against
+        raw-GPS distance-to-goal. Both should decrease together as the
+        robot makes real progress; if EKF distance shrinks far ahead of
+        GPS distance, θ is wrong and the candidate is converging on a
+        phantom goal (the failure mode the radial moving-away test
+        misses for tangential drift).
+
+        Forces a heading resync when the divergence crosses the
+        threshold. Cooldowns and resets the per-goal baseline so we
+        don't fire repeatedly during a single divergence event.
+        Independent of bootstrap state.
+        """
+        active = self._active
+        if active is None:
+            return
+        if self._last_gps_xy is None:
+            return
+        if self._now_s() < self._divergence_cooldown_until_s:
+            return
+        # Only meaningful for GPS goals — LOCAL/map goals have no
+        # ``goal_world_xy`` reference frame in raw GPS coordinates.
+        if active.goal_type != NavigateToWaypoint.Goal.GOAL_TYPE_GPS:
+            return
+
+        gx_w, gy_w = active.goal_world_xy
+        ex, ey = self._ekf.pos_xy
+        local_d = math.hypot(gx_w - ex, gy_w - ey)
+
+        gxr, gyr = self._last_gps_xy
+        world_d = math.hypot(gxr - gx_w, gyr - gy_w)
+
+        # Lazy-init baselines on first valid sample.
+        if active.local_d_start is None or active.world_d_start is None:
+            active.local_d_start = local_d
+            active.world_d_start = world_d
+            return
+
+        local_progress = active.local_d_start - local_d
+        world_progress = active.world_d_start - world_d
+
+        # Need substantial EKF-believed progress before evaluating.
+        # Prevents tripping on noise during the first few meters.
+        if local_progress < LOCAL_VS_WORLD_MIN_LOCAL_PROGRESS_M:
+            return
+
+        divergence = local_progress - world_progress
+        if divergence > LOCAL_VS_WORLD_DIVERGENCE_M:
+            self.get_logger().warn(
+                f"local↔world distance divergence: "
+                f"local_progress={local_progress:.1f}m "
+                f"world_progress={world_progress:.1f}m "
+                f"divergence={divergence:.1f}m — forcing heading resync"
+            )
+            # Same envelope-suspension side effect as moving-away —
+            # lifts the 1/r filter so a corrected candidate can flow.
+            self._envelope_suspended_until_s = (
+                self._now_s() + MOVING_AWAY_ENV_SUSPEND_S
+            )
+            self._force_heading_resync()
+            self._divergence_cooldown_until_s = (
+                self._now_s() + LOCAL_VS_WORLD_COOLDOWN_S
+            )
+            # Reset baselines so the next evaluation measures from
+            # post-resync state, not the now-stale pre-correction one.
+            active.local_d_start = local_d
+            active.world_d_start = world_d
 
     # ── /goal_pose republish — gated on active goal (§5.12) ────────
 
