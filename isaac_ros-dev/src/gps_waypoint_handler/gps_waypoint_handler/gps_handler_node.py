@@ -397,8 +397,21 @@ class GpsHandlerNode(Node):
             qos_profile_sensor_data,
             callback_group=self._gps_cbg,
         )
-        # /odometry/filtered: robot_localization's ekf_filter_node
-        # publishes RELIABLE depth=1, so match that exactly.
+        # Local-frame fused odom from robot_localization's ekf_filter_node.
+        #
+        # The slam.launch.py configures ekf_local with the remap
+        #   ('odometry/filtered', 'local_ekf/odom')
+        # so the local EKF publishes to ``/local_ekf/odom``, NOT
+        # ``/odometry/filtered``. The global EKF (``ekf_global``) is the
+        # node that *would* normally publish ``/odometry/filtered``, but
+        # it's commented out of the LaunchDescription. Subscribing to
+        # ``/odometry/filtered`` therefore receives nothing — the bug
+        # that kept the gps_handler EKF starved of odom updates and
+        # blocked θ-bootstrap convergence the entire time the system
+        # was deployed. Subscribe to the actual published topic name.
+        #
+        # robot_localization's ekf_filter_node publishes RELIABLE
+        # depth=1, so match that exactly.
         odom_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -406,7 +419,7 @@ class GpsHandlerNode(Node):
         )
         self.create_subscription(
             Odometry,
-            "/odometry/filtered",
+            "/local_ekf/odom",
             self._odom_callback,
             odom_qos,
             callback_group=self._estimator_cbg,
