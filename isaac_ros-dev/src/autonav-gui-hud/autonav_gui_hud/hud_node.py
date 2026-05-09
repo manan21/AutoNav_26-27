@@ -586,6 +586,32 @@ class HudWindow(QMainWindow):
             (btn_launch_all, "Launch All in Sequence", launch_all_style)
         )
 
+        # "Run Mission" toggle — runs ./config/run_mission.sh inside the
+        # container; click again to abort.
+        mission_off_style = (
+            button_style.replace("border: 1px solid #555", "border: 1px solid #fa0")
+                        .replace("color: #dcdcdc", "color: #fa0")
+        )
+        mission_on_style = (
+            button_style.replace("border: 1px solid #555", "border: 1px solid #0f0")
+                        .replace("color: #dcdcdc", "color: #0f0")
+        )
+        self._mission_off_style = mission_off_style
+        self._mission_on_style = mission_on_style
+        self._mission_running = False
+        self._mission_proc = None
+        self._mission_check_timer = QTimer(self)
+        self._mission_check_timer.setInterval(500)
+        self._mission_check_timer.timeout.connect(self._check_mission_finished)
+        self._mission_btn = QPushButton("Run Mission")
+        self._mission_btn.setStyleSheet(mission_off_style)
+        self._mission_btn.setFocusPolicy(Qt.NoFocus)
+        self._mission_btn.clicked.connect(self._toggle_mission)
+        launch_layout.addWidget(self._mission_btn)
+        self._launch_nav_buttons.append(
+            (self._mission_btn, "Run Mission", mission_off_style)
+        )
+
         launch_layout.addStretch()
 
         # "Exit Launch/End Processes" button at the bottom
@@ -1667,6 +1693,84 @@ class HudWindow(QMainWindow):
         self._load_csv(path)
         self._start_playback()
         self._show_main_page()
+
+    def _toggle_mission(self):
+        """Start ./config/run_mission.sh, or kill it if already running."""
+        if self._mission_running and self._mission_proc is not None:
+            self._kill_process(self._mission_proc, "Mission")
+            return  # _check_mission_finished will reset the button
+
+        if not self._container_connected:
+            self._gui_log_msg("Cannot run mission: container not connected")
+            return
+
+        cmd = "./config/run_mission.sh"
+        label = "Mission"
+        exec_cmd = self._wrap_container_cmd(cmd, label=label)
+        buf = []
+        self._process_buffers[label] = buf
+        buf.append(f"$ {cmd}\n")
+        try:
+            proc = subprocess.Popen(
+                exec_cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._process_objects[label] = proc
+            self._mission_proc = proc
+            self._mission_running = True
+            self._mission_btn.setText("Stop Mission")
+            self._mission_btn.setStyleSheet(self._mission_on_style)
+            for i, (b, lbl, _s) in enumerate(self._launch_nav_buttons):
+                if b is self._mission_btn:
+                    self._launch_nav_buttons[i] = (
+                        b, lbl, self._mission_on_style
+                    )
+                    break
+
+            def _reader():
+                try:
+                    for line in proc.stdout:
+                        buf.append(line)
+                except Exception:
+                    pass
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+            self._process_readers[label] = t
+            self._mission_check_timer.start()
+        except Exception as e:
+            buf.append(f"[Failed to start mission: {e}]\n")
+            self._mission_running = False
+            self._mission_proc = None
+
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+
+    def _check_mission_finished(self):
+        """Polled by _mission_check_timer; resets the button when the
+        run_mission.sh subprocess exits (either naturally or via kill)."""
+        if self._mission_proc is None:
+            self._mission_check_timer.stop()
+            return
+        rc = self._mission_proc.poll()
+        if rc is None:
+            return
+        self._mission_check_timer.stop()
+        buf = self._process_buffers.get("Mission")
+        if buf is not None:
+            buf.append(f"[Mission finished with code {rc}]\n")
+        self._process_objects.pop("Mission", None)
+        self._process_readers.pop("Mission", None)
+        self._mission_running = False
+        self._mission_proc = None
+        self._mission_btn.setText("Run Mission")
+        self._mission_btn.setStyleSheet(self._mission_off_style)
+        for i, (b, lbl, _s) in enumerate(self._launch_nav_buttons):
+            if b is self._mission_btn:
+                self._launch_nav_buttons[i] = (b, lbl, self._mission_off_style)
+                break
+        self._refresh_terminal_display()
 
     def _show_main_page(self):
         """Switch OPTIONS column back to the main page."""
