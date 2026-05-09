@@ -3,6 +3,7 @@ import io
 import math
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -199,6 +200,44 @@ def _style_ax(ax, title=None):
 class HudWindow(QMainWindow):
     """1920x720 dark-themed HUD window for the AutoNav bar display."""
 
+    # Two complete color stylesheets. The whole UI is built in dark colors;
+    # at the end of __init__ we walk the widget tree and substitute hex
+    # codes via _DARK_TO_LIGHT to switch to light. Toggling the theme button
+    # walks again with the inverse map. The maps are kept injective so
+    # substitution can run in either direction.
+    _DARK_TO_LIGHT = {
+        '#141414': '#ededed',  # window bg
+        '#1a1a1a': '#e0e0e0',  # pressed/disabled bg
+        '#1e1e1e': '#fafafa',  # panel bg / sensor cell
+        '#2a2a2a': '#e8e8e8',  # button bg
+        '#3a3a3a': '#d0d0d0',  # button hover
+        '#4a1a1a': '#f5dada',  # quit/exit bg
+        '#6a2a2a': '#e8b8b8',  # quit hover
+        '#300a0a': '#d8a8a8',  # quit pressed
+        '#1a2a3a': '#dde8f5',  # connect bg
+        '#2a3a4a': '#c5d8e8',  # connect hover
+        '#0a1a2a': '#b0c8de',  # connect pressed
+        '#8b0000': '#bb1010',  # E-stop bg (still red but lighter)
+        '#a00000': '#cc2020',  # E-stop hover
+        '#600000': '#990000',  # E-stop pressed
+        '#f00':    '#aa1111',  # E-stop border
+        '#fff':    '#fefefe',  # E-stop text (kept near-white on red)
+        '#333':    '#cccccc',  # disabled border
+        '#444':    '#b8b8b8',  # general border
+        '#555':    '#9c9c9c',  # button border
+        '#666':    '#a8a8a8',  # group label fg
+        '#888':    '#787878',  # dim fg
+        '#aaa':    '#5c5c5c',  # subtle label fg
+        '#ccc':    '#525252',  # mpl ax title
+        '#dcdcdc': '#202020',  # text fg
+        '#ffffff': '#000000',  # title text (full 6-char form)
+        '#0f0':    '#0a8800',  # active green
+        '#0af':    '#0a5a9a',  # info blue
+        '#ff0':    '#a06000',  # yellow status
+        '#f44':    '#cc3030',  # red dot
+        '#111111': '#f5f5f5',  # mpl axes facecolor
+    }
+
     def __init__(self, ros_node=None):
         super().__init__()
         self._ros_node = ros_node
@@ -207,7 +246,19 @@ class HudWindow(QMainWindow):
         self.showFullScreen()
         self.setCursor(Qt.BlankCursor)
 
-        # Dark palette
+        # GUI defaults to light theme. The widget tree is built in dark
+        # colors below, then _apply_theme() is called at the end of
+        # __init__ to flip the widget tree + QPalette + matplotlib canvases
+        # to whichever theme is selected.
+        self._theme = 'light'
+
+        # Build the regex once. Matches a 6-char hex first, then a 3-char
+        # hex (negative lookahead so #fff doesn't capture inside #fffabc).
+        self._hex_re = re.compile(
+            r'#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![0-9a-fA-F])'
+        )
+
+        # Initial QPalette (dark). _apply_theme overwrites this at the end.
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(20, 20, 20))
         palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
@@ -440,6 +491,14 @@ class HudWindow(QMainWindow):
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
 
         options_layout.addStretch()
+
+        # Theme toggle (label reflects what clicking will do, not current).
+        self.btn_theme = QPushButton("Switch to Dark Mode")
+        self.btn_theme.setStyleSheet(button_style)
+        self.btn_theme.setFocusPolicy(Qt.NoFocus)
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        options_layout.addWidget(self.btn_theme)
+        self._nav_buttons.append((self.btn_theme, "Switch to Dark Mode", button_style))
 
         quit_style = (
             button_style.replace("#2a2a2a", "#4a1a1a")
@@ -877,36 +936,18 @@ class HudWindow(QMainWindow):
             (self._dev_pull_btn, "git pull", dev_btn_compact)
         )
 
-        # Branch list header + refresh
-        branch_header = QHBoxLayout()
-        lbl_branches = QLabel("Switch branch")
-        lbl_branches.setStyleSheet(
-            "border: none; color: #aaa; font-size: 10px;"
-            " font-family: monospace;"
-        )
-        branch_header.addWidget(lbl_branches, stretch=1)
-        self._dev_refresh_btn = QPushButton("Refresh")
-        self._dev_refresh_btn.setStyleSheet(dev_btn_compact)
-        self._dev_refresh_btn.setFocusPolicy(Qt.NoFocus)
-        self._dev_refresh_btn.setFixedWidth(80)
-        self._dev_refresh_btn.clicked.connect(self._dev_refresh_branches)
-        branch_header.addWidget(self._dev_refresh_btn)
-        dev_layout.addLayout(branch_header)
+        # Branch switching is on its own sub-page (one click deeper) so
+        # accidentally tapping near the dev page does not switch branches.
+        self._dev_branches_btn = QPushButton("Switch Branch…")
+        self._dev_branches_btn.setStyleSheet(dev_btn_compact)
+        self._dev_branches_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_branches_btn.clicked.connect(self._show_branches_page)
+        dev_layout.addWidget(self._dev_branches_btn)
         self._dev_nav_buttons.append(
-            (self._dev_refresh_btn, "Refresh", dev_btn_compact)
+            (self._dev_branches_btn, "Switch Branch…", dev_btn_compact)
         )
 
-        # Scrollable branch grid: button left, ahead/behind label right
-        self._dev_branch_grid = QGridLayout()
-        self._dev_branch_grid.setSpacing(4)
-        branch_holder = QWidget()
-        branch_holder.setLayout(self._dev_branch_grid)
-        branch_scroll = QScrollArea()
-        branch_scroll.setWidgetResizable(True)
-        branch_scroll.setWidget(branch_holder)
-        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
-        branch_scroll.setMinimumHeight(180)
-        dev_layout.addWidget(branch_scroll, stretch=1)
+        dev_layout.addStretch()
 
         # Exit Developer button at the bottom
         exit_dev_style = (
@@ -924,6 +965,76 @@ class HudWindow(QMainWindow):
         )
 
         self._options_stack.addWidget(page_dev)  # index 4
+
+        # --- Page 5: Branch switcher (sub-page of Developer) ---
+        page_branches = QWidget()
+        branches_layout = QVBoxLayout(page_branches)
+        branches_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_br_title = QLabel("SWITCH BRANCH")
+        lbl_br_title.setFont(section_title_font)
+        lbl_br_title.setAlignment(Qt.AlignCenter)
+        lbl_br_title.setStyleSheet(section_title_style)
+        branches_layout.addWidget(lbl_br_title)
+
+        # Current branch + status (shared with dev page wiring)
+        self._br_branch_label = QLabel("Current branch: …")
+        self._br_branch_label.setAlignment(Qt.AlignCenter)
+        self._br_branch_label.setStyleSheet(
+            "border: none; color: #0af; font-size: 11px;"
+            " font-family: monospace;"
+        )
+        branches_layout.addWidget(self._br_branch_label)
+
+        self._br_status_label = QLabel("")
+        self._br_status_label.setAlignment(Qt.AlignCenter)
+        self._br_status_label.setWordWrap(True)
+        self._br_status_label.setStyleSheet(
+            "border: none; color: #888; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        branches_layout.addWidget(self._br_status_label)
+
+        # Refresh button (re-fetches and rebuilds branch list)
+        self._br_refresh_btn = QPushButton("Refresh")
+        self._br_refresh_btn.setStyleSheet(dev_btn_compact)
+        self._br_refresh_btn.setFocusPolicy(Qt.NoFocus)
+        self._br_refresh_btn.clicked.connect(self._dev_refresh_branches)
+        branches_layout.addWidget(self._br_refresh_btn)
+
+        self._branches_nav_buttons = []
+        self._branches_nav_buttons.append(
+            (self._br_refresh_btn, "Refresh", dev_btn_compact)
+        )
+
+        # Scrollable branch grid: button left, ahead/behind + GUI flag right
+        self._dev_branch_grid = QGridLayout()
+        self._dev_branch_grid.setSpacing(4)
+        branch_holder = QWidget()
+        branch_holder.setLayout(self._dev_branch_grid)
+        branch_scroll = QScrollArea()
+        branch_scroll.setWidgetResizable(True)
+        branch_scroll.setWidget(branch_holder)
+        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        branch_scroll.setMinimumHeight(280)
+        branches_layout.addWidget(branch_scroll, stretch=1)
+
+        # Back to Developer
+        exit_branches_style = (
+            button_style.replace("#2a2a2a", "#4a1a1a")
+                        .replace("#3a3a3a", "#6a2a2a")
+                        .replace("#1a1a1a", "#300a0a")
+        )
+        btn_exit_br = QPushButton("Back to Developer")
+        btn_exit_br.setStyleSheet(exit_branches_style)
+        btn_exit_br.setFocusPolicy(Qt.NoFocus)
+        btn_exit_br.clicked.connect(self._show_developer_page)
+        branches_layout.addWidget(btn_exit_br)
+        self._branches_nav_buttons.append(
+            (btn_exit_br, "Back to Developer", exit_branches_style)
+        )
+
+        self._options_stack.addWidget(page_branches)  # index 5
 
         # Poll container status once a second whenever the dev page is up
         self._dev_status_timer = QTimer(self)
@@ -1563,6 +1674,125 @@ class HudWindow(QMainWindow):
         self._nav_timer.timeout.connect(self._nav_anim_tick)
         self._nav_timer.start()
 
+        # The widget tree was built using dark hex codes; flip to whichever
+        # theme is selected (light by default).
+        self._apply_theme()
+
+    # -----------------------------------------------------------------
+    # Theme helpers
+    # -----------------------------------------------------------------
+    def _light_to_dark_map(self):
+        return {v: k for k, v in self._DARK_TO_LIGHT.items()}
+
+    def _color_map(self, target):
+        """Returns hex→hex substitution map for current → `target` theme."""
+        if target == 'light':
+            return dict(self._DARK_TO_LIGHT)
+        return self._light_to_dark_map()
+
+    def _recolor_widget_tree(self, root, color_map):
+        """Walk root + descendants and rewrite hex codes in stylesheets."""
+        def repl(m):
+            return color_map.get(m.group(0), m.group(0))
+        widgets = [root] + list(root.findChildren(QWidget))
+        for w in widgets:
+            s = w.styleSheet()
+            if not s:
+                continue
+            new_s = self._hex_re.sub(repl, s)
+            if new_s != s:
+                w.setStyleSheet(new_s)
+
+    def _set_qpalette_for_theme(self):
+        """Rebuild and install QPalette for the current theme."""
+        p = QPalette()
+        if self._theme == 'light':
+            p.setColor(QPalette.Window, QColor(237, 237, 237))
+            p.setColor(QPalette.WindowText, QColor(32, 32, 32))
+            p.setColor(QPalette.Base, QColor(250, 250, 250))
+            p.setColor(QPalette.AlternateBase, QColor(232, 232, 232))
+            p.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+            p.setColor(QPalette.ToolTipText, QColor(32, 32, 32))
+            p.setColor(QPalette.Text, QColor(32, 32, 32))
+            p.setColor(QPalette.Button, QColor(232, 232, 232))
+            p.setColor(QPalette.ButtonText, QColor(32, 32, 32))
+            p.setColor(QPalette.BrightText, QColor(180, 0, 0))
+            p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            p.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+        else:
+            p.setColor(QPalette.Window, QColor(20, 20, 20))
+            p.setColor(QPalette.WindowText, QColor(220, 220, 220))
+            p.setColor(QPalette.Base, QColor(30, 30, 30))
+            p.setColor(QPalette.AlternateBase, QColor(40, 40, 40))
+            p.setColor(QPalette.ToolTipBase, QColor(25, 25, 25))
+            p.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+            p.setColor(QPalette.Text, QColor(220, 220, 220))
+            p.setColor(QPalette.Button, QColor(40, 40, 40))
+            p.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+            p.setColor(QPalette.BrightText, QColor(255, 50, 50))
+            p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            p.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        self.setPalette(p)
+
+    def _restyle_canvases(self):
+        """Recolor matplotlib figures and axes for the current theme.
+        Stylesheet substitution doesn't reach matplotlib internals."""
+        if self._theme == 'light':
+            fig_bg = '#fafafa'
+            ax_bg = '#ffffff'
+            tick_color = '#555'
+            spine_color = '#bbb'
+            label_color = '#444'
+        else:
+            fig_bg = '#1e1e1e'
+            ax_bg = '#111111'
+            tick_color = '#888'
+            spine_color = '#444'
+            label_color = '#888'
+        canvases = self.findChildren(FigureCanvasQTAgg)
+        for canvas in canvases:
+            fig = canvas.figure
+            fig.set_facecolor(fig_bg)
+            for ax in fig.get_axes():
+                ax.set_facecolor(ax_bg)
+                ax.tick_params(colors=tick_color)
+                for spine in ax.spines.values():
+                    spine.set_color(spine_color)
+                ax.xaxis.label.set_color(label_color)
+                ax.yaxis.label.set_color(label_color)
+                if ax.get_title():
+                    ax.title.set_color(label_color)
+            canvas.draw_idle()
+
+    def _apply_theme(self):
+        """Push the current theme to QPalette + the widget tree + canvases.
+        Called once at end of __init__ (light by default) and again on every
+        toggle. The widget tree is always built in dark colors during
+        __init__, so on first call this flips dark → light if theme is
+        light. On subsequent calls, the tree already reflects the previous
+        theme, so we substitute previous → current."""
+        # The widget tree was last styled for the OPPOSITE of the current
+        # theme (we just toggled), so we substitute the inverse.
+        prev = 'dark' if self._theme == 'light' else 'light'
+        # Map: prev → current
+        if self._theme == 'light':
+            color_map = dict(self._DARK_TO_LIGHT)
+        else:
+            color_map = self._light_to_dark_map()
+        self._set_qpalette_for_theme()
+        self._recolor_widget_tree(self, color_map)
+        self._restyle_canvases()
+        # Update the theme button label to reflect what clicking does next.
+        if hasattr(self, 'btn_theme'):
+            self.btn_theme.setText(
+                "Switch to Dark Mode" if self._theme == 'light'
+                else "Switch to Light Mode"
+            )
+
+    def _toggle_theme(self):
+        self._theme = 'dark' if self._theme == 'light' else 'light'
+        self._apply_theme()
+
     # -----------------------------------------------------------------
     # Keyboard navigation
     # -----------------------------------------------------------------
@@ -1749,9 +1979,19 @@ class HudWindow(QMainWindow):
         self._nav_last_row[0] = 0
         self._update_selection()
         self._dev_update_branch_label()
-        self._dev_refresh_branches()
         self._dev_update_container_status()
         self._dev_status_timer.start()
+
+    def _show_branches_page(self):
+        """Switch OPTIONS column to the Branch switcher sub-page (index 5)."""
+        self._options_stack.setCurrentIndex(5)
+        self._nav_groups[0] = self._branches_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
 
     def _dev_run_git(self, args, timeout=15):
         """Run a git command in the host repo. Returns (rc, stdout, stderr)."""
@@ -1771,18 +2011,41 @@ class HudWindow(QMainWindow):
     def _dev_update_branch_label(self):
         rc, out, err = self._dev_run_git(['branch', '--show-current'])
         if rc == 0 and out:
-            self._dev_branch_label.setText(f"Current branch: {out}")
+            text = f"Current branch: {out}"
         else:
-            self._dev_branch_label.setText(
-                f"Current branch: ? ({err or 'unknown'})"
-            )
+            text = f"Current branch: ? ({err or 'unknown'})"
+        self._dev_branch_label.setText(text)
+        if hasattr(self, '_br_branch_label'):
+            self._br_branch_label.setText(text)
 
     def _dev_set_status(self, text, color='#888'):
-        self._dev_status_label.setStyleSheet(
+        # Callers pass dark-theme hex codes; translate to the active theme.
+        if self._theme == 'light':
+            color = self._DARK_TO_LIGHT.get(color, color)
+        style = (
             f"border: none; color: {color}; font-size: 10px;"
             " font-family: monospace;"
         )
+        self._dev_status_label.setStyleSheet(style)
         self._dev_status_label.setText(text)
+        if hasattr(self, '_br_status_label'):
+            self._br_status_label.setStyleSheet(style)
+            self._br_status_label.setText(text)
+
+    def _branch_has_gui(self, branch):
+        """True if `branch`'s tree contains the GUI source file. Used to
+        block switches that would leave the running GUI without source.
+        Tries the local ref first, then origin/<branch>."""
+        gui_path = (
+            'isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py'
+        )
+        for ref in (branch, f'origin/{branch}'):
+            rc, out, _err = self._dev_run_git(
+                ['ls-tree', '--name-only', ref, '--', gui_path]
+            )
+            if rc == 0 and out:
+                return True
+        return False
 
     def _dev_git_pull(self):
         self._dev_set_status("Running git pull --ff-only…", color='#ff0')
@@ -1798,7 +2061,7 @@ class HudWindow(QMainWindow):
         self._dev_refresh_branches()
 
     def _dev_refresh_branches(self):
-        # Clear the grid
+        # Clear the grid (lives on the branches sub-page now)
         while self._dev_branch_grid.count():
             item = self._dev_branch_grid.takeAt(0)
             w = item.widget()
@@ -1806,17 +2069,45 @@ class HudWindow(QMainWindow):
                 w.deleteLater()
         self._dev_branch_rows = []
 
-        # Drop any non-branch buttons (Container, git pull, Refresh, Exit)
-        # from nav so re-built branch buttons don't leave dangling refs.
-        keep_labels = {"Container", "git pull", "Refresh", "Exit Developer"}
-        self._dev_nav_buttons = [
-            entry for entry in self._dev_nav_buttons if entry[1] in keep_labels
+        # Reset the branches sub-page nav to just Refresh + Back.
+        keep_labels = {"Refresh", "Back to Developer"}
+        self._branches_nav_buttons = [
+            e for e in self._branches_nav_buttons if e[1] in keep_labels
         ]
 
-        # Quiet fetch so ahead/behind reflects the latest remote.
-        self._dev_run_git(['fetch', '--quiet'], timeout=20)
+        # Fetch with --prune so origin/<x> refs accurately reflect the
+        # current remote. Local branches are NEVER pruned by this call;
+        # local-only branches stay and are labeled "(old)" below.
+        self._dev_run_git(['fetch', '--prune', '--quiet'], timeout=30)
 
         # List local branches
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/heads/'
+        ])
+        local_branches = [b for b in (out or '').splitlines() if b]
+        local_set = set(local_branches)
+
+        # List remote branches; strip the "origin/" prefix and skip the
+        # symbolic origin/HEAD entry.
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/'
+        ])
+        remote_refs = [b for b in (out or '').splitlines() if b]
+        remote_branches = [
+            r[len('origin/'):] for r in remote_refs
+            if r.startswith('origin/') and not r.startswith('origin/HEAD')
+        ]
+        remote_set = set(remote_branches)
+
+        # Auto-create a local tracking branch for any origin branch we
+        # don't have yet. `git branch <name> origin/<name>` creates the
+        # ref without touching the working tree, so it's safe even with
+        # uncommitted work on the current branch.
+        for rb in remote_branches:
+            if rb not in local_set:
+                self._dev_run_git(['branch', rb, f'origin/{rb}'])
+
+        # Re-list locals so the newly-created tracking branches show up.
         rc, out, _err = self._dev_run_git([
             'for-each-ref', '--format=%(refname:short)', 'refs/heads/'
         ])
@@ -1830,43 +2121,83 @@ class HudWindow(QMainWindow):
             .replace("border: 1px solid #555", "border: 1px solid #0f0")
             .replace("color: #dcdcdc", "color: #0f0")
         )
+        # "no-GUI" branches are visually disabled — dim text + no hover.
+        nogui_style = (
+            self._dev_btn_style
+            .replace("color: #dcdcdc", "color: #555")
+        )
 
         ab_style = (
             "border: none; color: #aaa; font-size: 10px;"
             " font-family: monospace;"
         )
+        ab_warn_style = (
+            "border: none; color: #f44; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        ab_old_style = (
+            "border: none; color: #ff0; font-size: 10px;"
+            " font-family: monospace;"
+        )
 
-        # Find the index of the Refresh row in nav so branch buttons land
-        # before the Exit button (last). Simplest: rebuild order:
-        # [Container, git pull, Refresh, <branches…>, Exit Developer]
-        head_entries = [e for e in self._dev_nav_buttons if e[1] != "Exit Developer"]
+        # Rebuild order: [Refresh, <branches…>, Back to Developer].
+        head_entries = [
+            e for e in self._branches_nav_buttons if e[1] != "Back to Developer"
+        ]
         exit_entry = next(
-            (e for e in self._dev_nav_buttons if e[1] == "Exit Developer"), None
+            (e for e in self._branches_nav_buttons if e[1] == "Back to Developer"),
+            None,
         )
 
         new_branch_entries = []
         for i, branch in enumerate(branches):
+            has_gui = self._branch_has_gui(branch)
+            is_old = branch not in remote_set
             btn = QPushButton(branch)
-            style = on_style if branch == current else self._dev_btn_style
+            if branch == current:
+                style = on_style
+            elif not has_gui:
+                style = nogui_style
+            else:
+                style = self._dev_btn_style
             btn.setStyleSheet(style)
             btn.setFocusPolicy(Qt.NoFocus)
-            btn.clicked.connect(
-                lambda checked=False, b=branch: self._dev_switch_branch(b)
-            )
+            if has_gui:
+                btn.clicked.connect(
+                    lambda checked=False, b=branch: self._dev_switch_branch(b)
+                )
+            else:
+                btn.setEnabled(False)
+                btn.setToolTip(
+                    "This branch's tree does not contain the GUI source. "
+                    "Switching would leave the running GUI without code."
+                )
             self._dev_branch_grid.addWidget(btn, i, 0)
 
-            ab_text = self._dev_ahead_behind(branch)
+            # Right column: "(old)" for local-only, "no-gui" for missing GUI,
+            # otherwise ahead/behind versus origin.
+            if is_old:
+                ab_text = "(old)"
+                ab_lbl_style = ab_old_style
+            else:
+                ab_text = self._dev_ahead_behind(branch)
+                ab_lbl_style = ab_style
+            if not has_gui:
+                ab_text = (ab_text + " no-gui").strip()
+                ab_lbl_style = ab_warn_style
             ab_lbl = QLabel(ab_text)
-            ab_lbl.setStyleSheet(ab_style)
+            ab_lbl.setStyleSheet(ab_lbl_style)
             self._dev_branch_grid.addWidget(ab_lbl, i, 1)
 
             self._dev_branch_rows.append((btn, ab_lbl))
-            new_branch_entries.append((btn, branch, style))
+            # Only nav-add branches that are actually clickable.
+            if has_gui:
+                new_branch_entries.append((btn, branch, style))
 
         self._dev_branch_grid.setColumnStretch(0, 0)
         self._dev_branch_grid.setColumnStretch(1, 1)
 
-        self._dev_nav_buttons = head_entries + new_branch_entries + (
+        self._branches_nav_buttons = head_entries + new_branch_entries + (
             [exit_entry] if exit_entry else []
         )
 
@@ -1895,6 +2226,14 @@ class HudWindow(QMainWindow):
         rc_cur, current, _ = self._dev_run_git(['branch', '--show-current'])
         if rc_cur == 0 and current == branch:
             self._dev_set_status(f"Already on {branch}", color='#888')
+            return
+
+        # Defense-in-depth: never switch into a branch that lacks the GUI
+        # source, even if a stale UI button somehow lets the click through.
+        if not self._branch_has_gui(branch):
+            self._dev_set_status(
+                f"Refused: {branch} has no GUI source.", color='#f44'
+            )
             return
 
         # Auto-stash if dirty so the user's in-progress edits follow them.
@@ -2002,12 +2341,20 @@ class HudWindow(QMainWindow):
             self._dev_container_dot.setStyleSheet(
                 "background-color: #4f4; border-radius: 5px; border: none;"
             )
-            self._dev_container_btn.setText("Stop Container")
+            desired = "Stop Container"
         else:
             self._dev_container_dot.setStyleSheet(
                 "background-color: #f44; border-radius: 5px; border: none;"
             )
-            self._dev_container_btn.setText("Start Container")
+            desired = "Start Container"
+        # Sync the base_label stored in _dev_nav_buttons so the next
+        # _update_selection tick doesn't revert to a stale label and cause
+        # the button to flash between "Start Container" and the selection-
+        # wrapped form like "> Container <". Gate on actual state change so
+        # we don't restyle every nav button every poll.
+        if getattr(self, '_dev_container_btn_label', None) != desired:
+            self._dev_container_btn_label = desired
+            self._set_btn_label(self._dev_container_btn, desired)
 
     def _toggle_test(self, tid):
         """Start or stop a test by its ID."""
