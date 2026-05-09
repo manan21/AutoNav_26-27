@@ -1781,12 +1781,16 @@ class HudWindow(QMainWindow):
             tick_color = '#555'
             spine_color = '#bbb'
             label_color = '#444'
+            odom_trail = '#000000'
+            odom_grid = '#cccccc'
         else:
             fig_bg = '#1e1e1e'
             ax_bg = '#111111'
             tick_color = '#888'
             spine_color = '#444'
             label_color = '#888'
+            odom_trail = 'white'
+            odom_grid = '#333'
         canvases = self.findChildren(FigureCanvasQTAgg)
         for canvas in canvases:
             fig = canvas.figure
@@ -1801,6 +1805,22 @@ class HudWindow(QMainWindow):
                 if ax.get_title():
                     ax.title.set_color(label_color)
             canvas.draw_idle()
+        # Odom plot specifics: the trail line and grid don't fit the
+        # generic semantic-color palette (they're contrast-on-bg, not
+        # value-encoding), so they swap with the theme.
+        if hasattr(self, '_odom_scatter') and self._odom_scatter is not None:
+            self._odom_scatter.set_color(odom_trail)
+        if hasattr(self, '_odom_ax'):
+            for line in (self._odom_ax.get_xgridlines()
+                         + self._odom_ax.get_ygridlines()):
+                line.set_color(odom_grid)
+            # Re-color the corner texts (x/y, distance, live indicator)
+            for txt_attr in ('_odom_xy_label', '_odom_dist_label',
+                             '_odom_live_txt'):
+                if hasattr(self, txt_attr):
+                    getattr(self, txt_attr).set_color(label_color)
+        if hasattr(self, '_odom_canvas'):
+            self._odom_canvas.draw_idle()
 
     def _apply_theme(self):
         """Push the current theme to QPalette + the widget tree + canvases.
@@ -3239,7 +3259,10 @@ class HudWindow(QMainWindow):
         self._container_connected = True
         self._gui_log_msg(f"Connected to container '{self._container_name}'")
 
-        # Update button to show connected state
+        # Update button to show connected state. Note that the nav tuple
+        # stores the dark-original style; _update_selection runs each tick
+        # and pipes it through _translate_to_theme, so light mode survives.
+        T = self._translate_to_theme
         connected_style = (
             self._connect_style
             .replace("#1a2a3a", "#1a3a1a")
@@ -3247,7 +3270,7 @@ class HudWindow(QMainWindow):
             .replace("#0a1a2a", "#0a2a0a")
         )
         self.btn_connect.setText("Disconnect Container")
-        self.btn_connect.setStyleSheet(connected_style)
+        self.btn_connect.setStyleSheet(T(connected_style))
         for i, (b, lbl, _s) in enumerate(self._nav_buttons):
             if b is self.btn_connect:
                 self._nav_buttons[i] = (b, "Disconnect Container", connected_style)
@@ -3258,22 +3281,23 @@ class HudWindow(QMainWindow):
             btn_ref.setEnabled(True)
             for _b, _l, base_s in self._nav_buttons:
                 if _b is btn_ref:
-                    btn_ref.setStyleSheet(base_s)
+                    btn_ref.setStyleSheet(T(base_s))
                     break
         # Turn container dots green
         for dot in self._container_dots:
-            dot.setStyleSheet(
+            dot.setStyleSheet(T(
                 "background-color: #4f4; border-radius: 5px; border: none;"
-            )
+            ))
 
     def _disconnect_container(self):
         """Disconnect from the container and disable container features."""
         self._container_connected = False
         self._gui_log_msg(f"Disconnected from container '{self._container_name}'")
 
+        T = self._translate_to_theme
         # Restore connect button
         self.btn_connect.setText("Connect to Container")
-        self.btn_connect.setStyleSheet(self._connect_style)
+        self.btn_connect.setStyleSheet(T(self._connect_style))
         for i, (b, lbl, _s) in enumerate(self._nav_buttons):
             if b is self.btn_connect:
                 self._nav_buttons[i] = (b, "Connect to Container", self._connect_style)
@@ -3282,12 +3306,12 @@ class HudWindow(QMainWindow):
         # Disable container-dependent buttons and show warnings
         for btn_ref, base_label in self._container_buttons.items():
             btn_ref.setEnabled(False)
-            btn_ref.setStyleSheet(self._disabled_btn_style)
+            btn_ref.setStyleSheet(T(self._disabled_btn_style))
         # Turn container dots red
         for dot in self._container_dots:
-            dot.setStyleSheet(
+            dot.setStyleSheet(T(
                 "background-color: #f44; border-radius: 5px; border: none;"
-            )
+            ))
 
         # Stop any active container modes
         if self._live_active:
@@ -3980,8 +4004,9 @@ class HudWindow(QMainWindow):
         if xs:
             # Use a simple line instead of scatter (much faster)
             if self._odom_scatter is None:
+                trail_color = '#000000' if self._theme == 'light' else 'white'
                 self._odom_scatter, = self._odom_ax.plot(
-                    xs, ys, 'w-', linewidth=1.5, zorder=3,
+                    xs, ys, '-', color=trail_color, linewidth=1.5, zorder=3,
                 )
             else:
                 self._odom_scatter.set_data(xs, ys)
