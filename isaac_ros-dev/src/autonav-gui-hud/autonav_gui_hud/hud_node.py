@@ -225,17 +225,19 @@ class HudWindow(QMainWindow):
         '#333':    '#cccccc',  # disabled border
         '#444':    '#b8b8b8',  # general border
         '#555':    '#9c9c9c',  # button border
-        '#666':    '#a8a8a8',  # group label fg
-        '#888':    '#787878',  # dim fg
-        '#aaa':    '#5c5c5c',  # subtle label fg
+        '#666':    '#5e5e5e',  # group label fg — must stay readable on white
+        '#888':    '#6c6c6c',  # dim fg
+        '#aaa':    '#4e4e4e',  # subtle label fg
         '#ccc':    '#525252',  # mpl ax title
         '#dcdcdc': '#202020',  # text fg
         '#ffffff': '#000000',  # title text (full 6-char form)
-        '#0f0':    '#0a8800',  # active green
+        '#0f0':    '#0a8800',  # active green text
         '#0af':    '#0a5a9a',  # info blue
-        '#ff0':    '#a06000',  # yellow status
+        '#ff0':    '#a06000',  # yellow text status (dots use #ffff00 below)
         '#f44':    '#cc3030',  # red dot
+        '#4f4':    '#0db000',  # green dot — distinct from #0f0 so reverse map is bijective
         '#111111': '#f5f5f5',  # mpl axes facecolor
+        '#0a0a0a': '#fbfbfb',  # process terminal bg (overridden via _restyle_terminal too)
     }
 
     def __init__(self, ros_node=None):
@@ -1684,6 +1686,42 @@ class HudWindow(QMainWindow):
     def _light_to_dark_map(self):
         return {v: k for k, v in self._DARK_TO_LIGHT.items()}
 
+    def _translate_to_theme(self, s):
+        """Translate a stylesheet authored in dark hex codes to whichever
+        theme is currently active. Sites that build inline styles at
+        runtime (selection highlight, _dev_refresh_branches, status
+        labels) pipe through this so the active theme survives ticks
+        of _update_selection that re-write `base_style`."""
+        if not s or self._theme == 'dark':
+            return s
+        cm = self._DARK_TO_LIGHT
+        return self._hex_re.sub(lambda m: cm.get(m.group(0), m.group(0)), s)
+
+    def _restyle_terminal(self):
+        """The process terminal is special-cased: it shouldn't pick up
+        the regex substitution because we want a hard white-on-black
+        (dark) or black-on-white (light) look, not a muted version."""
+        if not hasattr(self, '_term_display'):
+            return
+        if self._theme == 'light':
+            self._term_display.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: #ffffff; color: #000000;"
+                "  border: 1px solid #b8b8b8; border-radius: 3px;"
+                "  font-family: monospace; font-size: 11px;"
+                "  padding: 4px;"
+                "}"
+            )
+        else:
+            self._term_display.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: #0a0a0a; color: #0f0;"
+                "  border: 1px solid #333; border-radius: 3px;"
+                "  font-family: monospace; font-size: 11px;"
+                "  padding: 4px;"
+                "}"
+            )
+
     def _color_map(self, target):
         """Returns hex→hex substitution map for current → `target` theme."""
         if target == 'light':
@@ -1782,6 +1820,12 @@ class HudWindow(QMainWindow):
         self._set_qpalette_for_theme()
         self._recolor_widget_tree(self, color_map)
         self._restyle_canvases()
+        self._restyle_terminal()
+        # Re-run _update_selection so the selected button picks up the
+        # newly-translated theme (its stylesheet was overwritten by the
+        # last tick using the stored dark base_style).
+        if hasattr(self, '_nav_groups'):
+            self._update_selection()
         # Update the theme button label to reflect what clicking does next.
         if hasattr(self, 'btn_theme'):
             self.btn_theme.setText(
@@ -2149,6 +2193,7 @@ class HudWindow(QMainWindow):
             None,
         )
 
+        T = self._translate_to_theme
         new_branch_entries = []
         for i, branch in enumerate(branches):
             has_gui = self._branch_has_gui(branch)
@@ -2160,7 +2205,7 @@ class HudWindow(QMainWindow):
                 style = nogui_style
             else:
                 style = self._dev_btn_style
-            btn.setStyleSheet(style)
+            btn.setStyleSheet(T(style))
             btn.setFocusPolicy(Qt.NoFocus)
             if has_gui:
                 btn.clicked.connect(
@@ -2186,7 +2231,7 @@ class HudWindow(QMainWindow):
                 ab_text = (ab_text + " no-gui").strip()
                 ab_lbl_style = ab_warn_style
             ab_lbl = QLabel(ab_text)
-            ab_lbl.setStyleSheet(ab_lbl_style)
+            ab_lbl.setStyleSheet(T(ab_lbl_style))
             self._dev_branch_grid.addWidget(ab_lbl, i, 1)
 
             self._dev_branch_rows.append((btn, ab_lbl))
@@ -2337,15 +2382,16 @@ class HudWindow(QMainWindow):
         except Exception:
             running = False
         self._dev_container_running = running
+        T = self._translate_to_theme
         if running:
-            self._dev_container_dot.setStyleSheet(
+            self._dev_container_dot.setStyleSheet(T(
                 "background-color: #4f4; border-radius: 5px; border: none;"
-            )
+            ))
             desired = "Stop Container"
         else:
-            self._dev_container_dot.setStyleSheet(
+            self._dev_container_dot.setStyleSheet(T(
                 "background-color: #f44; border-radius: 5px; border: none;"
-            )
+            ))
             desired = "Start Container"
         # Sync the base_label stored in _dev_nav_buttons so the next
         # _update_selection tick doesn't revert to a stale label and cause
@@ -2463,7 +2509,10 @@ class HudWindow(QMainWindow):
 
     _DOT_ON = "background-color: #0f0; border-radius: 7px; border: none;"
     _DOT_OFF = "background-color: #555; border-radius: 7px; border: none;"
-    _DOT_YELLOW = "background-color: #ff0; border-radius: 7px; border: none;"
+    # Use 6-char #ffff00 (NOT #ff0) so the regex walker leaves it alone in
+    # light mode — the user wants the process yellow dots to stay yellow,
+    # while #ff0 used for status text still translates to dark orange.
+    _DOT_YELLOW = "background-color: #ffff00; border-radius: 7px; border: none;"
 
     def _dot_keys_for(self, label):
         """Return the status-dot keys for a device label."""
@@ -3015,31 +3064,32 @@ class HudWindow(QMainWindow):
 
     def _update_selection(self):
         """Restyle all buttons: selected gets highlight + mirrored arrows, others reset."""
+        T = self._translate_to_theme
         for g, group in enumerate(self._nav_groups):
             for r, (widget, base_label, base_style) in enumerate(group):
                 is_selected = (g == self._nav_col and r == self._nav_row)
                 # Slider uses stylesheet only (no setText)
                 if widget is self.pb_slider:
                     if is_selected and self._scrub_mode:
-                        widget.setStyleSheet(self._slider_scrub_style)
+                        widget.setStyleSheet(T(self._slider_scrub_style))
                     elif is_selected:
-                        widget.setStyleSheet(self._slider_sel_style)
+                        widget.setStyleSheet(T(self._slider_sel_style))
                     else:
-                        widget.setStyleSheet(self._slider_base_style)
+                        widget.setStyleSheet(T(self._slider_base_style))
                 elif widget is self.btn_speed and is_selected and self._speed_mode:
                     widget.setText(
                         f"\u25B2  {base_label}  \u25BC"
                     )
-                    widget.setStyleSheet(
+                    widget.setStyleSheet(T(
                         self._speed_btn_style
                         .replace("border: 1px solid #555", "border: 1px solid #0f0")
                         .replace("color: #dcdcdc", "color: #0f0")
-                    )
+                    ))
                 elif widget in self._sensor_cells or widget is self._power_cell:
                     if is_selected:
-                        widget.setStyleSheet(self._sensor_sel_style)
+                        widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
-                        widget.setStyleSheet(self._sensor_frame_style)
+                        widget.setStyleSheet(T(self._sensor_frame_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -3056,15 +3106,15 @@ class HudWindow(QMainWindow):
                             f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                         )
                         if is_selected_device:
-                            widget.setStyleSheet(self._make_sel_style(self._STATUS_BTN_SELECTED))
+                            widget.setStyleSheet(T(self._make_sel_style(self._STATUS_BTN_SELECTED)))
                         else:
-                            widget.setStyleSheet(self._make_sel_style(base_style))
+                            widget.setStyleSheet(T(self._make_sel_style(base_style)))
                     else:
                         widget.setText(base_label)
                         if is_selected_device:
-                            widget.setStyleSheet(self._STATUS_BTN_SELECTED)
+                            widget.setStyleSheet(T(self._STATUS_BTN_SELECTED))
                         else:
-                            widget.setStyleSheet(base_style)
+                            widget.setStyleSheet(T(base_style))
         # Position floating directional indicators around the selected widget
         self._position_indicators()
 
