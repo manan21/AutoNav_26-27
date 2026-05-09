@@ -16,7 +16,7 @@
 #
 # Lines beginning with '#' and blank lines are ignored.
 # Numbers may be space- or comma-separated.
+# ER 5.0, 0.0
 
-ER 15.984687243938032, 0.736338582193662
 GA 37.23027, -80.42504
-EA 30.0000, 0.0000
+EA 0.0000, 0.0000
