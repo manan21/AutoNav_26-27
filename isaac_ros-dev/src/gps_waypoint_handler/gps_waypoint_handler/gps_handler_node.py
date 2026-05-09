@@ -90,7 +90,11 @@ NAV2_GOAL_HZ: float = 1.0
 FEEDBACK_HZ: float = 2.0
 
 # Convergence / arrival (§3.2)
-SUCCESS_RADIUS_M: float = 1.0
+# Tightened from the plan's 1.0 m default to 0.25 m so the action
+# terminates promptly once the robot is essentially on the candidate
+# goal — earlier behavior was to keep refining indefinitely once the
+# robot got within ~0.2 m, blocking the next mission leg.
+SUCCESS_RADIUS_M: float = 0.25
 STOP_REFINE_K: float = 2.0
 """``‖ekf_pos − goal‖ < k · σ_GPS`` ⇒ refinement_locked. k=2."""
 STOP_REFINE_SIGMA_GPS_M: float = 0.3
