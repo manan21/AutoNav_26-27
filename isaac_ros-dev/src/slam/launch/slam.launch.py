@@ -51,7 +51,11 @@ def generate_launch_description():
 
     pkg_share = FindPackageShare(package='slam').find('slam')
     slam_config = os.path.join(pkg_share, 'config', 'slam.yaml')
-    ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local_sim.yaml')
+    # Use the deployed-robot EKF config (dual-IMU + correct topic
+    # names matching what's actually published on Bowser). The
+    # ``ekf_local_sim.yaml`` variant is the legacy single-IMU
+    # Gazebo-friendly fallback.
+    ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
     ekf_global_config = os.path.join(pkg_share, 'config', 'ekf_global.yaml')
         
         # 1. LiDAR PointCloud to LaserScan Conversion

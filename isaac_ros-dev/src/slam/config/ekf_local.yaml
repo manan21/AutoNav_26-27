@@ -1,4 +1,10 @@
-ekf_local:
+# Top-level key MUST match the ROS2 node name. ``slam.launch.py``
+# instantiates the local EKF as  Node(name='ekf_node', ...) so the
+# parameter block has to live under ``ekf_node:``. Naming it
+# ``ekf_local:`` (the previous value) made every parameter silently
+# ignored — robot_localization fell back to its hard-coded defaults
+# and the topic-name fix below would have had no effect.
+ekf_node:
   ros__parameters:
     # Local EKF (e.g., ekf_local.yaml)
     frequency: 30.0              # High update rate for control
