@@ -173,6 +173,16 @@ EARTH_R_M: float = 6_371_000.0
 """Earth radius (m), used in the equirectangular lat/lon → meters
 linearization around the datum."""
 
+# Antenna lever-arm. The GPS antenna does not sit at base_link; the
+# URDF puts it ~38 cm behind and ~56 cm above on Bowser. Without
+# subtracting that offset before the EKF update, every GPS sample
+# is biased by R(yaw_world) · antenna_offset_in_baselink — a
+# heading-correlated bias that locks the EKF onto a fixed wrong
+# point. We pull the offset live from TF on the first GPS sample
+# (so URDF edits are picked up automatically).
+GPS_LINK_FRAME: str = "gps_footprint"
+BASE_LINK_FRAME: str = "base_link"
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -340,6 +350,13 @@ class GpsHandlerNode(Node):
 
         # Latest odom snapshot, for predict deltas + bootstrap pairs.
         self._last_odom_xy: Optional[Tuple[float, float]] = None
+        # Robot's odom-frame yaw, extracted from each odom message. We
+        # need it (combined with self._ekf.theta) to know the world
+        # heading for the antenna lever-arm correction in _gps_callback.
+        self._last_odom_yaw: float = 0.0
+        # Cached base_link → gps_footprint translation. Looked up lazily
+        # on the first GPS callback (TF tree may not be live at __init__).
+        self._gps_link_offset_xy: Optional[Tuple[float, float]] = None
         self._last_odom_stamp_s: Optional[float] = None
         self._odom_distance_m: float = 0.0
 
@@ -527,6 +544,12 @@ class GpsHandlerNode(Node):
         """
         ox = float(msg.pose.pose.position.x)
         oy = float(msg.pose.pose.position.y)
+        # Track odom-frame yaw too — used by the antenna lever-arm
+        # correction in _gps_callback (yaw_world = odom_yaw + ekf.theta).
+        oq = msg.pose.pose.orientation
+        odom_yaw = quat_to_yaw(
+            float(oq.x), float(oq.y), float(oq.z), float(oq.w)
+        )
         stamp_s = (
             float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
         )
@@ -570,6 +593,7 @@ class GpsHandlerNode(Node):
             dxo = ox - self._last_odom_xy[0]
             dyo = oy - self._last_odom_xy[1]
             self._last_odom_xy = (ox, oy)
+            self._last_odom_yaw = odom_yaw
             self._last_odom_stamp_s = stamp_s
             self._odom_distance_m += math.hypot(dxo, dyo)
 
@@ -656,6 +680,49 @@ class GpsHandlerNode(Node):
             zx, zy = latlon_to_local(
                 lat, lon, self._datum_lat, self._datum_lon
             )
+
+            # ── Antenna lever-arm correction ──────────────────────
+            # /gps_fix is the antenna's world position. The EKF tracks
+            # base_link's world position, so we have to subtract
+            # R(yaw_world) · antenna_offset_baselink from the raw fix
+            # before fusing. yaw_world = odom_yaw + ekf.theta (the
+            # rotation between odom and world).
+            if self._gps_link_offset_xy is None:
+                try:
+                    tf = self._tf_buffer.lookup_transform(
+                        BASE_LINK_FRAME,
+                        GPS_LINK_FRAME,
+                        Time(),
+                        rclpy.duration.Duration(seconds=0.5),
+                    )
+                    ax = float(tf.transform.translation.x)
+                    ay = float(tf.transform.translation.y)
+                    self._gps_link_offset_xy = (ax, ay)
+                    self.get_logger().info(
+                        f"GPS antenna offset (base_link→{GPS_LINK_FRAME}): "
+                        f"x={ax:+.3f}m y={ay:+.3f}m"
+                    )
+                except (
+                    LookupException,
+                    ConnectivityException,
+                    ExtrapolationException,
+                ):
+                    # TF not yet ready — defer correction until next fix.
+                    pass
+
+            if self._gps_link_offset_xy is not None and (
+                abs(self._gps_link_offset_xy[0]) > 1e-3
+                or abs(self._gps_link_offset_xy[1]) > 1e-3
+            ):
+                ax, ay = self._gps_link_offset_xy
+                yaw_world = self._last_odom_yaw + self._ekf.theta
+                c = math.cos(yaw_world)
+                s = math.sin(yaw_world)
+                dx_world = c * ax - s * ay
+                dy_world = s * ax + c * ay
+                zx -= dx_world
+                zy -= dy_world
+
             odom_xy = self._last_odom_xy or (0.0, 0.0)
             self._gps_history.append((stamp_s, (zx, zy), odom_xy))
             self._last_gps_xy = (zx, zy)
@@ -865,7 +932,12 @@ class GpsHandlerNode(Node):
             )
             self._moving_away_event_count += 1
             # Per §13 #15: do NOT reset the smoother.
-            self._force_heading_resync()
+            resync_ok = self._force_heading_resync()
+            self.get_logger().warn(
+                f"moving-away detector fired: delta={delta:+.2f}m over "
+                f"{t_new - oldest_t:.2f}s, count={self._moving_away_event_count}, "
+                f"force_resync={'OK' if resync_ok else 'BLOCKED (insufficient baseline)'}"
+            )
 
     def _update_local_world_divergence(self) -> None:
         """Lock held. Cross-check EKF-believed distance-to-goal against
@@ -915,18 +987,19 @@ class GpsHandlerNode(Node):
 
         divergence = local_progress - world_progress
         if divergence > LOCAL_VS_WORLD_DIVERGENCE_M:
-            self.get_logger().warn(
-                f"local↔world distance divergence: "
-                f"local_progress={local_progress:.1f}m "
-                f"world_progress={world_progress:.1f}m "
-                f"divergence={divergence:.1f}m — forcing heading resync"
-            )
             # Same envelope-suspension side effect as moving-away —
             # lifts the 1/r filter so a corrected candidate can flow.
             self._envelope_suspended_until_s = (
                 self._now_s() + MOVING_AWAY_ENV_SUSPEND_S
             )
-            self._force_heading_resync()
+            resync_ok = self._force_heading_resync()
+            self.get_logger().warn(
+                f"local↔world distance divergence: "
+                f"local_progress={local_progress:.1f}m "
+                f"world_progress={world_progress:.1f}m "
+                f"divergence={divergence:.1f}m, "
+                f"force_resync={'OK' if resync_ok else 'BLOCKED (insufficient baseline)'}"
+            )
             self._divergence_cooldown_until_s = (
                 self._now_s() + LOCAL_VS_WORLD_COOLDOWN_S
             )
