@@ -602,12 +602,12 @@ class HudWindow(QMainWindow):
         # once its readiness condition (a topic publishing) is met. The HUD
         # blocks the queue on that sentinel — see READY_SENTINEL below.
         self._launch_devices = [
-            ("Pre-SLAM", ["Encoders", "Arduino", "Motor Ctrl", "CONTROL"],
+            ("Pre-SLAM", ["Encoders", "CONTROL"],
              "./config/run-pre-slam.sh"),
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
-            ("DETECT", ["LINE DETECT", "PCA GRADE"], "./config/run-detect.sh"),
+            ("DETECT", ["DETECT"], "./config/run-detect.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
@@ -1175,13 +1175,43 @@ class HudWindow(QMainWindow):
             self.status_dots[name] = dot
             self._status_nav_buttons.append((btn, name, status_btn_style))
 
+        # Style for non-clickable rows (EKF status indicators). Same
+        # height/width as the button rows above so the columns line up,
+        # but a flat QLabel — there's nothing for the user to navigate
+        # to from these rows, they're pure freshness indicators driven
+        # by _ekf_pulse_tick.
+        status_text_style = (
+            "QLabel {"
+            "  background-color: transparent; color: #aaa;"
+            "  border: none;"
+            "  padding: 1px 4px; font-size: 11px;"
+            "}"
+        )
+
+        def _add_status_text_row(name, parent_layout):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            dot = QLabel()
+            dot.setFixedSize(14, 14)
+            dot.setStyleSheet(
+                "background-color: #555; border-radius: 7px; border: none;"
+            )
+            row.addWidget(dot)
+            lbl = QLabel(name)
+            lbl.setStyleSheet(status_text_style)
+            lbl.setFixedWidth(95)
+            row.addWidget(lbl)
+            row.addStretch()
+            parent_layout.addLayout(row)
+            self.status_dots[name] = dot
+
         # Physical Devices
         phys_label = QLabel("Physical Devices")
         phys_label.setStyleSheet(group_label_style)
         status_col.addWidget(phys_label)
         physical_names = [
             "Camera", "Lidar", "GPS", "Encoders",
-            "Power PCB", "Arduino", "Motor Ctrl",
+            "Power PCB",
         ]
         for name in physical_names:
             _add_status_row(name, status_col)
@@ -1190,19 +1220,20 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA GRADE"]
+        virtual_names = ["SLAM", "CONTROL", "NAV2", "DETECT"]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
         # EKF Filters — pure freshness indicators driven by
         # _ekf_pulse_tick. Solid green while their fused-output
         # topic is fresh, gray when stale. Not tied to a launch
-        # device — these just answer "is this filter publishing?"
+        # device and not clickable — these answer "is this filter
+        # publishing?", so they use the text-row helper.
         ekf_label = QLabel("EKF Filters")
         ekf_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(ekf_label)
         for name in ("Local EKF", "Map EKF"):
-            _add_status_row(name, status_col)
+            _add_status_text_row(name, status_col)
 
         # Test System
         test_label = QLabel("Test System")
@@ -1338,8 +1369,19 @@ class HudWindow(QMainWindow):
         self._gps_canvas.setMinimumSize(50, 50)
         gps_layout.addWidget(self._gps_canvas, stretch=1)
 
-        # Encoders — XY odometry plot with white trail + 1m grid
+        # Encoders — XY odometry plot with white trail + 1m grid.
+        # Title graduates from "Encoders (Odom)" to "Encoders (Odom EKF)"
+        # whenever /local_ekf/odom is fresh — see _set_enc_title and
+        # the live-tick odom block. Raw /odom is what we plot before
+        # the Local EKF is up; the filtered stream takes over once
+        # the EKF starts publishing, giving the operator the same
+        # estimate that the rest of the stack actually uses.
         enc_cell, enc_layout = _plot_cell("Encoders (Odom)")
+        # Hold a reference to the title QLabel so the live tick can
+        # flip the text. _plot_cell adds the title as the first
+        # widget in the returned layout.
+        self._enc_title_label = enc_layout.itemAt(0).widget()
+        self._enc_title_text = "Encoders (Odom)"
         self._odom_fig, self._odom_ax, self._odom_canvas = _make_dark_canvas()
         self._odom_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._odom_ax.set_facecolor('#111111')
@@ -4488,7 +4530,8 @@ class HudWindow(QMainWindow):
         if node is None:
             return  # Placeholders stay visible
 
-        t_s = time.monotonic() - self._live_t0
+        now = time.monotonic()
+        t_s = now - self._live_t0
         any_scalar_changed = False
 
         # --- GPS ---
@@ -4535,10 +4578,27 @@ class HudWindow(QMainWindow):
                         )
             any_scalar_changed = True
 
-        # --- Odom ---
-        odom = node.latest_odom
-        if odom is not None:
+        # --- Odom: graduate raw /odom → /local_ekf/odom when the
+        # Local EKF is publishing. Same buffer either way; the title
+        # flip is what tells the operator which stream is on screen.
+        ekf_odom_t = node.last_msg_t.get('ekf_local_odom', 0.0)
+        ekf_odom_alive = (
+            ekf_odom_t > 0.0
+            and (now - ekf_odom_t) < self._ekf_msg_age_max_s
+        )
+        if ekf_odom_alive and node.latest_ekf_odom is not None:
+            odom = node.latest_ekf_odom
+            node.latest_ekf_odom = None
+            # Drop any raw /odom we picked up in the same tick — we
+            # don't want to interleave the two streams in the trail.
             node.latest_odom = None
+            self._set_enc_title("Encoders (Odom EKF)")
+        else:
+            odom = node.latest_odom
+            if odom is not None:
+                node.latest_odom = None
+            self._set_enc_title("Encoders (Odom)")
+        if odom is not None:
             self._odom_live_txt.set_visible(False)
             self._odom_ax.grid(True, which='both', color='#333', linewidth=0.5)
             self._odom_ax.tick_params(labelbottom=True, labelleft=True)
@@ -4618,7 +4678,6 @@ class HudWindow(QMainWindow):
             self._live_set_dot_received('Lidar')
 
         # --- Redraw scalar plots (throttled to ~3 Hz) ---
-        now = time.monotonic()
         if any_scalar_changed and (now - getattr(self, '_last_live_redraw', 0)) > 0.33:
             self._redraw_plots()
             self._last_live_redraw = now
@@ -4629,6 +4688,19 @@ class HudWindow(QMainWindow):
         # the EKF is actually fusing this device, not just that
         # the device's raw stream is alive.
         self._ekf_pulse_tick(now)
+
+    def _set_enc_title(self, text):
+        """Flip the Encoders cell title between '(Odom)' and
+        '(Odom EKF)'. Cheap-no-op when the text is unchanged so the
+        live tick can call this every iteration without churn.
+        """
+        if getattr(self, '_enc_title_text', None) == text:
+            return
+        lbl = getattr(self, '_enc_title_label', None)
+        if lbl is None:
+            return
+        lbl.setText(text)
+        self._enc_title_text = text
 
     def _ekf_pulse_tick(self, now_s):
         """Apply the green↔purple EKF-participation pulse to device
@@ -4785,7 +4857,8 @@ if _HAS_ROS:
             self.latest_image_rgb = None   # numpy RGB array
             self.latest_scan = None        # LaserScan message
             self.latest_gps = None         # (lat, lon)
-            self.latest_odom = None        # (x, y, qz)
+            self.latest_odom = None        # (x, y, qz) — raw /odom
+            self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
@@ -4915,7 +4988,15 @@ if _HAS_ROS:
             # pulse on the GUI freezes to its last hue and the
             # device dots fall back to their plain-alive style —
             # the operator's "the EKF is dead" cue.
+            #
+            # We also stash the filtered pose so the Encoders cell
+            # can graduate from raw /odom to the EKF stream — the
+            # live tick prefers latest_ekf_odom whenever this topic
+            # is fresh.
             self.last_msg_t['ekf_local_odom'] = time.monotonic()
+            p = msg.pose.pose.position
+            qz = msg.pose.pose.orientation.z
+            self.latest_ekf_odom = (p.x, p.y, qz)
 
         def _cb_pose(self, msg):
             # slam_toolbox's localized pose. Drives the SLAM dot's
