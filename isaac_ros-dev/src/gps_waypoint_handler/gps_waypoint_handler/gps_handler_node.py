@@ -94,7 +94,15 @@ FEEDBACK_HZ: float = 2.0
 # terminates promptly once the robot is essentially on the candidate
 # goal — earlier behavior was to keep refining indefinitely once the
 # robot got within ~0.2 m, blocking the next mission leg.
-SUCCESS_RADIUS_M: float = 0.25
+SUCCESS_RADIUS_M: float = 0.75
+"""Default arrival radius for GPS / local / map goals, m. Sits below
+the IGVC AutoNav competition threshold so a goal counted as ``SUCCESS``
+locally is also a real arrival from the judges' perspective, but is
+loose enough to absorb GPS jitter + EKF position noise (empirically
+~0.3 m σ outdoors). Earlier tightenings to 0.25 m caused the controller
+to occasionally hover near a goal without graduating, blocking the
+next mission leg; the prior 1.0 m default was looser than necessary.
+Per-goal override available via ``goal_msg.success_radius_m``."""
 STOP_REFINE_K: float = 2.0
 """``‖ekf_pos − goal‖ < k · σ_GPS`` ⇒ refinement_locked. k=2."""
 STOP_REFINE_SIGMA_GPS_M: float = 0.3
