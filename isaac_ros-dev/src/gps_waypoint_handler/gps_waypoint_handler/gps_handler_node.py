@@ -112,6 +112,15 @@ GOAL_REPUBLISH_THETA_DEG: float = 1.0
 """Republish on θ shift > ~1° since the last publish, in addition to
 the 1 Hz timer."""
 
+# Suppress goal-pose republishes when the candidate has barely moved.
+# NAV2's BT triggers a planning pass on every fresh /goal_pose, which
+# manifested in the field as the robot start-stop-start-stopping every
+# tick of the smoother. Hold the published goal until the candidate
+# has actually moved enough to matter, OR the heartbeat interval has
+# elapsed (so a stalled NAV2 does eventually pick up state).
+GOAL_REPUBLISH_MIN_DELTA_M: float = 0.30
+GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
+
 # Continuous heading resync (§3.4)
 HEADING_RESYNC_THRESHOLD_DEG: float = 10.0
 HEADING_RESYNC_COOLDOWN_S: float = 3.0
@@ -148,12 +157,19 @@ CANDIDATE_ENV_MIN_R_M: float = 3.0
 MOVING_AWAY_WINDOW_S: float = 3.0
 MOVING_AWAY_THRESHOLD_M: float = 1.0
 MOVING_AWAY_ENV_SUSPEND_S: float = 4.0
-MOVING_AWAY_MIN_HISTORY_TICKS: int = 25
+MOVING_AWAY_MIN_HISTORY_TICKS: int = 8
+"""Reduced from 25. Real-robot GPS publishes at ~1-2 Hz; the prior
+25-tick floor blacked out the detector for 12-25 s, longer than the
+window in which the robot would drive off-target. 8 ticks ≈ 8 s
+@ 1 Hz, 4 s @ 2 Hz — fast enough to catch early divergence."""
 # Require the oldest sample in the moving-away history deque to span at
 # least this fraction of MOVING_AWAY_WINDOW_S before we trust the
 # delta-distance comparison. Guards against firing the detector with a
 # half-filled window right after _dist_history is cleared.
-MOVING_AWAY_WINDOW_COVERAGE: float = 0.8
+MOVING_AWAY_WINDOW_COVERAGE: float = 0.6
+"""Loosened from 0.8 for the same low-GPS-rate reason as
+MOVING_AWAY_MIN_HISTORY_TICKS — 0.8 demanded 2.4 s of span, which
+at 1 Hz GPS means at least 3 samples must already be present."""
 
 # Local-vs-world divergence detector — second trip wire next to
 # moving-away. Moving-away catches *radial* drift (raw GPS distance
@@ -277,6 +293,10 @@ class _ActiveGoal:
     last_published_goal_world: Optional[Tuple[float, float]] = None
     last_published_goal_map: Optional[Tuple[float, float]] = None
     last_published_theta: Optional[float] = None
+    # Wall-time-ish timestamp of the last successful /goal_pose publish.
+    # Drives the heartbeat gate of the goal-republish throttle so a
+    # stalled NAV2 still picks up state every GOAL_REPUBLISH_HEARTBEAT_S.
+    last_published_t_s: Optional[float] = None
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
     # valid raw GPS sample — they can't be set at goal acceptance
@@ -1220,6 +1240,48 @@ class GpsHandlerNode(Node):
             )
         qx, qy, qz, qw = yaw_to_quat(yaw_goal)
 
+        # Throttle goal_pose republishes when the candidate has barely
+        # moved. NAV2 BT triggers a planning pass on every fresh goal
+        # which manifested in the field as constant start/stop. Keep
+        # the heartbeat so a stalled NAV2 always recovers state.
+        now_pub_s = self._now_s()
+        last_map = active.last_published_goal_map
+        last_t = active.last_published_t_s
+        if last_map is not None and last_t is not None:
+            moved = math.hypot(gx_map - last_map[0], gy_map - last_map[1])
+            since_last = now_pub_s - last_t
+            if (
+                moved < GOAL_REPUBLISH_MIN_DELTA_M
+                and since_last < GOAL_REPUBLISH_HEARTBEAT_S
+            ):
+                # Skip the publish — but still update the marker below
+                # so RViz keeps showing the (held) candidate.
+                with self._lock:
+                    if self._active is not None:
+                        self._active.last_published_theta = theta
+                # Refresh the marker without re-publishing the goal.
+                marker_only = Marker()
+                marker_only.header.frame_id = self._map_frame
+                marker_only.header.stamp = self.get_clock().now().to_msg()
+                marker_only.ns = "gps_waypoint_candidate"
+                marker_only.id = 0
+                marker_only.type = Marker.SPHERE
+                marker_only.action = Marker.ADD
+                marker_only.pose.position.x = gx_map
+                marker_only.pose.position.y = gy_map
+                marker_only.pose.orientation.w = 1.0
+                marker_only.scale.x = 0.4
+                marker_only.scale.y = 0.4
+                marker_only.scale.z = 0.4
+                marker_only.color.r = 1.0
+                marker_only.color.g = 0.6
+                marker_only.color.b = 0.0
+                marker_only.color.a = 0.8
+                marker_only.lifetime = Duration(sec=2, nanosec=0)
+                marker_only.frame_locked = True
+                self._marker_pub.publish(marker_only)
+                return
+
         msg = PoseStamped()
         msg.header.frame_id = self._map_frame
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1265,6 +1327,7 @@ class GpsHandlerNode(Node):
                 self._active.last_published_goal_world = goal_world_xy
                 self._active.last_published_goal_map = (gx_map, gy_map)
                 self._active.last_published_theta = theta
+                self._active.last_published_t_s = now_pub_s
 
     # ── Always-on diagnostics (§4.2) ───────────────────────────────
 
