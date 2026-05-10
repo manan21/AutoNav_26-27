@@ -114,8 +114,14 @@ class ControlNode : public rclcpp::Node {
             controller.set_x(joy_msg->buttons[3]);
             controller.set_y(joy_msg->buttons[2]);
 
-            controller.set_right_bumper(joy_msg->buttons[6]);
-            controller.set_left_bumper(joy_msg->buttons[7]);
+            // Xbox-One / xpad-extended button layout in use on this
+            // controller: ABXY at 0-3, View/Menu/Guide/LSB/RSB at 4-8,
+            // bumpers at 9-10, D-pad as buttons 11-14. Earlier code
+            // read 6/7 (Back/Guide on this layout) which silently
+            // never fired SPEED_UP — verified empirically by spamming
+            // /joy: button 7 never registered any press.
+            controller.set_right_bumper(joy_msg->buttons[10]);  // RB
+            controller.set_left_bumper(joy_msg->buttons[9]);    // LB
 
             controller.set_left_stick_x(joy_msg->axes[0]);
             controller.set_left_stick_y(joy_msg->axes[1]);
