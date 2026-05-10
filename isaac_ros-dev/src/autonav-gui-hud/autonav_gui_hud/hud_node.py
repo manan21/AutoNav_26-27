@@ -17,6 +17,7 @@ try:
     from rclpy.node import Node
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu
     from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32
     _HAS_ROS = True
 except ImportError:
@@ -310,7 +311,7 @@ class HudWindow(QMainWindow):
         self._live_odom_maxlen = _LIVE_ODOM_MAXLEN
 
         # EKF participation pulse state. Each device dot whose raw
-        # input AND the local EKF output are both fresh gets
+        # input AND the EKF that consumes it are both fresh gets
         # painted with a hue cycling between green (135°) and
         # purple (270°) — the visible "this device is currently
         # being fused" indicator. Phase advances on every live
@@ -323,32 +324,42 @@ class HudWindow(QMainWindow):
         self._ekf_pulse_hue_lo = 135
         self._ekf_pulse_hue_hi = 270
         self._ekf_msg_age_max_s = 1.0
-        # Dot-key → message-key mapping. A dot pulses iff
-        # last_msg_t[msg_key] AND last_msg_t['ekf_local_odom']
-        # are both within max_age. Mapping rationale:
-        #   * Encoders → /odom: the wheel-encoder odometry is the
-        #     EKF's odom0 input.
-        #   * Lidar    → /multiScan/imu: the SICK lidar's onboard
-        #     IMU is the EKF's IMU input on Bowser today. The
+        # Dot-name → (input_msg_key, ekf_output_key). A dot pulses
+        # iff last_msg_t[input_msg_key] AND last_msg_t[ekf_output_key]
+        # are both within max_age — i.e. the input is being produced
+        # AND the EKF that consumes it is publishing fused output.
+        # Mapping rationale:
+        #   * Encoders → /odom feeds the Local EKF (ekf_local.yaml
+        #     odom0). Pulses while /local_ekf/odom is alive.
+        #   * Lidar    → /multiScan/imu (SICK lidar's onboard IMU)
+        #     feeds the Local EKF (ekf_local.yaml imu0). The
         #     /scan_fullframe stream feeds slam_toolbox separately
-        #     (map↔odom correction); whichever of the two is alive
-        #     when /local_ekf/odom is also alive is informative,
-        #     but only the IMU is actually fused. Stamp here is
-        #     the IMU's, since IMU participation is what
-        #     determines whether the encoder yaw bias gets
-        #     corrected at the local EKF.
-        #   * GPS      → /gps_fix: feeds gps_handler_node's
+        #     (map↔odom correction) — only the IMU is actually
+        #     fused into the Local EKF, so stamp here is the IMU's.
+        #   * GPS      → /gps_fix feeds gps_handler_node's
         #     magnetometer-less θ EKF, which depends on
         #     /local_ekf/odom for its predict heartbeat.
+        #   * SLAM     → /pose is slam_toolbox's localized pose,
+        #     consumed by the Map EKF (ekf_global.yaml pose0).
+        #     Pulses while /global_ekf/odom is alive.
         #   * Camera   → /zed/zed_node/imu/data is NOT yet wired
-        #     into ekf_local (see ekf_local.yaml comment about the
+        #     into either EKF (see ekf_local.yaml comment about the
         #     missing TF bridge). Until that lands, Camera has no
         #     entry here and its dot keeps the existing static
         #     style.
         self._ekf_pulse_devices = {
-            'Encoders': 'odom',
-            'Lidar':    'imu',
-            'GPS':      'gps',
+            'Encoders': ('odom', 'ekf_local_odom'),
+            'Lidar':    ('imu',  'ekf_local_odom'),
+            'GPS':      ('gps',  'ekf_local_odom'),
+            'SLAM':     ('pose', 'ekf_global_odom'),
+        }
+        # EKF status rows (the "is this filter publishing?" indicators
+        # added to the device list). Maps dot name → ekf-output
+        # last_msg_t key. _ekf_pulse_tick drives these solid green
+        # while the topic is fresh and gray when stale.
+        self._ekf_status_rows = {
+            'Local EKF': 'ekf_local_odom',
+            'Map EKF':   'ekf_global_odom',
         }
 
         # Container connection state
@@ -1181,6 +1192,16 @@ class HudWindow(QMainWindow):
         status_col.addWidget(virt_label)
         virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA GRADE"]
         for name in virtual_names:
+            _add_status_row(name, status_col)
+
+        # EKF Filters — pure freshness indicators driven by
+        # _ekf_pulse_tick. Solid green while their fused-output
+        # topic is fresh, gray when stale. Not tied to a launch
+        # device — these just answer "is this filter publishing?"
+        ekf_label = QLabel("EKF Filters")
+        ekf_label.setStyleSheet(group_label_style + " margin-top: 6px;")
+        status_col.addWidget(ekf_label)
+        for name in ("Local EKF", "Map EKF"):
             _add_status_row(name, status_col)
 
         # Test System
@@ -4611,9 +4632,11 @@ class HudWindow(QMainWindow):
 
     def _ekf_pulse_tick(self, now_s):
         """Apply the green↔purple EKF-participation pulse to device
-        dots whose input AND /local_ekf/odom are both fresh.
+        dots whose input AND the EKF that consumes it are both fresh,
+        and drive the "Local EKF" / "Map EKF" status rows from the
+        freshness of their fused-output topics.
 
-        Devices NOT participating in the EKF fall through this
+        Devices NOT participating in any EKF fall through this
         method untouched — their styling is owned by the existing
         _live_set_dot_received / _live_dot_flash_tick path. This
         means a freshly-running-but-not-fused device stays plain
@@ -4629,9 +4652,9 @@ class HudWindow(QMainWindow):
         if stamps is None:
             return
 
-        ekf_age = now_s - stamps.get('ekf_local_odom', 0.0)
-        ekf_alive = (stamps.get('ekf_local_odom', 0.0) > 0.0
-                     and ekf_age < self._ekf_msg_age_max_s)
+        def _alive(key):
+            t = stamps.get(key, 0.0)
+            return t > 0.0 and (now_s - t) < self._ekf_msg_age_max_s
 
         # Hue interpolated along the green→purple arc by a sine
         # wave at ``_ekf_pulse_freq_hz``. Phase advanced by the
@@ -4645,18 +4668,24 @@ class HudWindow(QMainWindow):
             f"background-color: hsl({hue}, 100%, 60%); "
             "border-radius: 7px; border: none;")
 
-        for dot_name, msg_key in self._ekf_pulse_devices.items():
+        for dot_name, (input_key, ekf_key) in self._ekf_pulse_devices.items():
             dot = self.status_dots.get(dot_name)
             if dot is None:
                 continue
-            input_t = stamps.get(msg_key, 0.0)
-            input_alive = (input_t > 0.0
-                           and (now_s - input_t) < self._ekf_msg_age_max_s)
-            if input_alive and ekf_alive:
+            if _alive(input_key) and _alive(ekf_key):
                 dot.setStyleSheet(pulse_style)
             # Else: leave whatever the prior tick set — the existing
             # alive/flash logic owns the dot's appearance in those
             # states.
+
+        # EKF status rows: solid green while the filter is publishing,
+        # gray when stale. These don't pulse — they're the "is this
+        # filter alive?" answer, mirroring the device-list rows above.
+        for dot_name, ekf_key in self._ekf_status_rows.items():
+            dot = self.status_dots.get(dot_name)
+            if dot is None:
+                continue
+            dot.setStyleSheet(self._DOT_ON if _alive(ekf_key) else self._DOT_OFF)
 
     @staticmethod
     def _render_lidar_bev(scan, size=480):
@@ -4772,12 +4801,14 @@ if _HAS_ROS:
             # consuming this device. Stays at 0.0 until first
             # message; the pulse skips devices whose stamp == 0.0.
             self.last_msg_t = {
-                'image':          0.0,   # /zed/zed_node/rgb/...
-                'scan':           0.0,   # /scan_fullframe
-                'gps':            0.0,   # /gps_fix
-                'odom':           0.0,   # /odom (raw wheel)
-                'imu':            0.0,   # /sick_scansegment_xd/imu
-                'ekf_local_odom': 0.0,   # /local_ekf/odom (EKF out)
+                'image':           0.0,   # /zed/zed_node/rgb/...
+                'scan':            0.0,   # /scan_fullframe
+                'gps':             0.0,   # /gps_fix
+                'odom':            0.0,   # /odom (raw wheel)
+                'imu':             0.0,   # /multiScan/imu (SICK lidar IMU)
+                'pose':            0.0,   # /pose (slam_toolbox → Map EKF)
+                'ekf_local_odom':  0.0,   # /local_ekf/odom (Local EKF out)
+                'ekf_global_odom': 0.0,   # /global_ekf/odom (Map EKF out)
             }
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
@@ -4827,6 +4858,19 @@ if _HAS_ROS:
                 Odometry, '/local_ekf/odom',
                 self._cb_ekf_local_odom, _SENSOR_QOS,
             )
+            # Map EKF participation: /pose is slam_toolbox's localization
+            # output and is the Map EKF's pose0 input (ekf_global.yaml).
+            # /global_ekf/odom is the Map EKF's fused output. The GUI's
+            # SLAM dot pulses iff both are fresh; the "Map EKF" status
+            # row goes solid green iff /global_ekf/odom is fresh.
+            self.create_subscription(
+                PoseWithCovarianceStamped, '/pose',
+                self._cb_pose, _SENSOR_QOS,
+            )
+            self.create_subscription(
+                Odometry, '/global_ekf/odom',
+                self._cb_ekf_global_odom, _SENSOR_QOS,
+            )
 
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
@@ -4872,6 +4916,18 @@ if _HAS_ROS:
             # device dots fall back to their plain-alive style —
             # the operator's "the EKF is dead" cue.
             self.last_msg_t['ekf_local_odom'] = time.monotonic()
+
+        def _cb_pose(self, msg):
+            # slam_toolbox's localized pose. Drives the SLAM dot's
+            # EKF-participation pulse — pulses iff /global_ekf/odom
+            # is also fresh (i.e. the Map EKF is fusing this pose).
+            self.last_msg_t['pose'] = time.monotonic()
+
+        def _cb_ekf_global_odom(self, msg):
+            # The global (map-frame) robot_localization EKF's output.
+            # Drives the "Map EKF" status dot and is the second-half
+            # gate for the SLAM dot's pulse.
+            self.last_msg_t['ekf_global_odom'] = time.monotonic()
 
         def _cb_voltage(self, msg):
             self.latest_voltage = msg.data

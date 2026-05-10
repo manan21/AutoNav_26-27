@@ -106,6 +106,13 @@ BOOTSTRAP_ODOM_DIST_M: float = 5.0
 BOOTSTRAP_BASELINE_M: float = 5.0
 BOOTSTRAP_MIN_BASELINE_M: float = 1.5
 """``min_baseline`` passed to ``bootstrap_theta`` while still bootstrapping."""
+BOOTSTRAP_WINDOW: int = 100
+"""Sliding-anchor window for ``bootstrap_theta``. With encoder yaw
+bias on the local EKF, anchoring the closed-form fit on the very
+first GPS sample contaminates the estimate with drift accumulated
+over the entire history; sliding the anchor to the oldest sample
+within the trailing N entries (≈10 s @ 10 Hz GPS) keeps the time
+span — and therefore the drift per pair — bounded."""
 
 # Goal republish gating (§3.3)
 GOAL_REPUBLISH_THETA_DEG: float = 1.0
@@ -641,6 +648,15 @@ class GpsHandlerNode(Node):
                     # we're still under the graduation threshold. Pass
                     # the deque directly — ``bootstrap_theta`` iterates
                     # in a single pass without copying.
+                    #
+                    # ``bootstrap_theta`` accepts an optional ``window``
+                    # arg for sliding-anchor mode (mirrors the sim).
+                    # Tested at window=100 and it regressed convergence
+                    # in the heavy-encoder-bias regime — bootstrap
+                    # graduates before the window can clip, and the
+                    # long-tail slow-bootstrap agents benefit from the
+                    # full-history baseline. Default (window=None,
+                    # anchor-on-first) is what the deployed system uses.
                     bs_theta, baseline = bootstrap_theta(
                         self._gps_history,
                         min_baseline=BOOTSTRAP_MIN_BASELINE_M,

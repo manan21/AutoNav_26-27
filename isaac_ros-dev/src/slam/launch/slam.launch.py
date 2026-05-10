@@ -168,11 +168,21 @@ def generate_launch_description():
         nav2_params,
         # nodes
         ekf_local,
+        # Map EKF (world_frame=map). Consumes /pose from slam_toolbox
+        # and /local_ekf/odom; publishes /global_ekf/odom. The GUI's
+        # "Map EKF" status dot watches /global_ekf/odom for liveness.
+        # navsat_transform is intentionally not started here: the
+        # current ``ekf_global.yaml`` does not subscribe to
+        # ``/odometry/gps``, so launching navsat_transform would be a
+        # dangling node. Re-add it together with an ``odom1: /odometry/gps``
+        # input in ekf_global.yaml when GPS is to feed the Map EKF
+        # directly (currently GPS feeds the custom GpsEkf in
+        # gps_handler_node, not the Map EKF).
+        ekf_global,
         slam_toolbox,
         map_padder,
         gui_ready_emit,
         #gps_transform,
-        #ekf_global,
         #nav2
 
     ])

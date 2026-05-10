@@ -293,25 +293,41 @@ def _closed_form_fit_iter(
 def bootstrap_theta(
     history: Iterable[HistoryEntry],
     min_baseline: float = 1.5,
+    window: Optional[int] = None,
 ) -> Tuple[Optional[float], float]:
-    """Sim ``_bootstrap_theta`` (lines 1608-1639). Anchored on the first
-    sample of the *whole* history — so the cold-start estimate is built
-    from the longest baseline available.
+    """Sim ``_bootstrap_theta``. Closed-form heading-offset estimate
+    from accumulated GPS+odom pairs, weighted circular mean.
 
-    Accepts any iterable (deque, list, tuple, generator). Iterates the
-    sequence in a single pass via ``iter()`` — no list copy required.
+    Anchor choice (controls drift contamination):
+      * ``window=None`` — anchor on the very first sample of the
+        whole history. Original behaviour. With encoder yaw bias
+        active, late samples have accumulated drift; the fit
+        averages over baselines that all carry that drift, biasing
+        θ toward (true_heading − ⟨drift⟩).
+      * ``window=N`` (sliding anchor) — anchor on the OLDEST sample
+        within the trailing N entries. Reduces the time-span
+        between anchor and recent samples, so each pair carries
+        less relative drift. Mirrors the same N-sample sliding
+        window used by ``closed_form_theta_window``.
+
+    Accepts any iterable (deque, list, tuple, generator). Iterates
+    the sequence in a single pass via ``iter()`` / ``itertools.islice``
+    — no list copy required.
     """
-    it = iter(history)
+    n = getattr(history, "__len__", None)
+    if n is not None and n() < 4:
+        return None, 0.0
+    if window is not None and n is not None and n() > window:
+        # Use the same sliding-anchor mechanic as
+        # closed_form_theta_window: anchor on the oldest sample in
+        # the trailing N.
+        start = n() - window
+        it = itertools.islice(iter(history), start, None)
+    else:
+        it = iter(history)
     try:
         anchor = next(it)
     except StopIteration:
-        return None, 0.0
-    # Need at least 4 entries total (anchor + 3 rest) to attempt a fit;
-    # short-circuit when ``history`` exposes ``__len__`` cheaply (deque,
-    # list, tuple). Generators take the slow path: the inner loop will
-    # simply finish with w_sum == 0.0 and return (None, 0.0).
-    n = getattr(history, "__len__", None)
-    if n is not None and n() < 4:
         return None, 0.0
     return _closed_form_fit_iter(anchor, it, min_baseline)
 
