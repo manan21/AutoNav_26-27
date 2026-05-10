@@ -18,7 +18,7 @@ fi
 
 LAT=$1
 LON=$2
-RADIUS=${3:-0.25}
+RADIUS=${3:-0.75}
 
 # Validate that lat/lon are decimal numbers (signed, optional fraction).
 if ! [[ $LAT =~ ^-?[0-9]+(\.[0-9]+)?$ && $LON =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
