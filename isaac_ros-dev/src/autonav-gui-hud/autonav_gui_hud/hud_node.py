@@ -606,10 +606,10 @@ class HudWindow(QMainWindow):
              "./config/run-pre-slam.sh"),
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
+            ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("DETECT", ["DETECT"], "./config/run-detect.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
-            ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
 
@@ -1806,6 +1806,21 @@ class HudWindow(QMainWindow):
         self._nav_timer.setInterval(250)  # 4 Hz animation
         self._nav_timer.timeout.connect(self._nav_anim_tick)
         self._nav_timer.start()
+
+        # EKF status timer — drives both the green↔purple participation
+        # pulse on device dots AND the "Local EKF / Map EKF" status
+        # rows. Runs whenever the GUI is up, NOT only in Live mode:
+        # the operator should be able to glance at the launch screen
+        # and see whether the filters are publishing without first
+        # having to enter Live. _ekf_pulse_tick reads only last_msg_t
+        # + status_dots, so it's safe to call before live mode is
+        # entered (gracefully no-ops when the ROS node is None).
+        self._ekf_status_timer = QTimer()
+        self._ekf_status_timer.setInterval(200)  # 5 Hz
+        self._ekf_status_timer.timeout.connect(
+            lambda: self._ekf_pulse_tick(time.monotonic())
+        )
+        self._ekf_status_timer.start()
 
         # The widget tree was built using dark hex codes; flip to whichever
         # theme is selected (light by default).
@@ -4682,12 +4697,10 @@ class HudWindow(QMainWindow):
             self._redraw_plots()
             self._last_live_redraw = now
 
-        # --- EKF participation pulse ---
-        # Paint device dots green↔purple while their input AND
-        # the local-EKF output are both fresh — visual proof that
-        # the EKF is actually fusing this device, not just that
-        # the device's raw stream is alive.
-        self._ekf_pulse_tick(now)
+        # NOTE: the EKF participation pulse used to run here. It now
+        # has a dedicated always-on timer (self._ekf_status_timer in
+        # __init__) so the pulse and the EKF Filters status rows
+        # update whether or not Live mode is active.
 
     def _set_enc_title(self, text):
         """Flip the Encoders cell title between '(Odom)' and
