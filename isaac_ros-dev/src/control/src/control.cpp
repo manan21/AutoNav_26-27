@@ -114,14 +114,20 @@ class ControlNode : public rclcpp::Node {
             controller.set_x(joy_msg->buttons[3]);
             controller.set_y(joy_msg->buttons[2]);
 
-            // Xbox-One / xpad-extended button layout in use on this
-            // controller: ABXY at 0-3, View/Menu/Guide/LSB/RSB at 4-8,
-            // bumpers at 9-10, D-pad as buttons 11-14. Earlier code
-            // read 6/7 (Back/Guide on this layout) which silently
-            // never fired SPEED_UP — verified empirically by spamming
-            // /joy: button 7 never registered any press.
-            controller.set_right_bumper(joy_msg->buttons[10]);  // RB
-            controller.set_left_bumper(joy_msg->buttons[9]);    // LB
+            // Bumpers are not in a stable position across the controllers
+            // / xpad-driver combinations we've seen on this Jetson: live
+            // /joy diagnostics on 2026-05-10 captured presses at indices
+            // {6, 7} in one session and {9, 10} in another. Rather than
+            // pin to one layout and silently break on the next swap, OR
+            // both index pairs. Trade-off: on a layout where 9/10 are
+            // stick clicks instead of bumpers, clicking a stick will
+            // also nudge the speed — non-critical UX cost vs. the
+            // bumpers becoming inert.
+            auto safe_btn = [&joy_msg](size_t i) -> int {
+                return i < joy_msg->buttons.size() ? joy_msg->buttons[i] : 0;
+            };
+            controller.set_right_bumper(safe_btn(6) || safe_btn(10));
+            controller.set_left_bumper(safe_btn(7) || safe_btn(9));
 
             controller.set_left_stick_x(joy_msg->axes[0]);
             controller.set_left_stick_y(joy_msg->axes[1]);
