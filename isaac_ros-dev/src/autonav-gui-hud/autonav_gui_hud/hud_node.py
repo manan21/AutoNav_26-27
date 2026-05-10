@@ -327,24 +327,27 @@ class HudWindow(QMainWindow):
         # last_msg_t[msg_key] AND last_msg_t['ekf_local_odom']
         # are both within max_age. Mapping rationale:
         #   * Encoders → /odom: the wheel-encoder odometry is the
-        #     EKF's core odom0 input.
-        #   * Camera   → /zed/zed_node/imu/data: the ZED's onboard
-        #     IMU is the EKF's intended IMU input. (The actual
-        #     ekf_local.yaml config references ``imu1/data`` /
-        #     ``imu2/data``, neither of which is published by any
-        #     node in the repo — see config-mismatch note.)
-        #   * Lidar    → /scan_fullframe: the lidar feeds
-        #     slam_toolbox which produces the map↔odom correction
-        #     downstream of the local EKF. Not a direct EKF input,
-        #     but pulses while the localisation pipeline as a
-        #     whole is healthy.
+        #     EKF's odom0 input.
+        #   * Lidar    → /multiScan/imu: the SICK lidar's onboard
+        #     IMU is the EKF's IMU input on Bowser today. The
+        #     /scan_fullframe stream feeds slam_toolbox separately
+        #     (map↔odom correction); whichever of the two is alive
+        #     when /local_ekf/odom is also alive is informative,
+        #     but only the IMU is actually fused. Stamp here is
+        #     the IMU's, since IMU participation is what
+        #     determines whether the encoder yaw bias gets
+        #     corrected at the local EKF.
         #   * GPS      → /gps_fix: feeds gps_handler_node's
         #     magnetometer-less θ EKF, which depends on
         #     /local_ekf/odom for its predict heartbeat.
+        #   * Camera   → /zed/zed_node/imu/data is NOT yet wired
+        #     into ekf_local (see ekf_local.yaml comment about the
+        #     missing TF bridge). Until that lands, Camera has no
+        #     entry here and its dot keeps the existing static
+        #     style.
         self._ekf_pulse_devices = {
             'Encoders': 'odom',
-            'Camera':   'imu',
-            'Lidar':    'scan',
+            'Lidar':    'imu',
             'GPS':      'gps',
         }
 
@@ -4806,17 +4809,19 @@ if _HAS_ROS:
                 Float32, '/electrical/soc', self._cb_soc, _SENSOR_QOS,
             )
             # ── EKF participation: monitor the EKF's input streams
-            # and its output. The ZED camera's onboard IMU
-            # (/zed/zed_node/imu/data) is the canonical IMU on
-            # Bowser — slam/config/ekf_local.yaml lists imu0/imu1
-            # slots but those topic names aren't published by
-            # anything in the repo, so the EKF on the real robot
-            # may be silently starved. The HudWindow's pulse
-            # treats this stamp as "the camera IMU is alive";
-            # whether the EKF is actually fusing it is signalled
-            # by /local_ekf/odom freshness.
+            # and its output. The IMU input feeding ekf_local on
+            # Bowser is the SICK multiScan's onboard IMU at
+            # /multiScan/imu — the SICK driver advertises IMU as
+            # ``<nodename>/imu`` and the launch sets nodename
+            # ``multiScan`` (sick_multiscan.launch:5). The ZED
+            # camera's IMU is excluded for now: its TF chain to
+            # base_link is not currently bridged, so
+            # robot_localization rejects every ZED IMU message.
+            # When the URDF/launch is fixed to publish
+            # base_link → zed2i_imu_link, add a second subscription
+            # here and a corresponding dot mapping.
             self.create_subscription(
-                Imu, '/zed/zed_node/imu/data', self._cb_imu, _SENSOR_QOS,
+                Imu, '/multiScan/imu', self._cb_imu, _SENSOR_QOS,
             )
             self.create_subscription(
                 Odometry, '/local_ekf/odom',
@@ -4854,10 +4859,10 @@ if _HAS_ROS:
             self.latest_odom = (p.x, p.y, qz)
 
         def _cb_imu(self, msg):
-            # ZED camera's onboard IMU. Stamp drives the Camera
-            # dot's EKF-participation pulse in HudWindow's
-            # _ekf_pulse_tick — pulses only while
-            # /local_ekf/odom is also fresh.
+            # SICK multiScan onboard IMU (the EKF's only IMU input
+            # on Bowser today). Stamp drives the Lidar dot's EKF-
+            # participation pulse in HudWindow's _ekf_pulse_tick —
+            # pulses only while /local_ekf/odom is also fresh.
             self.last_msg_t['imu'] = time.monotonic()
 
         def _cb_ekf_local_odom(self, msg):

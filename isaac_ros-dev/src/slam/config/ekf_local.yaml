@@ -6,51 +6,53 @@
 # and the topic-name fix below would have had no effect.
 ekf_node:
   ros__parameters:
-    # Local EKF (e.g., ekf_local.yaml)
-    frequency: 30.0              # High update rate for control
-    world_frame: odom          # Output odom->base_link
-    two_d_mode: false
-
-    # Whether to publish the acceleration state. Defaults to false if unspecified.
+    # Local EKF (odom → base_link). The 30 Hz output is consumed by
+    # gps_handler_node as the predict-heartbeat for its
+    # magnetometer-less θ EKF.
+    frequency: 30.0
+    world_frame: odom
+    # 2-D ground robot — drop Z / roll / pitch so IMU acceleration
+    # noise can't drive Z drift into the published estimate. The sim
+    # variant (ekf_local_sim.yaml:13) had this set to true; the real
+    # config was inadvertently false.
+    two_d_mode: true
     publish_acceleration: true
-
-# Whether to broadcast the transformation over the /tf topic. Defaults to true if unspecified.
     publish_tf: true
 
+    # ── Inputs ────────────────────────────────────────────────────
+    # Topic names had to be repaired against what is actually
+    # published on Bowser:
+    #   * ``/odom`` — wheel_odom_pub.cpp:34 (advertised as ``"odom"``,
+    #     resolves to ``/odom`` with no namespace).
+    #   * ``/multiScan/imu`` — the SICK multiScan driver names its
+    #     node ``multiScan`` (sick_multiscan.launch:5) and publishes
+    #     IMU under ``<nodename>/imu`` (ros_msgpack_publisher.cpp:287-304),
+    #     so the actual topic is ``/multiScan/imu`` — NOT the
+    #     ``/sick_scansegment_xd/imu`` that previous configs (and the
+    #     simulator's ekf_local_sim.yaml) assumed.
+    #
+    # The ZED IMU (``/zed/zed_node/imu/data``) is intentionally NOT
+    # included here yet: its frame_id is ``zed2i_imu_link`` and the
+    # current ``shogi.urdf`` has no TF chain to ``base_link`` for
+    # that frame, so robot_localization would reject every ZED IMU
+    # message with a TF lookup failure. Add it back once the URDF
+    # bridges ``base_link → zed2i_imu_link`` (or ``run-zed.sh``
+    # publishes the ZED's internal IMU TF via ``publish_imu_tf:=true``
+    # AND the URDF connects ``zed_camera_link`` to the ZED's own
+    # ``zed2i_camera_link`` chain). Until then a dual-IMU config
+    # would silently starve.
+    odom0: /odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: true
 
-    # Topic names match the actual publishers on Bowser. The
-    # original ``imu1/data`` / ``imu2/data`` / ``wheel_encoder/odom``
-    # placeholders left over from initial wiring are not published
-    # by anything in this repo, so the EKF was silently starved
-    # of inputs and never produced a ``/local_ekf/odom`` heartbeat —
-    # which in turn left ``gps_handler_node``'s predict step idle
-    # and the magnetometer-less θ EKF stuck at 0. See the
-    # autonav-gui-hud EKF participation pulse for live verification.
-    imu0: /zed/zed_node/imu/data    # ZED camera onboard IMU
+    imu0: /multiScan/imu
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
-                  false, true, true,
-                  false, false, false] # TODO tune based on what sensor reads
+                  false, true,  true,
+                  false, false, false]
     imu0_differential: true
-
-    imu1: /sick_scansegment_xd/imu  # SICK lidar onboard IMU (redundancy)
-    imu1_config: [false, false, false,
-                  false, false, false,
-                  false, false, false,
-                  false, true, true,
-                  false, false, false] #TODO tune based on what sensor reads
-    imu1_differential: true
-
-    odom0: /odom                     # wheel_odom_pub.cpp publishes here
-    odom0_config: [false, false, false,
-                  false, false, false,
-                  true, true, false,
-                  false, false, true,
-                  false, false, false] #TODO tune based on what sensor reads
-    odom0_differential: true
-
-
-
-
-
