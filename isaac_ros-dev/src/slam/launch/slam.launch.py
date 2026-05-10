@@ -104,6 +104,45 @@ def generate_launch_description():
         ]
     '''
 
+    # 2.5 PointCloud2 → LaserScan converter for the PCA-filtered
+    # obstacle cloud. autonav_detection::grade_detector publishes
+    # /scan_pca_filtered_points (PointCloud2, obstacles only — ground
+    # and ramps already filtered out via PCA grade classification).
+    # This node collapses that 3-D cloud to a 2-D LaserScan on
+    # /scan_pca_filtered, which is then consumed by:
+    #   - slam_toolbox (scan_topic in slam.yaml)
+    #   - Nav2 obstacle_layer (topic in nav2_paramsv2.yaml)
+    # Unifies the 3D→2D collapse into one place — replaces both the
+    # SICK driver's internal layer-5 collapse (which still publishes
+    # /scan_fullframe untouched, kept for debug) and Nav2's per-layer
+    # PointCloud2 height-band filter.
+    # Coupling note: SLAM + Nav2 obstacle_layer now both depend on
+    # grade_detector being alive to receive any input. /scan_fullframe
+    # from the SICK driver remains a fallback if you need to swap
+    # back during a bench test.
+    pca_pc2_to_scan = Node(
+        package='pointcloud_to_laserscan',
+        executable='pointcloud_to_laserscan_node',
+        name='pca_cloud_to_laserscan',
+        output='screen',
+        parameters=[{
+            'target_frame':   'base_link',
+            'min_height':     -0.10,
+            'max_height':      1.50,
+            'angle_min':      -3.141592,
+            'angle_max':       3.141592,
+            'angle_increment': 0.0087,   # ~0.5°, matches SICK fullframe
+            'scan_time':       0.1,
+            'range_min':       0.30,
+            'range_max':      25.0,
+            'use_inf':         True,
+        }],
+        remappings=[
+            ('cloud_in', '/scan_pca_filtered_points'),
+            ('scan',     '/scan_pca_filtered'),
+        ],
+    )
+
     # 3. Local EKF (odom -> base_link)
     ekf_local = Node(
         package='robot_localization',
@@ -179,6 +218,7 @@ def generate_launch_description():
         # directly (currently GPS feeds the custom GpsEkf in
         # gps_handler_node, not the Map EKF).
         ekf_global,
+        pca_pc2_to_scan,
         slam_toolbox,
         map_padder,
         gui_ready_emit,

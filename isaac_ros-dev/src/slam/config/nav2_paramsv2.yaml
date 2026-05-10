@@ -157,21 +157,19 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        # Source = PCA-filtered cloud from autonav_detection::grade_detector,
-        # NOT raw /scan_fullframe. The detector already classifies ground vs
-        # obstacles via Steps 1-5 of terrain-grade-layer-plan.md, so every
-        # point arriving here is an obstacle to be marked.
-        observation_sources: pca_cloud
-        pca_cloud:
-          topic: /scan_pca_filtered_points
+        # Source = PCA-filtered 2-D LaserScan (autonav_detection::
+        # grade_detector → pointcloud_to_laserscan in slam.launch.py).
+        # The 3-D /scan_pca_filtered_points is collapsed once, upstream,
+        # into /scan_pca_filtered so SLAM and this layer see the same
+        # 2-D representation. Every return in this scan is an obstacle
+        # (ground / ramp already filtered by PCA grade classification).
+        observation_sources: filtered_scan
+        filtered_scan:
+          topic: /scan_pca_filtered
           observation_persistence: 0.0
-          # Heights are evaluated in the costmap's global frame after TF.
-          # Wide band: detector already filtered ground; trust its output.
-          min_obstacle_height: -1.0
-          max_obstacle_height: 2.0
           clearing: True
           marking: True
-          data_type: "PointCloud2"
+          data_type: "LaserScan"
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
@@ -222,15 +220,13 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         # Same source as the local costmap above — see notes there.
-        observation_sources: pca_cloud
-        pca_cloud:
-          topic: /scan_pca_filtered_points
+        observation_sources: filtered_scan
+        filtered_scan:
+          topic: /scan_pca_filtered
           observation_persistence: 0.0
-          min_obstacle_height: -1.0
-          max_obstacle_height: 2.0
           clearing: True
           marking: True
-          data_type: "PointCloud2"
+          data_type: "LaserScan"
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5

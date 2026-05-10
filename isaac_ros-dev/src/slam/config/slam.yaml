@@ -2,7 +2,13 @@ slam_toolbox:
   ros__parameters:
 
     base_frame: base_link
-    scan_topic: /scan_fullframe
+    # PCA-filtered 2-D laser scan (autonav_detection::grade_detector →
+    # pointcloud_to_laserscan in slam.launch.py). Replaces the raw SICK
+    # /scan_fullframe so SLAM doesn't map ramp faces / drivable grades
+    # as walls. /scan_fullframe is still published by the SICK driver
+    # if you need to swap back during a bench test.
+    # scan_topic: /scan_fullframe   # legacy — raw SICK layer-5
+    scan_topic: /scan_pca_filtered
     max_laser_range: 10.0
     min_laser_range: 0.3
     mapper:
