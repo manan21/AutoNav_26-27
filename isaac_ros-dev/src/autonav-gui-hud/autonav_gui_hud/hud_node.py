@@ -331,7 +331,7 @@ class HudWindow(QMainWindow):
         # Mapping rationale:
         #   * Encoders → /odom feeds the Local EKF (ekf_local.yaml
         #     odom0). Pulses while /local_ekf/odom is alive.
-        #   * Lidar    → /multiScan/imu (SICK lidar's onboard IMU)
+        #   * Lidar    → /sick_scansegment_xd/imu (SICK lidar's onboard IMU)
         #     feeds the Local EKF (ekf_local.yaml imu0). The
         #     /scan_fullframe stream feeds slam_toolbox separately
         #     (map↔odom correction) — only the IMU is actually
@@ -4891,7 +4891,7 @@ if _HAS_ROS:
                 'scan':            0.0,   # /scan_fullframe
                 'gps':             0.0,   # /gps_fix
                 'odom':            0.0,   # /odom (raw wheel)
-                'imu':             0.0,   # /multiScan/imu (SICK lidar IMU)
+                'imu':             0.0,   # /sick_scansegment_xd/imu (SICK lidar IMU)
                 'pose':            0.0,   # /pose (slam_toolbox → Map EKF)
                 'ekf_local_odom':  0.0,   # /local_ekf/odom (Local EKF out)
                 'ekf_global_odom': 0.0,   # /global_ekf/odom (Map EKF out)
@@ -4926,19 +4926,22 @@ if _HAS_ROS:
                 Float32, '/electrical/soc', self._cb_soc, _SENSOR_QOS,
             )
             # ── EKF participation: monitor the EKF's input streams
-            # and its output. The IMU input feeding ekf_local on
-            # Bowser is the SICK multiScan's onboard IMU at
-            # /multiScan/imu — the SICK driver advertises IMU as
-            # ``<nodename>/imu`` and the launch sets nodename
-            # ``multiScan`` (sick_multiscan.launch:5). The ZED
-            # camera's IMU is excluded for now: its TF chain to
-            # base_link is not currently bridged, so
-            # robot_localization rejects every ZED IMU message.
-            # When the URDF/launch is fixed to publish
+            # and its output. The IMU input feeding ekf_local is the
+            # SICK multiScan's onboard IMU at /sick_scansegment_xd/imu
+            # — the SICK driver hardcodes its ROS2 node name to
+            # ``sick_scansegment_xd`` and advertises IMU under
+            # ``<nodename>/imu``. (Earlier code subscribed to
+            # /multiScan/imu based on the launch file's ``nodename``
+            # default, but the running driver ignores that arg —
+            # verified via ros2 topic info, 0 publishers on
+            # /multiScan/imu.) The ZED camera's IMU is excluded for
+            # now: its TF chain to base_link is not currently
+            # bridged, so robot_localization rejects every ZED IMU
+            # message. When the URDF/launch is fixed to publish
             # base_link → zed2i_imu_link, add a second subscription
             # here and a corresponding dot mapping.
             self.create_subscription(
-                Imu, '/multiScan/imu', self._cb_imu, _SENSOR_QOS,
+                Imu, '/sick_scansegment_xd/imu', self._cb_imu, _SENSOR_QOS,
             )
             self.create_subscription(
                 Odometry, '/local_ekf/odom',

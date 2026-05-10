@@ -20,16 +20,17 @@ ekf_node:
     publish_tf: true
 
     # ── Inputs ────────────────────────────────────────────────────
-    # Topic names had to be repaired against what is actually
-    # published on Bowser:
+    # Topic names verified against what the running stack actually
+    # publishes (ros2 topic info, 2026-05-10):
     #   * ``/odom`` — wheel_odom_pub.cpp:34 (advertised as ``"odom"``,
     #     resolves to ``/odom`` with no namespace).
-    #   * ``/multiScan/imu`` — the SICK multiScan driver names its
-    #     node ``multiScan`` (sick_multiscan.launch:5) and publishes
-    #     IMU under ``<nodename>/imu`` (ros_msgpack_publisher.cpp:287-304),
-    #     so the actual topic is ``/multiScan/imu`` — NOT the
-    #     ``/sick_scansegment_xd/imu`` that previous configs (and the
-    #     simulator's ekf_local_sim.yaml) assumed.
+    #   * ``/sick_scansegment_xd/imu`` — the SICK driver hardcodes
+    #     its ROS2 node name to ``sick_scansegment_xd`` regardless
+    #     of the ``nodename`` arg in ``sick_multiscan.launch``, and
+    #     publishes IMU under ``<nodename>/imu``. An earlier comment
+    #     here claimed the topic was ``/multiScan/imu``; that was
+    #     wrong and the EKF was silently starving its IMU input
+    #     (``ros2 topic info /multiScan/imu`` showed 0 publishers).
     #
     # The ZED IMU (``/zed/zed_node/imu/data``) is intentionally NOT
     # included here yet: its frame_id is ``zed2i_imu_link`` and the
@@ -49,7 +50,7 @@ ekf_node:
                    false, false, false]
     odom0_differential: true
 
-    imu0: /multiScan/imu
+    imu0: /sick_scansegment_xd/imu
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
