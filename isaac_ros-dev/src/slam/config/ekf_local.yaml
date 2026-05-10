@@ -12,7 +12,15 @@ ekf_local:
     publish_tf: true
 
 
-    imu0: imu1/data            # First IMU (orientation/angular velocity)
+    # Topic names match the actual publishers on Bowser. The
+    # original ``imu1/data`` / ``imu2/data`` / ``wheel_encoder/odom``
+    # placeholders left over from initial wiring are not published
+    # by anything in this repo, so the EKF was silently starved
+    # of inputs and never produced a ``/local_ekf/odom`` heartbeat —
+    # which in turn left ``gps_handler_node``'s predict step idle
+    # and the magnetometer-less θ EKF stuck at 0. See the
+    # autonav-gui-hud EKF participation pulse for live verification.
+    imu0: /zed/zed_node/imu/data    # ZED camera onboard IMU
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
@@ -20,7 +28,7 @@ ekf_local:
                   false, false, false] # TODO tune based on what sensor reads
     imu0_differential: true
 
-    imu1: imu2/data            # Second IMU (redundancy/fault tolerance)
+    imu1: /sick_scansegment_xd/imu  # SICK lidar onboard IMU (redundancy)
     imu1_config: [false, false, false,
                   false, false, false,
                   false, false, false,
@@ -28,7 +36,7 @@ ekf_local:
                   false, false, false] #TODO tune based on what sensor reads
     imu1_differential: true
 
-    odom0: wheel_encoder/odom  # Wheel encoder odometry
+    odom0: /odom                     # wheel_odom_pub.cpp publishes here
     odom0_config: [false, false, false,
                   false, false, false,
                   true, true, false,
