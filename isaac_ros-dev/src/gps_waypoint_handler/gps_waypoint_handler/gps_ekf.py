@@ -168,6 +168,23 @@ class GpsEkf:
         K = self.P @ H.T @ S_inv
         self.x = self.x + K @ y
         self.P = (self._I - K @ H) @ self.P
+        # Floor the position variance HERE, immediately after the Kalman
+        # gain shrinks it. The predict step also enforces this floor, but
+        # update() can drive P[0,0]/P[1,1] far below it in a single step
+        # — and if a biased GPS sample is consistently accepted, the
+        # gain on subsequent samples collapses and the EKF locks to the
+        # bias before predict() has a chance to reinflate. Mirror the
+        # off-diagonal scaling logic from predict() to preserve correlation.
+        for i in (0, 1):
+            if self.P[i, i] < EKF_POS_VAR_FLOOR:
+                old_var = float(self.P[i, i])
+                if old_var > 1e-12:
+                    scale = math.sqrt(EKF_POS_VAR_FLOOR / old_var)
+                    for j in range(self.P.shape[0]):
+                        if j != i:
+                            self.P[i, j] *= scale
+                            self.P[j, i] *= scale
+                self.P[i, i] = EKF_POS_VAR_FLOOR
         # Keep θ in (-π, π].
         self.x[2] = wrap_pi(self.x[2])
         self.update_count += 1

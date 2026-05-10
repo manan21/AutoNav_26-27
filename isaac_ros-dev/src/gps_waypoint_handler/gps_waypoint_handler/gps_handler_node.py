@@ -119,6 +119,17 @@ HEADING_RESYNC_WINDOW: int = 100
 HEADING_RESYNC_MIN_BASELINE_M: float = 2.0
 HEADING_RESYNC_VAR_DEG: float = 5.0
 
+# Periodic unconditional heading refit (sim parity). Every
+# PERIODIC_REFIT_PERIOD_S, refit θ from the full window if it
+# disagrees with the EKF's current θ by more than the threshold.
+# Catches small persistent biases (5-10°) that fall below the
+# moving-away (1 m / 3 s) and divergence (5 m) thresholds yet
+# still cause meters of cross-track error over a long goal.
+PERIODIC_REFIT_PERIOD_S: float = 3.0
+PERIODIC_REFIT_THRESHOLD_DEG: float = 10.0
+PERIODIC_REFIT_MIN_BASELINE_M: float = 2.0
+PERIODIC_REFIT_VAR_DEG: float = 5.0
+
 # Force resync — fired by moving-away (§3.5, §10.6.4)
 HEADING_FORCE_RESYNC_WINDOW: int = 500
 HEADING_FORCE_RESYNC_MIN_BASELINE_M: float = 3.0
@@ -756,6 +767,42 @@ class GpsHandlerNode(Node):
                 self._now_s() + HEADING_RESYNC_COOLDOWN_S
             )
             self._heading_resync_count += 1
+
+    def _periodic_heading_refit(self) -> None:
+        """Timer callback: unconditional periodic θ refit, every
+        PERIODIC_REFIT_PERIOD_S. Sim parity — catches small persistent
+        biases below the moving-away/divergence thresholds before they
+        translate into meters of cross-track drift. Guarded by an
+        active goal and bootstrap completion. Distinct from
+        ``_maybe_resync_heading`` (which is GPS-callback-driven and
+        cooldown-gated) and ``_force_heading_resync`` (which is
+        detector-driven, wider window, larger threshold).
+        """
+        with self._lock:
+            if self._active is None:
+                return
+            if not self._bootstrap_done:
+                return
+            bs_theta, baseline = closed_form_theta_window(
+                self._gps_history,
+                HEADING_RESYNC_WINDOW,
+                min_baseline=PERIODIC_REFIT_MIN_BASELINE_M,
+            )
+            if bs_theta is None or baseline < PERIODIC_REFIT_MIN_BASELINE_M:
+                return
+            diff = wrap_pi(bs_theta - self._ekf.theta)
+            if abs(diff) <= math.radians(PERIODIC_REFIT_THRESHOLD_DEG):
+                return
+            self._ekf.reset_theta(
+                bs_theta,
+                theta_var=math.radians(PERIODIC_REFIT_VAR_DEG) ** 2,
+            )
+            self._heading_resync_count += 1
+            self.get_logger().warn(
+                f"periodic heading refit: θ_old={math.degrees(self._ekf.theta - diff):+.2f}°, "
+                f"θ_new={math.degrees(bs_theta):+.2f}°, "
+                f"diff={math.degrees(diff):+.2f}°, baseline={baseline:.2f}m"
+            )
 
     def _force_heading_resync(self) -> bool:
         """Lock held. Wide window (500 samples), 3 m floor, 20° diff —
