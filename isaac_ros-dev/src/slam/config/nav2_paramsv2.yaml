@@ -218,7 +218,7 @@ global_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
-        map_topic: "/map_padded"
+        map_topic: "/map"
         first_map_only: false
 
       obstacle_layer:
@@ -251,7 +251,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
         inflation_radius: 0.8 # NavfnPlanner does not know the robot footprint, so inflation radius must cover from obstacle edge to robot center. Furthest point of robot perimeter is 0.76m. We could switch to a planner that uses the footprint.
-      always_send_full_costmap: False
+      always_send_full_costmap: True
 
 map_server:
   ros__parameters:
