@@ -2646,6 +2646,14 @@ class HudWindow(QMainWindow):
 
     _DOT_ON = "background-color: #0f0; border-radius: 7px; border: none;"
     _DOT_OFF = "background-color: #555; border-radius: 7px; border: none;"
+
+    # Some ROS2 nodes are launched via an executable whose binary name
+    # doesn't match the node name (e.g., sick_scansegment_xd runs inside
+    # the sick_generic_caller binary with no __node:= remap). Map them
+    # here so /proc/*/cmdline matching still finds the right process.
+    _NODE_EXEC_ALIASES = {
+        'sick_scansegment_xd': ('sick_generic_caller',),
+    }
     # Use 6-char #ffff00 (NOT #ff0) so the regex walker leaves it alone in
     # light mode — the user wants the process yellow dots to stay yellow,
     # while #ff0 used for status text still translates to dark orange.
@@ -2705,35 +2713,46 @@ class HudWindow(QMainWindow):
             return self._DOT_ON
         return self._DOT_OFF
 
-    def _resolve_pid_for_node(self, short_name, full_name):
-        """Best-effort PID for a ROS2 node by matching /proc/*/cmdline.
+    def _snapshot_proc_cmdlines(self):
+        """Read every /proc/<pid>/cmdline once per poll.
 
-        ROS2 Humble doesn't expose participant PIDs via the graph API, so
-        we scrape argv. Heuristic — may miss or mis-match when multiple
-        processes share a node name. Callers must treat None as 'unknown'
-        and never act on a returned PID for a foreign node.
+        Returns {pid: cmdline_bytes}. Cheaper than re-scanning /proc for
+        each node-name lookup.
         """
+        out = {}
         try:
             entries = os.listdir('/proc')
         except OSError:
-            return None
-        needles = [n.encode() for n in (short_name, full_name) if n]
-        if not needles:
-            return None
+            return out
         for ent in entries:
             if not ent.isdigit():
                 continue
             try:
+                pid = int(ent)
                 with open(f'/proc/{ent}/cmdline', 'rb') as f:
-                    blob = f.read()
-            except OSError:
+                    out[pid] = f.read()
+            except (OSError, ValueError):
                 continue
-            if blob and any(n in blob for n in needles):
-                try:
-                    return int(ent)
-                except ValueError:
-                    return None
-        return None
+        return out
+
+    def _find_pids_for_node(self, short_name, full_name, proc_map):
+        """All PIDs whose cmdline matches a ROS2 node name.
+
+        Returns a list (possibly empty). ROS2 Humble doesn't expose
+        participant PIDs via the graph API, so we scrape argv. When
+        multiple processes share a node name (e.g., two wheel_odom from
+        two pre_slam launches) all are returned so the caller can
+        attribute one publisher endpoint per distinct PID.
+        """
+        needles = [n.encode() for n in (short_name, full_name) if n]
+        for alias in self._NODE_EXEC_ALIASES.get(short_name, ()):
+            needles.append(alias.encode())
+        if not needles:
+            return []
+        return [
+            pid for pid, blob in proc_map.items()
+            if blob and any(n in blob for n in needles)
+        ]
 
     def _gui_owner_label_for_pid(self, pid):
         """Walk PPid chain; return owning GUI device label or None.
@@ -2772,17 +2791,38 @@ class HudWindow(QMainWindow):
         return None
 
     def _poll_watched_publishers(self):
-        """0.1 Hz: query each watched topic, attribute publishers, flag duplicates."""
+        """0.1 Hz: attribute every watched-topic publisher to a process.
+
+        For each topic, group endpoints by (namespace, node_name). When
+        multiple endpoints share a node name they could come from one
+        process publishing several internal endpoints (e.g., Nav2's
+        behavior_server creates ~6 on /cmd_vel) OR from several distinct
+        processes that happen to share a name (the bug case: two
+        pre_slam launches → two wheel_odom processes). We disambiguate
+        by /proc scan: if N endpoints share a name and we find N distinct
+        matching processes, emit N rows; if fewer processes match, emit
+        one row per process (collapsing endpoints from the same PID).
+
+        ``node_to_pids`` carries already-attributed PIDs across topics
+        so a node that legitimately publishes to multiple watched topics
+        (e.g., ekf_node → /odom + /odometry/filtered) reuses the same
+        PID for both rather than skipping it as "claimed".
+        """
         node = self._ros_node
         if node is None or not self._watched_topics:
             return
+
+        proc_map = self._snapshot_proc_cmdlines()
         state = {}
+        node_to_pids = {}  # (ns, name) -> list of PIDs already attributed
+
         for topic in self._watched_topics:
             try:
                 infos = node.get_publishers_info_by_topic(topic)
             except Exception:
                 continue
-            entries = []
+
+            groups = {}  # (ns, name, full) -> endpoint count
             for info in infos:
                 ns = getattr(info, 'node_namespace', '') or ''
                 name = getattr(info, 'node_name', '') or ''
@@ -2790,29 +2830,62 @@ class HudWindow(QMainWindow):
                     ns = ns + '/'
                 full = (ns + name) if name else (ns or '?')
                 full = full.replace('//', '/')
-                pid = self._resolve_pid_for_node(name, full)
-                owner = self._gui_owner_label_for_pid(pid)
-                entries.append({
-                    'node': full,
-                    'topic': topic,
-                    'pid': pid,
-                    'gui_owner': owner,
-                })
+                key = (ns, name, full)
+                groups[key] = groups.get(key, 0) + 1
+
+            entries = []
+            for (ns, name, full), count in groups.items():
+                already = node_to_pids.get((ns, name), [])
+                if len(already) >= count:
+                    pids_for_topic = already[:count]
+                else:
+                    all_matches = self._find_pids_for_node(name, full, proc_map)
+                    extra = [p for p in all_matches if p not in already]
+                    take = max(0, count - len(already))
+                    already = already + extra[:take]
+                    node_to_pids[(ns, name)] = already
+                    pids_for_topic = already[:count]
+
+                if pids_for_topic:
+                    for pid in pids_for_topic:
+                        owner = self._gui_owner_label_for_pid(pid)
+                        entries.append({
+                            'node': full,
+                            'topic': topic,
+                            'pid': pid,
+                            'gui_owner': owner,
+                        })
+                else:
+                    entries.append({
+                        'node': full,
+                        'topic': topic,
+                        'pid': None,
+                        'gui_owner': None,
+                    })
             state[topic] = entries
+
         self._watched_pub_state = state
         self._apply_duplicate_dots(state)
         self._refresh_process_table()
 
     def _apply_duplicate_dots(self, state):
-        """Flip dots red when their device participates in a topic collision."""
+        """Flip dots red when their device participates in a topic collision.
+
+        Sources are keyed by PID where possible — so two publishers on
+        the same topic that both belong to GUI device 'Pre-SLAM' but
+        come from two distinct PIDs (the duplicate-launch case) count
+        as two sources, not one.
+        """
         flagged = set()
         for _topic, entries in state.items():
             sources = set()
             for e in entries:
-                if e['gui_owner'] is not None:
-                    sources.add(('gui', e['gui_owner']))
-                elif e['pid'] is not None:
-                    sources.add(('ext', e['pid']))
+                pid = e['pid']
+                owner = e['gui_owner']
+                if owner is not None:
+                    sources.add(('gui', owner, pid))
+                elif pid is not None:
+                    sources.add(('ext', pid))
                 else:
                     sources.add(('unknown', e['node']))
             if len(sources) <= 1:
