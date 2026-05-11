@@ -30,6 +30,12 @@ from tf2_ros import Buffer, TransformListener, TransformException
 LETHAL = np.int8(100)
 UNKNOWN = np.int8(-1)
 
+# Maximum output grid side, in cells. At 0.10 m resolution that's 160 m
+# (525 ft) — comfortably covers a 500 ft competition course with margin.
+# Memory at MAX² × 1 byte = 2.56 MB per published grid. The _grid_buf
+# allocated once in __init__ is sized to this.
+MAX_GRID_SIDE = 1600
+
 
 class MapPadder(Node):
 
@@ -69,6 +75,14 @@ class MapPadder(Node):
         # static_layer. We coalesce plan updates into a 2 Hz heartbeat
         # while /map and /goal still trigger immediate publishes.
         self._pending_plan_publish = False
+
+        # Pre-allocated scratch buffer reused on every _publish so a
+        # MAX × MAX (2.56 MB) ndarray isn't allocated per call. .fill()
+        # is in-place; .reshape views are O(1). Sized to the worst case
+        # so the slice grid = self._grid_buf[:bb_h, :bb_w] is always
+        # valid after the clamp below.
+        self._grid_buf = np.empty(
+            (MAX_GRID_SIDE, MAX_GRID_SIDE), dtype=np.int8)
 
         map_qos = QoSProfile(
             depth=1,
@@ -215,7 +229,11 @@ class MapPadder(Node):
 
         # ── downsample SLAM (cached) ─────────────────────────────────
         if self._ds is None:
-            raw = np.frombuffer(bytearray(msg.data), dtype=np.int8
+            # np.frombuffer on the incoming array.array is zero-copy
+            # (buffer protocol). The previous bytearray() wrap copied
+            # the whole /map; on a 1600×1600 grid that's 2.56 MB per
+            # /map arrival saved.
+            raw = np.frombuffer(msg.data, dtype=np.int8
                                 ).reshape(msg.info.height, msg.info.width)
             factor = max(1, round(self._out_res / slam_res)) \
                 if self._out_res > slam_res * 1.5 else 1
@@ -284,13 +302,10 @@ class MapPadder(Node):
         bb_w = (max_tx - min_tx + 1) * cpt
         bb_h = (max_ty - min_ty + 1) * cpt
 
-        # 1500 cells × 0.10 m = 150 m on a side — comfortably bigger than
-        # any AutoNav course we care about and ~11x smaller worst case
-        # than the previous 5000-cell (500 m) ceiling.
-        MAX = 1500
-        if bb_w > MAX or bb_h > MAX:
+        if bb_w > MAX_GRID_SIDE or bb_h > MAX_GRID_SIDE:
             self.get_logger().warn(f'Clamped {bb_w}x{bb_h}')
-            bb_w, bb_h = min(bb_w, MAX), min(bb_h, MAX)
+            bb_w = min(bb_w, MAX_GRID_SIDE)
+            bb_h = min(bb_h, MAX_GRID_SIDE)
 
         # ── 4. tile mask → cell mask ─────────────────────────────────
         n_tx = max_tx - min_tx + 1
@@ -303,7 +318,10 @@ class MapPadder(Node):
                           cpt, axis=1)[:bb_h, :bb_w]
 
         # ── 5. build grid ────────────────────────────────────────────
-        grid = np.full((bb_h, bb_w), LETHAL, dtype=np.int8)
+        # Reuse the pre-allocated buffer instead of allocating a fresh
+        # (bb_h, bb_w) ndarray per publish. .fill() is in-place.
+        grid = self._grid_buf[:bb_h, :bb_w]
+        grid.fill(LETHAL)
         grid[cmask] = UNKNOWN
 
         # Paste SLAM data into active corridor
@@ -330,12 +348,17 @@ class MapPadder(Node):
         out.info.origin.position.y = bb_oy
         out.info.origin.position.z = msg.info.origin.position.z
         out.info.origin.orientation = msg.info.origin.orientation
-        out.data = array.array('b', grid.ravel().tobytes())
+        # frombytes pattern saves one alloc vs array.array(typecode, bytes)
+        # — relevant at 1600×1600 where each publish's data field is 2.56 MB.
+        out.data = array.array('b')
+        out.data.frombytes(grid.tobytes())
         self._pub.publish(out)
 
-        n_active = int(cmask.sum())
+        # Dropped n_active = int(cmask.sum()) from the log line — that
+        # reduces a (bb_w × bb_h) bool array on every publish (millions
+        # of cells at the worst case) purely to print a count.
         self.get_logger().info(
-            f'{len(active)} tiles  {n_active}/{bb_w*bb_h} active cells  '
+            f'{len(active)} tiles  '
             f'{bb_w}x{bb_h} ({bb_w*res:.0f}x{bb_h*res:.0f}m)')
 
 
