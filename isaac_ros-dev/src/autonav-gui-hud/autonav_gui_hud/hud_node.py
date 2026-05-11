@@ -2757,9 +2757,13 @@ class HudWindow(QMainWindow):
     def _gui_owner_label_for_pid(self, pid):
         """Walk PPid chain; return owning GUI device label or None.
 
-        Bounded walk against PIDs of live GUI-spawned subprocesses
-        (self._process_objects). Anything not descended from a GUI child
-        is reported as foreign.
+        Bounded walk against the in-container ros2 launch PIDs the GUI
+        writes to /tmp/gui_pid_<sanitized_label> before exec'ing the
+        launch. The container runs with --pid=host so those PIDs are
+        host PIDs too. We deliberately do NOT use popen.pid here: that's
+        the host-side `docker exec` wrapper, which sits in a separate
+        process tree (parented by containerd-shim, not by the caller)
+        and is never an ancestor of the in-container ros2 launch.
         """
         if pid is None:
             return None
@@ -2768,10 +2772,21 @@ class HudWindow(QMainWindow):
             if popen is None:
                 continue
             try:
-                if popen.poll() is None:
-                    owned[popen.pid] = lbl
+                if popen.poll() is not None:
+                    continue
             except Exception:
                 continue
+            pid_tag = lbl.replace(' ', '_').replace('/', '_')
+            try:
+                with open(f'/tmp/gui_pid_{pid_tag}', 'r') as f:
+                    launch_pid = int(f.read().strip())
+            except (OSError, ValueError):
+                continue
+            try:
+                os.stat(f'/proc/{launch_pid}')
+            except OSError:
+                continue
+            owned[launch_pid] = lbl
         cur = pid
         for _ in range(64):
             if cur in owned:
