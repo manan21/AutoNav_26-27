@@ -81,6 +81,15 @@ class MapPadder(Node):
         self.create_subscription(Path, plan_topic, self._on_plan, 10)
         self.create_timer(0.5, self._plan_throttle_tick)
 
+        # Publish an empty stub IMMEDIATELY so Nav2's static_layer has
+        # something to latch onto during its configure() — without this,
+        # if Nav2 comes up before slam_toolbox has inserted its first
+        # keyframe (gated on robot motion via minimum_travel_distance /
+        # minimum_travel_heading), map_padder never publishes and the
+        # global_costmap is born empty. The first real /map arriving
+        # overwrites this stub via the TRANSIENT_LOCAL latch.
+        self._publish_initial_stub()
+
         self.get_logger().info(
             f'Map padder: tile={self._tile}m  res={self._out_res}m')
 
@@ -159,6 +168,36 @@ class MapPadder(Node):
         # controller tick and the padded grid only needs to track the
         # corridor at the costmap's own publish rate (~2 Hz).
         self._pending_plan_publish = True
+
+    def _publish_initial_stub(self):
+        """Emit a placeholder OccupancyGrid so subscribers configuring
+        before SLAM's first /map don't see an empty topic. Size is
+        50 m square at the configured output resolution — matches the
+        global_costmap defaults in nav2_paramsv2.yaml so static_layer
+        sees a sane stub. All cells are UNKNOWN; the first real /map
+        replaces this entirely via TRANSIENT_LOCAL.
+        """
+        side_m = 50.0
+        res = self._out_res if self._out_res > 0 else 0.10
+        cells = int(side_m / res)
+        stub = OccupancyGrid()
+        stub.header.frame_id = 'map'
+        stub.header.stamp = self.get_clock().now().to_msg()
+        stub.info.resolution = res
+        stub.info.width = cells
+        stub.info.height = cells
+        stub.info.origin.position.x = -side_m / 2.0
+        stub.info.origin.position.y = -side_m / 2.0
+        stub.info.origin.position.z = 0.0
+        stub.info.origin.orientation.w = 1.0
+        stub.data = array.array(
+            'b',
+            np.full(cells * cells, UNKNOWN, dtype=np.int8).tobytes(),
+        )
+        self._pub.publish(stub)
+        self.get_logger().info(
+            f'Initial /map_padded stub: {cells}x{cells} cells '
+            f'({side_m:.0f}m square @ {res}m res, all UNKNOWN)')
 
     def _plan_throttle_tick(self):
         if self._pending_plan_publish and self._latest_map:
