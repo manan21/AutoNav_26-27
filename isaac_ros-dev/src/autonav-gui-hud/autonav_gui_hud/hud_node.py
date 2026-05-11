@@ -2765,8 +2765,8 @@ class HudWindow(QMainWindow):
             if blob and any(n in blob for n in needles)
         ]
 
-    def _gui_owner_label_for_pid(self, pid):
-        """Walk PPid chain; return owning GUI device label or None.
+    def _gui_owner_for_pid(self, pid):
+        """Walk PPid chain; return (label, root_pid) or (None, None).
 
         Bounded walk against the in-container ros2 launch PIDs the GUI
         writes to /tmp/gui_pid_<sanitized_label> before exec'ing the
@@ -2775,9 +2775,15 @@ class HudWindow(QMainWindow):
         the host-side `docker exec` wrapper, which sits in a separate
         process tree (parented by containerd-shim, not by the caller)
         and is never an ancestor of the in-container ros2 launch.
+
+        Returning the root PID lets duplicate detection key sources on
+        the launch tree, not the publisher process — so two distinct
+        publisher nodes from the same launch (e.g. Nav2's behavior_server
+        and velocity_smoother both publishing /cmd_vel) collapse to one
+        source instead of falsely flagging the device as duplicated.
         """
         if pid is None:
-            return None
+            return (None, None)
         owned = {}
         for lbl, popen in self._process_objects.items():
             if popen is None:
@@ -2801,7 +2807,7 @@ class HudWindow(QMainWindow):
         cur = pid
         for _ in range(64):
             if cur in owned:
-                return owned[cur]
+                return (owned[cur], cur)
             try:
                 with open(f'/proc/{cur}/status', 'r') as f:
                     ppid = None
@@ -2810,11 +2816,11 @@ class HudWindow(QMainWindow):
                             ppid = int(line.split()[1])
                             break
                 if ppid is None or ppid <= 1:
-                    return None
+                    return (None, None)
                 cur = ppid
             except (OSError, ValueError):
-                return None
-        return None
+                return (None, None)
+        return (None, None)
 
     def _poll_watched_publishers(self):
         """0.1 Hz: attribute every watched-topic publisher to a process.
@@ -2874,12 +2880,13 @@ class HudWindow(QMainWindow):
 
                 if pids_for_topic:
                     for pid in pids_for_topic:
-                        owner = self._gui_owner_label_for_pid(pid)
+                        owner, owner_root = self._gui_owner_for_pid(pid)
                         entries.append({
                             'node': full,
                             'topic': topic,
                             'pid': pid,
                             'gui_owner': owner,
+                            'gui_owner_root': owner_root,
                         })
                 else:
                     entries.append({
@@ -2887,6 +2894,7 @@ class HudWindow(QMainWindow):
                         'topic': topic,
                         'pid': None,
                         'gui_owner': None,
+                        'gui_owner_root': None,
                     })
             state[topic] = entries
 
@@ -2897,10 +2905,13 @@ class HudWindow(QMainWindow):
     def _apply_duplicate_dots(self, state):
         """Flip dots red when their device participates in a topic collision.
 
-        Sources are keyed by PID where possible — so two publishers on
-        the same topic that both belong to GUI device 'Pre-SLAM' but
-        come from two distinct PIDs (the duplicate-launch case) count
-        as two sources, not one.
+        Sources are keyed by the launch ROOT PID for GUI-owned publishers
+        (the value from /tmp/gui_pid_<label>), not the publisher's own
+        PID. Two publisher nodes spawned by the same launch (e.g. Nav2's
+        behavior_server + velocity_smoother both on /cmd_vel) descend
+        from the same root, share one source tuple, and don't trip a
+        false duplicate. Two launches of the same device (real duplicate)
+        have different roots and DO trip it.
         """
         flagged = set()
         for _topic, entries in state.items():
@@ -2908,8 +2919,9 @@ class HudWindow(QMainWindow):
             for e in entries:
                 pid = e['pid']
                 owner = e['gui_owner']
+                owner_root = e.get('gui_owner_root')
                 if owner is not None:
-                    sources.add(('gui', owner, pid))
+                    sources.add(('gui', owner, owner_root))
                 elif pid is not None:
                     sources.add(('ext', pid))
                 else:
