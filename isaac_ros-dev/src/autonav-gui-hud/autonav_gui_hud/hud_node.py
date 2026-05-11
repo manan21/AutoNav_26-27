@@ -516,7 +516,11 @@ class HudWindow(QMainWindow):
         btn_quit = QPushButton("Quit GUI")
         btn_quit.setStyleSheet(quit_style)
         btn_quit.setFocusPolicy(Qt.NoFocus)
-        btn_quit.clicked.connect(QApplication.quit)
+        # self.close() triggers closeEvent → _kill_process for every
+        # running launch. QApplication.quit() bypasses closeEvent, which
+        # left in-container ros2 stacks orphaned and accumulating as
+        # zombies across GUI restarts.
+        btn_quit.clicked.connect(self.close)
         options_layout.addWidget(btn_quit)
         self._nav_buttons.append((btn_quit, "Quit GUI", quit_style))
 
@@ -1087,11 +1091,18 @@ class HudWindow(QMainWindow):
         )
         # One row per PID — aggregated across all watched topics. The
         # Topics column lists every watched topic that PID publishes to.
+        # Column widths kept in sync with _render_process_table below.
         for col, text in enumerate(["PID", "Source", "Topics", ""]):
             h = QLabel(text)
             h.setStyleSheet(proc_header_style)
             proc_header.addWidget(h, 0, col)
-        proc_header.setColumnStretch(2, 1)  # Topics column absorbs slack
+        proc_header.setColumnMinimumWidth(0, 110)
+        proc_header.setColumnMinimumWidth(1, 150)
+        proc_header.setColumnMinimumWidth(3, 60)
+        proc_header.setColumnStretch(0, 0)
+        proc_header.setColumnStretch(1, 0)
+        proc_header.setColumnStretch(2, 1)
+        proc_header.setColumnStretch(3, 0)
         proc_header_holder = QWidget()
         proc_header_holder.setLayout(proc_header)
         processes_layout.addWidget(proc_header_holder)
@@ -1108,7 +1119,7 @@ class HudWindow(QMainWindow):
         proc_scroll.setStyleSheet("QScrollArea { border: none; }")
         proc_scroll.setMinimumHeight(320)
         proc_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         processes_layout.addWidget(proc_scroll, stretch=1)
 
         # Empty-state placeholder shown when no watched-topic publishers exist.
@@ -2997,6 +3008,14 @@ class HudWindow(QMainWindow):
                 v.get('node', ''),
             )
 
+        # Fixed widths for PID / Source / Action so Topics absorbs slack.
+        # Without these caps a long unknown-node fallback (e.g. "? /…")
+        # forces the row wider than the viewport and we have to scroll
+        # horizontally — operator can't read the table.
+        col_pid_width = 110
+        col_source_width = 150
+        col_action_width = 60
+
         row = 0
         for _key, v in sorted(agg.items(), key=sort_key):
             owner = v['gui_owner']
@@ -3006,6 +3025,8 @@ class HudWindow(QMainWindow):
             pid_lbl.setStyleSheet(
                 cell_style if owner is not None else foreign_style
             )
+            pid_lbl.setWordWrap(True)
+            pid_lbl.setMaximumWidth(col_pid_width)
             self._proc_table.addWidget(pid_lbl, row, 0)
 
             if owner is not None:
@@ -3014,6 +3035,8 @@ class HudWindow(QMainWindow):
             else:
                 source_lbl = QLabel("External")
                 source_lbl.setStyleSheet(foreign_style)
+            source_lbl.setWordWrap(True)
+            source_lbl.setMaximumWidth(col_source_width)
             self._proc_table.addWidget(source_lbl, row, 1)
 
             topics_text = ", ".join(sorted(v['topics']))
@@ -3028,12 +3051,21 @@ class HudWindow(QMainWindow):
                 kill_btn = QPushButton("Kill")
                 kill_btn.setStyleSheet(kill_style)
                 kill_btn.setFocusPolicy(Qt.NoFocus)
+                kill_btn.setFixedWidth(col_action_width)
                 kill_btn.clicked.connect(
                     lambda _checked=False, lbl=owner:
                         self._kill_gui_process(lbl)
                 )
                 self._proc_table.addWidget(kill_btn, row, 3)
             row += 1
+
+        # Pin column widths so header and body line up.
+        self._proc_table.setColumnMinimumWidth(0, col_pid_width)
+        self._proc_table.setColumnMinimumWidth(1, col_source_width)
+        self._proc_table.setColumnMinimumWidth(3, col_action_width)
+        self._proc_table.setColumnStretch(0, 0)
+        self._proc_table.setColumnStretch(1, 0)
+        self._proc_table.setColumnStretch(3, 0)
 
         if hasattr(self, '_proc_empty_label'):
             self._proc_empty_label.setVisible(row == 0)
@@ -3044,6 +3076,11 @@ class HudWindow(QMainWindow):
         Reuses the existing toggle path so launch state, dot, and queue
         all reset cleanly — _toggle_device(label) when label is already
         on / starting routes to the stop branch.
+
+        Optimistically drops the killed device's rows from the table so
+        the user sees the change immediately instead of waiting up to
+        10 s for the next graph poll. DDS may still report the dying
+        publisher for a beat; the next poll reconciles authoritatively.
         """
         if device_label not in self._launch_states:
             return
@@ -3051,6 +3088,12 @@ class HudWindow(QMainWindow):
             self._toggle_device(device_label)
         except Exception as ex:
             self._gui_log_msg(f"Failed to stop {device_label}: {ex}")
+            return
+        self._watched_pub_state = {
+            topic: [e for e in entries if e.get('gui_owner') != device_label]
+            for topic, entries in self._watched_pub_state.items()
+        }
+        self._render_process_table()
 
     def _update_queue_label(self):
         """Refresh the queue status text at the top of the launch page."""
