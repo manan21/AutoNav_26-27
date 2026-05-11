@@ -30,7 +30,13 @@
               <Sequence name="PlanRecovery">
                 <ClearEntireCostmap name="ClearGlobalCostmap-Context"
                   service_name="global_costmap/clear_entirely_global_costmap"/>
-                <Wait wait_duration="1"/>
+                <!-- 0.1 s gives the costmap enough time after a clear to
+                     receive at least one fresh /scan_pca_filtered update
+                     (lidar at ~10-20 Hz) before ComputePathToPose retries.
+                     Was 1.0 s — unnecessarily long for a transient
+                     planning failure and held up FollowPath via the
+                     PipelineSequence parent. -->
+                <Wait wait_duration="0.1"/>
               </Sequence>
             </RecoveryNode>
           </Sequence>
