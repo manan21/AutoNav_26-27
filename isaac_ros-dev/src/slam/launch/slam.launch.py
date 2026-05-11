@@ -89,6 +89,43 @@ def generate_launch_description():
         ]
     )
 
+    # ── 2.5 PCA PointCloud2 → LaserScan converter ────────────────────────
+    # autonav_detection::grade_detector publishes /scan_pca_filtered_points
+    # (PointCloud2, obstacles only — drivable ground / ramps already
+    # filtered out via PCA grade classification). Nav2's obstacle_layer
+    # in nav2_paramsv2.yaml is configured to consume the 2-D LaserScan
+    # /scan_pca_filtered, so we collapse the 3-D cloud once here and let
+    # both local and global costmaps share the result.
+    #
+    # target_frame=base_link projects each point into base_link first;
+    # then the (min_height, max_height) window in base_link selects which
+    # heights count. -0.10 m → 1.50 m covers everything from just below
+    # the wheels to ~1.5 m above the chassis, which is more than enough
+    # for any AutoNav obstacle. angle_increment 0.0087 rad ≈ 0.5°.
+    pca_pc2_to_scan = Node(
+        package='pointcloud_to_laserscan',
+        executable='pointcloud_to_laserscan_node',
+        name='pca_cloud_to_laserscan',
+        output='screen',
+        parameters=[{
+            'use_sim_time':    LaunchConfiguration('use_sim_time'),
+            'target_frame':   'base_link',
+            'min_height':     -0.10,
+            'max_height':      1.50,
+            'angle_min':      -3.141592,
+            'angle_max':       3.141592,
+            'angle_increment': 0.0087,
+            'scan_time':       0.1,
+            'range_min':       0.30,
+            'range_max':      25.0,
+            'use_inf':         True,
+        }],
+        remappings=[
+            ('cloud_in', '/scan_pca_filtered_points'),
+            ('scan',     '/scan_pca_filtered'),
+        ],
+    )
+
     # ── 3. Map Padder ─────────────────────────────────────────────────────
     # Subscribes to /map (transient_local from slam_toolbox) and publishes
     # /map_padded (also transient_local). Must be alive BEFORE Nav2 starts
@@ -145,6 +182,7 @@ def generate_launch_description():
         # nodes (in startup order)
         ekf_local,
         slam_toolbox,
+        pca_pc2_to_scan,
         map_padder,
         nav2,
         gui_ready_emit,
