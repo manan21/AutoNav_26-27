@@ -26,7 +26,9 @@ ekf_node:
     # ── SICK IMU ────────────────────────────────────────────────────
     # Fuse: yaw rate only (gz). The SICK IMU is bolted to the chassis
     # so roll/pitch are structural, not meaningful for 2D nav.
-    imu0: sick_scansegment_xd/imu
+    # NOTE: Using transformed IMU topic that corrects for upside-down mounting
+    # (the LiDAR has π roll relative to base_link, which inverts the Z-axis)
+    imu0: sick_scansegment_xd/imu_base_link
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,

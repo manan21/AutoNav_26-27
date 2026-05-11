@@ -7,10 +7,17 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 
+# Install Python executables
+install(
+  PROGRAMS
+    slam_toolbox/imu_frame_transformer.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
-
+# Install configuration and launch files
 install (
   DIRECTORY config launch behavior_trees
   DESTINATION share/${PROJECT_NAME}

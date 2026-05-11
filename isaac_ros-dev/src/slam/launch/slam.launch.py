@@ -57,6 +57,18 @@ def generate_launch_description():
     slam_config      = os.path.join(pkg_share, 'config', 'slam.yaml')
     ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
 
+    # ── 0. IMU Frame Transformer ─────────────────────────────────────────
+    # The SICK LiDAR is mounted upside-down (π roll relative to base_link).
+    # This node transforms the IMU angular velocities to correct for the
+    # 180° rotation. Without this, yaw rate would be inverted.
+    imu_transformer = Node(
+        package='slam',
+        executable='imu_frame_transformer.py',
+        name='imu_frame_transformer',
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+    )
+
     # ── 1. Local EKF (odom -> base_link) ─────────────────────────────────
     # MUST be named 'ekf_node' — slam_toolbox looks for this exact name
     # when it reads the TF tree.
@@ -141,6 +153,7 @@ def generate_launch_description():
         publish_period,
         nav2_params_arg,
         # nodes (in startup order)
+        imu_transformer,
         ekf_local,
         slam_toolbox,
         map_padder,
