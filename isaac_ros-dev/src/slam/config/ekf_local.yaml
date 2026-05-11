@@ -11,11 +11,12 @@ ekf_node:
     world_frame: odom
 
     # ── Wheel odometry ──────────────────────────────────────────────
-    # Fuse: vx (forward velocity) and vyaw (turn rate)
-    # Do NOT fuse x/y position directly — let it integrate from velocity
+    # Fuse planar wheel odometry pose and twist. The encoder odom already
+    # integrates x/y/yaw, and feeding those states to the EKF keeps local
+    # heading and lateral uncertainty from drifting without bound.
     odom0: odom
-    odom0_config: [false, false, false,
-                   false, false, false,
+    odom0_config: [true,  true,  false,
+                   false, false, true,
                    true,  false, false,
                    false, false, true,
                    false, false, false]
@@ -24,8 +25,9 @@ ekf_node:
     odom0_queue_size: 10
 
     # ── SICK IMU ────────────────────────────────────────────────────
-    # Fuse: yaw rate only (gz). The SICK IMU is bolted to the chassis
-    # so roll/pitch are structural, not meaningful for 2D nav.
+    # Fuse yaw rate from the IMU. Wheel odom anchors yaw pose; the IMU adds
+    # short-term rotational responsiveness without introducing a second
+    # absolute heading source.
     # Feed the raw IMU topic to robot_localization and let it rotate the
     # measurement into base_link using TF. This avoids depending on a custom
     # transformer node for yaw-rate-only fusion.
