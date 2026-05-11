@@ -13,7 +13,15 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_link
-    scan_topic: /scan_fullframe
+    # PCA-filtered 2-D laser scan (autonav_detection::grade_detector →
+    # pointcloud_to_laserscan in slam.launch.py). Using the filtered
+    # scan instead of raw /scan_fullframe means SLAM maps only what
+    # PCA classifies as obstacles (no ramp faces / drivable grades as
+    # walls) — those obstacles end up in /map → /map_padded → global
+    # costmap static_layer as persistent long-range obstacles, so the
+    # obstacle_layer can stay short-range (2.5 m) for dynamics only.
+    # scan_topic: /scan_fullframe   # legacy — raw SICK layer-5
+    scan_topic: /scan_pca_filtered
     use_map_saver: true
     mode: mapping
 

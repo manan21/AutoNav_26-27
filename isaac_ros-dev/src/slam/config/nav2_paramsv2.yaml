@@ -208,12 +208,16 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
-        map_topic: "/map"
+        # /map_padded (from map_padder), NOT raw /map. map_padder's
+        # bounding box expands to include the robot tile + plan + goal,
+        # so the global costmap grows to follow the frontier instead of
+        # being anchored to wherever SLAM has actually mapped so far.
+        map_topic: "/map_padded"
         first_map_only: false
 
       obstacle_layer:
