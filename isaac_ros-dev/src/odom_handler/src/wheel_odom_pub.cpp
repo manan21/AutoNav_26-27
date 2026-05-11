@@ -138,6 +138,35 @@ class WheelOdomPublisher : public rclcpp::Node
       wheel_odom_msg.twist.twist.linear.x = linear_velocity_; // units are m/s
       wheel_odom_msg.twist.twist.angular.z = angular_velocity_; // units are rads/s
 
+      // Covariance — robot_localization treats an all-zero covariance
+      // (the default-initialised state) as "infinitely confident", which
+      // makes the EKF over-trust every wheel-odom reading and reject
+      // disagreeing IMU updates. The values below are realistic
+      // diff-drive starting points; tune from a stationary-rosbag noise
+      // measurement once the robot is on the floor.
+      //
+      // 6x6 covariance laid out row-major:
+      //   pose:  [ x   y   z   roll pitch yaw ]
+      //   twist: [ vx  vy  vz  vroll vpitch vyaw ]
+      // Off-axes (z / roll / pitch on a 2-D ground robot) get a large
+      // value so the EKF effectively ignores them.
+      for (int i = 0; i < 36; ++i) {
+          wheel_odom_msg.pose.covariance[i] = 0.0;
+          wheel_odom_msg.twist.covariance[i] = 0.0;
+      }
+      wheel_odom_msg.pose.covariance[0]  = 0.01;   // x
+      wheel_odom_msg.pose.covariance[7]  = 0.01;   // y
+      wheel_odom_msg.pose.covariance[14] = 1e-9;   // z (locked to 0, flat ground)
+      wheel_odom_msg.pose.covariance[21] = 1e-9;   // roll
+      wheel_odom_msg.pose.covariance[28] = 1e-9;   // pitch
+      wheel_odom_msg.pose.covariance[35] = 0.05;   // yaw
+      wheel_odom_msg.twist.covariance[0]  = 0.001; // vx
+      wheel_odom_msg.twist.covariance[7]  = 1e-9;  // vy
+      wheel_odom_msg.twist.covariance[14] = 1e-9;  // vz
+      wheel_odom_msg.twist.covariance[21] = 1e-9;  // vroll
+      wheel_odom_msg.twist.covariance[28] = 1e-9;  // vpitch
+      wheel_odom_msg.twist.covariance[35] = 0.02;  // vyaw
+
       // < ----------------------------- Publish the wheel odometry info ----------------------------- >
       publisher_->publish(wheel_odom_msg);
       

@@ -3,6 +3,7 @@ import io
 import math
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -14,12 +15,19 @@ from collections import deque
 try:
     import rclpy
     from rclpy.node import Node
-    from sensor_msgs.msg import Image, LaserScan, NavSatFix
+    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu
     from nav_msgs.msg import Odometry
+    from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
+
+try:
+    import yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
 
 try:
     from cv_bridge import CvBridge
@@ -153,6 +161,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSlider,
     QStackedWidget,
     QStyle,
@@ -198,6 +207,46 @@ def _style_ax(ax, title=None):
 class HudWindow(QMainWindow):
     """1920x720 dark-themed HUD window for the AutoNav bar display."""
 
+    # Two complete color stylesheets. The whole UI is built in dark colors;
+    # at the end of __init__ we walk the widget tree and substitute hex
+    # codes via _DARK_TO_LIGHT to switch to light. Toggling the theme button
+    # walks again with the inverse map. The maps are kept injective so
+    # substitution can run in either direction.
+    _DARK_TO_LIGHT = {
+        '#141414': '#ededed',  # window bg
+        '#1a1a1a': '#e0e0e0',  # pressed/disabled bg
+        '#1e1e1e': '#fafafa',  # panel bg / sensor cell
+        '#2a2a2a': '#e8e8e8',  # button bg
+        '#3a3a3a': '#d0d0d0',  # button hover
+        '#4a1a1a': '#f5dada',  # quit/exit bg
+        '#6a2a2a': '#e8b8b8',  # quit hover
+        '#300a0a': '#d8a8a8',  # quit pressed
+        '#1a2a3a': '#dde8f5',  # connect bg
+        '#2a3a4a': '#c5d8e8',  # connect hover
+        '#0a1a2a': '#b0c8de',  # connect pressed
+        '#8b0000': '#bb1010',  # E-stop bg (still red but lighter)
+        '#a00000': '#cc2020',  # E-stop hover
+        '#600000': '#990000',  # E-stop pressed
+        '#f00':    '#aa1111',  # E-stop border
+        '#fff':    '#fefefe',  # E-stop text (kept near-white on red)
+        '#333':    '#cccccc',  # disabled border
+        '#444':    '#b8b8b8',  # general border
+        '#555':    '#9c9c9c',  # button border
+        '#666':    '#5e5e5e',  # group label fg — must stay readable on white
+        '#888':    '#6c6c6c',  # dim fg
+        '#aaa':    '#4e4e4e',  # subtle label fg
+        '#ccc':    '#525252',  # mpl ax title
+        '#dcdcdc': '#202020',  # text fg
+        '#ffffff': '#000000',  # title text (full 6-char form)
+        '#0f0':    '#0a8800',  # active green text
+        '#0af':    '#0a5a9a',  # info blue
+        '#ff0':    '#a06000',  # yellow text status (dots use #ffff00 below)
+        '#f44':    '#cc3030',  # red dot
+        '#4f4':    '#0db000',  # green dot — distinct from #0f0 so reverse map is bijective
+        '#111111': '#f5f5f5',  # mpl axes facecolor
+        '#0a0a0a': '#fbfbfb',  # process terminal bg (overridden via _restyle_terminal too)
+    }
+
     def __init__(self, ros_node=None):
         super().__init__()
         self._ros_node = ros_node
@@ -206,7 +255,19 @@ class HudWindow(QMainWindow):
         self.showFullScreen()
         self.setCursor(Qt.BlankCursor)
 
-        # Dark palette
+        # GUI defaults to light theme. The widget tree is built in dark
+        # colors below, then _apply_theme() is called at the end of
+        # __init__ to flip the widget tree + QPalette + matplotlib canvases
+        # to whichever theme is selected.
+        self._theme = 'light'
+
+        # Build the regex once. Matches a 6-char hex first, then a 3-char
+        # hex (negative lookahead so #fff doesn't capture inside #fffabc).
+        self._hex_re = re.compile(
+            r'#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![0-9a-fA-F])'
+        )
+
+        # Initial QPalette (dark). _apply_theme overwrites this at the end.
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(20, 20, 20))
         palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
@@ -254,6 +315,58 @@ class HudWindow(QMainWindow):
         _LIVE_ODOM_MAXLEN = 100
         self._live_gps_maxlen = _LIVE_GPS_MAXLEN
         self._live_odom_maxlen = _LIVE_ODOM_MAXLEN
+
+        # EKF participation pulse state. Each device dot whose raw
+        # input AND the EKF that consumes it are both fresh gets
+        # painted with a hue cycling between green (135°) and
+        # purple (270°) — the visible "this device is currently
+        # being fused" indicator. Phase advances on every live
+        # tick (5 Hz); a 0.5 Hz cycle gives 10 frames per period
+        # which reads as a smooth breathing pulse.
+        self._ekf_pulse_phase = 0.0
+        self._ekf_pulse_freq_hz = 0.5
+        # Hue endpoints: green (#33ff66 ~ HSL 135) ↔ purple
+        # (#aa55ff ~ HSL 270). Sweep along the +135° arc.
+        self._ekf_pulse_hue_lo = 135
+        self._ekf_pulse_hue_hi = 270
+        self._ekf_msg_age_max_s = 1.0
+        # Dot-name → (input_msg_key, ekf_output_key). A dot pulses
+        # iff last_msg_t[input_msg_key] AND last_msg_t[ekf_output_key]
+        # are both within max_age — i.e. the input is being produced
+        # AND the EKF that consumes it is publishing fused output.
+        # Mapping rationale:
+        #   * Encoders → /odom feeds the Local EKF (ekf_local.yaml
+        #     odom0). Pulses while /local_ekf/odom is alive.
+        #   * Lidar    → /sick_scansegment_xd/imu (SICK lidar's onboard IMU)
+        #     feeds the Local EKF (ekf_local.yaml imu0). The
+        #     /scan_fullframe stream feeds slam_toolbox separately
+        #     (map↔odom correction) — only the IMU is actually
+        #     fused into the Local EKF, so stamp here is the IMU's.
+        #   * GPS      → /gps_fix feeds gps_handler_node's
+        #     magnetometer-less θ EKF, which depends on
+        #     /local_ekf/odom for its predict heartbeat.
+        #   * SLAM     → /pose is slam_toolbox's localized pose,
+        #     consumed by the Map EKF (ekf_global.yaml pose0).
+        #     Pulses while /global_ekf/odom is alive.
+        #   * Camera   → /zed/zed_node/imu/data is NOT yet wired
+        #     into either EKF (see ekf_local.yaml comment about the
+        #     missing TF bridge). Until that lands, Camera has no
+        #     entry here and its dot keeps the existing static
+        #     style.
+        self._ekf_pulse_devices = {
+            'Encoders': ('odom', 'ekf_local_odom'),
+            'Lidar':    ('imu',  'ekf_local_odom'),
+            'GPS':      ('gps',  'ekf_local_odom'),
+            'SLAM':     ('pose', 'ekf_global_odom'),
+        }
+        # EKF status rows (the "is this filter publishing?" indicators
+        # added to the device list). Maps dot name → ekf-output
+        # last_msg_t key. _ekf_pulse_tick drives these solid green
+        # while the topic is fresh and gray when stale.
+        self._ekf_status_rows = {
+            'Local EKF': 'ekf_local_odom',
+            'Map EKF':   'ekf_global_odom',
+        }
 
         # Container connection state
         self._container_connected = False
@@ -424,6 +537,13 @@ class HudWindow(QMainWindow):
         lbl_indep.setStyleSheet(group_label_style)
         options_layout.addWidget(lbl_indep)
 
+        self.btn_developer = QPushButton("Developer")
+        self.btn_developer.setStyleSheet(button_style)
+        self.btn_developer.setFocusPolicy(Qt.NoFocus)
+        self.btn_developer.clicked.connect(self._show_developer_page)
+        options_layout.addWidget(self.btn_developer)
+        self._nav_buttons.append((self.btn_developer, "Developer", button_style))
+
         self.btn_playback = QPushButton("Playback Mode")
         self.btn_playback.setStyleSheet(button_style)
         self.btn_playback.setFocusPolicy(Qt.NoFocus)
@@ -433,6 +553,14 @@ class HudWindow(QMainWindow):
 
         options_layout.addStretch()
 
+        # Theme toggle (label reflects what clicking will do, not current).
+        self.btn_theme = QPushButton("Switch to Dark Mode")
+        self.btn_theme.setStyleSheet(button_style)
+        self.btn_theme.setFocusPolicy(Qt.NoFocus)
+        self.btn_theme.clicked.connect(self._toggle_theme)
+        options_layout.addWidget(self.btn_theme)
+        self._nav_buttons.append((self.btn_theme, "Switch to Dark Mode", button_style))
+
         quit_style = (
             button_style.replace("#2a2a2a", "#4a1a1a")
                         .replace("#3a3a3a", "#6a2a2a")
@@ -441,7 +569,11 @@ class HudWindow(QMainWindow):
         btn_quit = QPushButton("Quit GUI")
         btn_quit.setStyleSheet(quit_style)
         btn_quit.setFocusPolicy(Qt.NoFocus)
-        btn_quit.clicked.connect(QApplication.quit)
+        # self.close() triggers closeEvent → _kill_process for every
+        # running launch. QApplication.quit() bypasses closeEvent, which
+        # left in-container ros2 stacks orphaned and accumulating as
+        # zombies across GUI restarts.
+        btn_quit.clicked.connect(self.close)
         options_layout.addWidget(btn_quit)
         self._nav_buttons.append((btn_quit, "Quit GUI", quit_style))
 
@@ -480,14 +612,15 @@ class HudWindow(QMainWindow):
         # once its readiness condition (a topic publishing) is met. The HUD
         # blocks the queue on that sentinel — see READY_SENTINEL below.
         self._launch_devices = [
-            ("Pre-SLAM", ["Encoders", "Arduino", "Motor Ctrl", "CONTROL"],
+            ("Pre-SLAM", ["Encoders", "CONTROL"],
              "./config/run-pre-slam.sh"),
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
-            ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
-            ("DETECT", ["LINE DETECT", "PCA GRADE"], "./config/run-detect.sh"),
-            ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
+            ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
+            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
+            ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
 
@@ -516,7 +649,8 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "DETECT": 45.0,
+            "LINE DETECT": 45.0,
+            "PCA DETECT": 45.0,
         }
 
         cmd_label_style = (
@@ -576,6 +710,32 @@ class HudWindow(QMainWindow):
         launch_layout.addWidget(btn_launch_all)
         self._launch_nav_buttons.append(
             (btn_launch_all, "Launch All in Sequence", launch_all_style)
+        )
+
+        # "Run Mission" toggle — runs ./config/run_mission.sh inside the
+        # container; click again to abort.
+        mission_off_style = (
+            button_style.replace("border: 1px solid #555", "border: 1px solid #fa0")
+                        .replace("color: #dcdcdc", "color: #fa0")
+        )
+        mission_on_style = (
+            button_style.replace("border: 1px solid #555", "border: 1px solid #0f0")
+                        .replace("color: #dcdcdc", "color: #0f0")
+        )
+        self._mission_off_style = mission_off_style
+        self._mission_on_style = mission_on_style
+        self._mission_running = False
+        self._mission_proc = None
+        self._mission_check_timer = QTimer(self)
+        self._mission_check_timer.setInterval(500)
+        self._mission_check_timer.timeout.connect(self._check_mission_finished)
+        self._mission_btn = QPushButton("Run Mission")
+        self._mission_btn.setStyleSheet(mission_off_style)
+        self._mission_btn.setFocusPolicy(Qt.NoFocus)
+        self._mission_btn.clicked.connect(self._toggle_mission)
+        launch_layout.addWidget(self._mission_btn)
+        self._launch_nav_buttons.append(
+            (self._mission_btn, "Run Mission", mission_off_style)
         )
 
         launch_layout.addStretch()
@@ -772,6 +932,302 @@ class HudWindow(QMainWindow):
 
         self._options_stack.addWidget(page_test)  # index 3
 
+        # --- Page 4: Developer (git + container lifecycle) ---
+        # GUI runs natively on the Jetson; all commands here run on the host.
+        self._dev_host_repo = os.path.expanduser('~/AutoNav_25-26')
+        self._dev_run_script = os.path.join(
+            self._dev_host_repo, 'env/docker/run-container.sh'
+        )
+        self._dev_container_running = False
+        self._dev_branch_rows = []  # (QPushButton, QLabel) per branch
+
+        page_dev = QWidget()
+        dev_layout = QVBoxLayout(page_dev)
+        dev_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_dev = QLabel("DEVELOPER")
+        lbl_dev.setFont(section_title_font)
+        lbl_dev.setAlignment(Qt.AlignCenter)
+        lbl_dev.setStyleSheet(section_title_style)
+        dev_layout.addWidget(lbl_dev)
+
+        # Current branch header
+        self._dev_branch_label = QLabel("Current branch: …")
+        self._dev_branch_label.setAlignment(Qt.AlignCenter)
+        self._dev_branch_label.setStyleSheet(
+            "border: none; color: #0af; font-size: 11px;"
+            " font-family: monospace;"
+        )
+        dev_layout.addWidget(self._dev_branch_label)
+
+        # Status / output line (errors, pull results, etc.)
+        self._dev_status_label = QLabel("")
+        self._dev_status_label.setAlignment(Qt.AlignCenter)
+        self._dev_status_label.setWordWrap(True)
+        self._dev_status_label.setStyleSheet(
+            "border: none; color: #888; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        dev_layout.addWidget(self._dev_status_label)
+
+        self._dev_nav_buttons = []  # same tuple format as other pages
+
+        dev_btn_compact = (
+            "QPushButton {"
+            "  background-color: #2a2a2a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 4px;"
+            "  padding: 8px 4px; font-size: 11px;"
+            "}"
+            "QPushButton:hover { background-color: #3a3a3a; }"
+            "QPushButton:pressed { background-color: #1a1a1a; }"
+        )
+        self._dev_btn_style = dev_btn_compact
+
+        # Container start/stop section
+        lbl_container = QLabel("CONTAINER")
+        lbl_container.setAlignment(Qt.AlignCenter)
+        lbl_container.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_container)
+
+        container_row = QHBoxLayout()
+        container_row.setSpacing(6)
+        self._dev_container_dot = QLabel()
+        self._dev_container_dot.setFixedSize(10, 10)
+        self._dev_container_dot.setStyleSheet(
+            "background-color: #f44; border-radius: 5px; border: none;"
+        )
+        self._dev_container_btn = QPushButton("Start Container")
+        self._dev_container_btn.setStyleSheet(dev_btn_compact)
+        self._dev_container_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_container_btn.clicked.connect(self._dev_toggle_container)
+        container_row.addWidget(self._dev_container_dot)
+        container_row.addWidget(self._dev_container_btn, stretch=1)
+        dev_layout.addLayout(container_row)
+        self._dev_nav_buttons.append(
+            (self._dev_container_btn, "Container", dev_btn_compact)
+        )
+
+        # Separator
+        sep_a = QFrame()
+        sep_a.setFrameShape(QFrame.HLine)
+        sep_a.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_a.setFixedHeight(1)
+        dev_layout.addWidget(sep_a)
+
+        # Git pull
+        lbl_git = QLabel("GIT")
+        lbl_git.setAlignment(Qt.AlignCenter)
+        lbl_git.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_git)
+
+        self._dev_pull_btn = QPushButton("git pull")
+        self._dev_pull_btn.setStyleSheet(dev_btn_compact)
+        self._dev_pull_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_pull_btn.clicked.connect(self._dev_git_pull)
+        dev_layout.addWidget(self._dev_pull_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_pull_btn, "git pull", dev_btn_compact)
+        )
+
+        # Branch switching is on its own sub-page (one click deeper) so
+        # accidentally tapping near the dev page does not switch branches.
+        self._dev_branches_btn = QPushButton("Switch Branch…")
+        self._dev_branches_btn.setStyleSheet(dev_btn_compact)
+        self._dev_branches_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_branches_btn.clicked.connect(self._show_branches_page)
+        dev_layout.addWidget(self._dev_branches_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_branches_btn, "Switch Branch…", dev_btn_compact)
+        )
+
+        self._dev_processes_btn = QPushButton("Manage Running Processes")
+        self._dev_processes_btn.setStyleSheet(dev_btn_compact)
+        self._dev_processes_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_processes_btn.clicked.connect(self._show_processes_page)
+        dev_layout.addWidget(self._dev_processes_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_processes_btn, "Manage Running Processes", dev_btn_compact)
+        )
+
+        dev_layout.addStretch()
+
+        # Exit Developer button at the bottom
+        exit_dev_style = (
+            button_style.replace("#2a2a2a", "#4a1a1a")
+                        .replace("#3a3a3a", "#6a2a2a")
+                        .replace("#1a1a1a", "#300a0a")
+        )
+        btn_exit_dev = QPushButton("Exit Developer")
+        btn_exit_dev.setStyleSheet(exit_dev_style)
+        btn_exit_dev.setFocusPolicy(Qt.NoFocus)
+        btn_exit_dev.clicked.connect(self._show_main_page)
+        dev_layout.addWidget(btn_exit_dev)
+        self._dev_nav_buttons.append(
+            (btn_exit_dev, "Exit Developer", exit_dev_style)
+        )
+
+        self._options_stack.addWidget(page_dev)  # index 4
+
+        # --- Page 5: Branch switcher (sub-page of Developer) ---
+        page_branches = QWidget()
+        branches_layout = QVBoxLayout(page_branches)
+        branches_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_br_title = QLabel("SWITCH BRANCH")
+        lbl_br_title.setFont(section_title_font)
+        lbl_br_title.setAlignment(Qt.AlignCenter)
+        lbl_br_title.setStyleSheet(section_title_style)
+        branches_layout.addWidget(lbl_br_title)
+
+        # Current branch + status (shared with dev page wiring)
+        self._br_branch_label = QLabel("Current branch: …")
+        self._br_branch_label.setAlignment(Qt.AlignCenter)
+        self._br_branch_label.setStyleSheet(
+            "border: none; color: #0af; font-size: 11px;"
+            " font-family: monospace;"
+        )
+        branches_layout.addWidget(self._br_branch_label)
+
+        self._br_status_label = QLabel("")
+        self._br_status_label.setAlignment(Qt.AlignCenter)
+        self._br_status_label.setWordWrap(True)
+        self._br_status_label.setStyleSheet(
+            "border: none; color: #888; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        branches_layout.addWidget(self._br_status_label)
+
+        # Refresh button (re-fetches and rebuilds branch list)
+        self._br_refresh_btn = QPushButton("Refresh")
+        self._br_refresh_btn.setStyleSheet(dev_btn_compact)
+        self._br_refresh_btn.setFocusPolicy(Qt.NoFocus)
+        self._br_refresh_btn.clicked.connect(self._dev_refresh_branches)
+        branches_layout.addWidget(self._br_refresh_btn)
+
+        self._branches_nav_buttons = []
+        self._branches_nav_buttons.append(
+            (self._br_refresh_btn, "Refresh", dev_btn_compact)
+        )
+
+        # Scrollable branch grid: button left, ahead/behind + GUI flag right
+        self._dev_branch_grid = QGridLayout()
+        self._dev_branch_grid.setSpacing(4)
+        branch_holder = QWidget()
+        branch_holder.setLayout(self._dev_branch_grid)
+        branch_scroll = QScrollArea()
+        branch_scroll.setWidgetResizable(True)
+        branch_scroll.setWidget(branch_holder)
+        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        branch_scroll.setMinimumHeight(280)
+        branches_layout.addWidget(branch_scroll, stretch=1)
+
+        # Back to Developer
+        exit_branches_style = (
+            button_style.replace("#2a2a2a", "#4a1a1a")
+                        .replace("#3a3a3a", "#6a2a2a")
+                        .replace("#1a1a1a", "#300a0a")
+        )
+        btn_exit_br = QPushButton("Back to Developer")
+        btn_exit_br.setStyleSheet(exit_branches_style)
+        btn_exit_br.setFocusPolicy(Qt.NoFocus)
+        btn_exit_br.clicked.connect(self._show_developer_page)
+        branches_layout.addWidget(btn_exit_br)
+        self._branches_nav_buttons.append(
+            (btn_exit_br, "Back to Developer", exit_branches_style)
+        )
+
+        self._options_stack.addWidget(page_branches)  # index 5
+
+        # --- Page 6: Manage Running Processes (sub-page of Developer) ---
+        page_processes = QWidget()
+        processes_layout = QVBoxLayout(page_processes)
+        processes_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_pr_title = QLabel("MANAGE RUNNING PROCESSES")
+        lbl_pr_title.setFont(section_title_font)
+        lbl_pr_title.setAlignment(Qt.AlignCenter)
+        lbl_pr_title.setStyleSheet(section_title_style)
+        processes_layout.addWidget(lbl_pr_title)
+
+        proc_banner = QLabel(
+            "Foreign PIDs resolved heuristically (node name → /proc/*/cmdline). "
+            "Display only — the GUI never kills foreign processes."
+        )
+        proc_banner.setWordWrap(True)
+        proc_banner.setAlignment(Qt.AlignCenter)
+        proc_banner.setStyleSheet(
+            "border: none; color: #ff0; font-size: 10px;"
+            " font-family: monospace; padding: 4px;"
+        )
+        processes_layout.addWidget(proc_banner)
+
+        # Header row for the process table
+        proc_header = QGridLayout()
+        proc_header.setSpacing(4)
+        proc_header_style = (
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace; font-weight: bold;"
+        )
+        # One row per PID — aggregated across all watched topics. The
+        # Topics column lists every watched topic that PID publishes to.
+        # Column widths kept in sync with _render_process_table below.
+        for col, text in enumerate(["PID", "Source", "Topics", ""]):
+            h = QLabel(text)
+            h.setStyleSheet(proc_header_style)
+            proc_header.addWidget(h, 0, col)
+        proc_header.setColumnMinimumWidth(0, 110)
+        proc_header.setColumnMinimumWidth(1, 150)
+        proc_header.setColumnMinimumWidth(3, 60)
+        proc_header.setColumnStretch(0, 0)
+        proc_header.setColumnStretch(1, 0)
+        proc_header.setColumnStretch(2, 1)
+        proc_header.setColumnStretch(3, 0)
+        proc_header_holder = QWidget()
+        proc_header_holder.setLayout(proc_header)
+        processes_layout.addWidget(proc_header_holder)
+
+        # Body rows live in their own scroll area, repopulated on every poll.
+        self._proc_table = QGridLayout()
+        self._proc_table.setSpacing(4)
+        self._proc_table.setColumnStretch(2, 1)
+        proc_holder = QWidget()
+        proc_holder.setLayout(self._proc_table)
+        proc_scroll = QScrollArea()
+        proc_scroll.setWidgetResizable(True)
+        proc_scroll.setWidget(proc_holder)
+        proc_scroll.setStyleSheet("QScrollArea { border: none; }")
+        proc_scroll.setMinimumHeight(320)
+        proc_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        processes_layout.addWidget(proc_scroll, stretch=1)
+
+        # Empty-state placeholder shown when no watched-topic publishers exist.
+        self._proc_empty_label = QLabel("No publishers detected on watched topics.")
+        self._proc_empty_label.setAlignment(Qt.AlignCenter)
+        self._proc_empty_label.setStyleSheet(
+            "border: none; color: #666; font-size: 10px;"
+            " font-family: monospace; padding: 6px;"
+        )
+        processes_layout.addWidget(self._proc_empty_label)
+
+        self._processes_nav_buttons = []
+
+        btn_exit_pr = QPushButton("Back to Developer")
+        btn_exit_pr.setStyleSheet(exit_branches_style)
+        btn_exit_pr.setFocusPolicy(Qt.NoFocus)
+        btn_exit_pr.clicked.connect(self._show_developer_page)
+        processes_layout.addWidget(btn_exit_pr)
+        self._processes_nav_buttons.append(
+            (btn_exit_pr, "Back to Developer", exit_branches_style)
+        )
+
+        self._options_stack.addWidget(page_processes)  # index 6
+
+        # Poll container status once a second whenever the dev page is up
+        self._dev_status_timer = QTimer(self)
+        self._dev_status_timer.setInterval(1000)
+        self._dev_status_timer.timeout.connect(self._dev_update_container_status)
+
         top_layout.addWidget(options_frame, stretch=2)
 
         # =====================================================================
@@ -825,13 +1281,43 @@ class HudWindow(QMainWindow):
             self.status_dots[name] = dot
             self._status_nav_buttons.append((btn, name, status_btn_style))
 
+        # Style for non-clickable rows (EKF status indicators). Same
+        # height/width as the button rows above so the columns line up,
+        # but a flat QLabel — there's nothing for the user to navigate
+        # to from these rows, they're pure freshness indicators driven
+        # by _ekf_pulse_tick.
+        status_text_style = (
+            "QLabel {"
+            "  background-color: transparent; color: #aaa;"
+            "  border: none;"
+            "  padding: 1px 4px; font-size: 11px;"
+            "}"
+        )
+
+        def _add_status_text_row(name, parent_layout):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            dot = QLabel()
+            dot.setFixedSize(14, 14)
+            dot.setStyleSheet(
+                "background-color: #555; border-radius: 7px; border: none;"
+            )
+            row.addWidget(dot)
+            lbl = QLabel(name)
+            lbl.setStyleSheet(status_text_style)
+            lbl.setFixedWidth(95)
+            row.addWidget(lbl)
+            row.addStretch()
+            parent_layout.addLayout(row)
+            self.status_dots[name] = dot
+
         # Physical Devices
         phys_label = QLabel("Physical Devices")
         phys_label.setStyleSheet(group_label_style)
         status_col.addWidget(phys_label)
         physical_names = [
             "Camera", "Lidar", "GPS", "Encoders",
-            "Power PCB", "Arduino", "Motor Ctrl",
+            "Power PCB",
         ]
         for name in physical_names:
             _add_status_row(name, status_col)
@@ -840,9 +1326,20 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA GRADE"]
+        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA DETECT"]
         for name in virtual_names:
             _add_status_row(name, status_col)
+
+        # EKF Filters — pure freshness indicators driven by
+        # _ekf_pulse_tick. Solid green while their fused-output
+        # topic is fresh, gray when stale. Not tied to a launch
+        # device and not clickable — these answer "is this filter
+        # publishing?", so they use the text-row helper.
+        ekf_label = QLabel("EKF Filters")
+        ekf_label.setStyleSheet(group_label_style + " margin-top: 6px;")
+        status_col.addWidget(ekf_label)
+        for name in ("Local EKF", "Map EKF"):
+            _add_status_text_row(name, status_col)
 
         # Test System
         test_label = QLabel("Test System")
@@ -978,8 +1475,19 @@ class HudWindow(QMainWindow):
         self._gps_canvas.setMinimumSize(50, 50)
         gps_layout.addWidget(self._gps_canvas, stretch=1)
 
-        # Encoders — XY odometry plot with white trail + 1m grid
+        # Encoders — XY odometry plot with white trail + 1m grid.
+        # Title graduates from "Encoders (Odom)" to "Encoders (Odom EKF)"
+        # whenever /local_ekf/odom is fresh — see _set_enc_title and
+        # the live-tick odom block. Raw /odom is what we plot before
+        # the Local EKF is up; the filtered stream takes over once
+        # the EKF starts publishing, giving the operator the same
+        # estimate that the rest of the stack actually uses.
         enc_cell, enc_layout = _plot_cell("Encoders (Odom)")
+        # Hold a reference to the title QLabel so the live tick can
+        # flip the text. _plot_cell adds the title as the first
+        # widget in the returned layout.
+        self._enc_title_label = enc_layout.itemAt(0).widget()
+        self._enc_title_text = "Encoders (Odom)"
         self._odom_fig, self._odom_ax, self._odom_canvas = _make_dark_canvas()
         self._odom_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._odom_ax.set_facecolor('#111111')
@@ -1312,6 +1820,18 @@ class HudWindow(QMainWindow):
         self._container_health_timer.timeout.connect(self._check_container_health)
         self._container_health_timer.start()
 
+        # Duplicate-publisher detector — polls topics from config/
+        # watched_topics.yaml at 0.1 Hz. Flags device dots red when
+        # >1 distinct publisher source (GUI device / foreign PID) is
+        # detected; feeds the Manage Running Processes dev-page window.
+        self._watched_topics = self._load_watched_topics()
+        self._watched_pub_state = {}         # topic -> [pub_entry, ...]
+        self._dot_duplicate_flagged = set()  # dot keys currently red-flagged
+        self._duplicate_poll_timer = QTimer()
+        self._duplicate_poll_timer.setInterval(10000)
+        self._duplicate_poll_timer.timeout.connect(self._poll_watched_publishers)
+        self._duplicate_poll_timer.start()
+
         top_layout.addWidget(viz_frame, stretch=2)
 
         # -- Keyboard navigation --
@@ -1404,6 +1924,202 @@ class HudWindow(QMainWindow):
         self._nav_timer.setInterval(250)  # 4 Hz animation
         self._nav_timer.timeout.connect(self._nav_anim_tick)
         self._nav_timer.start()
+
+        # EKF status timer — drives both the green↔purple participation
+        # pulse on device dots AND the "Local EKF / Map EKF" status
+        # rows. Runs whenever the GUI is up, NOT only in Live mode:
+        # the operator should be able to glance at the launch screen
+        # and see whether the filters are publishing without first
+        # having to enter Live. _ekf_pulse_tick reads only last_msg_t
+        # + status_dots, so it's safe to call before live mode is
+        # entered (gracefully no-ops when the ROS node is None).
+        self._ekf_status_timer = QTimer()
+        self._ekf_status_timer.setInterval(200)  # 5 Hz
+        self._ekf_status_timer.timeout.connect(
+            lambda: self._ekf_pulse_tick(time.monotonic())
+        )
+        self._ekf_status_timer.start()
+
+        # The widget tree was built using dark hex codes; flip to whichever
+        # theme is selected (light by default).
+        self._apply_theme()
+
+    # -----------------------------------------------------------------
+    # Theme helpers
+    # -----------------------------------------------------------------
+    def _light_to_dark_map(self):
+        return {v: k for k, v in self._DARK_TO_LIGHT.items()}
+
+    def _translate_to_theme(self, s):
+        """Translate a stylesheet authored in dark hex codes to whichever
+        theme is currently active. Sites that build inline styles at
+        runtime (selection highlight, _dev_refresh_branches, status
+        labels) pipe through this so the active theme survives ticks
+        of _update_selection that re-write `base_style`."""
+        if not s or self._theme == 'dark':
+            return s
+        cm = self._DARK_TO_LIGHT
+        return self._hex_re.sub(lambda m: cm.get(m.group(0), m.group(0)), s)
+
+    def _restyle_terminal(self):
+        """The process terminal is special-cased: it shouldn't pick up
+        the regex substitution because we want a hard white-on-black
+        (dark) or black-on-white (light) look, not a muted version."""
+        if not hasattr(self, '_term_display'):
+            return
+        if self._theme == 'light':
+            self._term_display.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: #ffffff; color: #000000;"
+                "  border: 1px solid #b8b8b8; border-radius: 3px;"
+                "  font-family: monospace; font-size: 11px;"
+                "  padding: 4px;"
+                "}"
+            )
+        else:
+            self._term_display.setStyleSheet(
+                "QTextEdit {"
+                "  background-color: #0a0a0a; color: #0f0;"
+                "  border: 1px solid #333; border-radius: 3px;"
+                "  font-family: monospace; font-size: 11px;"
+                "  padding: 4px;"
+                "}"
+            )
+
+    def _color_map(self, target):
+        """Returns hex→hex substitution map for current → `target` theme."""
+        if target == 'light':
+            return dict(self._DARK_TO_LIGHT)
+        return self._light_to_dark_map()
+
+    def _recolor_widget_tree(self, root, color_map):
+        """Walk root + descendants and rewrite hex codes in stylesheets."""
+        def repl(m):
+            return color_map.get(m.group(0), m.group(0))
+        widgets = [root] + list(root.findChildren(QWidget))
+        for w in widgets:
+            s = w.styleSheet()
+            if not s:
+                continue
+            new_s = self._hex_re.sub(repl, s)
+            if new_s != s:
+                w.setStyleSheet(new_s)
+
+    def _set_qpalette_for_theme(self):
+        """Rebuild and install QPalette for the current theme."""
+        p = QPalette()
+        if self._theme == 'light':
+            p.setColor(QPalette.Window, QColor(237, 237, 237))
+            p.setColor(QPalette.WindowText, QColor(32, 32, 32))
+            p.setColor(QPalette.Base, QColor(250, 250, 250))
+            p.setColor(QPalette.AlternateBase, QColor(232, 232, 232))
+            p.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+            p.setColor(QPalette.ToolTipText, QColor(32, 32, 32))
+            p.setColor(QPalette.Text, QColor(32, 32, 32))
+            p.setColor(QPalette.Button, QColor(232, 232, 232))
+            p.setColor(QPalette.ButtonText, QColor(32, 32, 32))
+            p.setColor(QPalette.BrightText, QColor(180, 0, 0))
+            p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            p.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+        else:
+            p.setColor(QPalette.Window, QColor(20, 20, 20))
+            p.setColor(QPalette.WindowText, QColor(220, 220, 220))
+            p.setColor(QPalette.Base, QColor(30, 30, 30))
+            p.setColor(QPalette.AlternateBase, QColor(40, 40, 40))
+            p.setColor(QPalette.ToolTipBase, QColor(25, 25, 25))
+            p.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+            p.setColor(QPalette.Text, QColor(220, 220, 220))
+            p.setColor(QPalette.Button, QColor(40, 40, 40))
+            p.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+            p.setColor(QPalette.BrightText, QColor(255, 50, 50))
+            p.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            p.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        self.setPalette(p)
+
+    def _restyle_canvases(self):
+        """Recolor matplotlib figures and axes for the current theme.
+        Stylesheet substitution doesn't reach matplotlib internals."""
+        if self._theme == 'light':
+            fig_bg = '#fafafa'
+            ax_bg = '#ffffff'
+            tick_color = '#555'
+            spine_color = '#bbb'
+            label_color = '#444'
+            odom_trail = '#000000'
+            odom_grid = '#cccccc'
+        else:
+            fig_bg = '#1e1e1e'
+            ax_bg = '#111111'
+            tick_color = '#888'
+            spine_color = '#444'
+            label_color = '#888'
+            odom_trail = 'white'
+            odom_grid = '#333'
+        canvases = self.findChildren(FigureCanvasQTAgg)
+        for canvas in canvases:
+            fig = canvas.figure
+            fig.set_facecolor(fig_bg)
+            for ax in fig.get_axes():
+                ax.set_facecolor(ax_bg)
+                ax.tick_params(colors=tick_color)
+                for spine in ax.spines.values():
+                    spine.set_color(spine_color)
+                ax.xaxis.label.set_color(label_color)
+                ax.yaxis.label.set_color(label_color)
+                if ax.get_title():
+                    ax.title.set_color(label_color)
+            canvas.draw_idle()
+        # Odom plot specifics: the trail line and grid don't fit the
+        # generic semantic-color palette (they're contrast-on-bg, not
+        # value-encoding), so they swap with the theme.
+        if hasattr(self, '_odom_scatter') and self._odom_scatter is not None:
+            self._odom_scatter.set_color(odom_trail)
+        if hasattr(self, '_odom_ax'):
+            for line in (self._odom_ax.get_xgridlines()
+                         + self._odom_ax.get_ygridlines()):
+                line.set_color(odom_grid)
+            # Re-color the corner texts (x/y, distance, live indicator)
+            for txt_attr in ('_odom_xy_label', '_odom_dist_label',
+                             '_odom_live_txt'):
+                if hasattr(self, txt_attr):
+                    getattr(self, txt_attr).set_color(label_color)
+        if hasattr(self, '_odom_canvas'):
+            self._odom_canvas.draw_idle()
+
+    def _apply_theme(self):
+        """Push the current theme to QPalette + the widget tree + canvases.
+        Called once at end of __init__ (light by default) and again on every
+        toggle. The widget tree is always built in dark colors during
+        __init__, so on first call this flips dark → light if theme is
+        light. On subsequent calls, the tree already reflects the previous
+        theme, so we substitute previous → current."""
+        # The widget tree was last styled for the OPPOSITE of the current
+        # theme (we just toggled), so we substitute the inverse.
+        prev = 'dark' if self._theme == 'light' else 'light'
+        # Map: prev → current
+        if self._theme == 'light':
+            color_map = dict(self._DARK_TO_LIGHT)
+        else:
+            color_map = self._light_to_dark_map()
+        self._set_qpalette_for_theme()
+        self._recolor_widget_tree(self, color_map)
+        self._restyle_canvases()
+        self._restyle_terminal()
+        # Re-run _update_selection so the selected button picks up the
+        # newly-translated theme (its stylesheet was overwritten by the
+        # last tick using the stored dark base_style).
+        if hasattr(self, '_nav_groups'):
+            self._update_selection()
+        # Update the theme button label to reflect what clicking does next.
+        if hasattr(self, 'btn_theme'):
+            self.btn_theme.setText(
+                "Switch to Dark Mode" if self._theme == 'light'
+                else "Switch to Light Mode"
+            )
+
+    def _toggle_theme(self):
+        self._theme = 'dark' if self._theme == 'light' else 'light'
+        self._apply_theme()
 
     # -----------------------------------------------------------------
     # Keyboard navigation
@@ -1510,6 +2226,84 @@ class HudWindow(QMainWindow):
         self._start_playback()
         self._show_main_page()
 
+    def _toggle_mission(self):
+        """Start ./config/run_mission.sh, or kill it if already running."""
+        if self._mission_running and self._mission_proc is not None:
+            self._kill_process(self._mission_proc, "Mission")
+            return  # _check_mission_finished will reset the button
+
+        if not self._container_connected:
+            self._gui_log_msg("Cannot run mission: container not connected")
+            return
+
+        cmd = "./config/run_mission.sh"
+        label = "Mission"
+        exec_cmd = self._wrap_container_cmd(cmd, label=label)
+        buf = []
+        self._process_buffers[label] = buf
+        buf.append(f"$ {cmd}\n")
+        try:
+            proc = subprocess.Popen(
+                exec_cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._process_objects[label] = proc
+            self._mission_proc = proc
+            self._mission_running = True
+            self._mission_btn.setText("Stop Mission")
+            self._mission_btn.setStyleSheet(self._mission_on_style)
+            for i, (b, lbl, _s) in enumerate(self._launch_nav_buttons):
+                if b is self._mission_btn:
+                    self._launch_nav_buttons[i] = (
+                        b, lbl, self._mission_on_style
+                    )
+                    break
+
+            def _reader():
+                try:
+                    for line in proc.stdout:
+                        buf.append(line)
+                except Exception:
+                    pass
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+            self._process_readers[label] = t
+            self._mission_check_timer.start()
+        except Exception as e:
+            buf.append(f"[Failed to start mission: {e}]\n")
+            self._mission_running = False
+            self._mission_proc = None
+
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+
+    def _check_mission_finished(self):
+        """Polled by _mission_check_timer; resets the button when the
+        run_mission.sh subprocess exits (either naturally or via kill)."""
+        if self._mission_proc is None:
+            self._mission_check_timer.stop()
+            return
+        rc = self._mission_proc.poll()
+        if rc is None:
+            return
+        self._mission_check_timer.stop()
+        buf = self._process_buffers.get("Mission")
+        if buf is not None:
+            buf.append(f"[Mission finished with code {rc}]\n")
+        self._process_objects.pop("Mission", None)
+        self._process_readers.pop("Mission", None)
+        self._mission_running = False
+        self._mission_proc = None
+        self._mission_btn.setText("Run Mission")
+        self._mission_btn.setStyleSheet(self._mission_off_style)
+        for i, (b, lbl, _s) in enumerate(self._launch_nav_buttons):
+            if b is self._mission_btn:
+                self._launch_nav_buttons[i] = (b, lbl, self._mission_off_style)
+                break
+        self._refresh_terminal_display()
+
     def _show_main_page(self):
         """Switch OPTIONS column back to the main page."""
         self._options_stack.setCurrentIndex(0)
@@ -1518,6 +2312,10 @@ class HudWindow(QMainWindow):
         self._nav_col = 0
         self._nav_row = 0
         self._nav_last_row[0] = 0
+        # Stop the dev page's container-status poll if it was running
+        timer = getattr(self, '_dev_status_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
         self._update_selection()
 
     # -- Test Mode sub-page ---------------------------------------------------
@@ -1575,6 +2373,406 @@ class HudWindow(QMainWindow):
         self._nav_row = 0
         self._nav_last_row[0] = 0
         self._update_selection()
+
+    # -- Developer sub-page ---------------------------------------------------
+
+    def _show_developer_page(self):
+        """Switch OPTIONS column to the Developer sub-page."""
+        self._options_stack.setCurrentIndex(4)
+        self._nav_groups[0] = self._dev_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._dev_update_branch_label()
+        self._dev_update_container_status()
+        self._dev_status_timer.start()
+
+    def _show_branches_page(self):
+        """Switch OPTIONS column to the Branch switcher sub-page (index 5)."""
+        self._options_stack.setCurrentIndex(5)
+        self._nav_groups[0] = self._branches_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+
+    def _show_processes_page(self):
+        """Switch OPTIONS column to the Manage Running Processes sub-page (index 6)."""
+        self._options_stack.setCurrentIndex(6)
+        self._nav_groups[0] = self._processes_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._render_process_table()
+
+    def _dev_run_git(self, args, timeout=15):
+        """Run a git command in the host repo. Returns (rc, stdout, stderr)."""
+        try:
+            r = subprocess.run(
+                ['git', '-C', self._dev_host_repo] + list(args),
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return r.returncode, r.stdout.strip(), r.stderr.strip()
+        except FileNotFoundError:
+            return 127, '', 'git not found on PATH'
+        except subprocess.TimeoutExpired:
+            return 124, '', f'git {args[0] if args else ""} timed out'
+        except Exception as e:
+            return 1, '', f'{e}'
+
+    def _dev_update_branch_label(self):
+        rc, out, err = self._dev_run_git(['branch', '--show-current'])
+        if rc == 0 and out:
+            text = f"Current branch: {out}"
+        else:
+            text = f"Current branch: ? ({err or 'unknown'})"
+        self._dev_branch_label.setText(text)
+        if hasattr(self, '_br_branch_label'):
+            self._br_branch_label.setText(text)
+
+    def _dev_set_status(self, text, color='#888'):
+        # Callers pass dark-theme hex codes; translate to the active theme.
+        if self._theme == 'light':
+            color = self._DARK_TO_LIGHT.get(color, color)
+        style = (
+            f"border: none; color: {color}; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        self._dev_status_label.setStyleSheet(style)
+        self._dev_status_label.setText(text)
+        if hasattr(self, '_br_status_label'):
+            self._br_status_label.setStyleSheet(style)
+            self._br_status_label.setText(text)
+
+    def _branch_has_gui(self, branch):
+        """True if `branch`'s tree contains the GUI source file. Used to
+        block switches that would leave the running GUI without source.
+        Tries the local ref first, then origin/<branch>."""
+        gui_path = (
+            'isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py'
+        )
+        for ref in (branch, f'origin/{branch}'):
+            rc, out, _err = self._dev_run_git(
+                ['ls-tree', '--name-only', ref, '--', gui_path]
+            )
+            if rc == 0 and out:
+                return True
+        return False
+
+    def _dev_git_pull(self):
+        self._dev_set_status("Running git pull --ff-only…", color='#ff0')
+        QApplication.processEvents()
+        rc, out, err = self._dev_run_git(['pull', '--ff-only'], timeout=60)
+        if rc == 0:
+            summary = out.splitlines()[-1] if out else 'Up to date'
+            self._dev_set_status(f"Pull OK: {summary}", color='#0f0')
+        else:
+            msg = (err or out or 'unknown error').splitlines()[-1]
+            self._dev_set_status(f"Pull failed: {msg}", color='#f44')
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+
+    def _dev_refresh_branches(self):
+        # Clear the grid (lives on the branches sub-page now)
+        while self._dev_branch_grid.count():
+            item = self._dev_branch_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._dev_branch_rows = []
+
+        # Reset the branches sub-page nav to just Refresh + Back.
+        keep_labels = {"Refresh", "Back to Developer"}
+        self._branches_nav_buttons = [
+            e for e in self._branches_nav_buttons if e[1] in keep_labels
+        ]
+
+        # Fetch with --prune so origin/<x> refs accurately reflect the
+        # current remote. Local branches are NEVER pruned by this call;
+        # local-only branches stay and are labeled "(old)" below.
+        self._dev_run_git(['fetch', '--prune', '--quiet'], timeout=30)
+
+        # List local branches
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/heads/'
+        ])
+        local_branches = [b for b in (out or '').splitlines() if b]
+        local_set = set(local_branches)
+
+        # List remote branches; strip the "origin/" prefix and skip the
+        # symbolic origin/HEAD entry.
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/'
+        ])
+        remote_refs = [b for b in (out or '').splitlines() if b]
+        remote_branches = [
+            r[len('origin/'):] for r in remote_refs
+            if r.startswith('origin/') and not r.startswith('origin/HEAD')
+        ]
+        remote_set = set(remote_branches)
+
+        # Auto-create a local tracking branch for any origin branch we
+        # don't have yet. `git branch <name> origin/<name>` creates the
+        # ref without touching the working tree, so it's safe even with
+        # uncommitted work on the current branch.
+        for rb in remote_branches:
+            if rb not in local_set:
+                self._dev_run_git(['branch', rb, f'origin/{rb}'])
+
+        # Re-list locals so the newly-created tracking branches show up.
+        rc, out, _err = self._dev_run_git([
+            'for-each-ref', '--format=%(refname:short)', 'refs/heads/'
+        ])
+        branches = [b for b in (out or '').splitlines() if b]
+
+        rc_cur, current, _ = self._dev_run_git(['branch', '--show-current'])
+        current = current if rc_cur == 0 else ''
+
+        on_style = (
+            self._dev_btn_style
+            .replace("border: 1px solid #555", "border: 1px solid #0f0")
+            .replace("color: #dcdcdc", "color: #0f0")
+        )
+        # "no-GUI" branches are visually disabled — dim text + no hover.
+        nogui_style = (
+            self._dev_btn_style
+            .replace("color: #dcdcdc", "color: #555")
+        )
+
+        ab_style = (
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        ab_warn_style = (
+            "border: none; color: #f44; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        ab_old_style = (
+            "border: none; color: #ff0; font-size: 10px;"
+            " font-family: monospace;"
+        )
+
+        # Rebuild order: [Refresh, <branches…>, Back to Developer].
+        head_entries = [
+            e for e in self._branches_nav_buttons if e[1] != "Back to Developer"
+        ]
+        exit_entry = next(
+            (e for e in self._branches_nav_buttons if e[1] == "Back to Developer"),
+            None,
+        )
+
+        T = self._translate_to_theme
+        new_branch_entries = []
+        for i, branch in enumerate(branches):
+            has_gui = self._branch_has_gui(branch)
+            is_old = branch not in remote_set
+            btn = QPushButton(branch)
+            if branch == current:
+                style = on_style
+            elif not has_gui:
+                style = nogui_style
+            else:
+                style = self._dev_btn_style
+            btn.setStyleSheet(T(style))
+            btn.setFocusPolicy(Qt.NoFocus)
+            if has_gui:
+                btn.clicked.connect(
+                    lambda checked=False, b=branch: self._dev_switch_branch(b)
+                )
+            else:
+                btn.setEnabled(False)
+                btn.setToolTip(
+                    "This branch's tree does not contain the GUI source. "
+                    "Switching would leave the running GUI without code."
+                )
+            self._dev_branch_grid.addWidget(btn, i, 0)
+
+            # Right column: "(old)" for local-only, "no-gui" for missing GUI,
+            # otherwise ahead/behind versus origin.
+            if is_old:
+                ab_text = "(old)"
+                ab_lbl_style = ab_old_style
+            else:
+                ab_text = self._dev_ahead_behind(branch)
+                ab_lbl_style = ab_style
+            if not has_gui:
+                ab_text = (ab_text + " no-gui").strip()
+                ab_lbl_style = ab_warn_style
+            ab_lbl = QLabel(ab_text)
+            ab_lbl.setStyleSheet(T(ab_lbl_style))
+            self._dev_branch_grid.addWidget(ab_lbl, i, 1)
+
+            self._dev_branch_rows.append((btn, ab_lbl))
+            # Only nav-add branches that are actually clickable.
+            if has_gui:
+                new_branch_entries.append((btn, branch, style))
+
+        self._dev_branch_grid.setColumnStretch(0, 0)
+        self._dev_branch_grid.setColumnStretch(1, 1)
+
+        self._branches_nav_buttons = head_entries + new_branch_entries + (
+            [exit_entry] if exit_entry else []
+        )
+
+    def _dev_ahead_behind(self, branch):
+        rc, out, _err = self._dev_run_git([
+            'rev-list', '--left-right', '--count',
+            f'{branch}...origin/{branch}',
+        ])
+        if rc != 0 or not out:
+            return "(no upstream)"
+        try:
+            ahead_str, behind_str = out.split()
+            ahead, behind = int(ahead_str), int(behind_str)
+        except ValueError:
+            return ""
+        if ahead == 0 and behind == 0:
+            return "in sync"
+        parts = []
+        if ahead:
+            parts.append(f"↑{ahead}")
+        if behind:
+            parts.append(f"↓{behind}")
+        return " ".join(parts)
+
+    def _dev_switch_branch(self, branch):
+        rc_cur, current, _ = self._dev_run_git(['branch', '--show-current'])
+        if rc_cur == 0 and current == branch:
+            self._dev_set_status(f"Already on {branch}", color='#888')
+            return
+
+        # Defense-in-depth: never switch into a branch that lacks the GUI
+        # source, even if a stale UI button somehow lets the click through.
+        if not self._branch_has_gui(branch):
+            self._dev_set_status(
+                f"Refused: {branch} has no GUI source.", color='#f44'
+            )
+            return
+
+        # Auto-stash if dirty so the user's in-progress edits follow them.
+        rc_st, st_out, _ = self._dev_run_git(['status', '--porcelain'])
+        stashed = False
+        if rc_st == 0 and st_out:
+            self._dev_set_status("Stashing local changes…", color='#ff0')
+            QApplication.processEvents()
+            rc_s, _o, err_s = self._dev_run_git(
+                ['stash', 'push', '-u', '-m', 'auto-stash from GUI']
+            )
+            if rc_s != 0:
+                self._dev_set_status(
+                    f"Stash failed: {(err_s or 'unknown').splitlines()[-1]}",
+                    color='#f44',
+                )
+                return
+            stashed = True
+
+        self._dev_set_status(f"Switching to {branch}…", color='#ff0')
+        QApplication.processEvents()
+        rc_sw, _o, err_sw = self._dev_run_git(['switch', branch])
+        if rc_sw != 0:
+            tail = (err_sw or 'unknown error').splitlines()[-1]
+            self._dev_set_status(f"Switch failed: {tail}", color='#f44')
+            if stashed:
+                self._dev_run_git(['stash', 'pop'])
+            return
+
+        if stashed:
+            rc_p, _o, err_p = self._dev_run_git(['stash', 'pop'])
+            if rc_p != 0:
+                self._dev_set_status(
+                    f"On {branch}; stash pop conflict — resolve manually",
+                    color='#ff0',
+                )
+            else:
+                self._dev_set_status(
+                    f"On {branch}; stashed changes restored", color='#0f0'
+                )
+        else:
+            self._dev_set_status(f"On {branch}", color='#0f0')
+
+        self._dev_update_branch_label()
+        self._dev_refresh_branches()
+
+    def _dev_toggle_container(self):
+        if self._dev_container_running:
+            self._dev_set_status(
+                f"Stopping container {self._container_name}…", color='#ff0'
+            )
+            QApplication.processEvents()
+            try:
+                r = subprocess.run(
+                    ['docker', 'stop', self._container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.returncode == 0:
+                    self._dev_set_status("Container stopped", color='#0f0')
+                else:
+                    msg = (r.stderr or r.stdout or 'unknown').splitlines()[-1]
+                    self._dev_set_status(f"Stop failed: {msg}", color='#f44')
+            except Exception as e:
+                self._dev_set_status(f"Stop failed: {e}", color='#f44')
+        else:
+            if not os.path.isfile(self._dev_run_script):
+                self._dev_set_status(
+                    f"Missing script: {self._dev_run_script}", color='#f44'
+                )
+                return
+            self._dev_set_status(
+                f"Starting container {self._container_name}…", color='#ff0'
+            )
+            QApplication.processEvents()
+            try:
+                # Detached run-container.sh; --no-attach keeps it from
+                # waiting for an interactive shell.
+                subprocess.Popen(
+                    ['bash', self._dev_run_script, '--no-attach'],
+                    cwd=self._dev_host_repo,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                self._dev_set_status(
+                    "Container start initiated", color='#0f0'
+                )
+            except Exception as e:
+                self._dev_set_status(f"Start failed: {e}", color='#f44')
+        # Status will update on the next 1s poll
+        self._dev_update_container_status()
+
+    def _dev_update_container_status(self):
+        try:
+            r = subprocess.run(
+                ['docker', 'ps', '--quiet', '--filter', 'status=running',
+                 '--filter', f'name=^/{self._container_name}$'],
+                capture_output=True, text=True, timeout=3,
+            )
+            running = bool(r.stdout.strip())
+        except Exception:
+            running = False
+        self._dev_container_running = running
+        T = self._translate_to_theme
+        if running:
+            self._dev_container_dot.setStyleSheet(T(
+                "background-color: #4f4; border-radius: 5px; border: none;"
+            ))
+            desired = "Stop Container"
+        else:
+            self._dev_container_dot.setStyleSheet(T(
+                "background-color: #f44; border-radius: 5px; border: none;"
+            ))
+            desired = "Start Container"
+        # Sync the base_label stored in _dev_nav_buttons so the next
+        # _update_selection tick doesn't revert to a stale label and cause
+        # the button to flash between "Start Container" and the selection-
+        # wrapped form like "> Container <". Gate on actual state change so
+        # we don't restyle every nav button every poll.
+        if getattr(self, '_dev_container_btn_label', None) != desired:
+            self._dev_container_btn_label = desired
+            self._set_btn_label(self._dev_container_btn, desired)
 
     def _toggle_test(self, tid):
         """Start or stop a test by its ID."""
@@ -1683,7 +2881,18 @@ class HudWindow(QMainWindow):
 
     _DOT_ON = "background-color: #0f0; border-radius: 7px; border: none;"
     _DOT_OFF = "background-color: #555; border-radius: 7px; border: none;"
-    _DOT_YELLOW = "background-color: #ff0; border-radius: 7px; border: none;"
+
+    # Some ROS2 nodes are launched via an executable whose binary name
+    # doesn't match the node name (e.g., sick_scansegment_xd runs inside
+    # the sick_generic_caller binary with no __node:= remap). Map them
+    # here so /proc/*/cmdline matching still finds the right process.
+    _NODE_EXEC_ALIASES = {
+        'sick_scansegment_xd': ('sick_generic_caller',),
+    }
+    # Use 6-char #ffff00 (NOT #ff0) so the regex walker leaves it alone in
+    # light mode — the user wants the process yellow dots to stay yellow,
+    # while #ff0 used for status text still translates to dark orange.
+    _DOT_YELLOW = "background-color: #ffff00; border-radius: 7px; border: none;"
 
     def _dot_keys_for(self, label):
         """Return the status-dot keys for a device label."""
@@ -1691,6 +2900,436 @@ class HudWindow(QMainWindow):
             if dev_label == label:
                 return keys
         return []
+
+    def _load_watched_topics(self):
+        """Load watched_topics from the package's config YAML.
+
+        Prefers ament_index lookup so an installed colcon build is found;
+        falls back to a source-relative path so dev runs from the source
+        tree still work.
+        """
+        if not _HAS_YAML:
+            return []
+        path = None
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share = get_package_share_directory('autonav_gui_hud')
+            cand = os.path.join(share, 'config', 'watched_topics.yaml')
+            if os.path.isfile(cand):
+                path = cand
+        except Exception:
+            pass
+        if path is None:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cand = os.path.normpath(
+                os.path.join(here, '..', 'config', 'watched_topics.yaml')
+            )
+            if os.path.isfile(cand):
+                path = cand
+        if path is None:
+            return []
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+            topics = data.get('watched_topics', []) or []
+            return [t for t in topics if isinstance(t, str)]
+        except Exception:
+            return []
+
+    def _base_dot_style_for(self, dot_key):
+        """Correct base style for a dot from current launch state."""
+        dev_label = self._dot_to_device.get(dot_key)
+        if dev_label is None:
+            return self._DOT_OFF
+        st = self._launch_states.get(dev_label, False)
+        if st == 'starting':
+            return self._DOT_YELLOW
+        if st is True:
+            return self._DOT_ON
+        return self._DOT_OFF
+
+    def _snapshot_proc_cmdlines(self):
+        """Read every /proc/<pid>/cmdline once per poll.
+
+        Returns {pid: cmdline_bytes}. Cheaper than re-scanning /proc for
+        each node-name lookup.
+        """
+        out = {}
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            return out
+        for ent in entries:
+            if not ent.isdigit():
+                continue
+            try:
+                pid = int(ent)
+                with open(f'/proc/{ent}/cmdline', 'rb') as f:
+                    out[pid] = f.read()
+            except (OSError, ValueError):
+                continue
+        return out
+
+    def _find_pids_for_node(self, short_name, full_name, proc_map):
+        """All PIDs whose cmdline matches a ROS2 node name.
+
+        Returns a list (possibly empty). ROS2 Humble doesn't expose
+        participant PIDs via the graph API, so we scrape argv. When
+        multiple processes share a node name (e.g., two wheel_odom from
+        two pre_slam launches) all are returned so the caller can
+        attribute one publisher endpoint per distinct PID.
+        """
+        needles = [n.encode() for n in (short_name, full_name) if n]
+        for alias in self._NODE_EXEC_ALIASES.get(short_name, ()):
+            needles.append(alias.encode())
+        if not needles:
+            return []
+        return [
+            pid for pid, blob in proc_map.items()
+            if blob and any(n in blob for n in needles)
+        ]
+
+    def _gui_owner_for_pid(self, pid):
+        """Walk PPid chain; return (label, root_pid) or (None, None).
+
+        Bounded walk against the in-container ros2 launch PIDs the GUI
+        writes to /tmp/gui_pid_<sanitized_label> before exec'ing the
+        launch. The container runs with --pid=host so those PIDs are
+        host PIDs too. We deliberately do NOT use popen.pid here: that's
+        the host-side `docker exec` wrapper, which sits in a separate
+        process tree (parented by containerd-shim, not by the caller)
+        and is never an ancestor of the in-container ros2 launch.
+
+        Returning the root PID lets duplicate detection key sources on
+        the launch tree, not the publisher process — so two distinct
+        publisher nodes from the same launch (e.g. Nav2's behavior_server
+        and velocity_smoother both publishing /cmd_vel) collapse to one
+        source instead of falsely flagging the device as duplicated.
+        """
+        if pid is None:
+            return (None, None)
+        owned = {}
+        for lbl, popen in self._process_objects.items():
+            if popen is None:
+                continue
+            try:
+                if popen.poll() is not None:
+                    continue
+            except Exception:
+                continue
+            pid_tag = lbl.replace(' ', '_').replace('/', '_')
+            try:
+                with open(f'/tmp/gui_pid_{pid_tag}', 'r') as f:
+                    launch_pid = int(f.read().strip())
+            except (OSError, ValueError):
+                continue
+            try:
+                os.stat(f'/proc/{launch_pid}')
+            except OSError:
+                continue
+            owned[launch_pid] = lbl
+        cur = pid
+        for _ in range(64):
+            if cur in owned:
+                return (owned[cur], cur)
+            try:
+                with open(f'/proc/{cur}/status', 'r') as f:
+                    ppid = None
+                    for line in f:
+                        if line.startswith('PPid:'):
+                            ppid = int(line.split()[1])
+                            break
+                if ppid is None or ppid <= 1:
+                    return (None, None)
+                cur = ppid
+            except (OSError, ValueError):
+                return (None, None)
+        return (None, None)
+
+    def _poll_watched_publishers(self):
+        """0.1 Hz: attribute every watched-topic publisher to a process.
+
+        For each topic, group endpoints by (namespace, node_name). When
+        multiple endpoints share a node name they could come from one
+        process publishing several internal endpoints (e.g., Nav2's
+        behavior_server creates ~6 on /cmd_vel) OR from several distinct
+        processes that happen to share a name (the bug case: two
+        pre_slam launches → two wheel_odom processes). We disambiguate
+        by /proc scan: if N endpoints share a name and we find N distinct
+        matching processes, emit N rows; if fewer processes match, emit
+        one row per process (collapsing endpoints from the same PID).
+
+        ``node_to_pids`` carries already-attributed PIDs across topics
+        so a node that legitimately publishes to multiple watched topics
+        (e.g., ekf_node → /odom + /odometry/filtered) reuses the same
+        PID for both rather than skipping it as "claimed".
+        """
+        node = self._ros_node
+        if node is None or not self._watched_topics:
+            return
+
+        proc_map = self._snapshot_proc_cmdlines()
+        state = {}
+        node_to_pids = {}  # (ns, name) -> list of PIDs already attributed
+
+        for topic in self._watched_topics:
+            try:
+                infos = node.get_publishers_info_by_topic(topic)
+            except Exception:
+                continue
+
+            groups = {}  # (ns, name, full) -> endpoint count
+            for info in infos:
+                ns = getattr(info, 'node_namespace', '') or ''
+                name = getattr(info, 'node_name', '') or ''
+                if ns and not ns.endswith('/'):
+                    ns = ns + '/'
+                full = (ns + name) if name else (ns or '?')
+                full = full.replace('//', '/')
+                key = (ns, name, full)
+                groups[key] = groups.get(key, 0) + 1
+
+            entries = []
+            for (ns, name, full), count in groups.items():
+                already = node_to_pids.get((ns, name), [])
+                if len(already) >= count:
+                    pids_for_topic = already[:count]
+                else:
+                    all_matches = self._find_pids_for_node(name, full, proc_map)
+                    extra = [p for p in all_matches if p not in already]
+                    take = max(0, count - len(already))
+                    already = already + extra[:take]
+                    node_to_pids[(ns, name)] = already
+                    pids_for_topic = already[:count]
+
+                if pids_for_topic:
+                    for pid in pids_for_topic:
+                        owner, owner_root = self._gui_owner_for_pid(pid)
+                        entries.append({
+                            'node': full,
+                            'topic': topic,
+                            'pid': pid,
+                            'gui_owner': owner,
+                            'gui_owner_root': owner_root,
+                        })
+                else:
+                    entries.append({
+                        'node': full,
+                        'topic': topic,
+                        'pid': None,
+                        'gui_owner': None,
+                        'gui_owner_root': None,
+                    })
+            state[topic] = entries
+
+        self._watched_pub_state = state
+        self._apply_duplicate_dots(state)
+        self._refresh_process_table()
+
+    def _apply_duplicate_dots(self, state):
+        """Flip dots red when their device participates in a topic collision.
+
+        Sources are keyed by the launch ROOT PID for GUI-owned publishers
+        (the value from /tmp/gui_pid_<label>), not the publisher's own
+        PID. Two publisher nodes spawned by the same launch (e.g. Nav2's
+        behavior_server + velocity_smoother both on /cmd_vel) descend
+        from the same root, share one source tuple, and don't trip a
+        false duplicate. Two launches of the same device (real duplicate)
+        have different roots and DO trip it.
+        """
+        flagged = set()
+        for _topic, entries in state.items():
+            sources = set()
+            for e in entries:
+                pid = e['pid']
+                owner = e['gui_owner']
+                owner_root = e.get('gui_owner_root')
+                if owner is not None:
+                    sources.add(('gui', owner, owner_root))
+                elif pid is not None:
+                    sources.add(('ext', pid))
+                else:
+                    sources.add(('unknown', e['node']))
+            if len(sources) <= 1:
+                continue
+            for e in entries:
+                owner = e['gui_owner']
+                if owner is None:
+                    continue
+                for dev_label, dot_keys, _cmd in self._launch_devices:
+                    if dev_label == owner:
+                        flagged.update(dot_keys)
+                        break
+
+        for k in flagged - self._dot_duplicate_flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(
+                    "background-color: #f44; border-radius: 7px; border: none;"
+                )
+        for k in self._dot_duplicate_flagged - flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(self._base_dot_style_for(k))
+        self._dot_duplicate_flagged = flagged
+
+    def _refresh_process_table(self):
+        """Hook invoked from _poll_watched_publishers each 0.1 Hz tick."""
+        if not hasattr(self, '_proc_table'):
+            return
+        self._render_process_table()
+
+    def _render_process_table(self):
+        """Repopulate the Manage Running Processes grid, aggregated by PID.
+
+        Columns: [PID | Source | Topics | Action]. Each process gets one
+        row; the Topics cell lists every watched topic that PID publishes
+        to. Unknown-PID publishers cluster by node name so they don't
+        collapse together. Kill button only on GUI-owned rows.
+        """
+        if not hasattr(self, '_proc_table'):
+            return
+
+        while self._proc_table.count():
+            item = self._proc_table.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+
+        cell_style = (
+            "border: none; color: #ccc; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        foreign_style = (
+            "border: none; color: #f80; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        kill_style = (
+            "QPushButton {"
+            "  background-color: #4a1a1a; color: #fbb;"
+            "  border: 1px solid #722; border-radius: 3px;"
+            "  padding: 2px 8px; font-size: 10px;"
+            "}"
+            "QPushButton:hover { background-color: #6a2a2a; }"
+            "QPushButton:pressed { background-color: #300a0a; }"
+        )
+
+        # Aggregate per process. Resolved PIDs collapse cleanly; unresolved
+        # publishers cluster by node name as a fallback so distinct unknown
+        # processes don't merge into a single row.
+        agg = {}  # key -> {pid, node, gui_owner, topics: set}
+        for topic in self._watched_topics:
+            for e in self._watched_pub_state.get(topic, []):
+                pid = e.get('pid')
+                node = e.get('node', '?')
+                owner = e.get('gui_owner')
+                key = pid if pid is not None else ('unk', node)
+                if key not in agg:
+                    agg[key] = {
+                        'pid': pid,
+                        'node': node,
+                        'gui_owner': owner,
+                        'topics': set(),
+                    }
+                agg[key]['topics'].add(e.get('topic', topic))
+
+        # Sort: GUI-owned first, then by numeric PID, then unknowns by node.
+        def sort_key(item):
+            _key, v = item
+            owner = v.get('gui_owner')
+            pid = v.get('pid')
+            return (
+                0 if owner is not None else 1,
+                pid if pid is not None else 10**9,
+                v.get('node', ''),
+            )
+
+        # Fixed widths for PID / Source / Action so Topics absorbs slack.
+        # Without these caps a long unknown-node fallback (e.g. "? /…")
+        # forces the row wider than the viewport and we have to scroll
+        # horizontally — operator can't read the table.
+        col_pid_width = 110
+        col_source_width = 150
+        col_action_width = 60
+
+        row = 0
+        for _key, v in sorted(agg.items(), key=sort_key):
+            owner = v['gui_owner']
+            pid = v['pid']
+            pid_text = str(pid) if pid is not None else f"?  {v['node']}"
+            pid_lbl = QLabel(pid_text)
+            pid_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            pid_lbl.setWordWrap(True)
+            pid_lbl.setMaximumWidth(col_pid_width)
+            self._proc_table.addWidget(pid_lbl, row, 0)
+
+            if owner is not None:
+                source_lbl = QLabel(f"GUI: {owner}")
+                source_lbl.setStyleSheet(cell_style)
+            else:
+                source_lbl = QLabel("External")
+                source_lbl.setStyleSheet(foreign_style)
+            source_lbl.setWordWrap(True)
+            source_lbl.setMaximumWidth(col_source_width)
+            self._proc_table.addWidget(source_lbl, row, 1)
+
+            topics_text = ", ".join(sorted(v['topics']))
+            topics_lbl = QLabel(topics_text)
+            topics_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            topics_lbl.setWordWrap(True)
+            self._proc_table.addWidget(topics_lbl, row, 2)
+
+            if owner is not None:
+                kill_btn = QPushButton("Kill")
+                kill_btn.setStyleSheet(kill_style)
+                kill_btn.setFocusPolicy(Qt.NoFocus)
+                kill_btn.setFixedWidth(col_action_width)
+                kill_btn.clicked.connect(
+                    lambda _checked=False, lbl=owner:
+                        self._kill_gui_process(lbl)
+                )
+                self._proc_table.addWidget(kill_btn, row, 3)
+            row += 1
+
+        # Pin column widths so header and body line up.
+        self._proc_table.setColumnMinimumWidth(0, col_pid_width)
+        self._proc_table.setColumnMinimumWidth(1, col_source_width)
+        self._proc_table.setColumnMinimumWidth(3, col_action_width)
+        self._proc_table.setColumnStretch(0, 0)
+        self._proc_table.setColumnStretch(1, 0)
+        self._proc_table.setColumnStretch(3, 0)
+
+        if hasattr(self, '_proc_empty_label'):
+            self._proc_empty_label.setVisible(row == 0)
+
+    def _kill_gui_process(self, device_label):
+        """Terminate a GUI-spawned process by its device label.
+
+        Reuses the existing toggle path so launch state, dot, and queue
+        all reset cleanly — _toggle_device(label) when label is already
+        on / starting routes to the stop branch.
+
+        Optimistically drops the killed device's rows from the table so
+        the user sees the change immediately instead of waiting up to
+        10 s for the next graph poll. DDS may still report the dying
+        publisher for a beat; the next poll reconciles authoritatively.
+        """
+        if device_label not in self._launch_states:
+            return
+        try:
+            self._toggle_device(device_label)
+        except Exception as ex:
+            self._gui_log_msg(f"Failed to stop {device_label}: {ex}")
+            return
+        self._watched_pub_state = {
+            topic: [e for e in entries if e.get('gui_owner') != device_label]
+            for topic, entries in self._watched_pub_state.items()
+        }
+        self._render_process_table()
 
     def _update_queue_label(self):
         """Refresh the queue status text at the top of the launch page."""
@@ -2235,31 +3874,32 @@ class HudWindow(QMainWindow):
 
     def _update_selection(self):
         """Restyle all buttons: selected gets highlight + mirrored arrows, others reset."""
+        T = self._translate_to_theme
         for g, group in enumerate(self._nav_groups):
             for r, (widget, base_label, base_style) in enumerate(group):
                 is_selected = (g == self._nav_col and r == self._nav_row)
                 # Slider uses stylesheet only (no setText)
                 if widget is self.pb_slider:
                     if is_selected and self._scrub_mode:
-                        widget.setStyleSheet(self._slider_scrub_style)
+                        widget.setStyleSheet(T(self._slider_scrub_style))
                     elif is_selected:
-                        widget.setStyleSheet(self._slider_sel_style)
+                        widget.setStyleSheet(T(self._slider_sel_style))
                     else:
-                        widget.setStyleSheet(self._slider_base_style)
+                        widget.setStyleSheet(T(self._slider_base_style))
                 elif widget is self.btn_speed and is_selected and self._speed_mode:
                     widget.setText(
                         f"\u25B2  {base_label}  \u25BC"
                     )
-                    widget.setStyleSheet(
+                    widget.setStyleSheet(T(
                         self._speed_btn_style
                         .replace("border: 1px solid #555", "border: 1px solid #0f0")
                         .replace("color: #dcdcdc", "color: #0f0")
-                    )
+                    ))
                 elif widget in self._sensor_cells or widget is self._power_cell:
                     if is_selected:
-                        widget.setStyleSheet(self._sensor_sel_style)
+                        widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
-                        widget.setStyleSheet(self._sensor_frame_style)
+                        widget.setStyleSheet(T(self._sensor_frame_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -2276,15 +3916,15 @@ class HudWindow(QMainWindow):
                             f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                         )
                         if is_selected_device:
-                            widget.setStyleSheet(self._make_sel_style(self._STATUS_BTN_SELECTED))
+                            widget.setStyleSheet(T(self._make_sel_style(self._STATUS_BTN_SELECTED)))
                         else:
-                            widget.setStyleSheet(self._make_sel_style(base_style))
+                            widget.setStyleSheet(T(self._make_sel_style(base_style)))
                     else:
                         widget.setText(base_label)
                         if is_selected_device:
-                            widget.setStyleSheet(self._STATUS_BTN_SELECTED)
+                            widget.setStyleSheet(T(self._STATUS_BTN_SELECTED))
                         else:
-                            widget.setStyleSheet(base_style)
+                            widget.setStyleSheet(T(base_style))
         # Position floating directional indicators around the selected widget
         self._position_indicators()
 
@@ -2409,7 +4049,10 @@ class HudWindow(QMainWindow):
         self._container_connected = True
         self._gui_log_msg(f"Connected to container '{self._container_name}'")
 
-        # Update button to show connected state
+        # Update button to show connected state. Note that the nav tuple
+        # stores the dark-original style; _update_selection runs each tick
+        # and pipes it through _translate_to_theme, so light mode survives.
+        T = self._translate_to_theme
         connected_style = (
             self._connect_style
             .replace("#1a2a3a", "#1a3a1a")
@@ -2417,7 +4060,7 @@ class HudWindow(QMainWindow):
             .replace("#0a1a2a", "#0a2a0a")
         )
         self.btn_connect.setText("Disconnect Container")
-        self.btn_connect.setStyleSheet(connected_style)
+        self.btn_connect.setStyleSheet(T(connected_style))
         for i, (b, lbl, _s) in enumerate(self._nav_buttons):
             if b is self.btn_connect:
                 self._nav_buttons[i] = (b, "Disconnect Container", connected_style)
@@ -2428,22 +4071,23 @@ class HudWindow(QMainWindow):
             btn_ref.setEnabled(True)
             for _b, _l, base_s in self._nav_buttons:
                 if _b is btn_ref:
-                    btn_ref.setStyleSheet(base_s)
+                    btn_ref.setStyleSheet(T(base_s))
                     break
         # Turn container dots green
         for dot in self._container_dots:
-            dot.setStyleSheet(
+            dot.setStyleSheet(T(
                 "background-color: #4f4; border-radius: 5px; border: none;"
-            )
+            ))
 
     def _disconnect_container(self):
         """Disconnect from the container and disable container features."""
         self._container_connected = False
         self._gui_log_msg(f"Disconnected from container '{self._container_name}'")
 
+        T = self._translate_to_theme
         # Restore connect button
         self.btn_connect.setText("Connect to Container")
-        self.btn_connect.setStyleSheet(self._connect_style)
+        self.btn_connect.setStyleSheet(T(self._connect_style))
         for i, (b, lbl, _s) in enumerate(self._nav_buttons):
             if b is self.btn_connect:
                 self._nav_buttons[i] = (b, "Connect to Container", self._connect_style)
@@ -2452,16 +4096,72 @@ class HudWindow(QMainWindow):
         # Disable container-dependent buttons and show warnings
         for btn_ref, base_label in self._container_buttons.items():
             btn_ref.setEnabled(False)
-            btn_ref.setStyleSheet(self._disabled_btn_style)
+            btn_ref.setStyleSheet(T(self._disabled_btn_style))
         # Turn container dots red
         for dot in self._container_dots:
-            dot.setStyleSheet(
+            dot.setStyleSheet(T(
                 "background-color: #f44; border-radius: 5px; border: none;"
-            )
+            ))
 
         # Stop any active container modes
         if self._live_active:
             self._stop_live_mode()
+
+        # Reset launch panel: any green/yellow buttons must return to gray
+        # since their in-container processes are dead with the container.
+        self._reset_all_launch_states()
+
+    def _reset_all_launch_states(self):
+        """Clear launch-page state when the container drops away.
+        Cancels timers, kills any tracked host-side wrappers, resets every
+        device to gray. Called from _disconnect_container so launch buttons
+        do not stay locked green after the container stops."""
+        for label in list(self._launch_states.keys()):
+            if not self._launch_states.get(label):
+                continue
+            self._launch_states[label] = False
+            # Status dots back to off
+            for key in self._dot_keys_for(label):
+                if key in self.status_dots:
+                    self.status_dots[key].setStyleSheet(self._DOT_OFF)
+            # Cancel readiness/flash timers
+            t = self._startup_timers.pop(label, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            self._startup_deadlines.pop(label, None)
+            self._ready_events.pop(label, None)
+            t = self._flash_timers.pop(label, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            # Kill the host-side wrapper subprocess (the in-container
+            # children are already gone with the container).
+            proc = self._process_objects.pop(label, None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                buf = self._process_buffers.get(label)
+                if buf is not None:
+                    buf.append("[Process ended: container disconnected]\n")
+            self._process_readers.pop(label, None)
+            # Restore button text + style
+            for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
+                if blabel == label:
+                    btn.setText(label)
+                    btn.setStyleSheet(self._launch_btn_style)
+                    self._launch_nav_buttons[i] = (btn, blabel, self._launch_btn_style)
+                    break
+        # Empty the queue and refresh the queue label
+        self._launch_queue.clear()
+        self._update_queue_label()
+        self._refresh_terminal_display()
 
     def _check_container_health(self):
         """Periodic check: if connected, verify the container is still running."""
@@ -3094,8 +4794,9 @@ class HudWindow(QMainWindow):
         if xs:
             # Use a simple line instead of scatter (much faster)
             if self._odom_scatter is None:
+                trail_color = '#000000' if self._theme == 'light' else 'white'
                 self._odom_scatter, = self._odom_ax.plot(
-                    xs, ys, 'w-', linewidth=1.5, zorder=3,
+                    xs, ys, '-', color=trail_color, linewidth=1.5, zorder=3,
                 )
             else:
                 self._odom_scatter.set_data(xs, ys)
@@ -3410,7 +5111,8 @@ class HudWindow(QMainWindow):
         if node is None:
             return  # Placeholders stay visible
 
-        t_s = time.monotonic() - self._live_t0
+        now = time.monotonic()
+        t_s = now - self._live_t0
         any_scalar_changed = False
 
         # --- GPS ---
@@ -3457,10 +5159,27 @@ class HudWindow(QMainWindow):
                         )
             any_scalar_changed = True
 
-        # --- Odom ---
-        odom = node.latest_odom
-        if odom is not None:
+        # --- Odom: graduate raw /odom → /local_ekf/odom when the
+        # Local EKF is publishing. Same buffer either way; the title
+        # flip is what tells the operator which stream is on screen.
+        ekf_odom_t = node.last_msg_t.get('ekf_local_odom', 0.0)
+        ekf_odom_alive = (
+            ekf_odom_t > 0.0
+            and (now - ekf_odom_t) < self._ekf_msg_age_max_s
+        )
+        if ekf_odom_alive and node.latest_ekf_odom is not None:
+            odom = node.latest_ekf_odom
+            node.latest_ekf_odom = None
+            # Drop any raw /odom we picked up in the same tick — we
+            # don't want to interleave the two streams in the trail.
             node.latest_odom = None
+            self._set_enc_title("Encoders (Odom EKF)")
+        else:
+            odom = node.latest_odom
+            if odom is not None:
+                node.latest_odom = None
+            self._set_enc_title("Encoders (Odom)")
+        if odom is not None:
             self._odom_live_txt.set_visible(False)
             self._odom_ax.grid(True, which='both', color='#333', linewidth=0.5)
             self._odom_ax.tick_params(labelbottom=True, labelleft=True)
@@ -3540,10 +5259,84 @@ class HudWindow(QMainWindow):
             self._live_set_dot_received('Lidar')
 
         # --- Redraw scalar plots (throttled to ~3 Hz) ---
-        now = time.monotonic()
         if any_scalar_changed and (now - getattr(self, '_last_live_redraw', 0)) > 0.33:
             self._redraw_plots()
             self._last_live_redraw = now
+
+        # NOTE: the EKF participation pulse used to run here. It now
+        # has a dedicated always-on timer (self._ekf_status_timer in
+        # __init__) so the pulse and the EKF Filters status rows
+        # update whether or not Live mode is active.
+
+    def _set_enc_title(self, text):
+        """Flip the Encoders cell title between '(Odom)' and
+        '(Odom EKF)'. Cheap-no-op when the text is unchanged so the
+        live tick can call this every iteration without churn.
+        """
+        if getattr(self, '_enc_title_text', None) == text:
+            return
+        lbl = getattr(self, '_enc_title_label', None)
+        if lbl is None:
+            return
+        lbl.setText(text)
+        self._enc_title_text = text
+
+    def _ekf_pulse_tick(self, now_s):
+        """Apply the green↔purple EKF-participation pulse to device
+        dots whose input AND the EKF that consumes it are both fresh,
+        and drive the "Local EKF" / "Map EKF" status rows from the
+        freshness of their fused-output topics.
+
+        Devices NOT participating in any EKF fall through this
+        method untouched — their styling is owned by the existing
+        _live_set_dot_received / _live_dot_flash_tick path. This
+        means a freshly-running-but-not-fused device stays plain
+        green, an EKF-fused device pulses, and a stalled device
+        keeps its yellow flash. The transition between states is
+        what tells the operator "the EKF just elevated this
+        device" or "the EKF just lost it."
+        """
+        node = self._ros_node
+        if node is None:
+            return
+        stamps = getattr(node, 'last_msg_t', None)
+        if stamps is None:
+            return
+
+        def _alive(key):
+            t = stamps.get(key, 0.0)
+            return t > 0.0 and (now_s - t) < self._ekf_msg_age_max_s
+
+        # Hue interpolated along the green→purple arc by a sine
+        # wave at ``_ekf_pulse_freq_hz``. Phase advanced by the
+        # tick interval (5 Hz live tick → 0.2 s).
+        self._ekf_pulse_phase = (
+            (self._ekf_pulse_phase + 0.2 * self._ekf_pulse_freq_hz) % 1.0)
+        t = 0.5 * (1.0 + math.sin(2.0 * math.pi * self._ekf_pulse_phase))
+        hue = int(self._ekf_pulse_hue_lo
+                  + (self._ekf_pulse_hue_hi - self._ekf_pulse_hue_lo) * t)
+        pulse_style = (
+            f"background-color: hsl({hue}, 100%, 60%); "
+            "border-radius: 7px; border: none;")
+
+        for dot_name, (input_key, ekf_key) in self._ekf_pulse_devices.items():
+            dot = self.status_dots.get(dot_name)
+            if dot is None:
+                continue
+            if _alive(input_key) and _alive(ekf_key):
+                dot.setStyleSheet(pulse_style)
+            # Else: leave whatever the prior tick set — the existing
+            # alive/flash logic owns the dot's appearance in those
+            # states.
+
+        # EKF status rows: solid green while the filter is publishing,
+        # gray when stale. These don't pulse — they're the "is this
+        # filter alive?" answer, mirroring the device-list rows above.
+        for dot_name, ekf_key in self._ekf_status_rows.items():
+            dot = self.status_dots.get(dot_name)
+            if dot is None:
+                continue
+            dot.setStyleSheet(self._DOT_ON if _alive(ekf_key) else self._DOT_OFF)
 
     @staticmethod
     def _render_lidar_bev(scan, size=480):
@@ -3643,11 +5436,32 @@ if _HAS_ROS:
             self.latest_image_rgb = None   # numpy RGB array
             self.latest_scan = None        # LaserScan message
             self.latest_gps = None         # (lat, lon)
-            self.latest_odom = None        # (x, y, qz)
+            self.latest_odom = None        # (x, y, qz) — raw /odom
+            self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
             self.latest_soc = None         # float (0-100%)
+
+            # ── EKF participation tracking (per-message wall-clock
+            # timestamps). The HudWindow's pulse tick reads this to
+            # decide which device dots are "elevated" (= the local
+            # robot_localization EKF is currently fusing this
+            # device's data). A device is considered participating
+            # iff (a) its raw input topic is fresh AND (b)
+            # /local_ekf/odom is fresh — i.e. the EKF is alive AND
+            # consuming this device. Stays at 0.0 until first
+            # message; the pulse skips devices whose stamp == 0.0.
+            self.last_msg_t = {
+                'image':           0.0,   # /zed/zed_node/rgb/...
+                'scan':            0.0,   # /scan_fullframe
+                'gps':             0.0,   # /gps_fix
+                'odom':            0.0,   # /odom (raw wheel)
+                'imu':             0.0,   # /sick_scansegment_xd/imu (SICK lidar IMU)
+                'pose':            0.0,   # /pose (slam_toolbox → Map EKF)
+                'ekf_local_odom':  0.0,   # /local_ekf/odom (Local EKF out)
+                'ekf_global_odom': 0.0,   # /global_ekf/odom (Map EKF out)
+            }
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
 
@@ -3677,8 +5491,44 @@ if _HAS_ROS:
             self.create_subscription(
                 Float32, '/electrical/soc', self._cb_soc, _SENSOR_QOS,
             )
+            # ── EKF participation: monitor the EKF's input streams
+            # and its output. The IMU input feeding ekf_local is the
+            # SICK multiScan's onboard IMU at /sick_scansegment_xd/imu
+            # — the SICK driver hardcodes its ROS2 node name to
+            # ``sick_scansegment_xd`` and advertises IMU under
+            # ``<nodename>/imu``. (Earlier code subscribed to
+            # /multiScan/imu based on the launch file's ``nodename``
+            # default, but the running driver ignores that arg —
+            # verified via ros2 topic info, 0 publishers on
+            # /multiScan/imu.) The ZED camera's IMU is excluded for
+            # now: its TF chain to base_link is not currently
+            # bridged, so robot_localization rejects every ZED IMU
+            # message. When the URDF/launch is fixed to publish
+            # base_link → zed2i_imu_link, add a second subscription
+            # here and a corresponding dot mapping.
+            self.create_subscription(
+                Imu, '/sick_scansegment_xd/imu', self._cb_imu, _SENSOR_QOS,
+            )
+            self.create_subscription(
+                Odometry, '/local_ekf/odom',
+                self._cb_ekf_local_odom, _SENSOR_QOS,
+            )
+            # Map EKF participation: /pose is slam_toolbox's localization
+            # output and is the Map EKF's pose0 input (ekf_global.yaml).
+            # /global_ekf/odom is the Map EKF's fused output. The GUI's
+            # SLAM dot pulses iff both are fresh; the "Map EKF" status
+            # row goes solid green iff /global_ekf/odom is fresh.
+            self.create_subscription(
+                PoseWithCovarianceStamped, '/pose',
+                self._cb_pose, _SENSOR_QOS,
+            )
+            self.create_subscription(
+                Odometry, '/global_ekf/odom',
+                self._cb_ekf_global_odom, _SENSOR_QOS,
+            )
 
         def _cb_image(self, msg):
+            self.last_msg_t['image'] = time.monotonic()
             try:
                 channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
                 img = np.frombuffer(msg.data, dtype=np.uint8)
@@ -3694,15 +5544,53 @@ if _HAS_ROS:
                 pass
 
         def _cb_scan(self, msg):
+            self.last_msg_t['scan'] = time.monotonic()
             self.latest_scan = msg
 
         def _cb_gps(self, msg):
+            self.last_msg_t['gps'] = time.monotonic()
             self.latest_gps = (msg.latitude, msg.longitude)
 
         def _cb_odom(self, msg):
+            self.last_msg_t['odom'] = time.monotonic()
             p = msg.pose.pose.position
             qz = msg.pose.pose.orientation.z
             self.latest_odom = (p.x, p.y, qz)
+
+        def _cb_imu(self, msg):
+            # SICK multiScan onboard IMU (the EKF's only IMU input
+            # on Bowser today). Stamp drives the Lidar dot's EKF-
+            # participation pulse in HudWindow's _ekf_pulse_tick —
+            # pulses only while /local_ekf/odom is also fresh.
+            self.last_msg_t['imu'] = time.monotonic()
+
+        def _cb_ekf_local_odom(self, msg):
+            # The local robot_localization EKF's output. When
+            # this stops publishing, every "EKF-participating"
+            # pulse on the GUI freezes to its last hue and the
+            # device dots fall back to their plain-alive style —
+            # the operator's "the EKF is dead" cue.
+            #
+            # We also stash the filtered pose so the Encoders cell
+            # can graduate from raw /odom to the EKF stream — the
+            # live tick prefers latest_ekf_odom whenever this topic
+            # is fresh.
+            self.last_msg_t['ekf_local_odom'] = time.monotonic()
+            p = msg.pose.pose.position
+            qz = msg.pose.pose.orientation.z
+            self.latest_ekf_odom = (p.x, p.y, qz)
+
+        def _cb_pose(self, msg):
+            # slam_toolbox's localized pose. Drives the SLAM dot's
+            # EKF-participation pulse — pulses iff /global_ekf/odom
+            # is also fresh (i.e. the Map EKF is fusing this pose).
+            self.last_msg_t['pose'] = time.monotonic()
+
+        def _cb_ekf_global_odom(self, msg):
+            # The global (map-frame) robot_localization EKF's output.
+            # Drives the "Map EKF" status dot and is the second-half
+            # gate for the SLAM dot's pulse.
+            self.last_msg_t['ekf_global_odom'] = time.monotonic()
 
         def _cb_voltage(self, msg):
             self.latest_voltage = msg.data

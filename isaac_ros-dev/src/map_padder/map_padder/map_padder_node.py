@@ -64,6 +64,12 @@ class MapPadder(Node):
         self._slam_tiles = set()
         self._prev_active = None
 
+        # /plan arrives on every controller tick (~20 Hz); republishing
+        # the whole padded grid that fast saturates global_costmap's
+        # static_layer. We coalesce plan updates into a 2 Hz heartbeat
+        # while /map and /goal still trigger immediate publishes.
+        self._pending_plan_publish = False
+
         map_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -73,6 +79,7 @@ class MapPadder(Node):
         self.create_subscription(OccupancyGrid, input_topic, self._on_map, map_qos)
         self.create_subscription(PoseStamped, goal_topic, self._on_goal, 10)
         self.create_subscription(Path, plan_topic, self._on_plan, 10)
+        self.create_timer(0.5, self._plan_throttle_tick)
 
         self.get_logger().info(
             f'Map padder: tile={self._tile}m  res={self._out_res}m')
@@ -148,8 +155,15 @@ class MapPadder(Node):
             for i in range(0, len(msg.poses), step)]
         self._plan_poses.append(
             (msg.poses[-1].pose.position.x, msg.poses[-1].pose.position.y))
-        if self._latest_map:
+        # Defer to the throttle timer — Nav2 republishes /plan on every
+        # controller tick and the padded grid only needs to track the
+        # corridor at the costmap's own publish rate (~2 Hz).
+        self._pending_plan_publish = True
+
+    def _plan_throttle_tick(self):
+        if self._pending_plan_publish and self._latest_map:
             self._publish(self._latest_map)
+            self._pending_plan_publish = False
 
     # ── core ─────────────────────────────────────────────────────────
 
@@ -231,7 +245,10 @@ class MapPadder(Node):
         bb_w = (max_tx - min_tx + 1) * cpt
         bb_h = (max_ty - min_ty + 1) * cpt
 
-        MAX = 5000
+        # 1500 cells × 0.10 m = 150 m on a side — comfortably bigger than
+        # any AutoNav course we care about and ~11x smaller worst case
+        # than the previous 5000-cell (500 m) ceiling.
+        MAX = 1500
         if bb_w > MAX or bb_h > MAX:
             self.get_logger().warn(f'Clamped {bb_w}x{bb_h}')
             bb_w, bb_h = min(bb_w, MAX), min(bb_h, MAX)

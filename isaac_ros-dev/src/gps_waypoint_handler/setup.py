@@ -15,16 +15,13 @@ setup(
     zip_safe=True,
     maintainer='vtuser',
     maintainer_email='sramey02@vt.edu',
-    description='TODO: Package description',
+    description='Self-correcting GPS waypoint action server with a magnetometer-less heading EKF.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'gps_conversions = gps_waypoint_handler.gps_conversions:main',
-            'waypoint_commander = gps_waypoint_handler.waypoint_commander:main',
             'get_gps_positioning = gps_waypoint_handler.get_gps_positioning:main',
-            'gps_waypoint_bringup = gps_waypoint_handler.gps_waypoint_bringup:main',
-            'tester_publisher = gps_waypoint_handler.tester_publisher:main',
+            'gps_handler_node = gps_waypoint_handler.gps_handler_node:main',
         ],
     },
 )

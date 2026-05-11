@@ -1,3 +1,5 @@
+> **Legacy / fallback control.** Prefer [`ManualOp_instructions.md`](./ManualOp_instructions.md) for normal operation. Use this only when ROS2 / the Jetson container is unavailable — it talks directly to the motor controller over serial from a laptop, bypassing the rest of the stack. Works on either **Shogi** or **Bowser**.
+
 This file is a guide for how to set up, run, and use the manual control system.
 
 # Install instructions

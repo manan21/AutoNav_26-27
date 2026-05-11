@@ -1,150 +1,88 @@
-#!/bin/bash
-# Send a Nav2 goal pose from a GPS waypoint.
-# Usage: ./send_GPS_waypoint.sh <latitude> <longitude> [yaw_degrees]
+#!/usr/bin/env bash
+# isaac_ros-dev/config/send_GPS_waypoint.sh
+# Usage: ./send_GPS_waypoint.sh <lat> <lon> [radius_m]
 #
-# Converts GPS coordinates to map frame using robot_localization's
-# fromLL service (provided by navsat_transform_node), then sends
-# a NavigateToPose action goal.
-#
-# Requires: navsat_transform_node running (from dual_ekf_navsat launch)
-#
-# Accepts decimal degrees OR DMS (degrees/minutes/seconds) format:
-#   Decimal:  37.23112  -80.42459
-#   DMS:      '37°13'\''49.7"N'  '80°25'\''29.2"W'
-#   DMS alt:  37d13m49.7sN  80d25m29.2sW
-#
-# Examples:
-#   ./send_GPS_waypoint.sh 37.23112 -80.42459                        # decimal
-#   ./send_GPS_waypoint.sh "37°13'49.7\"N" "80°25'29.2\"W"          # DMS
-#   ./send_GPS_waypoint.sh 37d13m49.7sN 80d25m29.2sW                # DMS alt
-#   ./send_GPS_waypoint.sh 37.23112 -80.42459 90                    # with yaw
+# Sends a NavigateToWaypoint goal and streams feedback. On Ctrl+C (SIGINT)
+# or SIGTERM, parses the goal UUID from send_goal's stdout and issues a
+# `ros2 action cancel` so the cancellation reaches the action server,
+# not just the local CLI process. This is the workaround for the fact
+# that `ros2 action send_goal` in ROS 2 Humble has NO --cancel-on-disconnect
+# flag (that flag does not exist in the Humble CLI).
 
-if [ $# -lt 2 ]; then
-  echo "Usage: $0 <latitude> <longitude> [yaw_degrees]"
-  echo "  latitude    Decimal degrees (37.2311) or DMS (\"37°13'49.7\\\"N\" or 37d13m49.7sN)"
-  echo "  longitude   Decimal degrees (-80.4248) or DMS (\"80°25'29.2\\\"W\" or 80d25m29.2sW)"
-  echo "  yaw_degrees Orientation at goal in degrees (default: face toward goal)"
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <lat> <lon> [radius_m]" >&2
   exit 1
 fi
 
-# Parse coordinates — converts DMS to decimal if needed
-parse_coord() {
-  python3 -c "
-import re, sys
-raw = '$1'
+LAT=$1
+LON=$2
+RADIUS=${3:-0.75}
 
-# Try parsing as DMS: 37°13'49.7\"N, 37d13m49.7sN, etc.
-m = re.match(r'(-?)(\d+)[°d]\s*(\d+)[\'m]\s*([\d.]+)[\"s]?\s*([NSEWnsew])?', raw)
-if m:
-    sign = m.group(1)
-    deg = float(m.group(2))
-    minutes = float(m.group(3))
-    sec = float(m.group(4))
-    direction = (m.group(5) or '').upper()
-    decimal = deg + minutes / 60.0 + sec / 3600.0
-    if direction in ('S', 'W') or sign == '-':
-        decimal = -abs(decimal)
-    print(f'{decimal:.8f}')
-else:
-    # Assume already decimal
-    print(f'{float(raw):.8f}')
-"
+# Validate that lat/lon are decimal numbers (signed, optional fraction).
+if ! [[ $LAT =~ ^-?[0-9]+(\.[0-9]+)?$ && $LON =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "lat and lon must be decimal numbers" >&2
+  exit 1
+fi
+if ! [[ $RADIUS =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "radius_m must be a decimal number" >&2
+  exit 1
+fi
+
+GOAL_YAML="{goal_type: 0, target: {header: {frame_id: 'wgs84'}, pose: {position: {x: $LON, y: $LAT, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}, success_radius_m: $RADIUS}"
+
+# Tempfile to capture send_goal's stdout so the trap can parse the UUID.
+OUT_LOG=$(mktemp -t send_gps_waypoint.XXXXXX)
+
+cleanup_tmp() { rm -f "$OUT_LOG"; }
+trap cleanup_tmp EXIT
+
+# Run send_goal in the background, teeing stdout so the operator still
+# sees feedback in real time AND we have a parseable copy in OUT_LOG.
+ros2 action send_goal /navigate_to_waypoint \
+  autonav_interfaces/action/NavigateToWaypoint \
+  "$GOAL_YAML" \
+  --feedback 2>&1 | tee "$OUT_LOG" &
+SEND_PID=$!
+
+on_interrupt() {
+  echo "" >&2
+  echo "interrupt received -- cancelling /navigate_to_waypoint" >&2
+
+  # The goal UUID is printed by `ros2 action send_goal` once the goal is
+  # accepted. The exact line in Humble looks like:
+  #   "Goal accepted with ID: a1b2c3d4e5f6..."
+  # We grep for that and extract the trailing token. If the goal hasn't
+  # been accepted yet, UUID will be empty and we skip the cancel.
+  UUID=$(grep -E 'Goal accepted with ID' "$OUT_LOG" 2>/dev/null \
+           | tail -n1 \
+           | awk -F': ' '{print $2}' \
+           | tr -d '[:space:]' || true)
+
+  if [[ -n "${UUID:-}" ]]; then
+    # NOTE: `ros2 action cancel <action_name> <uuid>` is the documented
+    # Humble form. If your Humble build's CLI rejects this signature,
+    # try `ros2 action cancel <action_name>` (some distros allow omitting
+    # the UUID to cancel all active goals). Adjust as needed.
+    ros2 action cancel /navigate_to_waypoint "$UUID" 2>/dev/null || \
+      echo "ros2 action cancel failed (UUID=$UUID); falling through to SIGTERM" >&2
+  else
+    echo "no goal UUID parsed from send_goal output; skipping action cancel" >&2
+  fi
+
+  # Always tear down the local CLI process so the script returns promptly.
+  kill -TERM "$SEND_PID" 2>/dev/null || true
+  wait "$SEND_PID" 2>/dev/null || true
+  exit 130
 }
+trap on_interrupt INT TERM
 
-LAT=$(parse_coord "$1")
-LON=$(parse_coord "$2")
-YAW_DEG_OVERRIDE=${3:-""}
-
-# --- Step 1: Convert GPS to map frame via fromLL service ---
-echo "Converting GPS ($LAT, $LON) to map frame..."
-
-FROMLL_OUTPUT=$(ros2 service call /fromLL robot_localization/srv/FromLL \
-  "{ll_point: {latitude: $LAT, longitude: $LON, altitude: 0.0}}" 2>&1)
-
-if [ $? -ne 0 ]; then
-  echo "ERROR: fromLL service call failed. Is navsat_transform_node running?"
-  echo "  Launch it with: ros2 launch slam dual_ekf_navsat.launch.py"
-  echo "Raw output: $FROMLL_OUTPUT"
-  exit 1
-fi
-
-# Parse the map_point x,y from the service response
-MAP_COORDS=$(python3 -c "
-import re, sys
-
-output = '''$FROMLL_OUTPUT'''
-
-# robot_localization response format: ...Point(x=1.23, y=4.56, z=0.0)
-# or YAML style: x: 1.23
-xm = re.search(r'x[=:]\s*([-\d.eE+]+)', output)
-ym = re.search(r'y[=:]\s*([-\d.eE+]+)', output)
-
-if not xm or not ym:
-    print('ERROR: Could not parse fromLL response', file=sys.stderr)
-    print('Response was: ' + output, file=sys.stderr)
-    sys.exit(1)
-
-print(f'{xm.group(1)} {ym.group(1)}')
-")
-
-if [ $? -ne 0 ]; then
-  echo "Failed to parse fromLL response."
-  exit 1
-fi
-
-read X Y <<< "$MAP_COORDS"
-echo "Map frame goal: x=$X, y=$Y"
-
-# --- Step 2: Determine goal orientation ---
-if [ -n "$YAW_DEG_OVERRIDE" ]; then
-  YAW_DEG=$YAW_DEG_OVERRIDE
-  echo "Using specified yaw: ${YAW_DEG}°"
-else
-  # Auto-compute yaw to face from current position toward goal
-  TF_OUTPUT=$(ros2 run tf2_ros tf2_echo map base_link --once 2>&1)
-
-  YAW_DEG=$(python3 -c "
-import math, re, sys
-
-output = '''$TF_OUTPUT'''
-t = re.search(r'Translation: \[([^,]+),\s*([^,]+),\s*([^\]]+)\]', output)
-
-if not t:
-    # Can't get current pose — default to 0
-    print('0')
-    sys.exit(0)
-
-rx, ry = float(t.group(1)), float(t.group(2))
-goal_x, goal_y = $X, $Y
-
-dx = goal_x - rx
-dy = goal_y - ry
-
-if abs(dx) < 0.01 and abs(dy) < 0.01:
-    print('0')
-else:
-    print(f'{math.degrees(math.atan2(dy, dx)):.2f}')
-")
-  echo "Auto-computed yaw toward goal: ${YAW_DEG}°"
-fi
-
-# --- Step 3: Convert yaw to quaternion and send goal ---
-QZ=$(python3 -c "import math; print(math.sin(math.radians($YAW_DEG)/2))")
-QW=$(python3 -c "import math; print(math.cos(math.radians($YAW_DEG)/2))")
-
-echo "Sending NavigateToPose: x=$X, y=$Y, yaw=${YAW_DEG}° (qz=$QZ, qw=$QW)"
-
-ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
-"pose:
-  header:
-    frame_id: 'map'
-  pose:
-    position:
-      x: $X
-      y: $Y
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: $QZ
-      w: $QW"
+# Wait for send_goal to finish on its own (goal succeeded / aborted /
+# rejected). `set -e` is fine here because we explicitly capture $?.
+set +e
+wait "$SEND_PID"
+EXIT=$?
+set -e
+trap - INT TERM
+exit $EXIT

@@ -11,3 +11,8 @@ tile_cache/
 *.venv*
 .DS_STORE
 ZED_Diagnostic_Results.json
+
+# Claude behavior framework (local-only)
+CLAUDE.md
+BEHAVIOR.md
+RESEARCH.md

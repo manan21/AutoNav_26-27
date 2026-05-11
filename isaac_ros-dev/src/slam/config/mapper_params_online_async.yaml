@@ -13,7 +13,8 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_footprint
-    scan_topic: /scan_fullframe
+    # scan_topic: /scan_fullframe   # legacy — raw SICK layer-5
+    scan_topic: /scan_pca_filtered   # PCA-filtered — see slam.yaml note
     use_map_saver: true
     mode: mapping #localization
 
