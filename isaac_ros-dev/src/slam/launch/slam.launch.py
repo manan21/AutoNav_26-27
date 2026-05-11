@@ -55,7 +55,7 @@ def generate_launch_description():
     # ── Paths ─────────────────────────────────────────────────────────────
     pkg_share = FindPackageShare(package='slam').find('slam')
     slam_config      = os.path.join(pkg_share, 'config', 'slam.yaml')
-    ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local_sim.yaml')
+    ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
 
     # ── 1. Local EKF (odom -> base_link) ─────────────────────────────────
     # MUST be named 'ekf_node' — slam_toolbox looks for this exact name
