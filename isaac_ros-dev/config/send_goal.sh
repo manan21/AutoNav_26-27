@@ -97,17 +97,7 @@ QW=$(python3 -c "import math; print(math.cos(math.radians($YAW_DEG)/2))")
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}° (qz=$QZ, qw=$QW)"
 
-ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
-"pose:
-  header:
-    frame_id: 'map'
-  pose:
-    position:
-      x: $X
-      y: $Y
-      z: 0.0
-    orientation:
-      x: 0.0
-      y: 0.0
-      z: $QZ
-      w: $QW"
+ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
+"{header: {frame_id: 'map'},
+  pose: {position: {x: $X, y: $Y, z: 0.0},
+         orientation: {x: 0.0, y: 0.0, z: $QZ, w: $QW}}}"
