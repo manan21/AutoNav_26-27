@@ -1085,10 +1085,13 @@ class HudWindow(QMainWindow):
             "border: none; color: #aaa; font-size: 10px;"
             " font-family: monospace; font-weight: bold;"
         )
-        for col, text in enumerate(["Node", "Topic", "Source", "PID", ""]):
+        # One row per PID — aggregated across all watched topics. The
+        # Topics column lists every watched topic that PID publishes to.
+        for col, text in enumerate(["PID", "Source", "Topics", ""]):
             h = QLabel(text)
             h.setStyleSheet(proc_header_style)
             proc_header.addWidget(h, 0, col)
+        proc_header.setColumnStretch(2, 1)  # Topics column absorbs slack
         proc_header_holder = QWidget()
         proc_header_holder.setLayout(proc_header)
         processes_layout.addWidget(proc_header_holder)
@@ -1096,13 +1099,16 @@ class HudWindow(QMainWindow):
         # Body rows live in their own scroll area, repopulated on every poll.
         self._proc_table = QGridLayout()
         self._proc_table.setSpacing(4)
+        self._proc_table.setColumnStretch(2, 1)
         proc_holder = QWidget()
         proc_holder.setLayout(self._proc_table)
         proc_scroll = QScrollArea()
         proc_scroll.setWidgetResizable(True)
         proc_scroll.setWidget(proc_holder)
         proc_scroll.setStyleSheet("QScrollArea { border: none; }")
-        proc_scroll.setMinimumHeight(240)
+        proc_scroll.setMinimumHeight(320)
+        proc_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         processes_layout.addWidget(proc_scroll, stretch=1)
 
         # Empty-state placeholder shown when no watched-topic publishers exist.
@@ -2839,16 +2845,16 @@ class HudWindow(QMainWindow):
         self._render_process_table()
 
     def _render_process_table(self):
-        """Repopulate the Manage Running Processes grid from _watched_pub_state.
+        """Repopulate the Manage Running Processes grid, aggregated by PID.
 
-        Columns: [Node | Topic | Source | PID | Action]. The Action cell
-        only renders a Kill button for GUI-owned rows; foreign rows show
-        the heuristic PID as plain text per the disclaimer banner above.
+        Columns: [PID | Source | Topics | Action]. Each process gets one
+        row; the Topics cell lists every watched topic that PID publishes
+        to. Unknown-PID publishers cluster by node name so they don't
+        collapse together. Kill button only on GUI-owned rows.
         """
         if not hasattr(self, '_proc_table'):
             return
 
-        # Clear existing widgets from the grid.
         while self._proc_table.count():
             item = self._proc_table.takeAt(0)
             w = item.widget()
@@ -2873,50 +2879,76 @@ class HudWindow(QMainWindow):
             "QPushButton:pressed { background-color: #300a0a; }"
         )
 
-        row = 0
-        any_rendered = False
+        # Aggregate per process. Resolved PIDs collapse cleanly; unresolved
+        # publishers cluster by node name as a fallback so distinct unknown
+        # processes don't merge into a single row.
+        agg = {}  # key -> {pid, node, gui_owner, topics: set}
         for topic in self._watched_topics:
-            entries = self._watched_pub_state.get(topic, [])
-            for e in entries:
-                any_rendered = True
-                node_lbl = QLabel(e.get('node', '?'))
-                node_lbl.setStyleSheet(cell_style)
-                self._proc_table.addWidget(node_lbl, row, 0)
-
-                topic_lbl = QLabel(e.get('topic', topic))
-                topic_lbl.setStyleSheet(cell_style)
-                self._proc_table.addWidget(topic_lbl, row, 1)
-
-                gui_owner = e.get('gui_owner')
-                if gui_owner is not None:
-                    source_lbl = QLabel(f"GUI: {gui_owner}")
-                    source_lbl.setStyleSheet(cell_style)
-                else:
-                    source_lbl = QLabel("External")
-                    source_lbl.setStyleSheet(foreign_style)
-                self._proc_table.addWidget(source_lbl, row, 2)
-
+            for e in self._watched_pub_state.get(topic, []):
                 pid = e.get('pid')
-                pid_text = str(pid) if pid is not None else "unknown"
-                pid_lbl = QLabel(pid_text)
-                pid_lbl.setStyleSheet(
-                    cell_style if gui_owner is not None else foreign_style
-                )
-                self._proc_table.addWidget(pid_lbl, row, 3)
+                node = e.get('node', '?')
+                owner = e.get('gui_owner')
+                key = pid if pid is not None else ('unk', node)
+                if key not in agg:
+                    agg[key] = {
+                        'pid': pid,
+                        'node': node,
+                        'gui_owner': owner,
+                        'topics': set(),
+                    }
+                agg[key]['topics'].add(e.get('topic', topic))
 
-                if gui_owner is not None:
-                    kill_btn = QPushButton("Kill")
-                    kill_btn.setStyleSheet(kill_style)
-                    kill_btn.setFocusPolicy(Qt.NoFocus)
-                    kill_btn.clicked.connect(
-                        lambda _checked=False, lbl=gui_owner:
-                            self._kill_gui_process(lbl)
-                    )
-                    self._proc_table.addWidget(kill_btn, row, 4)
-                row += 1
+        # Sort: GUI-owned first, then by numeric PID, then unknowns by node.
+        def sort_key(item):
+            _key, v = item
+            owner = v.get('gui_owner')
+            pid = v.get('pid')
+            return (
+                0 if owner is not None else 1,
+                pid if pid is not None else 10**9,
+                v.get('node', ''),
+            )
+
+        row = 0
+        for _key, v in sorted(agg.items(), key=sort_key):
+            owner = v['gui_owner']
+            pid = v['pid']
+            pid_text = str(pid) if pid is not None else f"?  {v['node']}"
+            pid_lbl = QLabel(pid_text)
+            pid_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            self._proc_table.addWidget(pid_lbl, row, 0)
+
+            if owner is not None:
+                source_lbl = QLabel(f"GUI: {owner}")
+                source_lbl.setStyleSheet(cell_style)
+            else:
+                source_lbl = QLabel("External")
+                source_lbl.setStyleSheet(foreign_style)
+            self._proc_table.addWidget(source_lbl, row, 1)
+
+            topics_text = ", ".join(sorted(v['topics']))
+            topics_lbl = QLabel(topics_text)
+            topics_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            topics_lbl.setWordWrap(True)
+            self._proc_table.addWidget(topics_lbl, row, 2)
+
+            if owner is not None:
+                kill_btn = QPushButton("Kill")
+                kill_btn.setStyleSheet(kill_style)
+                kill_btn.setFocusPolicy(Qt.NoFocus)
+                kill_btn.clicked.connect(
+                    lambda _checked=False, lbl=owner:
+                        self._kill_gui_process(lbl)
+                )
+                self._proc_table.addWidget(kill_btn, row, 3)
+            row += 1
 
         if hasattr(self, '_proc_empty_label'):
-            self._proc_empty_label.setVisible(not any_rendered)
+            self._proc_empty_label.setVisible(row == 0)
 
     def _kill_gui_process(self, device_label):
         """Terminate a GUI-spawned process by its device label.
