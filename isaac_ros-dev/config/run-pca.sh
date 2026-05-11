@@ -9,7 +9,7 @@ ros2 run autonav_detection grade_detector --ros-args --params-file "$PARAMS" "$@
 launchpid=$!
 trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
 
-sleep 5
+sleep 3
 echo "[GUI_READY] PCA DETECT"
 
 wait "$launchpid"
