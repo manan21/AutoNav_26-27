@@ -1,63 +1,86 @@
-# Top-level key MUST match the ROS2 node name. ``slam.launch.py``
-# instantiates the local EKF as  Node(name='ekf_node', ...) so the
-# parameter block has to live under ``ekf_node:``. Naming it
-# ``ekf_local:`` (the previous value) made every parameter silently
-# ignored — robot_localization fell back to its hard-coded defaults
-# and the topic-name fix below would have had no effect.
 ekf_node:
   ros__parameters:
-    # Local EKF (odom → base_link). The 30 Hz output is consumed by
-    # gps_handler_node as the predict-heartbeat for its
-    # magnetometer-less θ EKF.
     frequency: 30.0
-    world_frame: odom
-    # 2-D ground robot — drop Z / roll / pitch so IMU acceleration
-    # noise can't drive Z drift into the published estimate. The sim
-    # variant (ekf_local_sim.yaml:13) had this set to true; the real
-    # config was inadvertently false.
     two_d_mode: true
-    publish_acceleration: true
     publish_tf: true
+    publish_acceleration: false
 
-    # ── Inputs ────────────────────────────────────────────────────
-    # Topic names verified against what the running stack actually
-    # publishes (ros2 topic info, 2026-05-10):
-    #   * ``/odom`` — wheel_odom_pub.cpp:34 (advertised as ``"odom"``,
-    #     resolves to ``/odom`` with no namespace).
-    #   * ``/sick_scansegment_xd/imu`` — the SICK driver hardcodes
-    #     its ROS2 node name to ``sick_scansegment_xd`` regardless
-    #     of the ``nodename`` arg in ``sick_multiscan.launch``, and
-    #     publishes IMU under ``<nodename>/imu``. An earlier comment
-    #     here claimed the topic was ``/multiScan/imu``; that was
-    #     wrong and the EKF was silently starving its IMU input
-    #     (``ros2 topic info /multiScan/imu`` showed 0 publishers).
-    #
-    # The ZED IMU (``/zed/zed_node/imu/data``) is intentionally NOT
-    # included here yet: its frame_id is ``zed2i_imu_link`` and the
-    # current ``shogi.urdf`` has no TF chain to ``base_link`` for
-    # that frame, so robot_localization would reject every ZED IMU
-    # message with a TF lookup failure. Add it back once the URDF
-    # bridges ``base_link → zed2i_imu_link`` (or ``run-zed.sh``
-    # publishes the ZED's internal IMU TF via ``publish_imu_tf:=true``
-    # AND the URDF connects ``zed_camera_link`` to the ZED's own
-    # ``zed2i_camera_link`` chain). Until then a dual-IMU config
-    # would silently starve.
-    odom0: /odom
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # ── Wheel odometry ──────────────────────────────────────────────
+    # Fuse: vx (forward velocity) and vyaw (turn rate)
+    # Do NOT fuse x/y position directly — let it integrate from velocity
+    odom0: odom
     odom0_config: [false, false, false,
                    false, false, false,
-                   true,  true,  false,
+                   true,  false, false,
                    false, false, true,
                    false, false, false]
-    odom0_differential: true
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
 
-    imu0: /sick_scansegment_xd/imu
-    # 2-D ground robot — fuse yaw-rate only. Earlier configs also
-    # enabled vpitch (index 10) but two_d_mode constrains pitch to
-    # zero, so feeding vpitch only adds noise to the update step
-    # without helping the state estimate.
+    # ── SICK IMU ────────────────────────────────────────────────────
+    # Fuse: yaw rate only (gz). The SICK IMU is bolted to the chassis
+    # so roll/pitch are structural, not meaningful for 2D nav.
+    imu0: sick_scansegment_xd/imu
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]
-    imu0_differential: true
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    # ── Process noise ───────────────────────────────────────────────
+    # How much we expect the state to drift per timestep.
+    # Order: x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
+    # Larger = less trust in the model, more trust in measurements.
+    # For a differential drive robot on flat ground:
+    #   - x/y drift slowly (wheels slip a little)
+    #   - yaw drifts slowly
+    #   - vx drifts very slowly (speed is fairly consistent)
+    #   - vyaw drifts slowly
+    process_noise_covariance: [
+      0.05,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.05,   0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.06,   0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.03,   0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.03,   0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.06,   0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025,   0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01,   0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01,   0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02,   0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.01,   0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.01,   0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015
+    ]
+
+    # ── Initial estimate covariance ─────────────────────────────────
+    # How uncertain we are about the starting state.
+    # Large values = "I don't know where I started"
+    initial_estimate_covariance: [
+      1.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    1.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    1.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9,   0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    1e-9
+    ]

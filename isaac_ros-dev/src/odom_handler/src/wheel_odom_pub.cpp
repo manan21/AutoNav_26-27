@@ -156,16 +156,14 @@ class WheelOdomPublisher : public rclcpp::Node
       }
       wheel_odom_msg.pose.covariance[0]  = 0.01;   // x
       wheel_odom_msg.pose.covariance[7]  = 0.01;   // y
-      wheel_odom_msg.pose.covariance[14] = 1e6;    // z (unused on 2-D robot)
-      wheel_odom_msg.pose.covariance[21] = 1e6;    // roll
-      wheel_odom_msg.pose.covariance[28] = 1e6;    // pitch
-      wheel_odom_msg.pose.covariance[35] = 0.05;   // yaw
-      wheel_odom_msg.twist.covariance[0]  = 0.05;  // vx
-      wheel_odom_msg.twist.covariance[7]  = 1e6;   // vy (no lateral slip on diff drive)
-      wheel_odom_msg.twist.covariance[14] = 1e6;   // vz
-      wheel_odom_msg.twist.covariance[21] = 1e6;   // vroll
-      wheel_odom_msg.twist.covariance[28] = 1e6;   // vpitch
-      wheel_odom_msg.twist.covariance[35] = 0.10;  // vyaw
+      wheel_odom_msg.pose.covariance[14] = 1e-9;   // z (locked to 0, flat ground)
+      wheel_odom_msg.pose.covariance[21] = 1e-9;   // roll
+      wheel_odom_msg.pose.covariance[28] = 1e-9;   // pitch
+      wheel_odom_msg.twist.covariance[0]  = 0.001; // vx
+      wheel_odom_msg.twist.covariance[7]  = 1e-9;  // vy
+      wheel_odom_msg.twist.covariance[14] = 1e-9;  // vz
+      wheel_odom_msg.twist.covariance[21] = 1e-9;  // vroll
+      wheel_odom_msg.twist.covariance[28] = 1e-9;  // vpitch
 
       // < ----------------------------- Publish the wheel odometry info ----------------------------- >
       publisher_->publish(wheel_odom_msg);
