@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>map_padder</name>
+  <version>1.0.0</version>
+  <description>Pads the SLAM map to a minimum size so GPS waypoints outside the mapped area are reachable</description>
+  <maintainer email="nfikes@vt.edu">nfikes</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

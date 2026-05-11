@@ -1,0 +1,7 @@
+# ZED parameter overrides (applied on top of submodule defaults)
+# This file is passed via ros_params_override_path in sensors.launch.py
+
+/**:
+    ros__parameters:
+        sensors:
+            sensors_pub_rate: 380.0
