@@ -3,7 +3,10 @@ bt_navigator:
     use_sim_time: False
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: /odom
+    # Use the EKF-fused odom (wheel + SICK IMU) so behavior-tree
+    # conditions (IsStuck, GoalUpdated staleness checks, etc.) reason
+    # about smoothed velocity/pose, not raw wheel encoder readings.
+    odom_topic: /local_ekf/odom
     bt_loop_duration: 10
     default_server_timeout: 60
     wait_for_service_timeout: 1000
@@ -247,7 +250,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.8 # NavfnPlanner does not know the robot footprint, so inflation radius must cover from obstacle edge to robot center. Furthest point of robot perimeter is 0.76m. We could switch to a planner that uses the footprint.
+        inflation_radius: 0.90 # NavfnPlanner treats the robot as a point at base_link; inflation must therefore cover from obstacle edge to the furthest footprint corner. For the [0.77, 0.41] footprint, sqrt(0.77² + 0.41²) ≈ 0.873 m — 0.90 m gives ~3 cm safety margin. Was 0.8 m which fell short by ~7 cm and let the global planner route paths the local DWB had to reject on collision grounds. Kernel grows 17×17 → 19×19 cells.
       always_send_full_costmap: True
 
 map_server:
@@ -344,7 +347,10 @@ velocity_smoother:
     min_velocity: [-0.26, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
-    odom_topic: "odom"
+    # /local_ekf/odom is the EKF-fused output. Only matters if feedback
+    # is switched away from OPEN_LOOP (the current setting at line above
+    # ignores this topic).
+    odom_topic: "/local_ekf/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
