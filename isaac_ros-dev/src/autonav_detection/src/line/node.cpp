@@ -40,6 +40,7 @@ public:
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("line_hold_timeout_ms", 0);
+		this->declare_parameter("line_memory_max_points", 20000);
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
 		// in cuda.cu; now plumbed through line_detector.yaml).
@@ -58,6 +59,7 @@ public:
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
+		line_memory_max_points_ = std::max<int64_t>(1, this->get_parameter("line_memory_max_points").as_int());
 		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
 		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
 		sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
@@ -74,6 +76,7 @@ public:
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Line memory max points: %ld", line_memory_max_points_);
 		RCLCPP_INFO(this->get_logger(),
 			"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
 			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
@@ -153,6 +156,7 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
+	int64_t line_memory_max_points_ = 20000;
 	double  brightness_threshold_ = 220.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;

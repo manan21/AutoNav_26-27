@@ -25,6 +25,7 @@ lines:
     max_rgb_depth_delta_ms: 120       # RGB/depth sync window
     tf_lookup_timeout_ms: 100
     line_hold_timeout_ms: 0           # 0 = never reuse stale line set
+    line_memory_max_points: 20000     # cap remembered obstacle points across frames
 
     # ── CERIAS line-pixel detector ───────────────────────────────────────
     # Stage 1: host-side binary mask. Pixels brighter than this are
