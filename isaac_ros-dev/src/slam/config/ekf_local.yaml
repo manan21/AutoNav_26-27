@@ -26,9 +26,10 @@ ekf_node:
     # ── SICK IMU ────────────────────────────────────────────────────
     # Fuse: yaw rate only (gz). The SICK IMU is bolted to the chassis
     # so roll/pitch are structural, not meaningful for 2D nav.
-    # NOTE: Using transformed IMU topic that corrects for upside-down mounting
-    # (the LiDAR has π roll relative to base_link, which inverts the Z-axis)
-    imu0: sick_scansegment_xd/imu_base_link
+    # Feed the raw IMU topic to robot_localization and let it rotate the
+    # measurement into base_link using TF. This avoids depending on a custom
+    # transformer node for yaw-rate-only fusion.
+    imu0: sick_scansegment_xd/imu
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
@@ -37,7 +38,9 @@ ekf_node:
     imu0_differential: false
     imu0_relative: false
     imu0_queue_size: 10
-    imu0_remove_gravitational_acceleration: true
+    # We are not fusing linear acceleration, so gravity removal is unnecessary
+    # and only adds an orientation dependency to the IMU preprocessing path.
+    imu0_remove_gravitational_acceleration: false
 
     # ── Process noise ───────────────────────────────────────────────
     # How much we expect the state to drift per timestep.
