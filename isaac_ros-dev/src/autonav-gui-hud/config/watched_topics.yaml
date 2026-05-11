@@ -1,0 +1,17 @@
+# Topics watched by the HUD's duplicate-publisher detector.
+#
+# A topic appears here only if >1 publisher actually breaks the stack:
+# /cmd_vel for example must be single-writer (two control nodes will
+# fight on the wire), while /goal_pose is intentionally multi-writer
+# (RViz, send_goal.sh, and the GPS handler all publish to it) and is
+# left OFF this list deliberately.
+#
+# Reloaded on GUI start. Append freely; the detector polls at 0.1 Hz.
+
+watched_topics:
+  - /cmd_vel            # velocity commands — strictly single-writer
+  - /odom               # wheel odometry — multi-writer breaks EKF
+  - /odometry/filtered  # robot_localization output
+  - /scan               # primary SICK laser scan
+  - /scan_fullframe     # full-frame variant consumed by SLAM
+  - /gps_fix            # single GPS sensor

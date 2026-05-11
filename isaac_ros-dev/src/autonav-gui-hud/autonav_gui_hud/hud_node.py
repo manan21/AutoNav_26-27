@@ -24,6 +24,12 @@ except ImportError:
     _HAS_ROS = False
 
 try:
+    import yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+try:
     from cv_bridge import CvBridge
     _HAS_CV_BRIDGE = True
 except ImportError:
@@ -563,7 +569,11 @@ class HudWindow(QMainWindow):
         btn_quit = QPushButton("Quit GUI")
         btn_quit.setStyleSheet(quit_style)
         btn_quit.setFocusPolicy(Qt.NoFocus)
-        btn_quit.clicked.connect(QApplication.quit)
+        # self.close() triggers closeEvent → _kill_process for every
+        # running launch. QApplication.quit() bypasses closeEvent, which
+        # left in-container ros2 stacks orphaned and accumulating as
+        # zombies across GUI restarts.
+        btn_quit.clicked.connect(self.close)
         options_layout.addWidget(btn_quit)
         self._nav_buttons.append((btn_quit, "Quit GUI", quit_style))
 
@@ -608,7 +618,8 @@ class HudWindow(QMainWindow):
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
-            ("DETECT", ["DETECT"], "./config/run-detect.sh"),
+            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
@@ -638,7 +649,8 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "DETECT": 45.0,
+            "LINE DETECT": 45.0,
+            "PCA DETECT": 45.0,
         }
 
         cmd_label_style = (
@@ -1028,6 +1040,15 @@ class HudWindow(QMainWindow):
             (self._dev_branches_btn, "Switch Branch…", dev_btn_compact)
         )
 
+        self._dev_processes_btn = QPushButton("Manage Running Processes")
+        self._dev_processes_btn.setStyleSheet(dev_btn_compact)
+        self._dev_processes_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_processes_btn.clicked.connect(self._show_processes_page)
+        dev_layout.addWidget(self._dev_processes_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_processes_btn, "Manage Running Processes", dev_btn_compact)
+        )
+
         dev_layout.addStretch()
 
         # Exit Developer button at the bottom
@@ -1116,6 +1137,91 @@ class HudWindow(QMainWindow):
         )
 
         self._options_stack.addWidget(page_branches)  # index 5
+
+        # --- Page 6: Manage Running Processes (sub-page of Developer) ---
+        page_processes = QWidget()
+        processes_layout = QVBoxLayout(page_processes)
+        processes_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_pr_title = QLabel("MANAGE RUNNING PROCESSES")
+        lbl_pr_title.setFont(section_title_font)
+        lbl_pr_title.setAlignment(Qt.AlignCenter)
+        lbl_pr_title.setStyleSheet(section_title_style)
+        processes_layout.addWidget(lbl_pr_title)
+
+        proc_banner = QLabel(
+            "Foreign PIDs resolved heuristically (node name → /proc/*/cmdline). "
+            "Display only — the GUI never kills foreign processes."
+        )
+        proc_banner.setWordWrap(True)
+        proc_banner.setAlignment(Qt.AlignCenter)
+        proc_banner.setStyleSheet(
+            "border: none; color: #ff0; font-size: 10px;"
+            " font-family: monospace; padding: 4px;"
+        )
+        processes_layout.addWidget(proc_banner)
+
+        # Header row for the process table
+        proc_header = QGridLayout()
+        proc_header.setSpacing(4)
+        proc_header_style = (
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace; font-weight: bold;"
+        )
+        # One row per PID — aggregated across all watched topics. The
+        # Topics column lists every watched topic that PID publishes to.
+        # Column widths kept in sync with _render_process_table below.
+        for col, text in enumerate(["PID", "Source", "Topics", ""]):
+            h = QLabel(text)
+            h.setStyleSheet(proc_header_style)
+            proc_header.addWidget(h, 0, col)
+        proc_header.setColumnMinimumWidth(0, 110)
+        proc_header.setColumnMinimumWidth(1, 150)
+        proc_header.setColumnMinimumWidth(3, 60)
+        proc_header.setColumnStretch(0, 0)
+        proc_header.setColumnStretch(1, 0)
+        proc_header.setColumnStretch(2, 1)
+        proc_header.setColumnStretch(3, 0)
+        proc_header_holder = QWidget()
+        proc_header_holder.setLayout(proc_header)
+        processes_layout.addWidget(proc_header_holder)
+
+        # Body rows live in their own scroll area, repopulated on every poll.
+        self._proc_table = QGridLayout()
+        self._proc_table.setSpacing(4)
+        self._proc_table.setColumnStretch(2, 1)
+        proc_holder = QWidget()
+        proc_holder.setLayout(self._proc_table)
+        proc_scroll = QScrollArea()
+        proc_scroll.setWidgetResizable(True)
+        proc_scroll.setWidget(proc_holder)
+        proc_scroll.setStyleSheet("QScrollArea { border: none; }")
+        proc_scroll.setMinimumHeight(320)
+        proc_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        proc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        processes_layout.addWidget(proc_scroll, stretch=1)
+
+        # Empty-state placeholder shown when no watched-topic publishers exist.
+        self._proc_empty_label = QLabel("No publishers detected on watched topics.")
+        self._proc_empty_label.setAlignment(Qt.AlignCenter)
+        self._proc_empty_label.setStyleSheet(
+            "border: none; color: #666; font-size: 10px;"
+            " font-family: monospace; padding: 6px;"
+        )
+        processes_layout.addWidget(self._proc_empty_label)
+
+        self._processes_nav_buttons = []
+
+        btn_exit_pr = QPushButton("Back to Developer")
+        btn_exit_pr.setStyleSheet(exit_branches_style)
+        btn_exit_pr.setFocusPolicy(Qt.NoFocus)
+        btn_exit_pr.clicked.connect(self._show_developer_page)
+        processes_layout.addWidget(btn_exit_pr)
+        self._processes_nav_buttons.append(
+            (btn_exit_pr, "Back to Developer", exit_branches_style)
+        )
+
+        self._options_stack.addWidget(page_processes)  # index 6
 
         # Poll container status once a second whenever the dev page is up
         self._dev_status_timer = QTimer(self)
@@ -1220,7 +1326,7 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "DETECT"]
+        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA DETECT"]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
@@ -1713,6 +1819,18 @@ class HudWindow(QMainWindow):
         self._container_health_timer.setInterval(5000)
         self._container_health_timer.timeout.connect(self._check_container_health)
         self._container_health_timer.start()
+
+        # Duplicate-publisher detector — polls topics from config/
+        # watched_topics.yaml at 0.1 Hz. Flags device dots red when
+        # >1 distinct publisher source (GUI device / foreign PID) is
+        # detected; feeds the Manage Running Processes dev-page window.
+        self._watched_topics = self._load_watched_topics()
+        self._watched_pub_state = {}         # topic -> [pub_entry, ...]
+        self._dot_duplicate_flagged = set()  # dot keys currently red-flagged
+        self._duplicate_poll_timer = QTimer()
+        self._duplicate_poll_timer.setInterval(10000)
+        self._duplicate_poll_timer.timeout.connect(self._poll_watched_publishers)
+        self._duplicate_poll_timer.start()
 
         top_layout.addWidget(viz_frame, stretch=2)
 
@@ -2281,6 +2399,16 @@ class HudWindow(QMainWindow):
         self._dev_update_branch_label()
         self._dev_refresh_branches()
 
+    def _show_processes_page(self):
+        """Switch OPTIONS column to the Manage Running Processes sub-page (index 6)."""
+        self._options_stack.setCurrentIndex(6)
+        self._nav_groups[0] = self._processes_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._render_process_table()
+
     def _dev_run_git(self, args, timeout=15):
         """Run a git command in the host repo. Returns (rc, stdout, stderr)."""
         try:
@@ -2753,6 +2881,14 @@ class HudWindow(QMainWindow):
 
     _DOT_ON = "background-color: #0f0; border-radius: 7px; border: none;"
     _DOT_OFF = "background-color: #555; border-radius: 7px; border: none;"
+
+    # Some ROS2 nodes are launched via an executable whose binary name
+    # doesn't match the node name (e.g., sick_scansegment_xd runs inside
+    # the sick_generic_caller binary with no __node:= remap). Map them
+    # here so /proc/*/cmdline matching still finds the right process.
+    _NODE_EXEC_ALIASES = {
+        'sick_scansegment_xd': ('sick_generic_caller',),
+    }
     # Use 6-char #ffff00 (NOT #ff0) so the regex walker leaves it alone in
     # light mode — the user wants the process yellow dots to stay yellow,
     # while #ff0 used for status text still translates to dark orange.
@@ -2764,6 +2900,436 @@ class HudWindow(QMainWindow):
             if dev_label == label:
                 return keys
         return []
+
+    def _load_watched_topics(self):
+        """Load watched_topics from the package's config YAML.
+
+        Prefers ament_index lookup so an installed colcon build is found;
+        falls back to a source-relative path so dev runs from the source
+        tree still work.
+        """
+        if not _HAS_YAML:
+            return []
+        path = None
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share = get_package_share_directory('autonav_gui_hud')
+            cand = os.path.join(share, 'config', 'watched_topics.yaml')
+            if os.path.isfile(cand):
+                path = cand
+        except Exception:
+            pass
+        if path is None:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cand = os.path.normpath(
+                os.path.join(here, '..', 'config', 'watched_topics.yaml')
+            )
+            if os.path.isfile(cand):
+                path = cand
+        if path is None:
+            return []
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+            topics = data.get('watched_topics', []) or []
+            return [t for t in topics if isinstance(t, str)]
+        except Exception:
+            return []
+
+    def _base_dot_style_for(self, dot_key):
+        """Correct base style for a dot from current launch state."""
+        dev_label = self._dot_to_device.get(dot_key)
+        if dev_label is None:
+            return self._DOT_OFF
+        st = self._launch_states.get(dev_label, False)
+        if st == 'starting':
+            return self._DOT_YELLOW
+        if st is True:
+            return self._DOT_ON
+        return self._DOT_OFF
+
+    def _snapshot_proc_cmdlines(self):
+        """Read every /proc/<pid>/cmdline once per poll.
+
+        Returns {pid: cmdline_bytes}. Cheaper than re-scanning /proc for
+        each node-name lookup.
+        """
+        out = {}
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            return out
+        for ent in entries:
+            if not ent.isdigit():
+                continue
+            try:
+                pid = int(ent)
+                with open(f'/proc/{ent}/cmdline', 'rb') as f:
+                    out[pid] = f.read()
+            except (OSError, ValueError):
+                continue
+        return out
+
+    def _find_pids_for_node(self, short_name, full_name, proc_map):
+        """All PIDs whose cmdline matches a ROS2 node name.
+
+        Returns a list (possibly empty). ROS2 Humble doesn't expose
+        participant PIDs via the graph API, so we scrape argv. When
+        multiple processes share a node name (e.g., two wheel_odom from
+        two pre_slam launches) all are returned so the caller can
+        attribute one publisher endpoint per distinct PID.
+        """
+        needles = [n.encode() for n in (short_name, full_name) if n]
+        for alias in self._NODE_EXEC_ALIASES.get(short_name, ()):
+            needles.append(alias.encode())
+        if not needles:
+            return []
+        return [
+            pid for pid, blob in proc_map.items()
+            if blob and any(n in blob for n in needles)
+        ]
+
+    def _gui_owner_for_pid(self, pid):
+        """Walk PPid chain; return (label, root_pid) or (None, None).
+
+        Bounded walk against the in-container ros2 launch PIDs the GUI
+        writes to /tmp/gui_pid_<sanitized_label> before exec'ing the
+        launch. The container runs with --pid=host so those PIDs are
+        host PIDs too. We deliberately do NOT use popen.pid here: that's
+        the host-side `docker exec` wrapper, which sits in a separate
+        process tree (parented by containerd-shim, not by the caller)
+        and is never an ancestor of the in-container ros2 launch.
+
+        Returning the root PID lets duplicate detection key sources on
+        the launch tree, not the publisher process — so two distinct
+        publisher nodes from the same launch (e.g. Nav2's behavior_server
+        and velocity_smoother both publishing /cmd_vel) collapse to one
+        source instead of falsely flagging the device as duplicated.
+        """
+        if pid is None:
+            return (None, None)
+        owned = {}
+        for lbl, popen in self._process_objects.items():
+            if popen is None:
+                continue
+            try:
+                if popen.poll() is not None:
+                    continue
+            except Exception:
+                continue
+            pid_tag = lbl.replace(' ', '_').replace('/', '_')
+            try:
+                with open(f'/tmp/gui_pid_{pid_tag}', 'r') as f:
+                    launch_pid = int(f.read().strip())
+            except (OSError, ValueError):
+                continue
+            try:
+                os.stat(f'/proc/{launch_pid}')
+            except OSError:
+                continue
+            owned[launch_pid] = lbl
+        cur = pid
+        for _ in range(64):
+            if cur in owned:
+                return (owned[cur], cur)
+            try:
+                with open(f'/proc/{cur}/status', 'r') as f:
+                    ppid = None
+                    for line in f:
+                        if line.startswith('PPid:'):
+                            ppid = int(line.split()[1])
+                            break
+                if ppid is None or ppid <= 1:
+                    return (None, None)
+                cur = ppid
+            except (OSError, ValueError):
+                return (None, None)
+        return (None, None)
+
+    def _poll_watched_publishers(self):
+        """0.1 Hz: attribute every watched-topic publisher to a process.
+
+        For each topic, group endpoints by (namespace, node_name). When
+        multiple endpoints share a node name they could come from one
+        process publishing several internal endpoints (e.g., Nav2's
+        behavior_server creates ~6 on /cmd_vel) OR from several distinct
+        processes that happen to share a name (the bug case: two
+        pre_slam launches → two wheel_odom processes). We disambiguate
+        by /proc scan: if N endpoints share a name and we find N distinct
+        matching processes, emit N rows; if fewer processes match, emit
+        one row per process (collapsing endpoints from the same PID).
+
+        ``node_to_pids`` carries already-attributed PIDs across topics
+        so a node that legitimately publishes to multiple watched topics
+        (e.g., ekf_node → /odom + /odometry/filtered) reuses the same
+        PID for both rather than skipping it as "claimed".
+        """
+        node = self._ros_node
+        if node is None or not self._watched_topics:
+            return
+
+        proc_map = self._snapshot_proc_cmdlines()
+        state = {}
+        node_to_pids = {}  # (ns, name) -> list of PIDs already attributed
+
+        for topic in self._watched_topics:
+            try:
+                infos = node.get_publishers_info_by_topic(topic)
+            except Exception:
+                continue
+
+            groups = {}  # (ns, name, full) -> endpoint count
+            for info in infos:
+                ns = getattr(info, 'node_namespace', '') or ''
+                name = getattr(info, 'node_name', '') or ''
+                if ns and not ns.endswith('/'):
+                    ns = ns + '/'
+                full = (ns + name) if name else (ns or '?')
+                full = full.replace('//', '/')
+                key = (ns, name, full)
+                groups[key] = groups.get(key, 0) + 1
+
+            entries = []
+            for (ns, name, full), count in groups.items():
+                already = node_to_pids.get((ns, name), [])
+                if len(already) >= count:
+                    pids_for_topic = already[:count]
+                else:
+                    all_matches = self._find_pids_for_node(name, full, proc_map)
+                    extra = [p for p in all_matches if p not in already]
+                    take = max(0, count - len(already))
+                    already = already + extra[:take]
+                    node_to_pids[(ns, name)] = already
+                    pids_for_topic = already[:count]
+
+                if pids_for_topic:
+                    for pid in pids_for_topic:
+                        owner, owner_root = self._gui_owner_for_pid(pid)
+                        entries.append({
+                            'node': full,
+                            'topic': topic,
+                            'pid': pid,
+                            'gui_owner': owner,
+                            'gui_owner_root': owner_root,
+                        })
+                else:
+                    entries.append({
+                        'node': full,
+                        'topic': topic,
+                        'pid': None,
+                        'gui_owner': None,
+                        'gui_owner_root': None,
+                    })
+            state[topic] = entries
+
+        self._watched_pub_state = state
+        self._apply_duplicate_dots(state)
+        self._refresh_process_table()
+
+    def _apply_duplicate_dots(self, state):
+        """Flip dots red when their device participates in a topic collision.
+
+        Sources are keyed by the launch ROOT PID for GUI-owned publishers
+        (the value from /tmp/gui_pid_<label>), not the publisher's own
+        PID. Two publisher nodes spawned by the same launch (e.g. Nav2's
+        behavior_server + velocity_smoother both on /cmd_vel) descend
+        from the same root, share one source tuple, and don't trip a
+        false duplicate. Two launches of the same device (real duplicate)
+        have different roots and DO trip it.
+        """
+        flagged = set()
+        for _topic, entries in state.items():
+            sources = set()
+            for e in entries:
+                pid = e['pid']
+                owner = e['gui_owner']
+                owner_root = e.get('gui_owner_root')
+                if owner is not None:
+                    sources.add(('gui', owner, owner_root))
+                elif pid is not None:
+                    sources.add(('ext', pid))
+                else:
+                    sources.add(('unknown', e['node']))
+            if len(sources) <= 1:
+                continue
+            for e in entries:
+                owner = e['gui_owner']
+                if owner is None:
+                    continue
+                for dev_label, dot_keys, _cmd in self._launch_devices:
+                    if dev_label == owner:
+                        flagged.update(dot_keys)
+                        break
+
+        for k in flagged - self._dot_duplicate_flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(
+                    "background-color: #f44; border-radius: 7px; border: none;"
+                )
+        for k in self._dot_duplicate_flagged - flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(self._base_dot_style_for(k))
+        self._dot_duplicate_flagged = flagged
+
+    def _refresh_process_table(self):
+        """Hook invoked from _poll_watched_publishers each 0.1 Hz tick."""
+        if not hasattr(self, '_proc_table'):
+            return
+        self._render_process_table()
+
+    def _render_process_table(self):
+        """Repopulate the Manage Running Processes grid, aggregated by PID.
+
+        Columns: [PID | Source | Topics | Action]. Each process gets one
+        row; the Topics cell lists every watched topic that PID publishes
+        to. Unknown-PID publishers cluster by node name so they don't
+        collapse together. Kill button only on GUI-owned rows.
+        """
+        if not hasattr(self, '_proc_table'):
+            return
+
+        while self._proc_table.count():
+            item = self._proc_table.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+
+        cell_style = (
+            "border: none; color: #ccc; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        foreign_style = (
+            "border: none; color: #f80; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        kill_style = (
+            "QPushButton {"
+            "  background-color: #4a1a1a; color: #fbb;"
+            "  border: 1px solid #722; border-radius: 3px;"
+            "  padding: 2px 8px; font-size: 10px;"
+            "}"
+            "QPushButton:hover { background-color: #6a2a2a; }"
+            "QPushButton:pressed { background-color: #300a0a; }"
+        )
+
+        # Aggregate per process. Resolved PIDs collapse cleanly; unresolved
+        # publishers cluster by node name as a fallback so distinct unknown
+        # processes don't merge into a single row.
+        agg = {}  # key -> {pid, node, gui_owner, topics: set}
+        for topic in self._watched_topics:
+            for e in self._watched_pub_state.get(topic, []):
+                pid = e.get('pid')
+                node = e.get('node', '?')
+                owner = e.get('gui_owner')
+                key = pid if pid is not None else ('unk', node)
+                if key not in agg:
+                    agg[key] = {
+                        'pid': pid,
+                        'node': node,
+                        'gui_owner': owner,
+                        'topics': set(),
+                    }
+                agg[key]['topics'].add(e.get('topic', topic))
+
+        # Sort: GUI-owned first, then by numeric PID, then unknowns by node.
+        def sort_key(item):
+            _key, v = item
+            owner = v.get('gui_owner')
+            pid = v.get('pid')
+            return (
+                0 if owner is not None else 1,
+                pid if pid is not None else 10**9,
+                v.get('node', ''),
+            )
+
+        # Fixed widths for PID / Source / Action so Topics absorbs slack.
+        # Without these caps a long unknown-node fallback (e.g. "? /…")
+        # forces the row wider than the viewport and we have to scroll
+        # horizontally — operator can't read the table.
+        col_pid_width = 110
+        col_source_width = 150
+        col_action_width = 60
+
+        row = 0
+        for _key, v in sorted(agg.items(), key=sort_key):
+            owner = v['gui_owner']
+            pid = v['pid']
+            pid_text = str(pid) if pid is not None else f"?  {v['node']}"
+            pid_lbl = QLabel(pid_text)
+            pid_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            pid_lbl.setWordWrap(True)
+            pid_lbl.setMaximumWidth(col_pid_width)
+            self._proc_table.addWidget(pid_lbl, row, 0)
+
+            if owner is not None:
+                source_lbl = QLabel(f"GUI: {owner}")
+                source_lbl.setStyleSheet(cell_style)
+            else:
+                source_lbl = QLabel("External")
+                source_lbl.setStyleSheet(foreign_style)
+            source_lbl.setWordWrap(True)
+            source_lbl.setMaximumWidth(col_source_width)
+            self._proc_table.addWidget(source_lbl, row, 1)
+
+            topics_text = ", ".join(sorted(v['topics']))
+            topics_lbl = QLabel(topics_text)
+            topics_lbl.setStyleSheet(
+                cell_style if owner is not None else foreign_style
+            )
+            topics_lbl.setWordWrap(True)
+            self._proc_table.addWidget(topics_lbl, row, 2)
+
+            if owner is not None:
+                kill_btn = QPushButton("Kill")
+                kill_btn.setStyleSheet(kill_style)
+                kill_btn.setFocusPolicy(Qt.NoFocus)
+                kill_btn.setFixedWidth(col_action_width)
+                kill_btn.clicked.connect(
+                    lambda _checked=False, lbl=owner:
+                        self._kill_gui_process(lbl)
+                )
+                self._proc_table.addWidget(kill_btn, row, 3)
+            row += 1
+
+        # Pin column widths so header and body line up.
+        self._proc_table.setColumnMinimumWidth(0, col_pid_width)
+        self._proc_table.setColumnMinimumWidth(1, col_source_width)
+        self._proc_table.setColumnMinimumWidth(3, col_action_width)
+        self._proc_table.setColumnStretch(0, 0)
+        self._proc_table.setColumnStretch(1, 0)
+        self._proc_table.setColumnStretch(3, 0)
+
+        if hasattr(self, '_proc_empty_label'):
+            self._proc_empty_label.setVisible(row == 0)
+
+    def _kill_gui_process(self, device_label):
+        """Terminate a GUI-spawned process by its device label.
+
+        Reuses the existing toggle path so launch state, dot, and queue
+        all reset cleanly — _toggle_device(label) when label is already
+        on / starting routes to the stop branch.
+
+        Optimistically drops the killed device's rows from the table so
+        the user sees the change immediately instead of waiting up to
+        10 s for the next graph poll. DDS may still report the dying
+        publisher for a beat; the next poll reconciles authoritatively.
+        """
+        if device_label not in self._launch_states:
+            return
+        try:
+            self._toggle_device(device_label)
+        except Exception as ex:
+            self._gui_log_msg(f"Failed to stop {device_label}: {ex}")
+            return
+        self._watched_pub_state = {
+            topic: [e for e in entries if e.get('gui_owner') != device_label]
+            for topic, entries in self._watched_pub_state.items()
+        }
+        self._render_process_table()
 
     def _update_queue_label(self):
         """Refresh the queue status text at the top of the launch page."""

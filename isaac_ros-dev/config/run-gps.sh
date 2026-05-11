@@ -7,7 +7,7 @@ pid_handler=$!
 
 trap 'kill -INT "$pid_pub" "$pid_handler" 2>/dev/null' INT TERM
 
-sleep 5
+sleep 3
 echo "[GUI_READY] GPS"
 
 wait
