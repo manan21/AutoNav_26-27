@@ -1,10 +1,23 @@
 slam_toolbox:
   ros__parameters:
 
-    base_frame: base_link
+    # Use the planar robot footprint for 2D SLAM. The LiDAR frame hangs off
+    # base_link via a static transform, so slam_toolbox can still resolve the
+    # full chain lidar_footprint -> base_footprint through TF.
+    base_frame: base_footprint
     scan_topic: /scan_fullframe
     max_laser_range: 10.0
     min_laser_range: 0.3
+    mode: mapping
+    debug_logging: false
+    # Jetson-side throughput tuning: process fewer scans and give TF a little
+    # more time so the message filter does not back up behind EKF updates.
+    throttle_scans: 2
+    minimum_time_interval: 0.1
+    transform_timeout: 0.3
+    tf_buffer_duration: 30.0
+    scan_buffer_size: 20
+    enable_interactive_mode: false
     mapper:
       frame_id: odom 
       resolution: 0.05 # not sure

@@ -30,7 +30,7 @@ def generate_launch_description():
     publish_period = DeclareLaunchArgument(
         'publish_period',
         # 0.02 if you want to publish
-        default_value='0.02',
+        default_value='0.05',
         description="if you want SLAM to publish map->odom... (sim yes real no)"
     )
     nav2_params = DeclareLaunchArgument(
@@ -172,4 +172,3 @@ def generate_launch_description():
         #nav2
 
     ])
-
