@@ -23,6 +23,12 @@ except ImportError:
     _HAS_ROS = False
 
 try:
+    import yaml
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+try:
     from cv_bridge import CvBridge
     _HAS_CV_BRIDGE = True
 except ImportError:
@@ -554,7 +560,8 @@ class HudWindow(QMainWindow):
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
-            ("DETECT", ["LINE DETECT", "PCA GRADE"], "./config/run-detect.sh"),
+            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
@@ -585,7 +592,8 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "DETECT": 45.0,
+            "LINE DETECT": 45.0,
+            "PCA DETECT": 45.0,
         }
 
         cmd_label_style = (
@@ -949,6 +957,15 @@ class HudWindow(QMainWindow):
             (self._dev_branches_btn, "Switch Branch…", dev_btn_compact)
         )
 
+        self._dev_processes_btn = QPushButton("Manage Running Processes")
+        self._dev_processes_btn.setStyleSheet(dev_btn_compact)
+        self._dev_processes_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_processes_btn.clicked.connect(self._show_processes_page)
+        dev_layout.addWidget(self._dev_processes_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_processes_btn, "Manage Running Processes", dev_btn_compact)
+        )
+
         dev_layout.addStretch()
 
         # Exit Developer button at the bottom
@@ -1038,6 +1055,78 @@ class HudWindow(QMainWindow):
 
         self._options_stack.addWidget(page_branches)  # index 5
 
+        # --- Page 6: Manage Running Processes (sub-page of Developer) ---
+        page_processes = QWidget()
+        processes_layout = QVBoxLayout(page_processes)
+        processes_layout.setContentsMargins(6, 0, 6, 0)
+
+        lbl_pr_title = QLabel("MANAGE RUNNING PROCESSES")
+        lbl_pr_title.setFont(section_title_font)
+        lbl_pr_title.setAlignment(Qt.AlignCenter)
+        lbl_pr_title.setStyleSheet(section_title_style)
+        processes_layout.addWidget(lbl_pr_title)
+
+        proc_banner = QLabel(
+            "Foreign PIDs resolved heuristically (node name → /proc/*/cmdline). "
+            "Display only — the GUI never kills foreign processes."
+        )
+        proc_banner.setWordWrap(True)
+        proc_banner.setAlignment(Qt.AlignCenter)
+        proc_banner.setStyleSheet(
+            "border: none; color: #ff0; font-size: 10px;"
+            " font-family: monospace; padding: 4px;"
+        )
+        processes_layout.addWidget(proc_banner)
+
+        # Header row for the process table
+        proc_header = QGridLayout()
+        proc_header.setSpacing(4)
+        proc_header_style = (
+            "border: none; color: #aaa; font-size: 10px;"
+            " font-family: monospace; font-weight: bold;"
+        )
+        for col, text in enumerate(["Node", "Topic", "Source", "PID", ""]):
+            h = QLabel(text)
+            h.setStyleSheet(proc_header_style)
+            proc_header.addWidget(h, 0, col)
+        proc_header_holder = QWidget()
+        proc_header_holder.setLayout(proc_header)
+        processes_layout.addWidget(proc_header_holder)
+
+        # Body rows live in their own scroll area, repopulated on every poll.
+        self._proc_table = QGridLayout()
+        self._proc_table.setSpacing(4)
+        proc_holder = QWidget()
+        proc_holder.setLayout(self._proc_table)
+        proc_scroll = QScrollArea()
+        proc_scroll.setWidgetResizable(True)
+        proc_scroll.setWidget(proc_holder)
+        proc_scroll.setStyleSheet("QScrollArea { border: none; }")
+        proc_scroll.setMinimumHeight(240)
+        processes_layout.addWidget(proc_scroll, stretch=1)
+
+        # Empty-state placeholder shown when no watched-topic publishers exist.
+        self._proc_empty_label = QLabel("No publishers detected on watched topics.")
+        self._proc_empty_label.setAlignment(Qt.AlignCenter)
+        self._proc_empty_label.setStyleSheet(
+            "border: none; color: #666; font-size: 10px;"
+            " font-family: monospace; padding: 6px;"
+        )
+        processes_layout.addWidget(self._proc_empty_label)
+
+        self._processes_nav_buttons = []
+
+        btn_exit_pr = QPushButton("Back to Developer")
+        btn_exit_pr.setStyleSheet(exit_branches_style)
+        btn_exit_pr.setFocusPolicy(Qt.NoFocus)
+        btn_exit_pr.clicked.connect(self._show_developer_page)
+        processes_layout.addWidget(btn_exit_pr)
+        self._processes_nav_buttons.append(
+            (btn_exit_pr, "Back to Developer", exit_branches_style)
+        )
+
+        self._options_stack.addWidget(page_processes)  # index 6
+
         # Poll container status once a second whenever the dev page is up
         self._dev_status_timer = QTimer(self)
         self._dev_status_timer.setInterval(1000)
@@ -1111,7 +1200,7 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA GRADE"]
+        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA DETECT"]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
@@ -1582,6 +1671,18 @@ class HudWindow(QMainWindow):
         self._container_health_timer.setInterval(5000)
         self._container_health_timer.timeout.connect(self._check_container_health)
         self._container_health_timer.start()
+
+        # Duplicate-publisher detector — polls topics from config/
+        # watched_topics.yaml at 0.1 Hz. Flags device dots red when
+        # >1 distinct publisher source (GUI device / foreign PID) is
+        # detected; feeds the Manage Running Processes dev-page window.
+        self._watched_topics = self._load_watched_topics()
+        self._watched_pub_state = {}         # topic -> [pub_entry, ...]
+        self._dot_duplicate_flagged = set()  # dot keys currently red-flagged
+        self._duplicate_poll_timer = QTimer()
+        self._duplicate_poll_timer.setInterval(10000)
+        self._duplicate_poll_timer.timeout.connect(self._poll_watched_publishers)
+        self._duplicate_poll_timer.start()
 
         top_layout.addWidget(viz_frame, stretch=2)
 
@@ -2056,6 +2157,16 @@ class HudWindow(QMainWindow):
         self._update_selection()
         self._dev_update_branch_label()
         self._dev_refresh_branches()
+
+    def _show_processes_page(self):
+        """Switch OPTIONS column to the Manage Running Processes sub-page (index 6)."""
+        self._options_stack.setCurrentIndex(6)
+        self._nav_groups[0] = self._processes_nav_buttons
+        self._nav_col = 0
+        self._nav_row = 0
+        self._nav_last_row[0] = 0
+        self._update_selection()
+        self._render_process_table()
 
     def _dev_run_git(self, args, timeout=15):
         """Run a git command in the host repo. Returns (rc, stdout, stderr)."""
@@ -2540,6 +2651,286 @@ class HudWindow(QMainWindow):
             if dev_label == label:
                 return keys
         return []
+
+    def _load_watched_topics(self):
+        """Load watched_topics from the package's config YAML.
+
+        Prefers ament_index lookup so an installed colcon build is found;
+        falls back to a source-relative path so dev runs from the source
+        tree still work.
+        """
+        if not _HAS_YAML:
+            return []
+        path = None
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share = get_package_share_directory('autonav_gui_hud')
+            cand = os.path.join(share, 'config', 'watched_topics.yaml')
+            if os.path.isfile(cand):
+                path = cand
+        except Exception:
+            pass
+        if path is None:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cand = os.path.normpath(
+                os.path.join(here, '..', 'config', 'watched_topics.yaml')
+            )
+            if os.path.isfile(cand):
+                path = cand
+        if path is None:
+            return []
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+            topics = data.get('watched_topics', []) or []
+            return [t for t in topics if isinstance(t, str)]
+        except Exception:
+            return []
+
+    def _base_dot_style_for(self, dot_key):
+        """Correct base style for a dot from current launch state."""
+        dev_label = self._dot_to_device.get(dot_key)
+        if dev_label is None:
+            return self._DOT_OFF
+        st = self._launch_states.get(dev_label, False)
+        if st == 'starting':
+            return self._DOT_YELLOW
+        if st is True:
+            return self._DOT_ON
+        return self._DOT_OFF
+
+    def _resolve_pid_for_node(self, short_name, full_name):
+        """Best-effort PID for a ROS2 node by matching /proc/*/cmdline.
+
+        ROS2 Humble doesn't expose participant PIDs via the graph API, so
+        we scrape argv. Heuristic — may miss or mis-match when multiple
+        processes share a node name. Callers must treat None as 'unknown'
+        and never act on a returned PID for a foreign node.
+        """
+        try:
+            entries = os.listdir('/proc')
+        except OSError:
+            return None
+        needles = [n.encode() for n in (short_name, full_name) if n]
+        if not needles:
+            return None
+        for ent in entries:
+            if not ent.isdigit():
+                continue
+            try:
+                with open(f'/proc/{ent}/cmdline', 'rb') as f:
+                    blob = f.read()
+            except OSError:
+                continue
+            if blob and any(n in blob for n in needles):
+                try:
+                    return int(ent)
+                except ValueError:
+                    return None
+        return None
+
+    def _gui_owner_label_for_pid(self, pid):
+        """Walk PPid chain; return owning GUI device label or None.
+
+        Bounded walk against PIDs of live GUI-spawned subprocesses
+        (self._process_objects). Anything not descended from a GUI child
+        is reported as foreign.
+        """
+        if pid is None:
+            return None
+        owned = {}
+        for lbl, popen in self._process_objects.items():
+            if popen is None:
+                continue
+            try:
+                if popen.poll() is None:
+                    owned[popen.pid] = lbl
+            except Exception:
+                continue
+        cur = pid
+        for _ in range(64):
+            if cur in owned:
+                return owned[cur]
+            try:
+                with open(f'/proc/{cur}/status', 'r') as f:
+                    ppid = None
+                    for line in f:
+                        if line.startswith('PPid:'):
+                            ppid = int(line.split()[1])
+                            break
+                if ppid is None or ppid <= 1:
+                    return None
+                cur = ppid
+            except (OSError, ValueError):
+                return None
+        return None
+
+    def _poll_watched_publishers(self):
+        """0.1 Hz: query each watched topic, attribute publishers, flag duplicates."""
+        node = self._ros_node
+        if node is None or not self._watched_topics:
+            return
+        state = {}
+        for topic in self._watched_topics:
+            try:
+                infos = node.get_publishers_info_by_topic(topic)
+            except Exception:
+                continue
+            entries = []
+            for info in infos:
+                ns = getattr(info, 'node_namespace', '') or ''
+                name = getattr(info, 'node_name', '') or ''
+                if ns and not ns.endswith('/'):
+                    ns = ns + '/'
+                full = (ns + name) if name else (ns or '?')
+                full = full.replace('//', '/')
+                pid = self._resolve_pid_for_node(name, full)
+                owner = self._gui_owner_label_for_pid(pid)
+                entries.append({
+                    'node': full,
+                    'topic': topic,
+                    'pid': pid,
+                    'gui_owner': owner,
+                })
+            state[topic] = entries
+        self._watched_pub_state = state
+        self._apply_duplicate_dots(state)
+        self._refresh_process_table()
+
+    def _apply_duplicate_dots(self, state):
+        """Flip dots red when their device participates in a topic collision."""
+        flagged = set()
+        for _topic, entries in state.items():
+            sources = set()
+            for e in entries:
+                if e['gui_owner'] is not None:
+                    sources.add(('gui', e['gui_owner']))
+                elif e['pid'] is not None:
+                    sources.add(('ext', e['pid']))
+                else:
+                    sources.add(('unknown', e['node']))
+            if len(sources) <= 1:
+                continue
+            for e in entries:
+                owner = e['gui_owner']
+                if owner is None:
+                    continue
+                for dev_label, dot_keys, _cmd in self._launch_devices:
+                    if dev_label == owner:
+                        flagged.update(dot_keys)
+                        break
+
+        for k in flagged - self._dot_duplicate_flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(
+                    "background-color: #f44; border-radius: 7px; border: none;"
+                )
+        for k in self._dot_duplicate_flagged - flagged:
+            dot = self.status_dots.get(k)
+            if dot is not None:
+                dot.setStyleSheet(self._base_dot_style_for(k))
+        self._dot_duplicate_flagged = flagged
+
+    def _refresh_process_table(self):
+        """Hook invoked from _poll_watched_publishers each 0.1 Hz tick."""
+        if not hasattr(self, '_proc_table'):
+            return
+        self._render_process_table()
+
+    def _render_process_table(self):
+        """Repopulate the Manage Running Processes grid from _watched_pub_state.
+
+        Columns: [Node | Topic | Source | PID | Action]. The Action cell
+        only renders a Kill button for GUI-owned rows; foreign rows show
+        the heuristic PID as plain text per the disclaimer banner above.
+        """
+        if not hasattr(self, '_proc_table'):
+            return
+
+        # Clear existing widgets from the grid.
+        while self._proc_table.count():
+            item = self._proc_table.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+
+        cell_style = (
+            "border: none; color: #ccc; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        foreign_style = (
+            "border: none; color: #f80; font-size: 10px;"
+            " font-family: monospace;"
+        )
+        kill_style = (
+            "QPushButton {"
+            "  background-color: #4a1a1a; color: #fbb;"
+            "  border: 1px solid #722; border-radius: 3px;"
+            "  padding: 2px 8px; font-size: 10px;"
+            "}"
+            "QPushButton:hover { background-color: #6a2a2a; }"
+            "QPushButton:pressed { background-color: #300a0a; }"
+        )
+
+        row = 0
+        any_rendered = False
+        for topic in self._watched_topics:
+            entries = self._watched_pub_state.get(topic, [])
+            for e in entries:
+                any_rendered = True
+                node_lbl = QLabel(e.get('node', '?'))
+                node_lbl.setStyleSheet(cell_style)
+                self._proc_table.addWidget(node_lbl, row, 0)
+
+                topic_lbl = QLabel(e.get('topic', topic))
+                topic_lbl.setStyleSheet(cell_style)
+                self._proc_table.addWidget(topic_lbl, row, 1)
+
+                gui_owner = e.get('gui_owner')
+                if gui_owner is not None:
+                    source_lbl = QLabel(f"GUI: {gui_owner}")
+                    source_lbl.setStyleSheet(cell_style)
+                else:
+                    source_lbl = QLabel("External")
+                    source_lbl.setStyleSheet(foreign_style)
+                self._proc_table.addWidget(source_lbl, row, 2)
+
+                pid = e.get('pid')
+                pid_text = str(pid) if pid is not None else "unknown"
+                pid_lbl = QLabel(pid_text)
+                pid_lbl.setStyleSheet(
+                    cell_style if gui_owner is not None else foreign_style
+                )
+                self._proc_table.addWidget(pid_lbl, row, 3)
+
+                if gui_owner is not None:
+                    kill_btn = QPushButton("Kill")
+                    kill_btn.setStyleSheet(kill_style)
+                    kill_btn.setFocusPolicy(Qt.NoFocus)
+                    kill_btn.clicked.connect(
+                        lambda _checked=False, lbl=gui_owner:
+                            self._kill_gui_process(lbl)
+                    )
+                    self._proc_table.addWidget(kill_btn, row, 4)
+                row += 1
+
+        if hasattr(self, '_proc_empty_label'):
+            self._proc_empty_label.setVisible(not any_rendered)
+
+    def _kill_gui_process(self, device_label):
+        """Terminate a GUI-spawned process by its device label.
+
+        Reuses the existing toggle path so launch state, dot, and queue
+        all reset cleanly — _toggle_device(label) when label is already
+        on / starting routes to the stop branch.
+        """
+        if device_label not in self._launch_states:
+            return
+        try:
+            self._toggle_device(device_label)
+        except Exception as ex:
+            self._gui_log_msg(f"Failed to stop {device_label}: {ex}")
 
     def _update_queue_label(self):
         """Refresh the queue status text at the top of the launch page."""
