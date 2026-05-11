@@ -6,7 +6,7 @@ ekf_node:
 # frequency specified here, regardless of whether it receives more measurements. Defaults to 30 if unspecified.
         # 20 Hz is a better fit for the Jetson with the current LiDAR + IMU
         # stack; 30 Hz was overrunning the filter callback budget.
-        frequency: 30.0
+        frequency: 20.0
 
 # ekf_localization_node and ukf_localization_node both use a 3D omnidirectional motion model. If this parameter is
 # set to true, no 3D information will be used in your state estimate. Use this if you are operating in a planar
