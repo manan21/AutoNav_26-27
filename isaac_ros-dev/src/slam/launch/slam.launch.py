@@ -7,6 +7,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -52,10 +53,23 @@ def generate_launch_description():
         ]),
         description='Path to Nav2 parameters file')
 
+    # ── GPS fusion toggle ────────────────────────────────────────────
+    # When true (default), the Map EKF (ekf_global) and
+    # navsat_transform_node come up alongside slam_toolbox, fusing
+    # /gps_fix into /global_ekf/odom as an XY-only anchor. Set false
+    # at launch time if a GPS receiver is misbehaving and you want to
+    # fall back to a SLAM-only Map EKF without rebuilding.
+    enable_gps_fusion = DeclareLaunchArgument(
+        'enable_gps_fusion',
+        default_value='true',
+        description='Run ekf_global + navsat_transform_node so GPS '
+                    'contributes XY-only corrections to /global_ekf/odom.')
+
     # ── Paths ─────────────────────────────────────────────────────────────
     pkg_share = FindPackageShare(package='slam').find('slam')
-    slam_config      = os.path.join(pkg_share, 'config', 'slam.yaml')
-    ekf_local_config = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
+    slam_config       = os.path.join(pkg_share, 'config', 'slam.yaml')
+    ekf_local_config  = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
+    ekf_global_config = os.path.join(pkg_share, 'config', 'ekf_global.yaml')
 
     # ── 0. Local EKF (odom -> base_link) ─────────────────────────────────
     # robot_localization can rotate IMU measurements into base_link using TF,
@@ -87,6 +101,60 @@ def generate_launch_description():
                 'transform_publish_period': LaunchConfiguration('publish_period'),
             }
         ]
+    )
+
+    # ── 2.25 Map EKF (map -> base_link, NO TF publish) ──────────────────
+    # Fuses slam_toolbox /pose, the Local EKF output, and (when
+    # enable_gps_fusion is true) /odometry/gps from navsat_transform.
+    # Emits /global_ekf/odom for downstream consumers. publish_tf is
+    # OFF in ekf_global.yaml because slam_toolbox already publishes
+    # the map -> odom transform.
+    ekf_global = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_global',
+        output='screen',
+        parameters=[
+            ekf_global_config,
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
+        remappings=[('odometry/filtered', '/global_ekf/odom')],
+    )
+
+    # ── 2.4 navsat_transform_node (only when enable_gps_fusion) ─────────
+    # Converts /gps_fix → /odometry/gps in the map frame. With
+    # use_odometry_yaw=true the heading reference comes from the Map
+    # EKF itself (no magnetometer on this robot), so the first GPS
+    # corrections may be rotationally imprecise until the robot has
+    # moved enough for the EKF yaw to be meaningful. The XY-only mask
+    # in ekf_global.yaml limits how much a bad early fix can pull the
+    # estimate. delay=3.0 lets the EKF stabilize before the first GPS
+    # measurement is forwarded.
+    navsat_transform = Node(
+        package='robot_localization',
+        executable='navsat_transform_node',
+        name='navsat_transform',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'frequency': 30.0,
+            'delay': 3.0,
+            'magnetic_declination_radians': 0.0,
+            'yaw_offset': 0.0,
+            'zero_altitude': True,
+            'broadcast_cartesian_transform': False,
+            'publish_filtered_gps': True,
+            'use_odometry_yaw': True,
+            'wait_for_datum': False,
+        }],
+        remappings=[
+            ('gps/fix',          '/gps_fix'),
+            ('imu',              '/sick_scansegment_xd/imu'),
+            ('odometry/filtered', '/global_ekf/odom'),
+            ('odometry/gps',     '/odometry/gps'),
+            ('gps/filtered',     '/gps/filtered'),
+        ],
+        condition=IfCondition(LaunchConfiguration('enable_gps_fusion')),
     )
 
     # ── 2.5 PCA PointCloud2 → LaserScan converter ────────────────────────
@@ -179,9 +247,12 @@ def generate_launch_description():
         use_sim_time,
         publish_period,
         nav2_params_arg,
+        enable_gps_fusion,
         # nodes (in startup order)
         ekf_local,
         slam_toolbox,
+        ekf_global,
+        navsat_transform,
         pca_pc2_to_scan,
         map_padder,
         nav2,

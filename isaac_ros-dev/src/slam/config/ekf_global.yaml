@@ -1,17 +1,23 @@
 ekf_global:
   ros__parameters:
-    frequency: 5.0
+    frequency: 30.0
     sensor_timeout: 0.1
     map_frame: map
     odom_frame: odom
     base_link_frame: base_link
     world_frame: map
-    
-    
 
-    # [ x y z 
+    # slam_toolbox already publishes map -> odom. If this EKF also
+    # publishes TF, the two fight and Nav2 sees a chattering transform.
+    # We use this filter purely as a state estimator that emits
+    # /global_ekf/odom for downstream consumers.
+    publish_tf: false
+
+
+
+    # [ x y z
     #   r p yw
-    #   dx dy dz 
+    #   dx dy dz
     #   dr dp dyw
     #   ax ay az ]
 
@@ -32,3 +38,24 @@ ekf_global:
                   true, false, false,
                   false, false, true,
                   false, false, false]
+
+    # ── GPS (XY only, via navsat_transform_node) ─────────────────────
+    # We fuse only the absolute XY position from /odometry/gps and
+    # nothing else: no Z, no yaw, no velocity. The per-fix covariance
+    # comes from NavSatFix.position_covariance (passed through by
+    # navsat_transform_node), so the EKF naturally down-weights bad
+    # fixes the receiver flags. The rejection threshold below is a
+    # Mahalanobis-distance gate that drops measurements more than
+    # 5 σ from the current estimate — protects against multipath
+    # spikes that the receiver may have under-reported.
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false]
+    odom1_differential: false
+    odom1_relative: false
+    odom1_queue_size: 10
+    odom1_nodelay: false
+    odom1_rejection_threshold: 5.0

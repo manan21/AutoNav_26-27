@@ -2,7 +2,8 @@
 #include <sensor_msgs/msg/image.hpp>
 #include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
-#include "autonav_interfaces/msg/line_pixels.hpp"
+#include <std_msgs/msg/int32_multi_array.hpp>
+#include <std_msgs/msg/multi_array_dimension.hpp>
 
 #include <geometry_msgs/msg/vector3.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -113,7 +114,14 @@ public:
 		_line_point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
 			"lines_pointcloud", 10);
 
-		_line_pixels_pub = this->create_publisher<autonav_interfaces::msg::LinePixels>(
+		// Publish as a stock std_msgs/Int32MultiArray so the native
+		// (host-side) HUD can subscribe with only /opt/ros/humble on
+		// its Python path — no custom interface dep needed.
+		// Wire format: data[0] = image_width, data[1] = image_height,
+		// data[2..] is an interleaved [x0, y0, x1, y1, ...] pixel
+		// list. The same width/height also appear as layout.dim for
+		// callers that prefer the typed accessor.
+		_line_pixels_pub = this->create_publisher<std_msgs::msg::Int32MultiArray>(
 			"/line_detection/line_pixels", 10);
 			
 		// Create service for line detection
@@ -138,7 +146,7 @@ private:
 	rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _clear_lines_service;
 	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _line_point_cloud_pub; 
 	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_pub;
-	rclcpp::Publisher<autonav_interfaces::msg::LinePixels>::SharedPtr _line_pixels_pub;
+	rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr _line_pixels_pub;
 	rclcpp::TimerBase::SharedPtr _line_timer;
 
 	std::mutex callback_lock;
@@ -765,17 +773,24 @@ void LineDetectorNode::line_callback()
 		"Detected %d line pixels", *line_points_len);
 
 	{
-		autonav_interfaces::msg::LinePixels px_msg;
-		px_msg.header.stamp = camera_msg->header.stamp;
-		px_msg.header.frame_id = camera_msg->header.frame_id;
-		px_msg.image_width = camera_msg->width;
-		px_msg.image_height = camera_msg->height;
+		std_msgs::msg::Int32MultiArray px_msg;
+		std_msgs::msg::MultiArrayDimension dim_w;
+		dim_w.label = "width";
+		dim_w.size = camera_msg->width;
+		dim_w.stride = 0;
+		std_msgs::msg::MultiArrayDimension dim_h;
+		dim_h.label = "height";
+		dim_h.size = camera_msg->height;
+		dim_h.stride = 0;
+		px_msg.layout.dim.push_back(dim_w);
+		px_msg.layout.dim.push_back(dim_h);
 		const int n = *line_points_len;
-		px_msg.xs.reserve(n);
-		px_msg.ys.reserve(n);
+		px_msg.data.reserve(2 + 2 * n);
+		px_msg.data.push_back(static_cast<int32_t>(camera_msg->width));
+		px_msg.data.push_back(static_cast<int32_t>(camera_msg->height));
 		for (int i = 0; i < n; ++i) {
-			px_msg.xs.push_back(line_points[i].x);
-			px_msg.ys.push_back(line_points[i].y);
+			px_msg.data.push_back(line_points[i].x);
+			px_msg.data.push_back(line_points[i].y);
 		}
 		_line_pixels_pub->publish(px_msg);
 	}

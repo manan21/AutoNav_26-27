@@ -18,21 +18,15 @@ try:
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2
     from nav_msgs.msg import Odometry
     from geometry_msgs.msg import PoseWithCovarianceStamped
-    from std_msgs.msg import Float32
+    from std_msgs.msg import Float32, Int32MultiArray
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
         _HAS_PC2 = True
     except ImportError:
         _HAS_PC2 = False
-    try:
-        from autonav_interfaces.msg import LinePixels
-        _HAS_LINE_PIXELS = True
-    except ImportError:
-        _HAS_LINE_PIXELS = False
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
-    _HAS_LINE_PIXELS = False
     _HAS_PC2 = False
 
 try:
@@ -5732,14 +5726,15 @@ if _HAS_ROS:
                     self._cb_pca, _SENSOR_QOS,
                 )
             # 2D line-pixel array from the line detector (red dots on
-            # the camera image). Only subscribed if the autonav
-            # interfaces are importable — otherwise the overlay is
-            # silently disabled and the raw image is shown.
-            if _HAS_LINE_PIXELS:
-                self.create_subscription(
-                    LinePixels, '/line_detection/line_pixels',
-                    self._cb_line_pixels, _SENSOR_QOS,
-                )
+            # the camera image). Published as std_msgs/Int32MultiArray
+            # so the native HUD only needs /opt/ros/humble on its
+            # Python path — no custom interface dependency. Wire
+            # format: data[0]=width, data[1]=height, data[2:] is
+            # interleaved [x0, y0, x1, y1, ...].
+            self.create_subscription(
+                Int32MultiArray, '/line_detection/line_pixels',
+                self._cb_line_pixels, _SENSOR_QOS,
+            )
 
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
@@ -5850,18 +5845,24 @@ if _HAS_ROS:
                 pass
 
         def _cb_line_pixels(self, msg):
-            n = min(len(msg.xs), len(msg.ys))
-            if n == 0:
-                self.latest_line_pixels = (
-                    np.empty(0, dtype=np.int32),
-                    np.empty(0, dtype=np.int32),
-                    int(msg.image_width), int(msg.image_height),
-                )
+            data = msg.data
+            if len(data) < 2:
+                return
+            w = int(data[0])
+            h = int(data[1])
+            pairs = np.asarray(data[2:], dtype=np.int32)
+            # data[2:] is interleaved [x0, y0, x1, y1, ...]; drop the
+            # tail if a malformed message arrives with an odd count.
+            if pairs.size % 2 != 0:
+                pairs = pairs[:-1]
+            if pairs.size == 0:
+                xs = np.empty(0, dtype=np.int32)
+                ys = np.empty(0, dtype=np.int32)
             else:
-                xs = np.asarray(msg.xs[:n], dtype=np.int32)
-                ys = np.asarray(msg.ys[:n], dtype=np.int32)
-                self.latest_line_pixels = (
-                    xs, ys, int(msg.image_width), int(msg.image_height))
+                pairs = pairs.reshape(-1, 2)
+                xs = pairs[:, 0]
+                ys = pairs[:, 1]
+            self.latest_line_pixels = (xs, ys, w, h)
             self.latest_line_pixels_t = time.monotonic()
 
 
