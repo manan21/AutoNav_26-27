@@ -58,6 +58,7 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <cstdint>
 #include <optional>
 
 namespace line_layer
@@ -99,6 +100,7 @@ private:
   bool rolling_window_;
   bool publish_costmap_;
   double transform_tolerance_;
+  int64_t max_message_age_ms_;
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
 

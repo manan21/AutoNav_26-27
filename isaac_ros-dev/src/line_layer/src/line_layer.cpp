@@ -80,7 +80,8 @@ LineLayer::LineLayer()
   need_recalculation_(false),
   rolling_window_(false),
   publish_costmap_(false),
-  transform_tolerance_(0.2)
+  transform_tolerance_(0.2),
+  max_message_age_ms_(750)
 {
 }
 
@@ -96,11 +97,13 @@ LineLayer::onInitialize()
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
   declareParameter("publish_costmap", rclcpp::ParameterValue(false));
   declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
+  declareParameter("max_message_age_ms", rclcpp::ParameterValue(750));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
   node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
+  node->get_parameter(name_ + "." + "max_message_age_ms", max_message_age_ms_);
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -452,6 +455,28 @@ LineLayer::updateCosts(
     RCLCPP_WARN_THROTTLE(
       rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
       "line_layer received an empty buffered message");
+    clear_layer();
+    return;
+  }
+  auto node = node_.lock();
+  if (!node) {
+    clear_layer();
+    return;
+  }
+  if (last_msg->points.empty()) {
+    clear_layer();
+    return;
+  }
+  const rclcpp::Time message_stamp(last_msg->header.stamp, node->get_clock()->get_clock_type());
+  const rclcpp::Time now = node->now();
+  const rclcpp::Duration max_age =
+    rclcpp::Duration::from_nanoseconds(max_message_age_ms_ * 1000000LL);
+  if (max_message_age_ms_ >= 0 && message_stamp.nanoseconds() > 0 && (now - message_stamp) > max_age) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("nav2_costmap_2d"), *node->get_clock(), 2000,
+      "line_layer clearing stale line message age %.1f ms (limit %.1f ms)",
+      (now - message_stamp).seconds() * 1000.0,
+      max_age.seconds() * 1000.0);
     clear_layer();
     return;
   }

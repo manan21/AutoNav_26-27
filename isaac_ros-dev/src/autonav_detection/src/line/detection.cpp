@@ -13,7 +13,8 @@ std::pair<int2 *, int *> filter_line_components(
     const int2 *points,
     int count,
     int width,
-    int height)
+    int height,
+    int * kept_component_count)
 {
     int *filtered_count = new int(0);
     int2 *filtered_points = new int2[1];
@@ -98,6 +99,10 @@ std::pair<int2 *, int *> filter_line_components(
         "Filtered line pixels from %d to %d using %d kept connected components",
         count, *filtered_count, kept_components);
 
+    if (kept_component_count) {
+        *kept_component_count = kept_components;
+    }
+
     return std::make_pair(filtered_points, filtered_count);
 }
 
@@ -118,7 +123,12 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                                                   double brightness_threshold,
                                                   int    half_window,
                                                   float  sigma_threshold,
-                                                  float  mew_threshold) {
+                                                  float  mew_threshold,
+                                                  bool   debug_image_write_enabled,
+                                                  lines::LinePixelDetectionStats * stats) {
+    if (stats) {
+        *stats = lines::LinePixelDetectionStats();
+    }
 
     // convert to grayscale
     cv::Mat gray_img;
@@ -397,6 +407,9 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     }
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
+    if (stats) {
+        stats->raw_pixels = *counter_return;
+    }
 
     // Allocate output array based on actual count
     int2 *output_return = new int2[std::max(1, *counter_return)];
@@ -421,58 +434,56 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         }
     }
 
-    auto filtered_results = filter_line_components(output_return, *counter_return, width, height);
+    int kept_components = 0;
+    auto filtered_results = filter_line_components(
+        output_return, *counter_return, width, height, &kept_components);
     delete[] output_return;
     delete counter_return;
     output_return = filtered_results.first;
     counter_return = filtered_results.second;
-
-    // =========================
-    // DEBUG: continuously overwrite the same 3 images
-    // =========================
-    const std::string out_dir = "line_debug";
-    std::filesystem::create_directories(out_dir);
-
-    // Raw input (BGR)
-    cv::Mat raw_bgr;
-    if (image.channels() == 3) {
-        raw_bgr = image.clone();
-    } else if (image.channels() == 4) {
-        cv::cvtColor(image, raw_bgr, cv::COLOR_BGRA2BGR);
-    } else {
-        cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
+    if (stats) {
+        stats->filtered_pixels = *counter_return;
+        stats->kept_components = kept_components;
     }
 
-    // Mask
-    cv::imwrite(out_dir + "/line_mask.png", mask);
+    if (debug_image_write_enabled) {
+        const std::string out_dir = "line_debug";
+        std::filesystem::create_directories(out_dir);
 
-    // Line points overlay
-    cv::Mat lines_overlay = raw_bgr.clone();
-    const int n = *counter_return;
-
-    for (int i = 0; i < n; i++) {
-        int x = output_return[i].x;
-        int y = output_return[i].y;
-        if (0 <= x && x < width && 0 <= y && y < height) {
-            // red dot
-            lines_overlay.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
-            // make it slightly more visible
-            if (x + 1 < width) lines_overlay.at<cv::Vec3b>(y, x + 1) = cv::Vec3b(0, 0, 255);
-            if (x - 1 >= 0)   lines_overlay.at<cv::Vec3b>(y, x - 1) = cv::Vec3b(0, 0, 255);
-            if (y + 1 < height) lines_overlay.at<cv::Vec3b>(y + 1, x) = cv::Vec3b(0, 0, 255);
-            if (y - 1 >= 0)     lines_overlay.at<cv::Vec3b>(y - 1, x) = cv::Vec3b(0, 0, 255);
+        cv::Mat raw_bgr;
+        if (image.channels() == 3) {
+            raw_bgr = image.clone();
+        } else if (image.channels() == 4) {
+            cv::cvtColor(image, raw_bgr, cv::COLOR_BGRA2BGR);
+        } else {
+            cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
         }
+
+        cv::imwrite(out_dir + "/line_mask.png", mask);
+
+        cv::Mat lines_overlay = raw_bgr.clone();
+        const int n = *counter_return;
+
+        for (int i = 0; i < n; i++) {
+            int x = output_return[i].x;
+            int y = output_return[i].y;
+            if (0 <= x && x < width && 0 <= y && y < height) {
+                lines_overlay.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+                if (x + 1 < width) lines_overlay.at<cv::Vec3b>(y, x + 1) = cv::Vec3b(0, 0, 255);
+                if (x - 1 >= 0)   lines_overlay.at<cv::Vec3b>(y, x - 1) = cv::Vec3b(0, 0, 255);
+                if (y + 1 < height) lines_overlay.at<cv::Vec3b>(y + 1, x) = cv::Vec3b(0, 0, 255);
+                if (y - 1 >= 0)     lines_overlay.at<cv::Vec3b>(y - 1, x) = cv::Vec3b(0, 0, 255);
+            }
+        }
+
+        cv::imwrite(out_dir + "/line_raw.png", raw_bgr);
+        cv::imwrite(out_dir + "/line_lines.png", lines_overlay);
+
+        RCLCPP_INFO(
+            rclcpp::get_logger("lines"),
+            "Updated debug images in %s (line points=%d)",
+            out_dir.c_str(), n);
     }
-
-    cv::imwrite(out_dir + "/line_raw.png", raw_bgr);
-    cv::imwrite(out_dir + "/line_lines.png", lines_overlay);
-
-    RCLCPP_INFO(
-        rclcpp::get_logger("lines"),
-        "Updated debug images in %s (line points=%d)",
-        out_dir.c_str(), n
-    );
-
 
     // Clean up device memory
     cudaFree(input_image_device);

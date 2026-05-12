@@ -221,6 +221,7 @@ local_costmap:
         enabled: True
         line_topic: "/line_points"
         transform_tolerance: 0.2
+        max_message_age_ms: 750
         rolling_window: True
         publish_costmap: True
 

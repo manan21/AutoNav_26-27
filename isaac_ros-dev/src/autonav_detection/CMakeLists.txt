@@ -17,6 +17,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(autonav_interfaces REQUIRED)
@@ -60,6 +61,8 @@ target_include_directories(line_detector
 ament_target_dependencies(line_detector
   rclcpp
   autonav_interfaces
+  nav_msgs
+  std_msgs
   cv_bridge
   tf2_ros
   tf2_eigen
