@@ -20,29 +20,33 @@ slam_toolbox:
     # walls) — those obstacles end up in /map → /map_padded → global
     # costmap static_layer as persistent long-range obstacles, so the
     # obstacle_layer can stay short-range (2.5 m) for dynamics only.
-    # SLAM consumes the PCA-filtered scan, NOT the raw layer-5.
+    # SLAM consumes the raw layer-5 scan again.
     #
-    # Earlier revision flipped this to /scan_fullframe arguing "more
-    # returns = better scan-match constraint." Field testing showed
-    # the opposite: the layer-5 ground ring on outdoor uneven terrain
-    # is ambiguous between consecutive scans (the lidar pitches as
-    # the chassis traverses), and slam_toolbox's pose graph
-    # accumulates drift until a loop closure yanks map→odom by 0.5–2 m
-    # — visible to Nav2 as the robot teleporting along its heading,
-    # which the controller reacted to with "bouncing forward and
-    # backward." Magnitude scaled with distance from start (~30 m =
-    # ~1–2 m snap), exactly the signature of accumulated odom drift
-    # + correction.
+    # History: flipped to /scan_pca_filtered when /scan_fullframe was
+    # producing big map→odom snaps that scaled with distance. Root
+    # cause turned out to be ekf_local over-fusing wheel velocity and
+    # SICK IMU yaw rate (both reporting near-degenerate covariance) —
+    # the over-confident odom→base_link drift forced slam_toolbox to
+    # snap map→odom to compensate.
     #
-    # /scan_pca_filtered carries only the grade detector's flagged
-    # obstacles: walls, posts, vegetation poking up — stable
-    # landmarks frame-to-frame. Sparser scan, but the points it
-    # keeps are real features, not geometric noise.
+    # That EKF fusion has now been calibrated (ekf_local: pose-only
+    # /odom, IMU disabled). With odom→base_link clean (sub-mm jitter
+    # at rest verified by tf2_echo), slam_toolbox no longer has to
+    # fight a drifting odom — so /scan_fullframe's dense returns
+    # become genuinely useful constraint instead of unstable points
+    # the matcher had to wrestle.
     #
-    # Operational cost: SLAM now has a hard dependency on PCA DETECT
-    # running first. The GUI launch queue is reordered so PCA DETECT
-    # comes up before SLAM (see _launch_devices in hud_node.py).
-    scan_topic: /scan_pca_filtered
+    # /scan_pca_filtered also has a separate independent problem:
+    # in this environment only ~11% of beams come back finite (78/723),
+    # leaving the correlative scan-matcher starved of geometry — it
+    # silently accepts weak matches and the "map catches up with
+    # robot" symptom appears. /scan_fullframe doesn't have this
+    # density issue.
+    #
+    # Independent of scan topic: PCA thresholds are NOT to be relaxed.
+    # /scan_pca_filtered remains the right input for the Nav2 obstacle
+    # layer (via pca_pc2_to_scan) — that path is unchanged.
+    scan_topic: /scan_fullframe
     use_map_saver: true
     mode: mapping
 
@@ -87,7 +91,15 @@ slam_toolbox:
     minimum_travel_heading: 0.0
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.1
+    # Bumped from 0.1 → 0.3. With sparse/ambiguous outdoor scans the
+    # correlative matcher can return a "match" at low response score
+    # that doesn't actually correspond to real overlap — and silently
+    # accepting such matches lets slam_toolbox conclude "robot didn't
+    # move much" when it did, snapping map→odom forward and producing
+    # the "map catching up with the robot" symptom. 0.3 makes the
+    # matcher reject low-confidence matches; if no match passes, the
+    # scan is dropped rather than fused incorrectly.
+    link_match_minimum_response_fine: 0.3
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 3.0
     do_loop_closing: true
