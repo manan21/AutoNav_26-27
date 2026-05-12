@@ -25,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/GpsData.msg
 	srv/ConfigureControl.srv
   msg/LinePoints.msg
+  msg/LinePixels.msg
 	srv/AnvLines.srv
 	srv/GpsToLocal.srv
 	srv/LocalToGps.srv

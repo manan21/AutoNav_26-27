@@ -2,6 +2,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
+#include "autonav_interfaces/msg/line_pixels.hpp"
 
 #include <geometry_msgs/msg/vector3.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -111,6 +112,9 @@ public:
 
 		_line_point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
 			"lines_pointcloud", 10);
+
+		_line_pixels_pub = this->create_publisher<autonav_interfaces::msg::LinePixels>(
+			"/line_detection/line_pixels", 10);
 			
 		// Create service for line detection
 		_line_service = this->create_service<autonav_interfaces::srv::AnvLines>(
@@ -134,6 +138,7 @@ private:
 	rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _clear_lines_service;
 	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _line_point_cloud_pub; 
 	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_pub;
+	rclcpp::Publisher<autonav_interfaces::msg::LinePixels>::SharedPtr _line_pixels_pub;
 	rclcpp::TimerBase::SharedPtr _line_timer;
 
 	std::mutex callback_lock;
@@ -758,7 +763,23 @@ void LineDetectorNode::line_callback()
 
 	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 		"Detected %d line pixels", *line_points_len);
-	
+
+	{
+		autonav_interfaces::msg::LinePixels px_msg;
+		px_msg.header.stamp = camera_msg->header.stamp;
+		px_msg.header.frame_id = camera_msg->header.frame_id;
+		px_msg.image_width = camera_msg->width;
+		px_msg.image_height = camera_msg->height;
+		const int n = *line_points_len;
+		px_msg.xs.reserve(n);
+		px_msg.ys.reserve(n);
+		for (int i = 0; i < n; ++i) {
+			px_msg.xs.push_back(line_points[i].x);
+			px_msg.ys.push_back(line_points[i].y);
+		}
+		_line_pixels_pub->publish(px_msg);
+	}
+
 	if (*line_points_len == 0) {
 		publishHeldOrEmpty("empty line detection");
 		delete[] line_points;

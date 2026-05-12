@@ -15,13 +15,25 @@ from collections import deque
 try:
     import rclpy
     from rclpy.node import Node
-    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu
+    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2
     from nav_msgs.msg import Odometry
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32
+    try:
+        from sensor_msgs_py import point_cloud2 as _pc2
+        _HAS_PC2 = True
+    except ImportError:
+        _HAS_PC2 = False
+    try:
+        from autonav_interfaces.msg import LinePixels
+        _HAS_LINE_PIXELS = True
+    except ImportError:
+        _HAS_LINE_PIXELS = False
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
+    _HAS_LINE_PIXELS = False
+    _HAS_PC2 = False
 
 try:
     import yaml
@@ -51,7 +63,7 @@ import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, Ellipse
 
 
 # ── OSM tile helpers ──────────────────────────────────────────────────
@@ -379,6 +391,16 @@ class HudWindow(QMainWindow):
         self._lidar_cap = None    # cv2.VideoCapture
         self._cam_im = None       # matplotlib imshow handle
         self._lidar_im = None     # matplotlib imshow handle
+        # Camera/lidar overlays: scatter for detected line pixels and a
+        # patches.Ellipse for the GPS covariance — created lazily on
+        # first data, hidden when the source topic goes stale.
+        self._cam_lines_scatter = None
+        self._gps_cov_ellipse = None
+        # Freshness window for "is this overlay topic live right now?"
+        # The camera/lidar/GPS overlays clear themselves once the source
+        # has been silent for longer than this, so an inactive detector
+        # leaves the raw image / plain BEV / plain map untouched.
+        self._overlay_fresh_s = 1.0
         self._video_fps = 30      # must match recorder's VIDEO_FPS
 
         # --- Central widget + top-level 3-column layout ---
@@ -1397,8 +1419,12 @@ class HudWindow(QMainWindow):
             v.addWidget(t)
             return f, v
 
-        # Camera — image canvas for video playback
-        cam_cell, cam_layout = _plot_cell("Camera")
+        # Camera — image canvas for video playback. The title flips
+        # between "Camera RAW" and "Camera CUDA" depending on whether
+        # the CUDA line detector is publishing /line_detection/line_pixels.
+        cam_cell, cam_layout = _plot_cell("Camera RAW")
+        self._cam_title_label = cam_layout.itemAt(0).widget()
+        self._cam_title_text = "Camera RAW"
         self._cam_fig, self._cam_ax, self._cam_canvas = _make_dark_canvas()
         self._cam_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._cam_ax.set_facecolor('#111111')
@@ -1418,8 +1444,12 @@ class HudWindow(QMainWindow):
         self._cam_canvas.setMinimumSize(50, 50)
         cam_layout.addWidget(self._cam_canvas, stretch=1)
 
-        # Lidar — image canvas for video playback
-        lidar_cell, lidar_layout = _plot_cell("Lidar")
+        # Lidar — image canvas for video playback. Title flips between
+        # "LIDAR Heightband" (plain BEV) and "LIDAR PCA" when the grade
+        # detector is publishing /scan_pca_filtered_points.
+        lidar_cell, lidar_layout = _plot_cell("LIDAR Heightband")
+        self._lidar_title_label = lidar_layout.itemAt(0).widget()
+        self._lidar_title_text = "LIDAR Heightband"
         self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas()
         self._lidar_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._lidar_ax.set_facecolor('#111111')
@@ -1439,8 +1469,14 @@ class HudWindow(QMainWindow):
         self._lidar_canvas.setMinimumSize(50, 50)
         lidar_layout.addWidget(self._lidar_canvas, stretch=1)
 
-        # GPS — map plot with satellite background (no axis clutter)
+        # GPS — map plot with satellite background (no axis clutter).
+        # Title flips to "GPS Covariance [fix]" when the message
+        # carries a usable position_covariance. The red dot is the
+        # latest NavSatFix (not a rolling mean); the ellipse is the
+        # 2σ contour of that fix's reported error distribution.
         gps_cell, gps_layout = _plot_cell("GPS")
+        self._gps_title_label = gps_layout.itemAt(0).widget()
+        self._gps_title_text = "GPS"
         self._gps_fig, self._gps_ax, self._gps_canvas = _make_dark_canvas()
         self._gps_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._gps_ax.set_facecolor('#111111')
@@ -4518,6 +4554,9 @@ class HudWindow(QMainWindow):
         if self._cam_im is not None:
             self._cam_im.remove()
             self._cam_im = None
+        if self._cam_lines_scatter is not None:
+            self._cam_lines_scatter.remove()
+            self._cam_lines_scatter = None
         self._cam_no_video_txt.set_visible(False)
         self._cam_live_txt.set_visible(False)
         self._cam_ax.set_facecolor('#111111')
@@ -4543,6 +4582,15 @@ class HudWindow(QMainWindow):
         self._gps_map_extent = None
         self._gps_no_data_txt.set_visible(False)
         self._gps_live_txt.set_visible(False)
+        if self._gps_cov_ellipse is not None:
+            self._gps_cov_ellipse.remove()
+            self._gps_cov_ellipse = None
+        self._set_cell_title(
+            '_cam_title_text', '_cam_title_label', 'Camera RAW')
+        self._set_cell_title(
+            '_lidar_title_text', '_lidar_title_label', 'LIDAR Heightband')
+        self._set_cell_title(
+            '_gps_title_text', '_gps_title_label', 'GPS')
         self._gps_ax.set_facecolor('#111111')
         self._gps_canvas.draw_idle()
 
@@ -4967,6 +5015,15 @@ class HudWindow(QMainWindow):
         # Show "NO DATA AVAILABLE" placeholders (hidden when data arrives)
         self._cam_live_txt.set_visible(True)
         self._cam_no_video_txt.set_visible(False)
+        if self._cam_lines_scatter is not None:
+            self._cam_lines_scatter.remove()
+            self._cam_lines_scatter = None
+        self._set_cell_title(
+            '_cam_title_text', '_cam_title_label', 'Camera RAW')
+        self._set_cell_title(
+            '_lidar_title_text', '_lidar_title_label', 'LIDAR Heightband')
+        self._set_cell_title(
+            '_gps_title_text', '_gps_title_label', 'GPS')
         self._cam_canvas.draw_idle()
         self._lidar_live_txt.set_visible(True)
         self._lidar_no_video_txt.set_visible(False)
@@ -4981,6 +5038,9 @@ class HudWindow(QMainWindow):
         self._gps_trail.set_data([], [])
         self._gps_dot.set_data([], [])
         self._gps_coord_label.set_text('')
+        if self._gps_cov_ellipse is not None:
+            self._gps_cov_ellipse.remove()
+            self._gps_cov_ellipse = None
         self._gps_canvas.draw_idle()
         # Encoders: show live placeholder and clear plot
         self._odom_live_txt.set_visible(True)
@@ -5157,6 +5217,62 @@ class HudWindow(QMainWindow):
                             extent=[extent[0], extent[1], extent[2], extent[3]],
                             aspect='auto', zorder=0,
                         )
+            # 2σ covariance ellipse around the current fix. Drawn in
+            # degrees on the lat/lon axes — width/height come from the
+            # eigendecomposition of the East/North block, converted
+            # from meters to degrees with the local meridian scale.
+            cov = node.latest_gps_cov
+            self._set_cell_title(
+                '_gps_title_text', '_gps_title_label',
+                'GPS Covariance [fix]' if cov is not None else 'GPS',
+            )
+            if cov is not None:
+                cov_ee, cov_en, cov_nn = cov
+                trace = cov_ee + cov_nn
+                det = cov_ee * cov_nn - cov_en * cov_en
+                disc = max(0.0, trace * trace / 4.0 - det)
+                root = math.sqrt(disc)
+                lam1 = trace / 2.0 + root  # larger eigenvalue (m^2)
+                lam2 = max(0.0, trace / 2.0 - root)
+                # 2σ axes in meters.
+                a_m = 2.0 * math.sqrt(max(0.0, lam1))
+                b_m = 2.0 * math.sqrt(max(0.0, lam2))
+                # Orientation of the major axis. atan2 against the
+                # East/North block — angle measured CCW from East.
+                angle_rad = 0.5 * math.atan2(2.0 * cov_en,
+                                             cov_ee - cov_nn)
+                angle_deg = math.degrees(angle_rad)
+                m_per_deg_lat = 111320.0
+                m_per_deg_lon = m_per_deg_lat * max(
+                    1e-6, math.cos(math.radians(lat)))
+                # We render on a lat/lon axis where 1 deg lon ≠ 1 deg
+                # lat in meters; convert each principal axis as a
+                # vector and use the diameter (2 × radius) for Ellipse.
+                ca = math.cos(angle_rad)
+                sa = math.sin(angle_rad)
+                # Major-axis vector (a_m along the major dir) in deg.
+                maj_dlon = (a_m * ca) / m_per_deg_lon
+                maj_dlat = (a_m * sa) / m_per_deg_lat
+                min_dlon = (-b_m * sa) / m_per_deg_lon
+                min_dlat = (b_m * ca) / m_per_deg_lat
+                width_deg = 2.0 * math.hypot(maj_dlon, maj_dlat)
+                height_deg = 2.0 * math.hypot(min_dlon, min_dlat)
+                if self._gps_cov_ellipse is None:
+                    self._gps_cov_ellipse = Ellipse(
+                        (lon, lat), width=width_deg, height=height_deg,
+                        angle=angle_deg, facecolor='none',
+                        edgecolor='#ff5050', linewidth=1.2, alpha=0.85,
+                        zorder=4,
+                    )
+                    self._gps_ax.add_patch(self._gps_cov_ellipse)
+                else:
+                    self._gps_cov_ellipse.set_center((lon, lat))
+                    self._gps_cov_ellipse.width = width_deg
+                    self._gps_cov_ellipse.height = height_deg
+                    self._gps_cov_ellipse.angle = angle_deg
+                    self._gps_cov_ellipse.set_visible(True)
+            elif self._gps_cov_ellipse is not None:
+                self._gps_cov_ellipse.set_visible(False)
             any_scalar_changed = True
 
         # --- Odom: graduate raw /odom → /local_ekf/odom when the
@@ -5240,14 +5356,47 @@ class HudWindow(QMainWindow):
                 self._cam_im = self._cam_ax.imshow(img_rgb, aspect='equal')
             else:
                 self._cam_im.set_data(img_rgb)
-            self._cam_canvas.draw_idle()
             self._live_set_dot_received('Camera')
+
+            # Detected-line overlay. If the line detector is producing
+            # /line_detection/line_pixels, paint each pixel as a small
+            # red dot. When the topic goes silent we hide the scatter
+            # so the raw image is shown by itself — matching the
+            # "detector off → original image" behavior.
+            lp = node.latest_line_pixels
+            fresh = (now - node.latest_line_pixels_t) < self._overlay_fresh_s
+            self._set_cell_title(
+                '_cam_title_text', '_cam_title_label',
+                'Camera CUDA' if (lp is not None and fresh) else 'Camera RAW',
+            )
+            if lp is not None and fresh and lp[0].size > 0:
+                xs, ys = lp[0], lp[1]
+                if self._cam_lines_scatter is None:
+                    self._cam_lines_scatter = self._cam_ax.scatter(
+                        xs, ys, s=4, c='red', marker='.',
+                        linewidths=0, zorder=10,
+                    )
+                else:
+                    self._cam_lines_scatter.set_offsets(
+                        np.column_stack([xs, ys]))
+                    self._cam_lines_scatter.set_visible(True)
+            elif self._cam_lines_scatter is not None:
+                self._cam_lines_scatter.set_visible(False)
+
+            self._cam_canvas.draw_idle()
 
         # --- LiDAR ---
         scan = node.latest_scan
         if scan is not None:
             node.latest_scan = None
-            bev = self._render_lidar_bev(scan)
+            pca_xy = node.latest_pca_xy
+            pca_fresh = (now - node.latest_pca_t) < self._overlay_fresh_s
+            bev_pca = pca_xy if (pca_xy is not None and pca_fresh) else None
+            self._set_cell_title(
+                '_lidar_title_text', '_lidar_title_label',
+                'LIDAR PCA' if bev_pca is not None else 'LIDAR Heightband',
+            )
+            bev = self._render_lidar_bev(scan, pca_xy=bev_pca)
             bev = np.rot90(bev, 1)
             bev = np.fliplr(bev)
             self._lidar_live_txt.set_visible(False)
@@ -5267,6 +5416,20 @@ class HudWindow(QMainWindow):
         # has a dedicated always-on timer (self._ekf_status_timer in
         # __init__) so the pulse and the EKF Filters status rows
         # update whether or not Live mode is active.
+
+    def _set_cell_title(self, attr_text, attr_label, text):
+        """Update one of the sensor-cell title QLabels only when the
+        text changes — cheap no-op on every tick that the state
+        doesn't move, so we can call it every live tick without
+        triggering Qt restyle work.
+        """
+        if getattr(self, attr_text, None) == text:
+            return
+        lbl = getattr(self, attr_label, None)
+        if lbl is None:
+            return
+        lbl.setText(text)
+        setattr(self, attr_text, text)
 
     def _set_enc_title(self, text):
         """Flip the Encoders cell title between '(Odom)' and
@@ -5339,13 +5502,18 @@ class HudWindow(QMainWindow):
             dot.setStyleSheet(self._DOT_ON if _alive(ekf_key) else self._DOT_OFF)
 
     @staticmethod
-    def _render_lidar_bev(scan, size=480):
+    def _render_lidar_bev(scan, size=480, pca_xy=None):
         """Render a LaserScan as a bird's-eye-view RGB image.
 
         Gray background = outside lidar range / unknown.
         White = driveable (clear path from robot to hit).
         Black = obstacle shadow (from hit outward to max range).
         Green dots = hit points. Red dot = robot origin.
+
+        ``pca_xy`` is an optional (N, 2) array of obstacle XY positions
+        in the same frame as the scan (lidar_footprint). When provided,
+        they are drawn as 3x3 red squares on top of everything else —
+        this is the PCA obstacle overlay.
         """
         img = np.full((size, size, 3), 128, dtype=np.uint8)  # gray background
         cx, cy = size // 2, size // 2
@@ -5384,6 +5552,21 @@ class HudWindow(QMainWindow):
                 # Green hit dot
                 if 0 <= ex < size and 0 <= ey < size:
                     img[ey, ex] = (0, 255, 0)
+
+        # PCA obstacle overlay — drawn before the robot dot so the
+        # origin stays distinguishable when obstacles are clustered
+        # near the robot.
+        if pca_xy is not None and len(pca_xy) > 0:
+            for px, py in pca_xy:
+                if not (np.isfinite(px) and np.isfinite(py)):
+                    continue
+                ex = int(cx + px * scale)
+                ey = int(cy - py * scale)
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        ny, nx = ey + dy, ex + dx
+                        if 0 <= ny < size and 0 <= nx < size:
+                            img[ny, nx] = (255, 0, 0)
 
         # Robot origin (red dot)
         for dy in range(-1, 2):
@@ -5436,6 +5619,19 @@ if _HAS_ROS:
             self.latest_image_rgb = None   # numpy RGB array
             self.latest_scan = None        # LaserScan message
             self.latest_gps = None         # (lat, lon)
+            # GPS position covariance (3x3, ENU, in m^2). Stashed
+            # separately from latest_gps so the live tick can draw the
+            # 2σ ellipse without changing the fix-consumption path.
+            self.latest_gps_cov = None     # (cov_ee, cov_en, cov_nn) m^2
+            # Detected line pixels overlay (cleared by the live tick
+            # once consumed; the topic-staleness check in HudWindow
+            # decides whether to draw).
+            self.latest_line_pixels = None # (xs, ys, width, height)
+            self.latest_line_pixels_t = 0.0
+            # PCA-filtered lidar obstacles (PointCloud2 → list of
+            # (x, y) tuples in the lidar_footprint frame).
+            self.latest_pca_xy = None      # numpy (N, 2) array
+            self.latest_pca_t = 0.0
             self.latest_odom = None        # (x, y, qz) — raw /odom
             self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
             self.latest_voltage = None     # float
@@ -5526,6 +5722,24 @@ if _HAS_ROS:
                 Odometry, '/global_ekf/odom',
                 self._cb_ekf_global_odom, _SENSOR_QOS,
             )
+            # PCA-filtered lidar obstacles (red dots on the BEV).
+            # Requires sensor_msgs_py to deserialize PointCloud2; if
+            # the helper isn't on the Python path we skip this overlay
+            # rather than crashing the GUI at startup.
+            if _HAS_PC2:
+                self.create_subscription(
+                    PointCloud2, '/scan_pca_filtered_points',
+                    self._cb_pca, _SENSOR_QOS,
+                )
+            # 2D line-pixel array from the line detector (red dots on
+            # the camera image). Only subscribed if the autonav
+            # interfaces are importable — otherwise the overlay is
+            # silently disabled and the raw image is shown.
+            if _HAS_LINE_PIXELS:
+                self.create_subscription(
+                    LinePixels, '/line_detection/line_pixels',
+                    self._cb_line_pixels, _SENSOR_QOS,
+                )
 
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
@@ -5550,6 +5764,18 @@ if _HAS_ROS:
         def _cb_gps(self, msg):
             self.last_msg_t['gps'] = time.monotonic()
             self.latest_gps = (msg.latitude, msg.longitude)
+            # position_covariance is row-major 3x3 in ENU (m^2). Pull
+            # the 2x2 East/North block — that's what the GUI's lat/lon
+            # map view can render as a 2σ ellipse.
+            cov = msg.position_covariance
+            if cov is not None and len(cov) >= 5:
+                cov_ee = float(cov[0])
+                cov_en = float(cov[1])
+                cov_nn = float(cov[4])
+                if (math.isfinite(cov_ee) and math.isfinite(cov_en)
+                        and math.isfinite(cov_nn) and cov_ee > 0.0
+                        and cov_nn > 0.0):
+                    self.latest_gps_cov = (cov_ee, cov_en, cov_nn)
 
         def _cb_odom(self, msg):
             self.last_msg_t['odom'] = time.monotonic()
@@ -5603,6 +5829,40 @@ if _HAS_ROS:
 
         def _cb_soc(self, msg):
             self.latest_soc = msg.data
+
+        def _cb_pca(self, msg):
+            # PointCloud2 of grade/PCA-flagged obstacles in the lidar
+            # footprint frame. We only need the (x, y) for the BEV
+            # overlay — z is dropped because the BEV is 2D.
+            try:
+                pts = np.fromiter(
+                    (xy for xy in _pc2.read_points(
+                        msg, field_names=('x', 'y'), skip_nans=True)),
+                    dtype=np.dtype([('x', np.float32), ('y', np.float32)]),
+                )
+                if pts.size == 0:
+                    self.latest_pca_xy = np.empty((0, 2), dtype=np.float32)
+                else:
+                    self.latest_pca_xy = np.stack(
+                        [pts['x'], pts['y']], axis=1).astype(np.float32)
+                self.latest_pca_t = time.monotonic()
+            except Exception:
+                pass
+
+        def _cb_line_pixels(self, msg):
+            n = min(len(msg.xs), len(msg.ys))
+            if n == 0:
+                self.latest_line_pixels = (
+                    np.empty(0, dtype=np.int32),
+                    np.empty(0, dtype=np.int32),
+                    int(msg.image_width), int(msg.image_height),
+                )
+            else:
+                xs = np.asarray(msg.xs[:n], dtype=np.int32)
+                ys = np.asarray(msg.ys[:n], dtype=np.int32)
+                self.latest_line_pixels = (
+                    xs, ys, int(msg.image_width), int(msg.image_height))
+            self.latest_line_pixels_t = time.monotonic()
 
 
 def main(args=None):
