@@ -81,10 +81,15 @@ class ControlNode : public rclcpp::Node {
     // Debounce for bumper speed changes (500ms between changes)
     std::chrono::steady_clock::time_point last_speed_change_time_{};
 
+    // /joy watchdog: timestamp of last received /joy. Initialized to
+    // epoch so the watchdog also fires before the first /joy arrives.
+    rclcpp::Time last_joy_msg_time_{0, 0, RCL_ROS_TIME};
+
     bool currX = false;
     bool prevX = false;
 
     void joystick_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg) {
+        last_joy_msg_time_ = this->now();
         currX = joy_msg->buttons[3];
 
         // Detect rising edge
@@ -184,6 +189,10 @@ class ControlNode : public rclcpp::Node {
 
 
         if(!autonomousMode){
+            // Joy watchdog: 0.5 s without /joy → zero motors.
+            if ((this->now() - last_joy_msg_time_).seconds() > 0.5) {
+                motors.move(0, 0);
+            } else {
             Xbox::CommandData command = controller.calculateCommand();
 
             if(command.cmd == Xbox::MOVE){
@@ -210,6 +219,7 @@ class ControlNode : public rclcpp::Node {
             else if(command.cmd == Xbox::STOP){
                 motors.shutdown();
             }
+            }  // end joy-watchdog else
         }
         else {
            motors.move(right_wheel_speed * 40, left_wheel_speed * 40);
