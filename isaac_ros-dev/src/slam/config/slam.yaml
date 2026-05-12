@@ -63,7 +63,7 @@ slam_toolbox:
     # (use if something else broadcasts this transform).
     transform_publish_period: 0.02
 
-    map_update_interval: 5.0
+    map_update_interval: 1.0
     # 0.10 m matches what map_padder and global_costmap consume, so /map
     # is published at the target downstream resolution and map_padder's
     # downsample step (factor = round(out_res / slam_res)) becomes 1:1.

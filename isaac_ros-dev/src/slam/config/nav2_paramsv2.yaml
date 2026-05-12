@@ -237,8 +237,8 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      # With use_scan_matching: false AND identity map=odom, /map_padded and live obstacle_layer share the same TF chain, so static_layer is back in.
-      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
+      # No live obstacle_layer here. Live lidar obstacles go into the local costmap only; the global one is pure course memory (static_layer from /map_padded) so there's no visual lag between static_layer and live lidar.
+      plugins: ["static_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -252,8 +252,8 @@ global_costmap:
         observation_sources: filtered_scan
         filtered_scan:
           topic: /scan_pca_filtered
-          # Persistence holds obstacles after lidar loses sight. static_layer handles long-term memory; this layer just bridges the 5 s map_update_interval.
-          observation_persistence: 5.0
+          # static_layer carries persistent memory; keeping this 0 so obstacle_layer matches the local costmap (no ghost obstacles).
+          observation_persistence: 0.0
           clearing: True
           marking: True
           data_type: "LaserScan"
