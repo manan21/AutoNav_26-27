@@ -48,9 +48,9 @@ def generate_launch_description():
 
     publish_period = DeclareLaunchArgument(
         'publish_period',
-        default_value='0.02',
+        default_value='0.0',
         description='SLAM map->odom TF publish period (s). 0.02 = 50 Hz, '
-                    '0.0 disables.')
+                    '0.0 disables (static_transform_publisher owns the TF).')
 
     nav2_params_arg = DeclareLaunchArgument(
         'nav2_params',
@@ -78,6 +78,14 @@ def generate_launch_description():
     slam_config       = os.path.join(pkg_share, 'config', 'slam.yaml')
     ekf_local_config  = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
     ekf_global_config = os.path.join(pkg_share, 'config', 'ekf_global.yaml')
+
+    # Inflates /sick_scansegment_xd/imu's all-zero covariance so ekf_local can fuse yaw rate without over-trusting it.
+    imu_cov_inflator = Node(
+        package='imu_cov_inflator',
+        executable='imu_inflator_node',
+        name='imu_cov_inflator',
+        output='screen',
+    )
 
     # ── 0. Local EKF (odom -> base_link) ─────────────────────────────────
     # robot_localization can rotate IMU measurements into base_link using TF,
@@ -109,6 +117,15 @@ def generate_launch_description():
                 'transform_publish_period': LaunchConfiguration('publish_period'),
             }
         ]
+    )
+
+    # Static identity map->odom owns the TF; slam_toolbox is silent on TF.
+    map_to_odom_static = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_odom_static',
+        output='screen',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
     )
 
     # ── 2.25 Map EKF (map -> base_link, NO TF publish) ──────────────────
@@ -254,8 +271,10 @@ def generate_launch_description():
         nav2_params_arg,
         enable_gps_fusion,
         # nodes (in startup order)
+        imu_cov_inflator,
         ekf_local,
         slam_toolbox,
+        map_to_odom_static,
         ekf_global,
         navsat_transform,
         pca_pc2_to_scan,

@@ -37,26 +37,22 @@ ekf_node:
     # encoder glitches without rejecting normal motion.
     odom0_pose_rejection_threshold: 5.0
 
-    # ── SICK IMU ────────────────────────────────────────────────────
-    # DISABLED until upstream covariance is fixed. /sick_scansegment_xd/imu
-    # reports angular_velocity_covariance as the all-zero matrix
-    # [0, 0, 0, 0, 0, 0, 0, 0, 0]. robot_localization treats zero
-    # covariance as "perfect measurement" — every IMU sample then
-    # over-rides the wheel-derived yaw. Combined with the wheel's
-    # near-degenerate vyaw covariance, the filter snapped between
-    # the two sources at the IMU's publish rate (~100 Hz), producing
-    # the observed map-frame bouncing. Re-enable once the SICK
-    # driver (or a wrapper) reports a realistic covariance.
-    # imu0: sick_scansegment_xd/imu
-    # imu0_config: [false, false, false,
-    #               false, false, false,
-    #               false, false, false,
-    #               false, false, true,
-    #               false, false, false]
-    # imu0_differential: false
-    # imu0_relative: false
-    # imu0_queue_size: 10
-    # imu0_remove_gravitational_acceleration: false
+    # ── SICK IMU (via imu_cov_inflator) ─────────────────────────────
+    # Bare /sick_scansegment_xd/imu reports zero covariance which
+    # robot_localization treats as "perfect" and over-fuses. The
+    # inflator republishes with σ² = 0.01 rad²/s² on yaw rate; this
+    # node subscribes to the inflated topic. Fusing IMU yaw rate
+    # constrains yaw drift far better than wheel encoders alone.
+    imu0: /sick_scansegment_xd/imu_inflated
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: false
 
     # ── Process noise ───────────────────────────────────────────────
     # How much we expect the state to drift per timestep.
