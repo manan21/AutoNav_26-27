@@ -11,38 +11,52 @@ ekf_node:
     world_frame: odom
 
     # ── Wheel odometry ──────────────────────────────────────────────
-    # Fuse planar wheel odometry pose and twist. The encoder odom already
-    # integrates x/y/yaw, and feeding those states to the EKF keeps local
-    # heading and lateral uncertainty from drifting without bound.
+    # Position-only fusion. The original config also fused vx
+    # (twist.covariance[0]=0.001 → σ≈3 cm/s) and vyaw
+    # (twist.covariance[35]=0.02 → σ≈0.14 rad/s). Both are unrealistically
+    # tight — robot_localization treats them as near-perfect, so any
+    # wheel-slip or encoder-rate jitter is fused as ground truth and
+    # immediately rewrites odom→base_link. slam_toolbox then snaps
+    # map→odom to compensate, and Nav2 sees the robot "bouncing" along
+    # its heading. By dropping the twist bits we let the EKF derive
+    # velocities from sequential pose updates instead, which is
+    # naturally smoother and bounded by the pose covariance (which is
+    # itself realistic at 0.01 m² σ≈10 cm).
     odom0: odom
     odom0_config: [true,  true,  false,
                    false, false, true,
-                   true,  false, false,
-                   false, false, true,
+                   false, false, false,
+                   false, false, false,
                    false, false, false]
     odom0_differential: false
     odom0_relative: false
     odom0_queue_size: 10
+    # Outlier gate: drop wheel-odom samples whose Mahalanobis distance
+    # from the current pose estimate exceeds 5 σ. With 10 cm σ on
+    # position, that's a 50 cm threshold — catches single-frame
+    # encoder glitches without rejecting normal motion.
+    odom0_pose_rejection_threshold: 5.0
 
     # ── SICK IMU ────────────────────────────────────────────────────
-    # Fuse yaw rate from the IMU. Wheel odom anchors yaw pose; the IMU adds
-    # short-term rotational responsiveness without introducing a second
-    # absolute heading source.
-    # Feed the raw IMU topic to robot_localization and let it rotate the
-    # measurement into base_link using TF. This avoids depending on a custom
-    # transformer node for yaw-rate-only fusion.
-    imu0: sick_scansegment_xd/imu
-    imu0_config: [false, false, false,
-                  false, false, false,
-                  false, false, false,
-                  false, false, true,
-                  false, false, false]
-    imu0_differential: false
-    imu0_relative: false
-    imu0_queue_size: 10
-    # We are not fusing linear acceleration, so gravity removal is unnecessary
-    # and only adds an orientation dependency to the IMU preprocessing path.
-    imu0_remove_gravitational_acceleration: false
+    # DISABLED until upstream covariance is fixed. /sick_scansegment_xd/imu
+    # reports angular_velocity_covariance as the all-zero matrix
+    # [0, 0, 0, 0, 0, 0, 0, 0, 0]. robot_localization treats zero
+    # covariance as "perfect measurement" — every IMU sample then
+    # over-rides the wheel-derived yaw. Combined with the wheel's
+    # near-degenerate vyaw covariance, the filter snapped between
+    # the two sources at the IMU's publish rate (~100 Hz), producing
+    # the observed map-frame bouncing. Re-enable once the SICK
+    # driver (or a wrapper) reports a realistic covariance.
+    # imu0: sick_scansegment_xd/imu
+    # imu0_config: [false, false, false,
+    #               false, false, false,
+    #               false, false, false,
+    #               false, false, true,
+    #               false, false, false]
+    # imu0_differential: false
+    # imu0_relative: false
+    # imu0_queue_size: 10
+    # imu0_remove_gravitational_acceleration: false
 
     # ── Process noise ───────────────────────────────────────────────
     # How much we expect the state to drift per timestep.

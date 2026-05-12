@@ -126,6 +126,11 @@ def generate_launch_description():
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
         remappings=[('odometry/filtered', '/global_ekf/odom')],
+        # Same gate as navsat_transform — setting
+        # enable_gps_fusion:=false disables the entire Map EKF path
+        # (both ekf_global and navsat_transform) so the operator can
+        # A/B test against the pre-fusion baseline without rebuilding.
+        condition=IfCondition(LaunchConfiguration('enable_gps_fusion')),
     )
 
     # ── 2.4 navsat_transform_node (only when enable_gps_fusion) ─────────
