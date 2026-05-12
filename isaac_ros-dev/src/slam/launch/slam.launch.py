@@ -48,8 +48,12 @@ def generate_launch_description():
 
     publish_period = DeclareLaunchArgument(
         'publish_period',
-        default_value='0.02',
-        description='SLAM map->odom TF publish period (s). 0.02 = 50 Hz.')
+        default_value='0.0',
+        description='SLAM map->odom TF publish period (s). 0.02 = 50 Hz, '
+                    '0.0 disables. We default to 0.0 because a separate '
+                    'static_transform_publisher below pins map=odom — '
+                    'slam_toolbox still builds /map but no longer yanks '
+                    'the robot around with scan-match corrections.')
 
     nav2_params_arg = DeclareLaunchArgument(
         'nav2_params',
@@ -108,6 +112,30 @@ def generate_launch_description():
                 'transform_publish_period': LaunchConfiguration('publish_period'),
             }
         ]
+    )
+
+    # ── 2.1 Static map->odom (BAIL-OUT against scan-match snapping) ─────
+    # slam_toolbox owns map->odom in the canonical setup, adjusting it
+    # at scan-match rate to keep map->base_link aligned with the pose
+    # graph. In sparse-feature outdoor environments those adjustments
+    # snap by tens of cm — visible to Nav2 as the robot teleporting
+    # along its heading, controller bouncing forward/back, mission
+    # progress stalling because the map "catches up" with the robot.
+    #
+    # The detach: slam_toolbox.transform_publish_period is 0.0 (see
+    # the ``publish_period`` launch arg default above), and this node
+    # pins map=odom statically. slam_toolbox keeps building /map for
+    # the global costmap, but it can no longer drag the robot's
+    # apparent position around. Drift becomes purely ekf_local's
+    # encoder/IMU integration (smooth, bounded, predictable) and
+    # gps_handler's internal heading EKF still corrects the GPS-to-
+    # local conversion for that drift.
+    map_to_odom_static = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_odom_static',
+        output='screen',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
     )
 
     # ── 2.25 Map EKF (map -> base_link, NO TF publish) ──────────────────
@@ -255,6 +283,7 @@ def generate_launch_description():
         # nodes (in startup order)
         ekf_local,
         slam_toolbox,
+        map_to_odom_static,
         ekf_global,
         navsat_transform,
         pca_pc2_to_scan,
