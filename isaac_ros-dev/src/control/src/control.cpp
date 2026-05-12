@@ -81,28 +81,10 @@ class ControlNode : public rclcpp::Node {
     // Debounce for bumper speed changes (500ms between changes)
     std::chrono::steady_clock::time_point last_speed_change_time_{};
 
-    // Watchdog: timestamp of the last /joy message received. In MANUAL
-    // mode, if no /joy has arrived for JOY_STALE_TIMEOUT_S, we force
-    // motors to zero velocity — otherwise a controller disconnect
-    // (USB drop, dead controller battery, sleep, lost dongle) leaves
-    // the Xbox controller object holding whatever stick values it had
-    // when the disconnect happened, and the encoder timer keeps
-    // re-issuing those commands until something stops the robot
-    // physically. Initialized to epoch so the watchdog fires
-    // immediately at startup until the first /joy message arrives —
-    // i.e. the robot won't move on its own waiting for the operator.
-    rclcpp::Time last_joy_msg_time_{0, 0, RCL_ROS_TIME};
-    static constexpr double JOY_STALE_TIMEOUT_S = 0.5;
-
     bool currX = false;
     bool prevX = false;
 
     void joystick_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg) {
-        // Update the watchdog timestamp on every /joy message. The
-        // encoder-timer's MANUAL-mode branch checks this against
-        // JOY_STALE_TIMEOUT_S and forces motors to zero if the
-        // controller has disconnected.
-        last_joy_msg_time_ = this->now();
         currX = joy_msg->buttons[3];
 
         // Detect rising edge
@@ -202,36 +184,6 @@ class ControlNode : public rclcpp::Node {
 
 
         if(!autonomousMode){
-            // Joystick watchdog. If /joy has been silent for more than
-            // JOY_STALE_TIMEOUT_S, the controller has disconnected
-            // (USB drop, dead battery, lost dongle) and the Xbox
-            // controller object is still holding whatever stick values
-            // it had at the disconnect — re-issuing them would keep
-            // the robot moving until something physically stops it.
-            // Force zero velocity instead. This also fires before the
-            // first /joy message ever arrives, so the robot never
-            // moves on its own at startup.
-            const double joy_age_s =
-                (this->now() - last_joy_msg_time_).seconds();
-            if (joy_age_s > JOY_STALE_TIMEOUT_S) {
-                motors.move(0, 0);
-                RCLCPP_WARN_THROTTLE(
-                    this->get_logger(), *this->get_clock(), 1000,
-                    "MANUAL mode: /joy stale by %.2f s — motors held at zero",
-                    joy_age_s);
-                // Skip the controller-command path; nothing else to do
-                // until the joystick comes back.
-                if (encodersPub) {
-                    encodersPub->publish(encoder_msg);
-                }
-                if (speed_pub_) {
-                    auto speed_msg = std_msgs::msg::String();
-                    speed_msg.data = std::to_string(motors.getSpeed());
-                    speed_pub_->publish(speed_msg);
-                }
-                return;
-            }
-
             Xbox::CommandData command = controller.calculateCommand();
 
             if(command.cmd == Xbox::MOVE){
