@@ -238,14 +238,8 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      # Global = accumulator. obstacle_layer reads the same /scan_pca_filtered the local does, but with clearing disabled so cells, once marked, stay marked. The static_layer adds longer-range SLAM-derived course memory on top. Planner therefore sees everything the local ever saw, plus the persistent map.
-      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
-
-      static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: True
-        map_topic: "/map_padded"
-        first_map_only: false
+      # Global = accumulated paste of local. obstacle_layer reads the same /scan_pca_filtered the local does, but with clearing disabled so cells, once marked, stay marked. No static_layer: /map_padded fills its entire grid with LETHAL outside its "active corridor" (see map_padder_node.py), which contaminated the global with ghost walls that didn't exist in the local.
+      plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
