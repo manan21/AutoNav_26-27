@@ -15,17 +15,24 @@ from ament_index_python.packages import get_package_share_directory
 
 
 '''
-Launch file for SLAM + Nav2 bringup.
+Launch file for SLAM bringup (Nav2 launches separately).
 
 Key ordering decisions:
   1. EKF (local odometry) starts first — SLAM toolbox needs odom->base_link.
   2. SLAM toolbox starts second — needs odom, publishes /map.
-  3. map_padder starts third — needs /map, publishes /map_padded (transient_local).
-  4. Nav2 (via navigation_launch.py) starts last via a TimerAction delay —
-     this ensures map_padder has already latched /map_padded before the
-     global costmap's StaticLayer subscribes. Without the delay, Nav2 starts
-     before map_padder publishes its first message and the transient_local
-     re-send only works if map_padder is already alive.
+  3. Map EKF + navsat_transform follow once /pose and /local_ekf/odom are
+     wired up; navsat_transform feeds /odometry/gps into the Map EKF as
+     an XY-only anchor (see ekf_global.yaml).
+  4. map_padder needs /map, publishes /map_padded (transient_local).
+  5. Nav2 is NOT launched here — it is started by the GUI's NAV2 button
+     (./config/run-nav2.sh → ros2 launch nav2_bringup navigation_launch.py).
+     Launching it from both sites produced two lifecycle_manager_navigation
+     processes under the same node name; they raced and neither finished
+     configuring its costmaps, which silently held map → odom back and
+     left /goal_pose stuck at (0, 0). The [GUI_READY] sentinel below
+     intentionally waits ~10 s so map_padder has time to receive the
+     first /map from slam_toolbox before the GUI's launch queue
+     graduates and fires the NAV2 button.
 
 The SLAM config uses slam.yaml (NOT mapper_params_online_async.yaml) because
 slam.yaml has the correct base_frame / scan_topic for this robot.
@@ -213,32 +220,24 @@ def generate_launch_description():
         }]
     )
 
-    # ── 4. Nav2 (delayed) ────────────────────────────────────────────────
-    # Delayed 8 s so map_padder has time to receive /map from SLAM and
-    # publish at least one /map_padded message before Nav2's StaticLayer
-    # subscribes. Adjust the delay if SLAM takes longer to produce /map.
-    nav2 = TimerAction(
-        period=8.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([
-                    PathJoinSubstitution([
-                        get_package_share_directory('nav2_bringup'),
-                        'launch',
-                        'navigation_launch.py'
-                    ])
-                ]),
-                launch_arguments={
-                    'use_sim_time': LaunchConfiguration('use_sim_time'),
-                    'params_file': LaunchConfiguration('nav2_params'),
-                }.items()
-            )
-        ]
-    )
+    # ── 4. Nav2 ─────────────────────────────────────────────────────────
+    # Nav2 is launched separately by the GUI's NAV2 button (which runs
+    # ``./config/run-nav2.sh`` → ``ros2 launch nav2_bringup
+    # navigation_launch.py``). Launching it here too was the cause of
+    # two ``lifecycle_manager_navigation`` / ``bt_navigator`` /
+    # ``planner_server`` / ``controller_server`` instances racing under
+    # the same node names — the manifest of "WARNING: there are nodes
+    # in the graph that share an exact name" and the symptom of
+    # /goal_pose stalling at (0, 0) because slam_toolbox never
+    # graduated to publishing ``map → odom``. Single Nav2 owner now:
+    # the GUI button. SLAM's [GUI_READY] sentinel below still fires
+    # ~10 s after launch so map_padder has time to receive the first
+    # /map from slam_toolbox before the NAV2 button is allowed to fire
+    # next in the GUI's launch queue.
 
     # ── 5. GUI ready signal ───────────────────────────────────────────────
     gui_ready_emit = ExecuteProcess(
-        cmd=['bash', '-c', 'sleep 10 && echo "[GUI_READY] SLAM+Nav2"'],
+        cmd=['bash', '-c', 'sleep 10 && echo "[GUI_READY] SLAM"'],
         output='screen',
     )
 
@@ -255,6 +254,5 @@ def generate_launch_description():
         navsat_transform,
         pca_pc2_to_scan,
         map_padder,
-        nav2,
         gui_ready_emit,
     ])
