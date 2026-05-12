@@ -1,5 +1,5 @@
 """
-Map Padder — tight seed-and-flood.
+Map Padder — tight seed-and-flood inside a fixed-size canvas.
 
 Seeds (tiles of interest):
   • SLAM tiles   — every 1×1 m tile with real SLAM data
@@ -14,6 +14,15 @@ Everything else is LETHAL (100) — the planner can't enter it.
 Result: tight walls hugging SLAM data and a narrow 3-tile-wide
 corridor to distant goals.  As the robot moves and SLAM expands,
 the active region grows organically.
+
+Every publish uses the SAME grid dimensions and origin
+(MAX_GRID_SIDE × MAX_GRID_SIDE cells centered on map (0,0)). This
+prevents nav2's static_layer from resizing the master costmap, which
+would in turn fire matchSize() on every layer and wipe the
+accumulated cells in obstacle_layer and line_layer (both run with
+clearing: False in the global costmap so the planner remembers past
+obstacles). The "grow / shrink" behaviour now manifests as
+LETHAL↔UNKNOWN cell transitions inside the stable canvas.
 """
 
 import array
@@ -184,16 +193,16 @@ class MapPadder(Node):
         self._pending_plan_publish = True
 
     def _publish_initial_stub(self):
-        """Emit a placeholder OccupancyGrid so subscribers configuring
-        before SLAM's first /map don't see an empty topic. Size is
-        50 m square at the configured output resolution — matches the
-        global_costmap defaults in nav2_paramsv2.yaml so static_layer
-        sees a sane stub. All cells are UNKNOWN; the first real /map
-        replaces this entirely via TRANSIENT_LOCAL.
+        """Emit a placeholder OccupancyGrid at the FINAL fixed size so
+        static_layer never resizes the master after this point. Sized at
+        MAX_GRID_SIDE × MAX_GRID_SIDE so subsequent real publishes have
+        identical dimensions and origin → no resize → no matchSize() →
+        accumulated cells in obstacle_layer / line_layer persist. All
+        cells start UNKNOWN; the first real /map carves the corridor.
         """
-        side_m = 50.0
         res = self._out_res if self._out_res > 0 else 0.10
-        cells = int(side_m / res)
+        cells = MAX_GRID_SIDE
+        side_m = cells * res
         stub = OccupancyGrid()
         stub.header.frame_id = 'map'
         stub.header.stamp = self.get_clock().now().to_msg()
@@ -243,9 +252,31 @@ class MapPadder(Node):
             self._ds_ox = msg.info.origin.position.x
             self._ds_oy = msg.info.origin.position.y
             self._ds_h, self._ds_w = self._ds.shape
+            # Audit B4: canvas resolution must equal _out_res so the
+            # main publish's grid dimensions match the __init__ stub —
+            # otherwise static_layer would resize the master costmap
+            # on the first real publish, firing matchSize() on every
+            # layer and wiping accumulated cells in obstacle_layer /
+            # line_layer. In typical operation slam_toolbox publishes
+            # at _out_res so _ds_res == _out_res; if they ever diverge
+            # (slam_res that doesn't divide _out_res cleanly), warn
+            # loudly and pin canvas to _out_res anyway — SLAM cell
+            # paste below will then drift sub-cell, but the global
+            # costmap stays stable, which is the more important
+            # invariant.
+            if abs(self._ds_res - self._out_res) > 1e-6:
+                self.get_logger().warn(
+                    f'slam_res={slam_res:.4f}m × factor={factor} = '
+                    f'{self._ds_res:.4f}m, but out_res='
+                    f'{self._out_res:.4f}m. Canvas pinned to out_res '
+                    f'to keep static_layer stable; SLAM paste may '
+                    f'drift in distant cells. Configure slam_toolbox '
+                    f'resolution to match map_padder out_res.')
 
         ds = self._ds
-        res = self._ds_res
+        # Canvas resolution is ALWAYS _out_res — must match the
+        # __init__ stub. See B4 audit note above.
+        res = self._out_res
 
         # ── 1. seeds ─────────────────────────────────────────────────
         seeds = set()
@@ -290,29 +321,34 @@ class MapPadder(Node):
         if not active:
             return
 
-        # ── 3. bounding box ──────────────────────────────────────────
-        min_tx = min(t[0] for t in active)
-        max_tx = max(t[0] for t in active)
-        min_ty = min(t[1] for t in active)
-        max_ty = max(t[1] for t in active)
-
-        bb_ox = min_tx * tile
-        bb_oy = min_ty * tile
+        # ── 3. fixed canvas (map-frame, centered on origin) ──────────
+        # Same dimensions / origin every publish so nav2's static_layer
+        # never triggers a master resize. Grow / shrink happens by
+        # flipping cells inside this stable canvas, not by changing the
+        # grid extents.
+        bb_w = MAX_GRID_SIDE
+        bb_h = MAX_GRID_SIDE
+        bb_ox = -(MAX_GRID_SIDE * res) / 2.0
+        bb_oy = -(MAX_GRID_SIDE * res) / 2.0
         cpt = max(1, round(tile / res))
-        bb_w = (max_tx - min_tx + 1) * cpt
-        bb_h = (max_ty - min_ty + 1) * cpt
-
-        if bb_w > MAX_GRID_SIDE or bb_h > MAX_GRID_SIDE:
-            self.get_logger().warn(f'Clamped {bb_w}x{bb_h}')
-            bb_w = min(bb_w, MAX_GRID_SIDE)
-            bb_h = min(bb_h, MAX_GRID_SIDE)
 
         # ── 4. tile mask → cell mask ─────────────────────────────────
-        n_tx = max_tx - min_tx + 1
-        n_ty = max_ty - min_ty + 1
+        # Canvas spans bb_w cells = bb_w*res meters → bb_w*res/tile tiles.
+        n_tx = bb_w // cpt
+        n_ty = bb_h // cpt
+        # Tile-index of the canvas's bottom-left corner.
+        min_tx = int(math.floor(bb_ox / tile))
+        min_ty = int(math.floor(bb_oy / tile))
+
         tmask = np.zeros((n_ty, n_tx), dtype=np.bool_)
         for tx, ty in active:
-            tmask[ty - min_ty, tx - min_tx] = True
+            lx = tx - min_tx
+            ly = ty - min_ty
+            # Drop tiles outside the fixed canvas — robot or goal beyond
+            # ±(MAX_GRID_SIDE*res/2). Logged below as a warning so it's
+            # visible if the course exceeds canvas range.
+            if 0 <= lx < n_tx and 0 <= ly < n_ty:
+                tmask[ly, lx] = True
 
         cmask = np.repeat(np.repeat(tmask, cpt, axis=0),
                           cpt, axis=1)[:bb_h, :bb_w]

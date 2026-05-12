@@ -80,6 +80,7 @@ LineLayer::LineLayer()
   need_recalculation_(false),
   rolling_window_(false),
   publish_costmap_(false),
+  clearing_(true),
   transform_tolerance_(0.2),
   max_message_age_ms_(750)
 {
@@ -96,12 +97,14 @@ LineLayer::onInitialize()
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
   declareParameter("publish_costmap", rclcpp::ParameterValue(false));
+  declareParameter("clearing", rclcpp::ParameterValue(true));
   declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
   declareParameter("max_message_age_ms", rclcpp::ParameterValue(750));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
+  node->get_parameter(name_ + "." + "clearing", clearing_);
   node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
   node->get_parameter(name_ + "." + "max_message_age_ms", max_message_age_ms_);
 
@@ -423,7 +426,9 @@ LineLayer::updateCosts(
   max_j = std::min(static_cast<int>(size_y), max_j);
 
   auto clear_layer = [&]() {
-    resetMaps();
+    if (clearing_) {
+      resetMaps();
+    }
     updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     current_ = true;
     if (publish_costmap_) {
@@ -487,8 +492,13 @@ LineLayer::updateCosts(
     return;
   }
 
-  // Clear the previous line layer state only when we have a usable message.
-  resetMaps();
+  // In clearing mode (local costmap default), wipe the previous frame's
+  // marks before stamping the new ones — the layer reflects "what we see
+  // right now". In non-clearing mode (global costmap), skip the reset so
+  // cells accumulate across publishes.
+  if (clearing_) {
+    resetMaps();
+  }
 
   const std::vector<geometry_msgs::msg::Vector3> & points = *transformed_points;
 

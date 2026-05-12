@@ -216,7 +216,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.5 # Controller can use footprint so inflation radius is now margin of safety from obstacle edge to footprint edge
+        inflation_radius: 1.10
 
       always_send_full_costmap: True
 
@@ -231,19 +231,29 @@ global_costmap:
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
       resolution: 0.10
-      # No static_layer, so these define the global costmap extent directly: 50×50 m grid centered on map-origin (0,0). Robot starts at map (0,0) via the static map→odom identity TF, so usable range is ±25 m around start — covers all competition waypoint distances.
-      width: 50
-      height: 50
-      origin_x: -25.0
-      origin_y: -25.0
+      # static_layer drives the global costmap geometry from /map_padded. map_padder now publishes a fixed 160x160 m canvas every cycle (centered on map (0,0)), so dimensions never change after the first publish — that's what prevents matchSize() from wiping obstacle_layer / line_layer cells. The width/height/origin below are only used until the first /map_padded arrives.
+      width: 160
+      height: 160
+      origin_x: -80.0
+      origin_y: -80.0
       track_unknown_space: true
-      # Global = accumulated paste of local. obstacle_layer reads the same /scan_pca_filtered the local does, but with clearing disabled so cells, once marked, stay marked. No static_layer: /map_padded fills its entire grid with LETHAL outside its "active corridor" (see map_padder_node.py), which contaminated the global with ghost walls that didn't exist in the local.
-      plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
+      # Three obstacle sources composed by max-merge:
+      #   static_layer  → /map_padded → corridor walls (LETHAL outside, UNKNOWN inside) — drives geometry and bounds Dijkstra's search.
+      #   obstacle_layer → /scan_pca_filtered (same as local), clearing: False → lidar marks accumulate forever inside the canvas.
+      #   line_layer    → /line_points (same as local), clearing: false → line marks accumulate forever inside the canvas.
+      # inflation_radius matches the local's 1.10 m so the planner respects the same clearance the controller does.
+      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
+
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+        map_topic: "/map_padded"
+        first_map_only: false
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        # Same source as local costmap → cells land at identical world positions (same /scan, same TF chain). clearing/raytracing disabled so the global accumulates obstacles permanently; cells leaving the local rolling window persist here forever.
+        # Same source as local costmap → cells land at identical world positions. clearing/raytracing disabled so the global accumulates lidar marks permanently inside the stable map_padder canvas. Cells leaving the local rolling window persist here forever.
         observation_sources: filtered_scan
         filtered_scan:
           topic: /scan_pca_filtered
@@ -264,11 +274,13 @@ global_costmap:
         max_message_age_ms: 750
         rolling_window: False
         publish_costmap: False
+        # Accumulate line marks across publishes — never wipe the layer. Requires map_padder to publish a stable-sized canvas (no matchSize() wipes).
+        clearing: false
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 1.10 # Set to this value because of off tracking.
+        inflation_radius: 1.10
       always_send_full_costmap: True
 
 map_server:

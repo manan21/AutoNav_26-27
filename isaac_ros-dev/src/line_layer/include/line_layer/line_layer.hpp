@@ -99,6 +99,8 @@ private:
   bool need_recalculation_;
   bool rolling_window_;
   bool publish_costmap_;
+  // If true (default, used by local costmap), resetMaps() runs every cycle and the layer reflects only the current message. If false (used in the global costmap), resetMaps() is skipped so cells accumulate forever — required for global obstacle memory when map_padder maintains a stable-sized grid.
+  bool clearing_;
   double transform_tolerance_;
   int64_t max_message_age_ms_;
   void updateOrigin(double new_origin_x, double new_origin_y);
