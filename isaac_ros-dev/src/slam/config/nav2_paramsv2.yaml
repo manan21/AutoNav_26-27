@@ -238,12 +238,11 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      # static_layer dropped: /map_padded (written at slam's corrected poses) translates against the live obstacle_layer as scan-match corrections shift map->odom. Both costmaps now sourced from live lidar only.
-      plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
+      # No live obstacle_layer here. Live lidar obstacles go into the local costmap only; the global one is pure course memory (static_layer from /map_padded) so there's no visual lag between static_layer and live lidar.
+      plugins: ["static_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        enabled: False
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
         first_map_only: false
@@ -251,19 +250,14 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        # Same source as the local costmap above — see notes there.
         observation_sources: filtered_scan
         filtered_scan:
           topic: /scan_pca_filtered
+          # static_layer carries persistent memory; keeping this 0 so obstacle_layer matches the local costmap (no ghost obstacles).
           observation_persistence: 0.0
           clearing: True
           marking: True
           data_type: "LaserScan"
-          # Same asymmetric ranges as local — short-range marking, long-
-          # range clearing. The global static_layer (from /map_padded)
-          # paints the persistent picture; this layer's long clearing
-          # ensures lidar-visible free space overrides any LETHAL fill
-          # map_padder placed outside its currently-active corridor.
           raytrace_max_range: 25.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5

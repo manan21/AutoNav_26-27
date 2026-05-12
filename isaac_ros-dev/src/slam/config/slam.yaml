@@ -63,7 +63,7 @@ slam_toolbox:
     # (use if something else broadcasts this transform).
     transform_publish_period: 0.02
 
-    map_update_interval: 5.0
+    map_update_interval: 1.0
     # 0.10 m matches what map_padder and global_costmap consume, so /map
     # is published at the target downstream resolution and map_padder's
     # downsample step (factor = round(out_res / slam_res)) becomes 1:1.
@@ -79,16 +79,12 @@ slam_toolbox:
     enable_interactive_mode: false  # off: saves CPU on Jetson
 
     # General Parameters
-    use_scan_matching: true
+    # Off: with static map=odom TF, slam-correction snaps cause oscillations.
+    use_scan_matching: false
     use_scan_barycenter: true
-    # Bench-testable defaults: 0.0 means slam_toolbox inserts a keyframe
-    # on the first scan it accepts, so the `map` frame appears in TF as
-    # soon as scans flow — without requiring the robot to move 30 cm or
-    # rotate 0.3 rad first. Insertion rate is still bounded downstream
-    # by minimum_time_interval (0.3 s) and throttle_scans (2), so this
-    # doesn't spam keyframes.
-    minimum_travel_distance: 0.0
-    minimum_travel_heading: 0.0
+    # Only insert a keyframe after the robot has actually moved. 0.0 grew the pose graph at scan rate and slowed slam at distance.
+    minimum_travel_distance: 0.5
+    minimum_travel_heading: 0.3
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
     # Bumped from 0.1 → 0.3. With sparse/ambiguous outdoor scans the
