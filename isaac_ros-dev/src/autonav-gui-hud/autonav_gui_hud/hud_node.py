@@ -645,9 +645,16 @@ class HudWindow(QMainWindow):
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
+            # PCA DETECT must come up before SLAM. slam_toolbox is
+            # configured to subscribe to /scan_pca_filtered (the
+            # grade detector's obstacle cloud collapsed to 2D via
+            # pca_pc2_to_scan in slam.launch.py). If SLAM starts
+            # first, slam_toolbox starves of scans, never produces
+            # /pose or the map→odom TF, and the Nav2 lifecycle
+            # stalls at "Activating planner_server."
+            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
-            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]

@@ -20,23 +20,29 @@ slam_toolbox:
     # walls) — those obstacles end up in /map → /map_padded → global
     # costmap static_layer as persistent long-range obstacles, so the
     # obstacle_layer can stay short-range (2.5 m) for dynamics only.
-    # SLAM consumes the raw SICK layer-5 scan, not the PCA-filtered
-    # one. Reasons:
-    #   1. /scan_pca_filtered is the grade detector's *obstacle* cloud
-    #      collapsed to 2D — most returns (drivable ground) are
-    #      removed. Fewer points = a looser scan-match constraint and
-    #      noisier pose estimates from Ceres.
-    #   2. The ground ring from layer-5 is a stable landmark
-    #      frame-to-frame; throwing it away hurts SLAM, not helps it.
-    #   3. Architectural separation: SLAM now depends only on the
-    #      lidar driver. The PCA / grade detector becomes optional —
-    #      toggling it off no longer collapses localization (which is
-    #      what was happening when /scan_pca_filtered went silent and
-    #      slam_toolbox starved → no /pose → no map→odom TF → Nav2
-    #      lifecycle stalled at "Activating planner_server").
-    # The Nav2 obstacle layer still consumes /scan_pca_filtered via
-    # pca_pc2_to_scan — that path is unchanged.
-    scan_topic: /scan_fullframe
+    # SLAM consumes the PCA-filtered scan, NOT the raw layer-5.
+    #
+    # Earlier revision flipped this to /scan_fullframe arguing "more
+    # returns = better scan-match constraint." Field testing showed
+    # the opposite: the layer-5 ground ring on outdoor uneven terrain
+    # is ambiguous between consecutive scans (the lidar pitches as
+    # the chassis traverses), and slam_toolbox's pose graph
+    # accumulates drift until a loop closure yanks map→odom by 0.5–2 m
+    # — visible to Nav2 as the robot teleporting along its heading,
+    # which the controller reacted to with "bouncing forward and
+    # backward." Magnitude scaled with distance from start (~30 m =
+    # ~1–2 m snap), exactly the signature of accumulated odom drift
+    # + correction.
+    #
+    # /scan_pca_filtered carries only the grade detector's flagged
+    # obstacles: walls, posts, vegetation poking up — stable
+    # landmarks frame-to-frame. Sparser scan, but the points it
+    # keeps are real features, not geometric noise.
+    #
+    # Operational cost: SLAM now has a hard dependency on PCA DETECT
+    # running first. The GUI launch queue is reordered so PCA DETECT
+    # comes up before SLAM (see _launch_devices in hud_node.py).
+    scan_topic: /scan_pca_filtered
     use_map_saver: true
     mode: mapping
 
