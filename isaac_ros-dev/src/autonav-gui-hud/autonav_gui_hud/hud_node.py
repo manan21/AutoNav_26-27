@@ -2836,16 +2836,36 @@ class HudWindow(QMainWindow):
     # colcon build doesn't freeze the GUI event loop. Status updates
     # come back to the UI thread via QTimer.singleShot(0, ...) so the
     # _dev_set_status label stays in sync without subclassing QThread.
+    _DEV_REBUILD_LABEL = "Load branch changes and build"
+
     def _dev_full_rebuild(self):
         if getattr(self, '_dev_full_rebuild_running', False):
             return  # already in flight — ignore the click
         self._dev_full_rebuild_running = True
         self._dev_full_rebuild_btn.setEnabled(False)
-        self._dev_set_status(
-            "Pull + Rebuild starting…", color='#ff0')
+        # Allocate the per-process terminal buffer the way every other
+        # launched device does, switch the terminal selection to it,
+        # and refresh. The worker thread streams every step's output
+        # into this buffer so the user sees the colcon build line by
+        # line in the side terminal instead of one delayed dump at the
+        # end (which is what subprocess.run with capture_output would
+        # give us).
+        label = self._DEV_REBUILD_LABEL
+        buf = [f"=== {label} ===\n"]
+        self._process_buffers[label] = buf
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+        self._dev_set_status("Starting…", color='#ff0')
+        # Bounce back to the main options screen — pressing this button
+        # is the operator saying "get the robot ready"; they want to be
+        # back on the launch screen so the streaming colcon build is
+        # visible in the side terminal while they wait.
+        self._show_main_page()
         QApplication.processEvents()
         threading.Thread(
             target=self._dev_full_rebuild_worker,
+            args=(label, buf),
             daemon=True,
         ).start()
 
@@ -2856,41 +2876,66 @@ class HudWindow(QMainWindow):
         QTimer.singleShot(
             0, lambda t=text, c=color: self._dev_set_status(t, color=c))
 
-    def _dev_full_rebuild_worker(self):
+    def _dev_full_rebuild_worker(self, label, buf):
+        """Background chain for the Load-branch-changes-and-build
+        button. Every step's stdout/stderr is appended to ``buf`` so
+        the side terminal (which reads ``_process_buffers[label]``)
+        shows the build live, line by line, the same way every other
+        launched device does.
+        """
+        def log(text):
+            """Append text to the per-process buffer with a trailing
+            newline. Safe to call from this worker thread — list.append
+            is atomic in CPython and the UI thread only reads."""
+            if not text:
+                return
+            if not text.endswith('\n'):
+                text += '\n'
+            buf.append(text)
+
         try:
             # 1. Stop container (no-op if already stopped).
             self._dev_ui_status(
                 f"[1/5] Stopping container {self._container_name}…",
                 color='#ff0')
+            log(f"$ docker stop {self._container_name}")
             try:
-                subprocess.run(
+                r = subprocess.run(
                     ['docker', 'stop', self._container_name],
                     capture_output=True, text=True, timeout=30,
                 )
-            except Exception:
-                # A failed stop is non-fatal — the container may already
-                # be down. The start step below will surface real issues.
-                pass
+                log(r.stdout)
+                log(r.stderr)
+            except Exception as e:
+                # Non-fatal — the container may already be down. The
+                # start step below will surface real issues.
+                log(f"[stop] {e}")
 
             # 2. git pull --ff-only on the host repo.
             self._dev_ui_status(
                 "[2/5] git pull --ff-only…", color='#ff0')
+            log("$ git pull --ff-only")
             rc, out, err = self._dev_run_git(
                 ['pull', '--ff-only'], timeout=120)
+            log(out)
+            log(err)
             if rc != 0:
                 msg = (err or out or 'unknown').splitlines()[-1]
                 self._dev_ui_status(
                     f"Pull failed: {msg}", color='#f44')
+                log(f"[!] Pull failed: {msg}")
                 return
 
             # 3. Start container detached.
             self._dev_ui_status(
                 f"[3/5] Starting container {self._container_name}…",
                 color='#ff0')
+            log(f"$ bash {self._dev_run_script} --no-attach")
             if not os.path.isfile(self._dev_run_script):
                 self._dev_ui_status(
                     f"Missing script: {self._dev_run_script}",
                     color='#f44')
+                log(f"[!] Missing script: {self._dev_run_script}")
                 return
             try:
                 subprocess.Popen(
@@ -2903,12 +2948,17 @@ class HudWindow(QMainWindow):
             except Exception as e:
                 self._dev_ui_status(
                     f"Start failed: {e}", color='#f44')
+                log(f"[!] Start failed: {e}")
                 return
 
             # 4. Wait until docker reports the container running.
             #    The 1 s poll loop matches _dev_update_container_status.
+            self._dev_ui_status(
+                "[4/5] Waiting for container to come up…",
+                color='#ff0')
+            log("Waiting for container to come up (60 s ceiling)…")
             ready = False
-            for _ in range(60):  # 60 s ceiling
+            for _ in range(60):
                 try:
                     r = subprocess.run(
                         ['docker', 'ps', '--quiet', '--filter',
@@ -2926,12 +2976,22 @@ class HudWindow(QMainWindow):
                 self._dev_ui_status(
                     "Container did not come up within 60 s.",
                     color='#f44')
+                log("[!] Container did not come up within 60 s.")
                 return
-
+            log("Container is up.")
             # Connect on the UI thread (touches widgets + state).
             QTimer.singleShot(0, self._connect_container)
 
-            # 5. colcon build inside the container.
+            # 5. colcon build — STREAMING. Popen with PIPE + an inline
+            # reader feeds each line into the per-process buffer as it
+            # arrives, so the side terminal shows progress live. We
+            # also register the Popen in _process_objects[label] so
+            # the GUI's 2 Hz poll timer cleans up the entry and writes
+            # the "[Process exited with code N]" trailer the way it
+            # does for any other launched device. closeEvent will
+            # SIGTERM/SIGKILL this Popen if the user closes the GUI
+            # mid-build (the local docker-exec proc forwards signals
+            # to the in-container colcon).
             self._dev_ui_status(
                 "[5/5] colcon build --symlink-install (this can "
                 "take several minutes)…", color='#ff0')
@@ -2940,33 +3000,45 @@ class HudWindow(QMainWindow):
                 "source /opt/ros/humble/setup.bash && "
                 "colcon build --symlink-install"
             )
+            log(
+                f"$ docker exec -u admin {self._container_name} "
+                f"/bin/bash -lc '{build_cmd}'"
+            )
             try:
-                br = subprocess.run(
+                proc = subprocess.Popen(
                     ['docker', 'exec', '-u', 'admin',
                      self._container_name, '/bin/bash', '-lc',
                      build_cmd],
-                    capture_output=True, text=True,
-                    timeout=60 * 60,  # 1 hour ceiling
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
                 )
-            except subprocess.TimeoutExpired:
-                self._dev_ui_status(
-                    "Build timed out after 1 h.", color='#f44')
-                return
             except Exception as e:
                 self._dev_ui_status(
-                    f"Build failed to launch: {e}", color='#f44')
+                    f"Build launch failed: {e}", color='#f44')
+                log(f"[!] Build launch failed: {e}")
                 return
-
-            if br.returncode == 0:
-                summary = (br.stdout or '').splitlines()
-                tail = summary[-1] if summary else 'done'
+            self._process_objects[label] = proc
+            try:
+                for line in proc.stdout:
+                    buf.append(line)
+                proc.wait()
+            except Exception as e:
+                log(f"[reader] {e}")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            rc = proc.returncode
+            if rc == 0:
                 self._dev_ui_status(
-                    f"Pull + Rebuild OK ({tail})", color='#0f0')
+                    "Load branch changes and build: OK",
+                    color='#0f0')
+                log("[OK] colcon build finished cleanly")
             else:
-                err_lines = (br.stderr or br.stdout or '').splitlines()
-                tail = err_lines[-1] if err_lines else 'unknown error'
                 self._dev_ui_status(
-                    f"Build failed: {tail}", color='#f44')
+                    f"Build failed (rc={rc})", color='#f44')
+                log(f"[!] Build failed (rc={rc})")
         finally:
             # Re-enable the button on the UI thread no matter how the
             # chain exited — failure paths must not leave it disabled.
