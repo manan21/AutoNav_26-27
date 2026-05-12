@@ -138,7 +138,7 @@ public:
 			cluster_min_aspect_ratio_, cluster_link_distance_m_);
 		RCLCPP_INFO(this->get_logger(),
 			"Temporal gates: voxel=%.2fm min_hits=%d confirm_window=%ld ms hold=%ld ms yaw_gate=%.2f rad/s",
-			temporal_voxel_size_, temporal_min_hits_, temporal_confirm_window_ms_,
+			temporal_voxel_size_m_, temporal_min_hits_, temporal_confirm_window_ms_,
 			confirmed_hold_ms_, yaw_rate_gate_rad_s_);
 		RCLCPP_INFO(this->get_logger(), "Debug image topics: %s", debug_image_publish_enabled_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Debug image writes: %s", debug_image_write_enabled_ ? "true" : "false");
@@ -808,7 +808,7 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::filterLineCluste
 
 LineDetectorNode::VoxelKey LineDetectorNode::voxelKeyForPoint(const Eigen::Vector3d & point) const
 {
-	const double voxel = std::max(0.01, temporal_voxel_size_);
+	const double voxel = std::max(0.01, temporal_voxel_size_m_);
 	return VoxelKey{
 		static_cast<int>(std::floor(point.x() / voxel)),
 		static_cast<int>(std::floor(point.y() / voxel))};
