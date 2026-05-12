@@ -2444,6 +2444,11 @@ class HudWindow(QMainWindow):
         self._dev_update_branch_label()
         self._dev_update_container_status()
         self._dev_status_timer.start()
+        # Audit the Load-branch-changes-and-build state each time the
+        # operator returns to this page — if the previous worker died
+        # without resetting the flag, the button would otherwise stay
+        # disabled and the status label stuck at "Starting…".
+        self._dev_rebuild_self_heal()
 
     def _show_branches_page(self):
         """Switch OPTIONS column to the Branch switcher sub-page (index 5)."""
@@ -2838,9 +2843,44 @@ class HudWindow(QMainWindow):
     # _dev_set_status label stays in sync without subclassing QThread.
     _DEV_REBUILD_LABEL = "Load branch changes and build"
 
+    def _dev_rebuild_self_heal(self):
+        """Detect a stale 'running' state and reset it.
+
+        ``_dev_full_rebuild_running`` is cleared by the worker thread's
+        ``finally`` block. That ``finally`` does not run when the
+        worker thread dies abnormally — a hung ``subprocess.run`` /
+        ``proc.wait()``, the main process being force-killed mid-build,
+        the daemon worker being torn down by the OS on GUI close, etc.
+        When that happens the flag is stuck True forever: the button
+        is permanently disabled and the status label is permanently
+        "Starting…", even though nothing is actually running.
+
+        We use the worker Thread's own ``is_alive()`` as the source of
+        truth — if a build was supposedly in flight but the thread
+        isn't alive, the state is by definition stale. Returns True
+        if it had to clean up.
+        """
+        if not getattr(self, '_dev_full_rebuild_running', False):
+            return False
+        t = getattr(self, '_dev_full_rebuild_thread', None)
+        if t is not None and t.is_alive():
+            return False  # genuinely running, leave it alone
+        # Stale — the worker died without clearing the flag.
+        self._dev_full_rebuild_running = False
+        if hasattr(self, '_dev_full_rebuild_btn'):
+            self._dev_full_rebuild_btn.setEnabled(True)
+        # Clear the misleading "Starting…" status so the user knows
+        # the GUI noticed.
+        self._dev_set_status(
+            "Previous build state was stale — reset.", color='#888')
+        return True
+
     def _dev_full_rebuild(self):
+        # Self-heal first: if the previous run died abnormally, this
+        # click should be treated as fresh, not silently ignored.
+        self._dev_rebuild_self_heal()
         if getattr(self, '_dev_full_rebuild_running', False):
-            return  # already in flight — ignore the click
+            return  # genuinely in flight — ignore the click
         self._dev_full_rebuild_running = True
         self._dev_full_rebuild_btn.setEnabled(False)
         # Allocate the per-process terminal buffer the way every other
@@ -2863,11 +2903,15 @@ class HudWindow(QMainWindow):
         # visible in the side terminal while they wait.
         self._show_main_page()
         QApplication.processEvents()
-        threading.Thread(
+        # Stash the worker Thread so _dev_rebuild_self_heal can use
+        # is_alive() to detect that a previous build died without
+        # firing its finally block.
+        self._dev_full_rebuild_thread = threading.Thread(
             target=self._dev_full_rebuild_worker,
             args=(label, buf),
             daemon=True,
-        ).start()
+        )
+        self._dev_full_rebuild_thread.start()
 
     def _dev_ui_status(self, text, color='#888'):
         """Thread-safe wrapper around _dev_set_status. Schedules the
