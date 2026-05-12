@@ -134,14 +134,21 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.05
-      ObstacleFootprint.scale: 4.0          # was 1.0 — penalises trajectories whose footprint clips ANY inflated cell, so shortcuts through cost regions are rejected
-      PathAlign.scale: 64.0                  # was 32.0 — doubled to make heading-misalignment expensive
-      PathAlign.forward_point_distance: 0.325  # was 0.0 — KEY: score alignment from a point 32cm ahead of base_link, not from base_link itself
+      # PURE PATH-TRACKER MODE: no BaseObstacle / ObstacleFootprint
+      # critics. The global planner already computed /plan around all
+      # obstacles using global_costmap (which includes static_layer
+      # from /map_padded + obstacle_layer + line_layer + inflation), so
+      # DWB doesn't need to second-guess obstacle safety — it just has
+      # to ride the path. Removing those critics also fixes the
+      # "robot freezes because every candidate trajectory touches some
+      # cost cell" failure mode that high ObstacleFootprint.scale causes
+      # under wide inflation.
+      critics: ["RotateToGoal", "Oscillation", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      PathAlign.scale: 64.0
+      PathAlign.forward_point_distance: 0.325
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.325  # was 0.0
-      PathDist.scale: 96.0                   # was 32.0 — tripled. Distance-to-path now dominates the score, so DWB picks trajectories that hug /plan
+      GoalAlign.forward_point_distance: 0.325
+      PathDist.scale: 96.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
