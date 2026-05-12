@@ -79,7 +79,8 @@ slam_toolbox:
     enable_interactive_mode: false  # off: saves CPU on Jetson
 
     # General Parameters
-    use_scan_matching: true
+    # Off so /map stays in the same frame as the static map=odom TF.
+    use_scan_matching: false
     use_scan_barycenter: true
     # Bench-testable defaults: 0.0 means slam_toolbox inserts a keyframe
     # on the first scan it accepts, so the `map` frame appears in TF as

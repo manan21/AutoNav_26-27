@@ -24,7 +24,8 @@ lines:
     publish_interval_ms: 250          # min 50; controls publish cadence
     max_rgb_depth_delta_ms: 120       # RGB/depth sync window
     tf_lookup_timeout_ms: 100
-    line_hold_timeout_ms: 0           # 0 = never reuse stale line set
+    # ms held in the points-deque. 0 means never expire (until line_memory_max_points cap).
+    line_hold_timeout_ms: 2000
     line_memory_max_points: 20000     # cap remembered obstacle points across frames
 
     # ── CERIAS line-pixel detector ───────────────────────────────────────
