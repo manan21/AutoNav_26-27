@@ -365,6 +365,18 @@ class HudWindow(QMainWindow):
             'GPS':      ('gps',  'ekf_local_odom'),
             'SLAM':     ('pose', 'ekf_global_odom'),
         }
+        # Per-device override of the "input is still considered
+        # fresh" window. The default ``_ekf_msg_age_max_s`` (1 s) is
+        # right for high-rate streams like /odom and the SICK IMU —
+        # losing freshness within a second means the source genuinely
+        # stopped. /gps_fix publishes at 0.5–10 Hz, so a 1 s window
+        # repeatedly times out between fixes and the GPS dot snaps
+        # in and out of the pulse instead of breathing smoothly. A
+        # 5 s window keeps the dot pulsing across the slow intervals
+        # while still going stale promptly if GPS actually dies.
+        self._ekf_pulse_input_max_age_s = {
+            'GPS': 5.0,
+        }
         # EKF status rows (the "is this filter publishing?" indicators
         # added to the device list). Maps dot name → ekf-output
         # last_msg_t key. _ekf_pulse_tick drives these solid green
@@ -5821,9 +5833,11 @@ class HudWindow(QMainWindow):
         if stamps is None:
             return
 
-        def _alive(key):
+        def _alive(key, max_age_s=None):
+            if max_age_s is None:
+                max_age_s = self._ekf_msg_age_max_s
             t = stamps.get(key, 0.0)
-            return t > 0.0 and (now_s - t) < self._ekf_msg_age_max_s
+            return t > 0.0 and (now_s - t) < max_age_s
 
         # Hue interpolated along the green→purple arc by a sine
         # wave at ``_ekf_pulse_freq_hz``. Phase advanced by the
@@ -5841,7 +5855,13 @@ class HudWindow(QMainWindow):
             dot = self.status_dots.get(dot_name)
             if dot is None:
                 continue
-            if _alive(input_key) and _alive(ekf_key):
+            # Per-device input-freshness override — slow inputs (GPS)
+            # use a longer window so the dot doesn't flicker between
+            # fixes. The EKF output side always uses the default
+            # window because it should be high-rate regardless.
+            input_max_age = self._ekf_pulse_input_max_age_s.get(
+                dot_name, self._ekf_msg_age_max_s)
+            if _alive(input_key, input_max_age) and _alive(ekf_key):
                 dot.setStyleSheet(pulse_style)
             # Else: leave whatever the prior tick set — the existing
             # alive/flash logic owns the dot's appearance in those
