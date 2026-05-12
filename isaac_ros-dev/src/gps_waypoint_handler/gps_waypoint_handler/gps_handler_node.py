@@ -136,6 +136,13 @@ the 1 Hz timer."""
 GOAL_REPUBLISH_MIN_DELTA_M: float = 0.30
 GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
 
+# In-mission updates flow through /goal_update so the BT's
+# GoalUpdater decorator can absorb them without canceling FollowPath
+# (no stop/go). We still re-issue /goal_pose every this many seconds
+# as a heartbeat — if bt_navigator ever loses its action handle
+# (lifecycle blip, network drop) the next heartbeat re-creates it.
+GOAL_POSE_HEARTBEAT_S: float = 10.0
+
 # Continuous heading resync (§3.4)
 HEADING_RESYNC_THRESHOLD_DEG: float = 10.0
 HEADING_RESYNC_COOLDOWN_S: float = 3.0
@@ -312,6 +319,14 @@ class _ActiveGoal:
     # Drives the heartbeat gate of the goal-republish throttle so a
     # stalled NAV2 still picks up state every GOAL_REPUBLISH_HEARTBEAT_S.
     last_published_t_s: Optional[float] = None
+    # Wall-time-ish timestamp of the last /goal_pose (NavigateToPose
+    # action) publish — distinct from last_published_t_s above, which
+    # covers /goal_update too. In-mission corrections go to
+    # /goal_update so the BT's GoalUpdater can absorb them without
+    # canceling FollowPath; we still kick a /goal_pose every
+    # GOAL_POSE_HEARTBEAT_S as a safety belt against bt_navigator
+    # losing its action handle.
+    last_goal_pose_t_s: float = 0.0
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
     # valid raw GPS sample — they can't be set at goal acceptance
@@ -492,6 +507,14 @@ class GpsHandlerNode(Node):
         pub_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self._goal_pub = self.create_publisher(
             PoseStamped, "/goal_pose", pub_qos
+        )
+        # In-mission corrections (1 Hz smoothed candidate) go here.
+        # Nav2's bt_nav.xml wraps the planner in a <GoalUpdater> that
+        # consumes /goal_update and rewrites the BT's {live_goal} in
+        # place — FollowPath is NOT canceled, so the controller keeps
+        # emitting cmd_vel uninterrupted across goal refreshes.
+        self._goal_update_pub = self.create_publisher(
+            PoseStamped, "/goal_update", pub_qos
         )
         diag_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._heading_pub = self.create_publisher(
@@ -1316,7 +1339,22 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.y = qy
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
-        self._goal_pub.publish(msg)
+
+        # Route: first publish of a leg AND periodic safety heartbeat
+        # go to /goal_pose (kicks NavigateToPose action / refreshes the
+        # action handle). All other in-mission corrections go to
+        # /goal_update so the BT's GoalUpdater absorbs them without
+        # canceling FollowPath — that's the fix for the stop/go.
+        first_pub = active.last_published_goal_map is None
+        heartbeat_due = (
+            now_pub_s - active.last_goal_pose_t_s
+            > GOAL_POSE_HEARTBEAT_S
+        )
+        if first_pub or heartbeat_due:
+            self._goal_pub.publish(msg)
+            active.last_goal_pose_t_s = now_pub_s
+        else:
+            self._goal_update_pub.publish(msg)
 
         # Marker for RViz — sphere at the smoothed candidate. The
         # 2 s lifetime auto-expires the marker if the publisher stops
