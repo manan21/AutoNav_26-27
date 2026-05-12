@@ -231,8 +231,7 @@ global_costmap:
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
       resolution: 0.10
-      # When static_layer is enabled, the incoming SLAM map defines the global costmap geometry.
-      # Therefore, the following width, height, and origin are not used
+      # No static_layer, so these define the global costmap extent directly: 50×50 m grid centered on map-origin (0,0). Robot starts at map (0,0) via the static map→odom identity TF, so usable range is ±25 m around start — covers all competition waypoint distances.
       width: 50
       height: 50
       origin_x: -25.0
