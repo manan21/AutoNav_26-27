@@ -20,42 +20,50 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="999" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <!-- Replan at 1 Hz to keep CPU available for the rest of the
-             stack. Fast invalidation detection comes from the
-             ReactiveSequence/IsPathValid wrapper around FollowPath
-             below, not from raw replan rate — that catches a dead
-             path within ~100 ms (BT tick rate) and forces a recovery
-             cycle, which the next 1 Hz plan refresh will complete. -->
-        <RateController hz="1.0">
+        <!-- Replan at 2 Hz. The standard Nav2 approach to "what if the
+             path becomes invalid?" is just to replan often enough that
+             a fresh path naturally replaces a stale one within one
+             cycle. 2 Hz gives a 500 ms worst-case staleness window
+             without the false-positive issues of an explicit
+             IsPathValid check (which can fail-cascade into recovery on
+             a transient one-tick costmap blip). -->
+        <RateController hz="2.0">
           <Sequence name="BendAndPlan">
             <!-- Bend goal if it's behind the robot -->
             <GoalBender input_goal="{goal}" output_goal="{nav_goal}"
               bend_distance="0.8" angle_threshold="1.57" bend_angle="1.05"/>
-            <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
+            <!-- 3 retries instead of 1. Planner gets up to 4 shots
+                 (initial + 3 retries with ClearGlobalCostmap between
+                 each) before bailing out of the plan loop and
+                 escalating to the heavy RecoveryFallback (BackUp,
+                 etc.). This handles the common case where a transient
+                 costmap state makes the first plan fail but the
+                 obstacle clears on the next scan. -->
+            <RecoveryNode number_of_retries="3" name="ComputePathRecovery">
               <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
               <Sequence name="PlanRecovery">
                 <ClearEntireCostmap name="ClearGlobalCostmap-Context"
                   service_name="global_costmap/clear_entirely_global_costmap"/>
-                <Wait wait_duration="1"/>
+                <!-- 0.3 s between retries — long enough for one fresh
+                     scan to repopulate the costmap after clearing,
+                     short enough that 3 retries complete in <1.5 s. -->
+                <Wait wait_duration="0.3"/>
               </Sequence>
             </RecoveryNode>
           </Sequence>
         </RateController>
-        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <!-- ReactiveSequence ticks IsPathValid every BT tick (~10 Hz)
-               while FollowPath is running. If the active {path} starts
-               passing through any LETHAL cell (robot ran into something,
-               obstacle appeared, costmap updated), IsPathValid returns
-               FAILURE, the sequence halts FollowPath immediately, and
-               the parent RecoveryNode clears the local costmap and
-               retries — by then the 2 Hz replanner has likely written
-               a fresh {path}. Without this, FollowPath would keep
-               trying to track the dead path until DWB's progress
-               checker fired its 8-second movement_time_allowance. -->
-          <ReactiveSequence name="MonitorAndFollow">
-            <IsPathValid path="{path}"/>
-            <FollowPath path="{path}" controller_id="FollowPath"/>
-          </ReactiveSequence>
+        <!-- 2 retries for FollowPath. If DWB's progress_checker fires
+             (no 10cm of motion in 8s), we get to clear the local
+             costmap and try the SAME path again before escalating.
+             Sometimes the first stall is from a transient obstacle
+             that's gone the next time around. -->
+        <RecoveryNode number_of_retries="2" name="FollowPathRecovery">
+          <!-- FollowPath consumes whatever {path} is currently on the
+               blackboard. When the RateController writes a new {path}
+               next cycle, FollowPath's action client re-issues the goal
+               with the new path automatically — no explicit
+               invalidation check needed. -->
+          <FollowPath path="{path}" controller_id="FollowPath"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context"
             service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
