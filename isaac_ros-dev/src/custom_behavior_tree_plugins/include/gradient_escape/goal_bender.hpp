@@ -29,6 +29,7 @@ public:
       BT::InputPort<int>("queue_size", 5, "Mini-waypoints sampled from current pose to U-tip"),
       BT::InputPort<double>("reach_radius", 0.5, "Robot-to-current-waypoint distance to advance the queue (m)"),
       BT::InputPort<double>("goal_change_threshold", 2.0, "Real-goal move (m) that rebuilds the queue"),
+      BT::InputPort<double>("tip_change_threshold", 1.0, "Current-path U-tip drift (m) that invalidates the queue"),
     };
   }
 
@@ -41,6 +42,11 @@ private:
   std::vector<geometry_msgs::msg::PoseStamped> committed_queue_;
   size_t committed_idx_ = 0;
   geometry_msgs::msg::PoseStamped committed_real_goal_;
+  // U-tip position at queue build — if the live path's tip drifts
+  // away from this, the queue is following a stale U-shape and gets
+  // rebuilt or released.
+  double committed_tip_x_ = 0.0;
+  double committed_tip_y_ = 0.0;
   bool has_commitment_ = false;
 };
 

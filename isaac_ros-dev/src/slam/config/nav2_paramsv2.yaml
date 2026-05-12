@@ -237,10 +237,12 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
+      # static_layer dropped: /map_padded (written at slam's corrected poses) translates against the live obstacle_layer as scan-match corrections shift map->odom. Both costmaps now sourced from live lidar only.
+      plugins: ["obstacle_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: False
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
         first_map_only: false

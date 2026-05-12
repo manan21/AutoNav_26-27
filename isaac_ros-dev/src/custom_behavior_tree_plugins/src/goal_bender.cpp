@@ -94,15 +94,47 @@ BT::NodeStatus GoalBender::tick()
   int queue_size = 5;
   double reach_radius = 0.5;
   double goal_change_thresh = 2.0;
+  double tip_change_thresh = 1.0;
   getInput("queue_size", queue_size);
   getInput("reach_radius", reach_radius);
   getInput("goal_change_threshold", goal_change_thresh);
+  getInput("tip_change_threshold", tip_change_thresh);
+
+  // Compute the current live path's U-tip (waypoint furthest from
+  // robot). If we have a commitment AND the live tip has drifted
+  // away from where it was when we built the queue, the planner is
+  // proposing a different U-shape — abandon the stale queue.
+  size_t live_tip = 0;
+  double live_tip_dist = 0.0;
+  if (have_path) {
+    for (size_t i = 1; i < prev_path.poses.size(); ++i) {
+      const double dx = prev_path.poses[i].pose.position.x - rx;
+      const double dy = prev_path.poses[i].pose.position.y - ry;
+      const double d = std::hypot(dx, dy);
+      if (d > live_tip_dist) {
+        live_tip_dist = d;
+        live_tip = i;
+      }
+    }
+  }
 
   // If the real goal moved a lot, the trap has changed shape — rebuild.
   if (has_commitment_) {
     const double dgx = gx - committed_real_goal_.pose.position.x;
     const double dgy = gy - committed_real_goal_.pose.position.y;
     if (std::hypot(dgx, dgy) > goal_change_thresh) {
+      has_commitment_ = false;
+      committed_queue_.clear();
+    }
+  }
+
+  // If the live path's tip has drifted, the queue is stale.
+  if (has_commitment_ && have_path) {
+    const double dtx =
+      prev_path.poses[live_tip].pose.position.x - committed_tip_x_;
+    const double dty =
+      prev_path.poses[live_tip].pose.position.y - committed_tip_y_;
+    if (std::hypot(dtx, dty) > tip_change_thresh) {
       has_commitment_ = false;
       committed_queue_.clear();
     }
@@ -120,34 +152,19 @@ BT::NodeStatus GoalBender::tick()
     }
   }
 
-  // Build a new queue from the current path. The U-tip is the path
-  // waypoint with maximum euclidean distance from the robot — that's
-  // where the path stops going away and starts curving back. Sample
-  // ``queue_size`` evenly-spaced waypoints between robot and tip.
-  if (!has_commitment_ && have_path) {
-    size_t tip = 0;
-    double max_d = 0.0;
-    for (size_t i = 1; i < prev_path.poses.size(); ++i) {
-      const double dx = prev_path.poses[i].pose.position.x - rx;
-      const double dy = prev_path.poses[i].pose.position.y - ry;
-      const double d = std::hypot(dx, dy);
-      if (d > max_d) {
-        max_d = d;
-        tip = i;
-      }
+  if (!has_commitment_ && have_path && live_tip >= 1 && queue_size > 0) {
+    committed_queue_.clear();
+    for (int n = 1; n <= queue_size; ++n) {
+      const size_t s = (live_tip * static_cast<size_t>(n)) /
+                       static_cast<size_t>(queue_size);
+      if (s >= prev_path.poses.size()) continue;
+      committed_queue_.push_back(prev_path.poses[s]);
     }
-    if (tip >= 1 && queue_size > 0) {
-      committed_queue_.clear();
-      for (int n = 1; n <= queue_size; ++n) {
-        const size_t s = (tip * static_cast<size_t>(n)) /
-                         static_cast<size_t>(queue_size);
-        if (s >= prev_path.poses.size()) continue;
-        committed_queue_.push_back(prev_path.poses[s]);
-      }
-      committed_idx_ = 0;
-      committed_real_goal_ = goal;
-      has_commitment_ = !committed_queue_.empty();
-    }
+    committed_idx_ = 0;
+    committed_real_goal_ = goal;
+    committed_tip_x_ = prev_path.poses[live_tip].pose.position.x;
+    committed_tip_y_ = prev_path.poses[live_tip].pose.position.y;
+    has_commitment_ = !committed_queue_.empty();
   }
 
   geometry_msgs::msg::PoseStamped bent;
