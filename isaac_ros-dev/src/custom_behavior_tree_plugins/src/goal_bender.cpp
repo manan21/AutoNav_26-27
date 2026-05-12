@@ -84,41 +84,84 @@ BT::NodeStatus GoalBender::tick()
   }
 
   if (!goal_behind && !path_behind) {
+    // Trap cleared — release any previous commitment and pass through.
+    has_commitment_ = false;
+    committed_queue_.clear();
     setOutput("output_goal", goal);
     return BT::NodeStatus::SUCCESS;
+  }
+
+  int queue_size = 5;
+  double reach_radius = 0.5;
+  double goal_change_thresh = 2.0;
+  getInput("queue_size", queue_size);
+  getInput("reach_radius", reach_radius);
+  getInput("goal_change_threshold", goal_change_thresh);
+
+  // If the real goal moved a lot, the trap has changed shape — rebuild.
+  if (has_commitment_) {
+    const double dgx = gx - committed_real_goal_.pose.position.x;
+    const double dgy = gy - committed_real_goal_.pose.position.y;
+    if (std::hypot(dgx, dgy) > goal_change_thresh) {
+      has_commitment_ = false;
+      committed_queue_.clear();
+    }
+  }
+
+  // Advance the queue when the robot reaches the current waypoint.
+  if (has_commitment_ && committed_idx_ < committed_queue_.size()) {
+    const auto & wp = committed_queue_[committed_idx_].pose.position;
+    if (std::hypot(wp.x - rx, wp.y - ry) < reach_radius) {
+      committed_idx_++;
+    }
+    if (committed_idx_ >= committed_queue_.size()) {
+      has_commitment_ = false;
+      committed_queue_.clear();
+    }
+  }
+
+  // Build a new queue from the current path. The U-tip is the path
+  // waypoint with maximum euclidean distance from the robot — that's
+  // where the path stops going away and starts curving back. Sample
+  // ``queue_size`` evenly-spaced waypoints between robot and tip.
+  if (!has_commitment_ && have_path) {
+    size_t tip = 0;
+    double max_d = 0.0;
+    for (size_t i = 1; i < prev_path.poses.size(); ++i) {
+      const double dx = prev_path.poses[i].pose.position.x - rx;
+      const double dy = prev_path.poses[i].pose.position.y - ry;
+      const double d = std::hypot(dx, dy);
+      if (d > max_d) {
+        max_d = d;
+        tip = i;
+      }
+    }
+    if (tip >= 1 && queue_size > 0) {
+      committed_queue_.clear();
+      for (int n = 1; n <= queue_size; ++n) {
+        const size_t s = (tip * static_cast<size_t>(n)) /
+                         static_cast<size_t>(queue_size);
+        if (s >= prev_path.poses.size()) continue;
+        committed_queue_.push_back(prev_path.poses[s]);
+      }
+      committed_idx_ = 0;
+      committed_real_goal_ = goal;
+      has_commitment_ = !committed_queue_.empty();
+    }
   }
 
   geometry_msgs::msg::PoseStamped bent;
   bent.header = goal.header;
   bent.header.stamp = node->get_clock()->now();
   bent.pose.position.z = 0.0;
-  bool used_path_waypoint = false;
 
-  if (have_path) {
-    int last_forward = -1;
-    for (size_t i = 0; i < prev_path.poses.size(); ++i) {
-      const double px = prev_path.poses[i].pose.position.x;
-      const double py = prev_path.poses[i].pose.position.y;
-      const double dx = px - rx;
-      const double dy = py - ry;
-      const double d  = std::hypot(dx, dy);
-      if (d < 0.3) {  // skip waypoints inside footprint — angle ill-defined
-        continue;
-      }
-      const double rel_p = wrap_pi(std::atan2(dy, dx) - ryaw);
-      if (std::abs(rel_p) > angle_thresh) {
-        break;
-      }
-      last_forward = static_cast<int>(i);
-    }
-    if (last_forward >= 0) {
-      bent.pose.position.x = prev_path.poses[last_forward].pose.position.x;
-      bent.pose.position.y = prev_path.poses[last_forward].pose.position.y;
-      used_path_waypoint = true;
-    }
-  }
-
-  if (!used_path_waypoint) {
+  if (has_commitment_ && committed_idx_ < committed_queue_.size()) {
+    bent.pose.position.x =
+      committed_queue_[committed_idx_].pose.position.x;
+    bent.pose.position.y =
+      committed_queue_[committed_idx_].pose.position.y;
+  } else {
+    // No path / no queue — fall back to the legacy fixed-arc bend.
     const double offset = (rel_goal >= 0.0) ? bend_angle : -bend_angle;
     const double heading = ryaw + offset;
     bent.pose.position.x = rx + bend_dist * std::cos(heading);
@@ -134,12 +177,12 @@ BT::NodeStatus GoalBender::tick()
   setOutput("output_goal", bent);
 
   RCLCPP_INFO(node->get_logger(),
-    "GoalBender: trigger=%s%s%s -> intermediate (%.1f, %.1f) via %s",
+    "GoalBender: trigger=%s%s%s -> wp[%zu/%zu] (%.1f, %.1f)",
     goal_behind ? "goal-behind" : "",
     (goal_behind && path_behind) ? "+" : "",
     path_behind ? "path-behind" : "",
-    bent.pose.position.x, bent.pose.position.y,
-    used_path_waypoint ? "path-walk" : "fixed-arc");
+    committed_idx_ + 1, committed_queue_.size(),
+    bent.pose.position.x, bent.pose.position.y);
 
   return BT::NodeStatus::SUCCESS;
 }

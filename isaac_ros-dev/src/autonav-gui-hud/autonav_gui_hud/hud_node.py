@@ -2957,6 +2957,22 @@ class HudWindow(QMainWindow):
             buf.append(text)
 
         try:
+            # 0. Tear down every running launch via the GUI's normal
+            # stop path. Without this, buttons stayed green after a
+            # rebuild because the inner ROS nodes died with the
+            # container faster than the GUI noticed. _toggle_device
+            # touches Qt widgets, so schedule on the UI thread.
+            running_labels = [
+                L for L, st in self._launch_states.items() if st
+            ]
+            self._dev_ui_status(
+                f"[0/5] Tearing down {len(running_labels)} launches…",
+                color='#ff0')
+            log(f"Tearing down launches: {running_labels}")
+            for L in running_labels:
+                QTimer.singleShot(0, lambda lab=L: self._toggle_device(lab))
+            time.sleep(1.5)  # let the UI-thread teardowns drain
+
             # 1. Stop container (no-op if already stopped).
             self._dev_ui_status(
                 f"[1/5] Stopping container {self._container_name}…",

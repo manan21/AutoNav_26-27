@@ -242,10 +242,6 @@ global_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
-        # /map_padded (from map_padder), NOT raw /map. map_padder's
-        # bounding box expands to include the robot tile + plan + goal,
-        # so the global costmap grows to follow the frontier instead of
-        # being anchored to wherever SLAM has actually mapped so far.
         map_topic: "/map_padded"
         first_map_only: false
 

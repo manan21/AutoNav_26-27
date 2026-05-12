@@ -9,8 +9,8 @@
 namespace gradient_escape
 {
 
-// Bends the goal toward an intermediate waypoint when the goal or
-// the previous path lies behind the robot's heading.
+// Bends the goal toward a committed queue of intermediate waypoints
+// when the goal or the previous path lies behind the robot's heading.
 class GoalBender : public BT::SyncActionNode
 {
 public:
@@ -26,10 +26,22 @@ public:
       BT::InputPort<double>("bend_angle", 1.05, "Fallback fixed-arc offset (rad)"),
       BT::InputPort<nav_msgs::msg::Path>("previous_path", "Last path from ComputePathToPose; enables path-direction trigger"),
       BT::InputPort<int>("path_lookahead_index", 5, "Waypoint index used to test path direction"),
+      BT::InputPort<int>("queue_size", 5, "Mini-waypoints sampled from current pose to U-tip"),
+      BT::InputPort<double>("reach_radius", 0.5, "Robot-to-current-waypoint distance to advance the queue (m)"),
+      BT::InputPort<double>("goal_change_threshold", 2.0, "Real-goal move (m) that rebuilds the queue"),
     };
   }
 
   BT::NodeStatus tick() override;
+
+private:
+  // Persists across ticks (BT.CPP keeps a single node instance).
+  // Prevents the per-tick re-bend that was causing the robot to
+  // oscillate between "follow the U" and "replan the U".
+  std::vector<geometry_msgs::msg::PoseStamped> committed_queue_;
+  size_t committed_idx_ = 0;
+  geometry_msgs::msg::PoseStamped committed_real_goal_;
+  bool has_commitment_ = false;
 };
 
 }  // namespace gradient_escape
