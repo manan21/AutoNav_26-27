@@ -20,8 +20,23 @@ slam_toolbox:
     # walls) — those obstacles end up in /map → /map_padded → global
     # costmap static_layer as persistent long-range obstacles, so the
     # obstacle_layer can stay short-range (2.5 m) for dynamics only.
-    # scan_topic: /scan_fullframe   # legacy — raw SICK layer-5
-    scan_topic: /scan_pca_filtered
+    # SLAM consumes the raw SICK layer-5 scan, not the PCA-filtered
+    # one. Reasons:
+    #   1. /scan_pca_filtered is the grade detector's *obstacle* cloud
+    #      collapsed to 2D — most returns (drivable ground) are
+    #      removed. Fewer points = a looser scan-match constraint and
+    #      noisier pose estimates from Ceres.
+    #   2. The ground ring from layer-5 is a stable landmark
+    #      frame-to-frame; throwing it away hurts SLAM, not helps it.
+    #   3. Architectural separation: SLAM now depends only on the
+    #      lidar driver. The PCA / grade detector becomes optional —
+    #      toggling it off no longer collapses localization (which is
+    #      what was happening when /scan_pca_filtered went silent and
+    #      slam_toolbox starved → no /pose → no map→odom TF → Nav2
+    #      lifecycle stalled at "Activating planner_server").
+    # The Nav2 obstacle layer still consumes /scan_pca_filtered via
+    # pca_pc2_to_scan — that path is unchanged.
+    scan_topic: /scan_fullframe
     use_map_saver: true
     mode: mapping
 
