@@ -281,7 +281,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 1.05 # NavfnPlanner treats the robot as a point at base_link; inflation must cover from obstacle edge to the furthest footprint corner (sqrt(0.77² + 0.41²) ≈ 0.873 m) PLUS a safety pad. 1.05 m gives ~18 cm of pad beyond the worst-case footprint corner — was 0.90 (only 3 cm pad), and the robot's corner still clipped a cone. Kernel grows 19×19 → 23×23 cells (~45% more inflation work per global costmap update).
+        inflation_radius: 1.10 # Set to this value because of off tracking.
       always_send_full_costmap: True
 
 map_server:
