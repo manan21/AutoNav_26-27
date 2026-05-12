@@ -1030,6 +1030,33 @@ class HudWindow(QMainWindow):
         sep_a.setFixedHeight(1)
         dev_layout.addWidget(sep_a)
 
+        # One-shot: stop container → pull current branch → start container
+        # → connect → colcon build. Long-running (minutes); runs in a
+        # worker thread and streams status into _dev_set_status. The
+        # button disables itself while the chain is in flight so a
+        # double-click can't kick off two builds in parallel.
+        lbl_quick = QLabel("QUICK ACTIONS")
+        lbl_quick.setAlignment(Qt.AlignCenter)
+        lbl_quick.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_quick)
+
+        self._dev_full_rebuild_btn = QPushButton("Load branch changes and build")
+        self._dev_full_rebuild_btn.setStyleSheet(dev_btn_compact)
+        self._dev_full_rebuild_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_full_rebuild_btn.clicked.connect(self._dev_full_rebuild)
+        dev_layout.addWidget(self._dev_full_rebuild_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_full_rebuild_btn, "Load branch changes and build", dev_btn_compact)
+        )
+        self._dev_full_rebuild_running = False
+
+        # Separator
+        sep_b = QFrame()
+        sep_b.setFrameShape(QFrame.HLine)
+        sep_b.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_b.setFixedHeight(1)
+        dev_layout.addWidget(sep_b)
+
         # Git pull
         lbl_git = QLabel("GIT")
         lbl_git.setAlignment(Qt.AlignCenter)
@@ -2804,6 +2831,150 @@ class HudWindow(QMainWindow):
             self._dev_container_btn_label = desired
             self._set_btn_label(self._dev_container_btn, desired)
 
+    # ── Quick action: stop → pull → start → connect → build ──────────
+    # Runs the whole chain in a worker thread so the multi-minute
+    # colcon build doesn't freeze the GUI event loop. Status updates
+    # come back to the UI thread via QTimer.singleShot(0, ...) so the
+    # _dev_set_status label stays in sync without subclassing QThread.
+    def _dev_full_rebuild(self):
+        if getattr(self, '_dev_full_rebuild_running', False):
+            return  # already in flight — ignore the click
+        self._dev_full_rebuild_running = True
+        self._dev_full_rebuild_btn.setEnabled(False)
+        self._dev_set_status(
+            "Pull + Rebuild starting…", color='#ff0')
+        QApplication.processEvents()
+        threading.Thread(
+            target=self._dev_full_rebuild_worker,
+            daemon=True,
+        ).start()
+
+    def _dev_ui_status(self, text, color='#888'):
+        """Thread-safe wrapper around _dev_set_status. Schedules the
+        actual setText call on the Qt event loop so worker threads
+        don't touch QLabel widgets directly."""
+        QTimer.singleShot(
+            0, lambda t=text, c=color: self._dev_set_status(t, color=c))
+
+    def _dev_full_rebuild_worker(self):
+        try:
+            # 1. Stop container (no-op if already stopped).
+            self._dev_ui_status(
+                f"[1/5] Stopping container {self._container_name}…",
+                color='#ff0')
+            try:
+                subprocess.run(
+                    ['docker', 'stop', self._container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except Exception:
+                # A failed stop is non-fatal — the container may already
+                # be down. The start step below will surface real issues.
+                pass
+
+            # 2. git pull --ff-only on the host repo.
+            self._dev_ui_status(
+                "[2/5] git pull --ff-only…", color='#ff0')
+            rc, out, err = self._dev_run_git(
+                ['pull', '--ff-only'], timeout=120)
+            if rc != 0:
+                msg = (err or out or 'unknown').splitlines()[-1]
+                self._dev_ui_status(
+                    f"Pull failed: {msg}", color='#f44')
+                return
+
+            # 3. Start container detached.
+            self._dev_ui_status(
+                f"[3/5] Starting container {self._container_name}…",
+                color='#ff0')
+            if not os.path.isfile(self._dev_run_script):
+                self._dev_ui_status(
+                    f"Missing script: {self._dev_run_script}",
+                    color='#f44')
+                return
+            try:
+                subprocess.Popen(
+                    ['bash', self._dev_run_script, '--no-attach'],
+                    cwd=self._dev_host_repo,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                self._dev_ui_status(
+                    f"Start failed: {e}", color='#f44')
+                return
+
+            # 4. Wait until docker reports the container running.
+            #    The 1 s poll loop matches _dev_update_container_status.
+            ready = False
+            for _ in range(60):  # 60 s ceiling
+                try:
+                    r = subprocess.run(
+                        ['docker', 'ps', '--quiet', '--filter',
+                         'status=running', '--filter',
+                         f'name=^/{self._container_name}$'],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if r.stdout.strip():
+                        ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            if not ready:
+                self._dev_ui_status(
+                    "Container did not come up within 60 s.",
+                    color='#f44')
+                return
+
+            # Connect on the UI thread (touches widgets + state).
+            QTimer.singleShot(0, self._connect_container)
+
+            # 5. colcon build inside the container.
+            self._dev_ui_status(
+                "[5/5] colcon build --symlink-install (this can "
+                "take several minutes)…", color='#ff0')
+            build_cmd = (
+                "cd /autonav/isaac_ros-dev && "
+                "source /opt/ros/humble/setup.bash && "
+                "colcon build --symlink-install"
+            )
+            try:
+                br = subprocess.run(
+                    ['docker', 'exec', '-u', 'admin',
+                     self._container_name, '/bin/bash', '-lc',
+                     build_cmd],
+                    capture_output=True, text=True,
+                    timeout=60 * 60,  # 1 hour ceiling
+                )
+            except subprocess.TimeoutExpired:
+                self._dev_ui_status(
+                    "Build timed out after 1 h.", color='#f44')
+                return
+            except Exception as e:
+                self._dev_ui_status(
+                    f"Build failed to launch: {e}", color='#f44')
+                return
+
+            if br.returncode == 0:
+                summary = (br.stdout or '').splitlines()
+                tail = summary[-1] if summary else 'done'
+                self._dev_ui_status(
+                    f"Pull + Rebuild OK ({tail})", color='#0f0')
+            else:
+                err_lines = (br.stderr or br.stdout or '').splitlines()
+                tail = err_lines[-1] if err_lines else 'unknown error'
+                self._dev_ui_status(
+                    f"Build failed: {tail}", color='#f44')
+        finally:
+            # Re-enable the button on the UI thread no matter how the
+            # chain exited — failure paths must not leave it disabled.
+            def _reset():
+                self._dev_full_rebuild_running = False
+                self._dev_full_rebuild_btn.setEnabled(True)
+            QTimer.singleShot(0, _reset)
+
     def _toggle_test(self, tid):
         """Start or stop a test by its ID."""
         if self._active_test == tid:
@@ -3769,14 +3940,27 @@ class HudWindow(QMainWindow):
         self._refresh_terminal_display()
 
     def closeEvent(self, event):
-        """Terminate all subprocesses and stop all modes on window close."""
+        """Terminate all subprocesses and stop all modes on window
+        close. Blocks until every kill thread has reported done (or
+        hits its timeout) — historically these ran as daemon threads
+        that the OS tore down mid-flight, which left orphan ros2
+        binaries reparented to PID 1 in the container and showing as
+        "external" processes in the next GUI session.
+        """
         # Stop live mode if active
         if self._live_active:
             self._stop_live_mode()
 
-        # Kill all running processes
+        # Kick off every kill in parallel, then join. Per-thread cap
+        # of 12 s ≈ Phase 1 SIGINT (5 s) + Phase 2 SIGKILL (5 s) +
+        # slack for the name-based pkill fallback.
+        kill_threads = []
         for label, proc in list(self._process_objects.items()):
-            self._kill_process(proc, label)
+            t = self._kill_process(proc, label)
+            if t is not None:
+                kill_threads.append((label, t))
+        for _label, t in kill_threads:
+            t.join(timeout=12)
         self._process_objects.clear()
 
         # Disconnect container
@@ -4235,16 +4419,39 @@ class HudWindow(QMainWindow):
         )
 
     def _kill_process(self, proc, label):
-        """Kill a launched process in a background thread so the GUI doesn't freeze."""
+        """Kill a launched process AND every descendant/orphan it
+        spawned, returning the kill Thread so callers can ``.join()``
+        when they need to block on completion (closeEvent does).
+        Fire-and-forget callers may discard the return value.
+
+        Kill plan, in order:
+          1. SIGINT to the wrapper PID and its process group — gives
+             bash traps + the ``ros2 run`` python wrapper a window to
+             clean up gracefully.
+          2. Recursive ps-tree walk → SIGKILL every descendant. Catches
+             grandchildren the previous ``--ppid $PID`` one-liner
+             missed.
+          3. SIGKILL the wrapper's process group (``kill -- -$PID``) —
+             catches anything that retained the group ID after being
+             reparented to PID 1 in the container.
+          4. Name-based ``pkill -f`` fallback for known orphan cases
+             (the CUDA ``line_detector`` and Eigen ``grade_detector``
+             survive their ``ros2 run`` python parent's SIGINT and
+             escape steps 2–3 because reparenting drops them off the
+             tree and out of the original PGID).
+        """
+        pid_tag = label.replace(' ', '_').replace('/', '_')
+
         def _do_kill():
             if self._container_connected:
-                pid_tag = label.replace(' ', '_').replace('/', '_')
                 try:
+                    # Phase 1: SIGINT — graceful path.
                     sigint_cmd = (
                         f"docker exec -u root {self._container_name} "
                         f"/bin/bash -c "
                         f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                        f"kill -INT $PID 2>/dev/null'"
+                        f"kill -INT $PID 2>/dev/null ; "
+                        f"kill -INT -- -$PID 2>/dev/null'"
                     )
                     subprocess.run(sigint_cmd, shell=True, timeout=5,
                                    capture_output=True)
@@ -4252,16 +4459,31 @@ class HudWindow(QMainWindow):
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
+                    # Phase 2 + 3: SIGKILL the recursive descendant
+                    # tree and the process group in one container hop.
                     force_cmd = (
                         f"docker exec -u root {self._container_name} "
-                        f"/bin/bash -c "
-                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                        f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
-                        f"kill -9 $PID $CHILDREN 2>/dev/null; "
+                        f"/bin/bash -c '"
+                        f"PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) ; "
+                        f"_desc() {{ local p=$1 ; "
+                        f"for k in $(ps -o pid= --ppid \"$p\" 2>/dev/null) ; "
+                        f"do echo $k ; _desc $k ; done ; }} ; "
+                        f"ALL=$(_desc $PID 2>/dev/null) ; "
+                        f"kill -9 $PID $ALL 2>/dev/null ; "
+                        f"kill -9 -- -$PID 2>/dev/null ; "
                         f"rm -f /tmp/gui_pid_{pid_tag}'"
                     )
                     subprocess.run(force_cmd, shell=True, timeout=5,
                                    capture_output=True)
+                    # Phase 4: name-based fallback for known orphans.
+                    for pattern in self._orphan_pkill_patterns(label):
+                        orphan_cmd = (
+                            f"docker exec -u root {self._container_name} "
+                            f"/bin/bash -c "
+                            f"\"pkill -KILL -f '{pattern}' 2>/dev/null\""
+                        )
+                        subprocess.run(orphan_cmd, shell=True, timeout=5,
+                                       capture_output=True)
                 except Exception:
                     pass
             try:
@@ -4272,7 +4494,30 @@ class HudWindow(QMainWindow):
                     proc.kill()
                 except Exception:
                     pass
-        threading.Thread(target=_do_kill, daemon=True).start()
+
+        t = threading.Thread(target=_do_kill, daemon=True)
+        t.start()
+        return t
+
+    def _orphan_pkill_patterns(self, label):
+        """Cmdline substrings for processes that escape the ps-tree +
+        process-group kill in ``_kill_process``. Each entry is matched
+        via ``pkill -KILL -f`` inside the container, so it must be a
+        unique substring of the full cmdline — broad matches risk
+        killing unrelated processes that happen to share a token. Keep
+        the list narrow; add entries only for orphans observed in
+        practice.
+        """
+        return {
+            'LINE DETECT': [
+                'autonav_detection line_detector',
+                'autonav_detection/line_detector',
+            ],
+            'PCA DETECT': [
+                'autonav_detection grade_detector',
+                'autonav_detection/grade_detector',
+            ],
+        }.get(label, [])
 
     def _launch_cmd_for(self, label):
         """Return the raw command string for a device/test label."""
