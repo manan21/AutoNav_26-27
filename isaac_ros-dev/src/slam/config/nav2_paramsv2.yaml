@@ -98,58 +98,54 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # Regulated Pure Pursuit Controller (RPP) — picks a single lookahead
-    # point on /plan and steers directly toward it. No trajectory sampling,
-    # no scoring critics — the robot can't "decide" to cut a corner because
-    # there is no scoring loop that could rank a shortcut above the path.
-    #
-    # Speed is regulated down on tight curves AND when the robot is close
-    # to cost (use_*_regulated_linear_velocity_scaling), so it slows for
-    # corners and near obstacles automatically.
+    # DWB Local Planner — aggressive path-lock tuning.
+    # PathDist and PathAlign weights pushed 2-3x over Nav2 defaults so the
+    # cost penalty for ANY deviation off /plan dominates trajectory
+    # selection. ObstacleFootprint boosted to make even brushing inflated
+    # cost regions expensive. PathAlign.forward_point_distance is non-zero
+    # so alignment is scored from a point ~32 cm ahead of base_link — this
+    # is what stops corner-cutting (with FPD=0 the alignment is from
+    # base_link itself which lets shortcuts score acceptably).
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-
-      # ── Speed envelope (matches the robot's mechanical limits) ─────
-      desired_linear_vel: 0.55
-      max_angular_accel: 1.2
-
-      # ── Lookahead — smallest knob with the biggest effect ─────────
-      # Smaller = tracks path tighter, turns sharper at corners.
-      # Larger  = smoother, but can cut corners on tight bends.
-      # Start at 0.4 m (≈0.8 s of travel at 0.5 m/s); if the robot
-      # over-rotates at corners, bump toward 0.55. If shortcuts come
-      # back, drop toward 0.30.
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.25
-      max_lookahead_dist: 0.7
-      lookahead_time: 1.0
-      use_velocity_scaled_lookahead_dist: true
-
-      # ── Approach to goal — slow down near the goal ────────────────
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
-
-      # ── Collision detection — stop if a forward arc hits cost ─────
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-
-      # ── Speed regulation: slow on curves AND near cost ────────────
-      use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.5
-      regulated_linear_scaling_min_speed: 0.1
-      use_cost_regulated_linear_velocity_scaling: true
-      cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 5.0   # MUST match inflation_layer's cost_scaling_factor
-
-      # ── Rotate-in-place at start when heading is way off path ─────
-      use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.5
-      rotate_to_heading_angular_vel: 0.7
-
-      # ── Transform / search params ─────────────────────────────────
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: False
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      max_vel_x: 0.55
+      max_vel_y: 0.0
+      max_vel_theta: 0.70
+      min_speed_xy: 0.0
+      max_speed_xy: 0.55
+      min_speed_theta: 0.15
+      acc_lim_x: 2.5
+      acc_lim_y: 0.0
+      acc_lim_theta: 0.9
+      decel_lim_x: -2.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -0.9
+      vx_samples: 20
+      vy_samples: 5
+      vtheta_samples: 20
+      sim_time: 1.5            # was 1.7 — shorter sim makes DWB score nearer trajectories, less room for "creative" shortcuts
+      linear_granularity: 0.05
+      angular_granularity: 0.025
       transform_tolerance: 0.2
-      max_robot_pose_search_dist: 10.0
+      xy_goal_tolerance: 0.25
+      trans_stopped_velocity: 0.05
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.05
+      ObstacleFootprint.scale: 4.0          # was 1.0 — penalises trajectories whose footprint clips ANY inflated cell, so shortcuts through cost regions are rejected
+      PathAlign.scale: 64.0                  # was 32.0 — doubled to make heading-misalignment expensive
+      PathAlign.forward_point_distance: 0.325  # was 0.0 — KEY: score alignment from a point 32cm ahead of base_link, not from base_link itself
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.325  # was 0.0
+      PathDist.scale: 96.0                   # was 32.0 — tripled. Distance-to-path now dominates the score, so DWB picks trajectories that hug /plan
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
   local_costmap:
