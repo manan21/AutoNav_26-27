@@ -22,7 +22,7 @@ lines:
     target_frame: "odom"
     enable_timer: true
     publish_interval_ms: 250          # min 50; controls publish cadence
-    max_rgb_depth_delta_ms: 120       # RGB/depth sync window
+    max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
     line_hold_timeout_ms: 800
     line_memory_max_points: 12000     # cap confirmed output points

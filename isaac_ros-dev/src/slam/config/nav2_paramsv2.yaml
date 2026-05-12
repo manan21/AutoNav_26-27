@@ -238,8 +238,8 @@ global_costmap:
       origin_x: -25.0
       origin_y: -25.0
       track_unknown_space: true
-      # No live obstacle_layer here. Live lidar obstacles go into the local costmap only; the global one is pure course memory (static_layer from /map_padded) so there's no visual lag between static_layer and live lidar.
-      plugins: ["static_layer", "line_layer", "inflation_layer"]
+      # Global = accumulator. obstacle_layer reads the same /scan_pca_filtered the local does, but with clearing disabled so cells, once marked, stay marked. The static_layer adds longer-range SLAM-derived course memory on top. Planner therefore sees everything the local ever saw, plus the persistent map.
+      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -250,15 +250,15 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
+        # Same source as local costmap → cells land at identical world positions (same /scan, same TF chain). clearing/raytracing disabled so the global accumulates obstacles permanently; cells leaving the local rolling window persist here forever.
         observation_sources: filtered_scan
         filtered_scan:
           topic: /scan_pca_filtered
-          # static_layer carries persistent memory; keeping this 0 so obstacle_layer matches the local costmap (no ghost obstacles).
           observation_persistence: 0.0
-          clearing: True
+          clearing: False
           marking: True
           data_type: "LaserScan"
-          raytrace_max_range: 25.0
+          raytrace_max_range: 0.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
