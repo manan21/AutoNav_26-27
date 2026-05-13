@@ -1,5 +1,5 @@
 """
-Map Padder — pure geometric extent driver for the global costmap.
+Map Padder — corridor + wall + buffer geometry for the global costmap.
 
 Seeds (tiles of interest):
   • Robot window tiles — the local-costmap footprint around base_link
@@ -7,21 +7,26 @@ Seeds (tiles of interest):
   • Line tiles         — straight line from robot to goal
   • Path tiles         — tiles along the current /plan
 
-Every seed gets its 8 neighbours activated (1-ring flood). The output
-is a bounding-box-sized OccupancyGrid where ACTIVE cells are UNKNOWN
-(-1) and inactive cells are also UNKNOWN — i.e. map_padder no longer
-contaminates the global with LETHAL "corridor walls" or SLAM-derived
-cell values. The global is intentionally a pure mirror of the local
-(via the local_mirror_layer plugin) plus this static_layer's
-geometry; the only sensor data path into the global is the local
-costmap topic, never raw /scan or /map.
+Every seed gets its 8-neighbour ring activated (the "buffer region").
+The output OccupancyGrid uses three cell classes:
+  • Active corridor (seeds + 1-ring buffer) → UNKNOWN (-1).
+    Planner traverses here freely (allow_unknown: true).
+  • Everything else inside the bounding box → LETHAL (100).
+    These are the "wall" cells: 100% intraversable, which is what
+    makes Dijkstra fast — search collapses to the corridor.
+  • Cells outside the bounding box don't exist (the grid is only
+    as wide as the BB).
 
-The bounding box GROWS and SHRINKS with the active region so that
-Dijkstra always plans over a tight, robot-and-goal-hugging grid —
-exactly the "map_padder makes the planner fast" property the user
-relies on. /map is still used as a SUBSCRIPTION trigger so we get
-periodic publish cadence, but its cell contents are no longer pasted
-into /map_padded.
+The bounding box is MONOTONICALLY GROWING within a session — once the
+corridor extends to a tile, the global costmap always covers it.
+That's how local_mirror_layer's accumulated obstacle cells survive
+the master-costmap resizes triggered by static_layer when /map_padded
+grows toward a far goal.
+
+map_padder does NOT contribute obstacle data; the only sensor path
+into the global costmap is /local_costmap/costmap via the
+local_mirror_layer plugin. Map padder is purely geometric: it carves
+the corridor and stamps walls around it.
 """
 
 import array
@@ -330,15 +335,30 @@ class MapPadder(Node):
             bb_w = min(bb_w, MAX_GRID_SIDE)
             bb_h = min(bb_h, MAX_GRID_SIDE)
 
-        # ── 4. build grid: ALL UNKNOWN (-1) ──────────────────────────
-        # We no longer fill LETHAL outside the corridor or paste SLAM
-        # data — that contaminated the global with cells the local had
-        # never observed. Every cell is UNKNOWN (-1); the planner has
-        # `allow_unknown: true` so it can route freely inside the
-        # bounding box. Obstacle marks come exclusively via
-        # local_mirror_layer reading /local_costmap/costmap.
+        # ── 4. tile mask → cell mask ─────────────────────────────────
+        n_tx = max_tx - min_tx + 1
+        n_ty = max_ty - min_ty + 1
+        tmask = np.zeros((n_ty, n_tx), dtype=np.bool_)
+        for tx, ty in active:
+            tmask[ty - min_ty, tx - min_tx] = True
+
+        cmask = np.repeat(np.repeat(tmask, cpt, axis=0),
+                          cpt, axis=1)[:bb_h, :bb_w]
+
+        # ── 5. build grid: LETHAL walls + UNKNOWN corridor ───────────
+        # Cells OUTSIDE the active corridor are LETHAL (100). These
+        # are the intraversable wall cells map_padder is designed
+        # around — they bound Dijkstra's search to the narrow
+        # corridor, which is what makes the global planner fast.
+        # Cells INSIDE the corridor (active tiles + their 1-ring
+        # 8-neighbor flood — the "buffer") are UNKNOWN (-1). The
+        # planner can traverse them (allow_unknown: true). The local
+        # mirror layer overlays obstacle cells from
+        # /local_costmap/costmap on top — map_padder itself never
+        # contributes sensor data to the global.
         grid = self._grid_buf[:bb_h, :bb_w]
-        grid.fill(UNKNOWN)
+        grid.fill(LETHAL)
+        grid[cmask] = UNKNOWN
 
         # ── 5. publish ───────────────────────────────────────────────
         out = OccupancyGrid()

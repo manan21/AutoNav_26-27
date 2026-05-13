@@ -10,7 +10,6 @@ namespace gradient_escape
 
 namespace
 {
-// Normalize an angle to [-pi, pi].
 inline double wrap_pi(double a)
 {
   while (a >  M_PI) a -= 2.0 * M_PI;
@@ -28,7 +27,6 @@ GoalBender::GoalBender(
 
 BT::NodeStatus GoalBender::tick()
 {
-  // --- read ports ---
   geometry_msgs::msg::PoseStamped goal;
   if (!getInput("input_goal", goal)) {
     return BT::NodeStatus::FAILURE;
@@ -43,7 +41,6 @@ BT::NodeStatus GoalBender::tick()
   getInput("bend_angle", bend_angle);
   getInput("path_lookahead_index", path_lookahead_idx);
 
-  // --- get robot pose from blackboard TF ---
   auto tf_buffer =
     config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   auto node = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
@@ -53,7 +50,6 @@ BT::NodeStatus GoalBender::tick()
     tf = tf_buffer->lookupTransform(
       "map", "base_link", tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
-    // Can't get pose — pass goal through unchanged
     setOutput("output_goal", goal);
     return BT::NodeStatus::SUCCESS;
   }
@@ -83,107 +79,35 @@ BT::NodeStatus GoalBender::tick()
     path_behind = std::abs(rel_look) > angle_thresh;
   }
 
-  if (!goal_behind && !path_behind) {
-    // Trap cleared — release any previous commitment and pass through.
-    has_commitment_ = false;
-    committed_queue_.clear();
+  // Bend ONLY when both the real goal AND the previous path are
+  // behind the robot. Other cases:
+  //   - goal in front, path in front  -> pass through (normal nav)
+  //   - goal in front, path behind    -> pass through; the backup-
+  //                                       recovery BT node handles
+  //                                       breadcrumb backtracking,
+  //                                       not us.
+  //   - goal behind, path in front    -> pass through; planner has
+  //                                       already found a forward
+  //                                       route.
+  if (!(goal_behind && path_behind)) {
     setOutput("output_goal", goal);
     return BT::NodeStatus::SUCCESS;
   }
 
-  int queue_size = 5;
-  double reach_radius = 0.5;
-  double goal_change_thresh = 2.0;
-  double tip_change_thresh = 1.0;
-  getInput("queue_size", queue_size);
-  getInput("reach_radius", reach_radius);
-  getInput("goal_change_threshold", goal_change_thresh);
-  getInput("tip_change_threshold", tip_change_thresh);
-
-  // Compute the current live path's U-tip (waypoint furthest from
-  // robot). If we have a commitment AND the live tip has drifted
-  // away from where it was when we built the queue, the planner is
-  // proposing a different U-shape — abandon the stale queue.
-  size_t live_tip = 0;
-  double live_tip_dist = 0.0;
-  if (have_path) {
-    for (size_t i = 1; i < prev_path.poses.size(); ++i) {
-      const double dx = prev_path.poses[i].pose.position.x - rx;
-      const double dy = prev_path.poses[i].pose.position.y - ry;
-      const double d = std::hypot(dx, dy);
-      if (d > live_tip_dist) {
-        live_tip_dist = d;
-        live_tip = i;
-      }
-    }
-  }
-
-  // If the real goal moved a lot, the trap has changed shape — rebuild.
-  if (has_commitment_) {
-    const double dgx = gx - committed_real_goal_.pose.position.x;
-    const double dgy = gy - committed_real_goal_.pose.position.y;
-    if (std::hypot(dgx, dgy) > goal_change_thresh) {
-      has_commitment_ = false;
-      committed_queue_.clear();
-    }
-  }
-
-  // If the live path's tip has drifted, the queue is stale.
-  if (has_commitment_ && have_path) {
-    const double dtx =
-      prev_path.poses[live_tip].pose.position.x - committed_tip_x_;
-    const double dty =
-      prev_path.poses[live_tip].pose.position.y - committed_tip_y_;
-    if (std::hypot(dtx, dty) > tip_change_thresh) {
-      has_commitment_ = false;
-      committed_queue_.clear();
-    }
-  }
-
-  // Advance the queue when the robot reaches the current waypoint.
-  if (has_commitment_ && committed_idx_ < committed_queue_.size()) {
-    const auto & wp = committed_queue_[committed_idx_].pose.position;
-    if (std::hypot(wp.x - rx, wp.y - ry) < reach_radius) {
-      committed_idx_++;
-    }
-    if (committed_idx_ >= committed_queue_.size()) {
-      has_commitment_ = false;
-      committed_queue_.clear();
-    }
-  }
-
-  if (!has_commitment_ && have_path && live_tip >= 1 && queue_size > 0) {
-    committed_queue_.clear();
-    for (int n = 1; n <= queue_size; ++n) {
-      const size_t s = (live_tip * static_cast<size_t>(n)) /
-                       static_cast<size_t>(queue_size);
-      if (s >= prev_path.poses.size()) continue;
-      committed_queue_.push_back(prev_path.poses[s]);
-    }
-    committed_idx_ = 0;
-    committed_real_goal_ = goal;
-    committed_tip_x_ = prev_path.poses[live_tip].pose.position.x;
-    committed_tip_y_ = prev_path.poses[live_tip].pose.position.y;
-    has_commitment_ = !committed_queue_.empty();
-  }
+  // Forward-bend: place an intermediate goal bend_distance metres
+  // away, offset by bend_angle from the robot heading toward the
+  // side the real goal is on. Yields a forward-only plan that turns
+  // toward the real goal incrementally — exactly what DWB in
+  // forward-only mode (min_vel_x: 0.0) can follow.
+  const double offset = (rel_goal >= 0.0) ? bend_angle : -bend_angle;
+  const double heading = ryaw + offset;
 
   geometry_msgs::msg::PoseStamped bent;
   bent.header = goal.header;
   bent.header.stamp = node->get_clock()->now();
+  bent.pose.position.x = rx + bend_dist * std::cos(heading);
+  bent.pose.position.y = ry + bend_dist * std::sin(heading);
   bent.pose.position.z = 0.0;
-
-  if (has_commitment_ && committed_idx_ < committed_queue_.size()) {
-    bent.pose.position.x =
-      committed_queue_[committed_idx_].pose.position.x;
-    bent.pose.position.y =
-      committed_queue_[committed_idx_].pose.position.y;
-  } else {
-    // No path / no queue — fall back to the legacy fixed-arc bend.
-    const double offset = (rel_goal >= 0.0) ? bend_angle : -bend_angle;
-    const double heading = ryaw + offset;
-    bent.pose.position.x = rx + bend_dist * std::cos(heading);
-    bent.pose.position.y = ry + bend_dist * std::sin(heading);
-  }
 
   const double to_real = std::atan2(
     gy - bent.pose.position.y, gx - bent.pose.position.x);
@@ -194,11 +118,7 @@ BT::NodeStatus GoalBender::tick()
   setOutput("output_goal", bent);
 
   RCLCPP_INFO(node->get_logger(),
-    "GoalBender: trigger=%s%s%s -> wp[%zu/%zu] (%.1f, %.1f)",
-    goal_behind ? "goal-behind" : "",
-    (goal_behind && path_behind) ? "+" : "",
-    path_behind ? "path-behind" : "",
-    committed_idx_ + 1, committed_queue_.size(),
+    "GoalBender: goal+path both behind -> forward bend to (%.1f, %.1f)",
     bent.pose.position.x, bent.pose.position.y);
 
   return BT::NodeStatus::SUCCESS;
