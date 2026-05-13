@@ -92,54 +92,67 @@ fi
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}°"
 
-# Hold the publisher alive until a subscriber matches and the message
-# is flushed. `ros2 topic pub --once` drops the message on the floor if
-# NAV2's /goal_pose subscriber hasn't completed DDS discovery against
-# our ephemeral publisher yet — this is what was breaking send_goal.sh
-# while the GPS handler (long-lived publisher) kept working.
+# Send via the NavigateToPose action client — the same path RViz's
+# "Nav2 Goal" tool uses. Bypasses the /goal_pose topic, which means no
+# DDS-discovery race between an ephemeral publisher and bt_navigator's
+# subscriber, and preempts any in-flight action goal cleanly.
 python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
-import math, sys, time
+import math, sys
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from geometry_msgs.msg import PoseStamped
+from rclpy.action import ActionClient
+from nav2_msgs.action import NavigateToPose
 
 x = float(sys.argv[1])
 y = float(sys.argv[2])
 yaw_deg = float(sys.argv[3])
 
-WAIT_FOR_SUB_TIMEOUT_S = 5.0
-POST_PUBLISH_SPIN_S = 0.5
+ACTION_NAME = '/navigate_to_pose'
+SERVER_WAIT_TIMEOUT_S = 5.0
+GOAL_ACCEPT_TIMEOUT_S = 5.0
 
 rclpy.init()
-node = Node('send_goal_pose_pub')
-qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
-pub = node.create_publisher(PoseStamped, '/goal_pose', qos)
+node = Node('send_goal_action_client')
+client = ActionClient(node, NavigateToPose, ACTION_NAME)
 
-deadline = time.monotonic() + WAIT_FOR_SUB_TIMEOUT_S
-while time.monotonic() < deadline and pub.get_subscription_count() < 1:
-    rclpy.spin_once(node, timeout_sec=0.1)
-
-if pub.get_subscription_count() < 1:
-    print(f'WARNING: no subscriber on /goal_pose after {WAIT_FOR_SUB_TIMEOUT_S}s '
-          f'(is bt_navigator running?) — publishing anyway',
+if not client.wait_for_server(timeout_sec=SERVER_WAIT_TIMEOUT_S):
+    print(f'ERROR: {ACTION_NAME} action server not available after '
+          f'{SERVER_WAIT_TIMEOUT_S}s (is bt_navigator running?)',
           file=sys.stderr)
+    node.destroy_node()
+    rclpy.shutdown()
+    sys.exit(1)
 
-msg = PoseStamped()
-msg.header.frame_id = 'map'
-msg.header.stamp = node.get_clock().now().to_msg()
-msg.pose.position.x = x
-msg.pose.position.y = y
-msg.pose.position.z = 0.0
-msg.pose.orientation.x = 0.0
-msg.pose.orientation.y = 0.0
-msg.pose.orientation.z = math.sin(math.radians(yaw_deg) / 2.0)
-msg.pose.orientation.w = math.cos(math.radians(yaw_deg) / 2.0)
-pub.publish(msg)
+goal_msg = NavigateToPose.Goal()
+goal_msg.pose.header.frame_id = 'map'
+goal_msg.pose.header.stamp = node.get_clock().now().to_msg()
+goal_msg.pose.pose.position.x = x
+goal_msg.pose.pose.position.y = y
+goal_msg.pose.pose.position.z = 0.0
+goal_msg.pose.pose.orientation.x = 0.0
+goal_msg.pose.pose.orientation.y = 0.0
+goal_msg.pose.pose.orientation.z = math.sin(math.radians(yaw_deg) / 2.0)
+goal_msg.pose.pose.orientation.w = math.cos(math.radians(yaw_deg) / 2.0)
 
-end = time.monotonic() + POST_PUBLISH_SPIN_S
-while time.monotonic() < end:
-    rclpy.spin_once(node, timeout_sec=0.05)
+send_future = client.send_goal_async(goal_msg)
+rclpy.spin_until_future_complete(
+    node, send_future, timeout_sec=GOAL_ACCEPT_TIMEOUT_S)
+
+goal_handle = send_future.result()
+if goal_handle is None:
+    print(f'ERROR: send_goal_async did not complete within '
+          f'{GOAL_ACCEPT_TIMEOUT_S}s', file=sys.stderr)
+    node.destroy_node()
+    rclpy.shutdown()
+    sys.exit(1)
+
+if not goal_handle.accepted:
+    print('ERROR: NavigateToPose goal REJECTED by server', file=sys.stderr)
+    node.destroy_node()
+    rclpy.shutdown()
+    sys.exit(1)
+
+print('NavigateToPose goal accepted — robot is rerouting.')
 
 node.destroy_node()
 rclpy.shutdown()

@@ -165,6 +165,7 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QScrollArea,
@@ -385,6 +386,21 @@ class HudWindow(QMainWindow):
             'Local EKF': 'ekf_local_odom',
             'Map EKF':   'ekf_global_odom',
         }
+
+        # Screen lock state. When _screen_locked is True an opaque
+        # overlay covers the central widget and an application-wide
+        # event filter (installed at end of __init__) intercepts every
+        # KeyPress / mouse event so the operator can neither click
+        # buttons nor type into focused widgets. Ctrl+Shift+L toggles
+        # the lock; while locked, Ctrl+Shift+L reveals the password
+        # field, and the field unlocks on a correct password + Enter.
+        self._screen_locked = False
+        self._lock_password = "@cro123"
+        self._lock_overlay = None
+        self._lock_password_input = None
+        self._lock_password_visible = False
+        self._lock_hint_label = None
+        self._lock_status_label = None
 
         # Container connection state
         self._container_connected = False
@@ -772,6 +788,76 @@ class HudWindow(QMainWindow):
         self._launch_nav_buttons.append(
             (self._mission_btn, "Run Mission", mission_off_style)
         )
+
+        # --- One-shot script runners: send_goal.sh / send_GPS_waypoint.sh ---
+        # Each row is [label | QLineEdit args | Send button]. The button
+        # fires the script (wrapped for the container) with the args
+        # string appended; output is captured into _process_buffers
+        # under the label so it shows up in the terminal display when
+        # the device dot is selected (no dot is wired for these, so the
+        # operator selects via the existing dot UI — output is mostly
+        # informational anyway).
+        sep_send = QFrame()
+        sep_send.setFrameShape(QFrame.HLine)
+        sep_send.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_send.setFixedHeight(1)
+        launch_layout.addWidget(sep_send)
+
+        send_field_style = (
+            "QLineEdit {"
+            "  background-color: #1a1a1a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 3px;"
+            "  padding: 4px 6px; font-size: 11px; font-family: monospace;"
+            "}"
+            "QLineEdit:focus { border: 1px solid #0af; }"
+        )
+        send_btn_style = (
+            "QPushButton {"
+            "  background-color: #2a2a2a; color: #0af;"
+            "  border: 1px solid #0af; border-radius: 4px;"
+            "  padding: 6px 8px; font-size: 11px;"
+            "}"
+            "QPushButton:hover { background-color: #3a3a3a; }"
+            "QPushButton:pressed { background-color: #1a1a1a; }"
+        )
+
+        send_grid = QGridLayout()
+        send_grid.setSpacing(4)
+
+        lbl_goal = QLabel("Send Goal")
+        lbl_goal.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
+        self._send_goal_input = QLineEdit()
+        self._send_goal_input.setPlaceholderText("-r 10 0 0")
+        self._send_goal_input.setStyleSheet(send_field_style)
+        btn_send_goal = QPushButton("Send")
+        btn_send_goal.setStyleSheet(send_btn_style)
+        btn_send_goal.setFocusPolicy(Qt.NoFocus)
+        btn_send_goal.setFixedWidth(60)
+        btn_send_goal.clicked.connect(self._on_send_goal_clicked)
+        self._send_goal_input.returnPressed.connect(self._on_send_goal_clicked)
+        send_grid.addWidget(lbl_goal, 0, 0)
+        send_grid.addWidget(self._send_goal_input, 0, 1)
+        send_grid.addWidget(btn_send_goal, 0, 2)
+
+        lbl_gps = QLabel("Send GPS")
+        lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
+        self._send_gps_input = QLineEdit()
+        self._send_gps_input.setPlaceholderText("37.23028, -80.42502")
+        self._send_gps_input.setStyleSheet(send_field_style)
+        btn_send_gps = QPushButton("Send")
+        btn_send_gps.setStyleSheet(send_btn_style)
+        btn_send_gps.setFocusPolicy(Qt.NoFocus)
+        btn_send_gps.setFixedWidth(60)
+        btn_send_gps.clicked.connect(self._on_send_gps_clicked)
+        self._send_gps_input.returnPressed.connect(self._on_send_gps_clicked)
+        send_grid.addWidget(lbl_gps, 1, 0)
+        send_grid.addWidget(self._send_gps_input, 1, 1)
+        send_grid.addWidget(btn_send_gps, 1, 2)
+
+        send_grid.setColumnStretch(0, 0)
+        send_grid.setColumnStretch(1, 1)
+        send_grid.setColumnStretch(2, 0)
+        launch_layout.addLayout(send_grid)
 
         launch_layout.addStretch()
 
@@ -2020,6 +2106,16 @@ class HudWindow(QMainWindow):
         # theme is selected (light by default).
         self._apply_theme()
 
+        # Application-wide event filter. This is what makes the screen
+        # lock actually block input: when _screen_locked is True the
+        # filter swallows every KeyPress / mouse event in the GUI
+        # process, except those targeted at the lock overlay's password
+        # field. Installed unconditionally so we don't have to manage
+        # install/uninstall on lock/unlock.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
     # -----------------------------------------------------------------
     # Theme helpers
     # -----------------------------------------------------------------
@@ -2378,6 +2474,76 @@ class HudWindow(QMainWindow):
             if b is self._mission_btn:
                 self._launch_nav_buttons[i] = (b, lbl, self._mission_off_style)
                 break
+        self._refresh_terminal_display()
+
+    def _on_send_goal_clicked(self):
+        """Run ./config/send_goal.sh with the args from the textfield."""
+        args = self._send_goal_input.text().strip()
+        self._run_one_shot_script(
+            label="Send Goal",
+            script="./config/send_goal.sh",
+            args=args,
+        )
+
+    def _on_send_gps_clicked(self):
+        """Run ./config/send_GPS_waypoint.sh with the args from the textfield.
+
+        Commas in the field (e.g. ``37.23028, -80.42502``) are normalized
+        to spaces so the script's positional <lat> <lon> [radius] parser
+        accepts the input as-pasted from a maps app.
+        """
+        raw = self._send_gps_input.text().strip()
+        args = re.sub(r'[,\s]+', ' ', raw).strip()
+        self._run_one_shot_script(
+            label="Send GPS",
+            script="./config/send_GPS_waypoint.sh",
+            args=args,
+        )
+
+    def _run_one_shot_script(self, label, script, args):
+        """Fire-and-forget runner for the send_goal/send_GPS scripts.
+
+        Wraps the command for the container the same way device launches
+        do, captures stdout into the per-label buffer, and selects the
+        label so the terminal display shows the output. The Popen is
+        kept in _process_objects so _poll_process_output reaps it when
+        it exits.
+        """
+        if not self._container_connected:
+            self._gui_log_msg(f"Cannot run {label}: container not connected")
+            return
+
+        # Shell-safe arg pass-through. The args string is appended
+        # verbatim to the script invocation inside the docker exec
+        # bash -lc '...' wrapper; the user owns the quoting of their
+        # own input (matches how they'd run it from a shell).
+        cmd = f"{script} {args}".strip()
+        exec_cmd = self._wrap_container_cmd(cmd, label=label)
+        buf = self._process_buffers.setdefault(label, [])
+        buf.append(f"$ {cmd}\n")
+        try:
+            proc = subprocess.Popen(
+                exec_cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._process_objects[label] = proc
+
+            def _reader():
+                try:
+                    for line in proc.stdout:
+                        buf.append(line)
+                except Exception:
+                    pass
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+            self._process_readers[label] = t
+            self._gui_log_msg(f"{label}: {cmd}")
+        except Exception as e:
+            buf.append(f"[Failed to start: {e}]\n")
+
+        self._selected_process = label
+        self._term_last_text = ''
         self._refresh_terminal_display()
 
     def _show_main_page(self):
@@ -3974,6 +4140,148 @@ class HudWindow(QMainWindow):
         self._gui_log.append(f"[{ts}] {msg}\n")
         self._refresh_terminal_display()
 
+    # -----------------------------------------------------------------
+    # Screen lock
+    # -----------------------------------------------------------------
+    def _build_lock_overlay(self):
+        """Lazily build the fullscreen lock overlay widget."""
+        overlay = QWidget(self)
+        overlay.setObjectName("lockOverlay")
+        overlay.setStyleSheet(
+            "QWidget#lockOverlay { background-color: rgba(0, 0, 0, 235); }"
+        )
+        overlay.setAutoFillBackground(True)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+
+        v = QVBoxLayout(overlay)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setAlignment(Qt.AlignCenter)
+        v.addStretch()
+
+        title = QLabel("\U0001F512  SCREEN LOCKED")
+        f = QFont()
+        f.setPointSize(36)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #dcdcdc; background: transparent; border: none;")
+        v.addWidget(title)
+
+        hint = QLabel("Press Ctrl+Shift+L to unlock")
+        hf = QFont()
+        hf.setPointSize(14)
+        hint.setFont(hf)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: #888; background: transparent; border: none;")
+        v.addWidget(hint)
+        self._lock_hint_label = hint
+
+        pw = QLineEdit()
+        pw.setEchoMode(QLineEdit.Password)
+        pw.setPlaceholderText("password")
+        pw.setAlignment(Qt.AlignCenter)
+        pw.setFixedWidth(320)
+        pw.setStyleSheet(
+            "QLineEdit {"
+            "  background-color: #1a1a1a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 4px;"
+            "  padding: 8px 10px; font-size: 16px; font-family: monospace;"
+            "}"
+            "QLineEdit:focus { border: 1px solid #0af; }"
+        )
+        pw.returnPressed.connect(self._try_unlock)
+        pw.setVisible(False)
+        # Center the line edit horizontally inside the QVBoxLayout via
+        # a wrapping QHBoxLayout — QLineEdit otherwise stretches.
+        pw_row = QHBoxLayout()
+        pw_row.addStretch()
+        pw_row.addWidget(pw)
+        pw_row.addStretch()
+        v.addLayout(pw_row)
+        self._lock_password_input = pw
+
+        status = QLabel("")
+        status.setAlignment(Qt.AlignCenter)
+        status.setStyleSheet("color: #f55; background: transparent; border: none;"
+                             " font-size: 12px;")
+        status.setVisible(False)
+        v.addWidget(status)
+        self._lock_status_label = status
+
+        v.addStretch()
+        overlay.hide()
+        self._lock_overlay = overlay
+        return overlay
+
+    def _toggle_screen_lock(self):
+        """Ctrl+Shift+L entry point (only called when unlocked)."""
+        if self._screen_locked:
+            return
+        self._lock_screen()
+
+    def _lock_screen(self):
+        if self._lock_overlay is None:
+            self._build_lock_overlay()
+        # Hide password field initially — operator must hit Ctrl+Shift+L
+        # again (or click) to reveal it.
+        self._lock_password_visible = False
+        self._lock_password_input.setVisible(False)
+        self._lock_password_input.clear()
+        self._lock_status_label.setVisible(False)
+        self._lock_hint_label.setText("Press Ctrl+Shift+L to unlock")
+        self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._lock_overlay.show()
+        self._lock_overlay.raise_()
+        # Show the cursor again so the operator can see they're locked
+        # (the HUD normally hides it).
+        self.setCursor(Qt.ArrowCursor)
+        self._screen_locked = True
+        self._gui_log_msg("Screen locked")
+
+    def _show_lock_password_input(self):
+        """Reveal & focus the password field. Called by the event filter
+        when Ctrl+Shift+L is pressed while locked. Idempotent: if the
+        field is already visible, just refocus it without clearing —
+        otherwise repeated Ctrl+Shift+L would wipe a partially-typed
+        password."""
+        if not self._screen_locked or self._lock_password_input is None:
+            return
+        if not self._lock_password_visible:
+            self._lock_password_visible = True
+            self._lock_password_input.setVisible(True)
+            self._lock_password_input.clear()
+            self._lock_status_label.setVisible(False)
+            self._lock_hint_label.setText("Type password and press Enter")
+        self._lock_password_input.setFocus(Qt.OtherFocusReason)
+
+    def _try_unlock(self):
+        if not self._screen_locked or self._lock_password_input is None:
+            return
+        if self._lock_password_input.text() == self._lock_password:
+            self._unlock_screen()
+        else:
+            self._lock_password_input.clear()
+            self._lock_status_label.setText("Incorrect password")
+            self._lock_status_label.setVisible(True)
+
+    def _unlock_screen(self):
+        self._screen_locked = False
+        if self._lock_overlay is not None:
+            self._lock_overlay.hide()
+        if self._lock_password_input is not None:
+            self._lock_password_input.clear()
+            self._lock_password_input.setVisible(False)
+        self._lock_password_visible = False
+        # Restore the HUD's default blank cursor.
+        self.setCursor(Qt.BlankCursor)
+        self._gui_log_msg("Screen unlocked")
+
+    def resizeEvent(self, event):
+        """Keep the lock overlay sized to the window."""
+        super().resizeEvent(event)
+        if self._lock_overlay is not None:
+            self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+
     _STATUS_BTN_SELECTED = (
         "QPushButton {"
         "  background-color: #1a3a1a; color: #0f0;"
@@ -3983,7 +4291,55 @@ class HudWindow(QMainWindow):
     )
 
     def eventFilter(self, obj, event):
-        """Forward mouse clicks on matplotlib canvases to the parent sensor cell."""
+        """Block input while locked; otherwise forward canvas clicks.
+
+        Installed application-wide (see __init__), so this is called
+        for every event in the process. The lock path runs first and
+        must be cheap when unlocked — it's a single attribute read.
+        """
+        # Ctrl+Shift+L must work from anywhere, including while focus
+        # is in a QLineEdit (the send_goal/send_GPS fields). Without
+        # this app-level intercept, the line edit would swallow the
+        # key event and HudWindow.keyPressEvent would never see it.
+        if (event.type() == QEvent.KeyPress and
+                event.key() == Qt.Key_L and
+                (event.modifiers() & Qt.ControlModifier) and
+                (event.modifiers() & Qt.ShiftModifier)):
+            if self._screen_locked:
+                self._show_lock_password_input()
+            else:
+                self._toggle_screen_lock()
+            return True
+
+        if self._screen_locked:
+            et = event.type()
+            if et == QEvent.KeyPress:
+                # Ctrl+Shift+L is already handled by the early intercept
+                # above (re-shows the password field while locked).
+                # Let the password field handle its own typing.
+                if (self._lock_password_input is not None and
+                        obj is self._lock_password_input):
+                    return False
+                # Swallow everything else.
+                return True
+            if et in (QEvent.KeyRelease, QEvent.ShortcutOverride):
+                # Block shortcut delivery too — otherwise QShortcut
+                # objects elsewhere in Qt could still fire on key
+                # combos we want suppressed.
+                if (self._lock_password_input is not None and
+                        obj is self._lock_password_input):
+                    return False
+                return True
+            if et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                      QEvent.MouseButtonDblClick, QEvent.Wheel):
+                # Mouse clicks: only the password field should be
+                # interactable. Letting the click reach the line edit
+                # is what gives it focus when the operator clicks it.
+                if (self._lock_password_input is not None and
+                        obj is self._lock_password_input):
+                    return False
+                return True
+
         if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
             cell = self._canvas_to_cell[obj]
             self._toggle_sensor_expand(cell)
@@ -4140,6 +4496,10 @@ class HudWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
+
+        # Ctrl+Shift+L is intercepted at the application-level event
+        # filter (see eventFilter) so it works from any focus context,
+        # including QLineEdit. No handling needed here.
 
         # --- Scrub mode: arrows move the slider, Enter exits ---
         if self._scrub_mode:
