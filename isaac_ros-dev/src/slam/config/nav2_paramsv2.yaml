@@ -230,6 +230,7 @@ local_costmap:
         line_topic: "/line_points"
         transform_tolerance: 0.2
         max_message_age_ms: 750
+        clearing: True
         rolling_window: True
         publish_costmap: True
 
@@ -260,9 +261,10 @@ global_costmap:
       # NO sensor data is fed directly into the global costmap.
       # The two contributors are:
       #   static_layer       → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer → /local_costmap/costmap → the ONLY obstacle path. Mirrors local cells with max-merge, accumulates forever, preserves cells across master-costmap resizes.
+      #   local_mirror_layer → /local_costmap/costmap → persistent memory of local obstacles/lines.
+      #   line_layer         → /line_points directly, non-clearing, so seen lane boundaries remain in global even after leaving camera view.
       # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer"]
+      plugins: ["static_layer", "local_mirror_layer", "line_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -277,9 +279,20 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
-        # Within the local's source window, the global mirrors exactly — including FREE cells overriding stale marks. The local's raytracing already filters transient obstacles (lidar smears, etc.), so anything the local currently sees as FREE really is free. Outside the source window, mirrored cells persist (the source msg never covers them again, so they stay) — that's how the global remembers obstacles as the robot rolls past them.
-        allow_decrease: true
+        # Accumulator mode: FREE cells from the local rolling window do not erase
+        # global memory. Clear the global costmap explicitly to remove ghosts.
+        allow_decrease: false
         track_unknown_space: true
+
+      line_layer:
+        plugin: "line_layer::LineLayer"
+        enabled: True
+        line_topic: "/line_points"
+        transform_tolerance: 0.2
+        max_message_age_ms: 750
+        clearing: False
+        rolling_window: False
+        publish_costmap: False
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

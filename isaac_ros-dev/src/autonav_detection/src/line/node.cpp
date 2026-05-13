@@ -300,6 +300,7 @@ private:
 	struct CandidatePoint {
 		Eigen::Vector3d target;
 		Eigen::Vector3d base;
+		cv::Point pixel;
 	};
 
 	struct VoxelKey {
@@ -321,6 +322,7 @@ private:
 
 	struct VoxelState {
 		Eigen::Vector3d point;
+		cv::Point2d pixel;
 		rclcpp::Time first_seen;
 		rclcpp::Time last_seen;
 		int hits = 0;
@@ -366,11 +368,14 @@ private:
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
 	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
+	std::vector<cv::Point> confirmedDebugPixels() const;
 	void publishDebugImages(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
 		const int2 * line_points,
-		int line_points_len);
+		int line_points_len,
+		const std::vector<CandidatePoint> & accepted_candidates,
+		const std::vector<cv::Point> & confirmed_pixels);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 	void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -694,6 +699,7 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 						base_point.point.x,
 						base_point.point.y,
 						base_point.point.z);
+				candidate.pixel = cv::Point(line_points[i].x, line_points[i].y);
 				depth_line_points.emplace_back(candidate);
 				tf_success++;
 			} catch (const std::exception& ex) {
@@ -828,16 +834,21 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 	bool yaw_gated,
 	DetectionFrameStats & stats)
 {
-	std::unordered_map<VoxelKey, std::pair<Eigen::Vector3d, int>, VoxelKeyHash> frame_voxels;
+	struct FrameVoxelAggregate {
+		Eigen::Vector3d point = Eigen::Vector3d::Zero();
+		cv::Point2d pixel{0.0, 0.0};
+		int count = 0;
+	};
+
+	std::unordered_map<VoxelKey, FrameVoxelAggregate, VoxelKeyHash> frame_voxels;
 	frame_voxels.reserve(candidates.size());
 	for (const auto & candidate : candidates) {
 		const VoxelKey key = voxelKeyForPoint(candidate.target);
 		auto & aggregate = frame_voxels[key];
-		if (aggregate.second == 0) {
-			aggregate.first = Eigen::Vector3d::Zero();
-		}
-		aggregate.first += candidate.target;
-		aggregate.second++;
+		aggregate.point += candidate.target;
+		aggregate.pixel.x += candidate.pixel.x;
+		aggregate.pixel.y += candidate.pixel.y;
+		aggregate.count++;
 	}
 
 	const rclcpp::Duration confirm_window =
@@ -845,7 +856,11 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 
 	for (auto & item : frame_voxels) {
 		const VoxelKey & key = item.first;
-		Eigen::Vector3d point = item.second.first / std::max(1, item.second.second);
+		const int count = std::max(1, item.second.count);
+		Eigen::Vector3d point = item.second.point / count;
+		cv::Point2d pixel(
+			item.second.pixel.x / count,
+			item.second.pixel.y / count);
 		auto voxel_it = temporal_voxels_.find(key);
 
 		if (yaw_gated && (voxel_it == temporal_voxels_.end() || !voxel_it->second.confirmed)) {
@@ -855,6 +870,7 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 		if (voxel_it == temporal_voxels_.end()) {
 			VoxelState state;
 			state.point = point;
+			state.pixel = pixel;
 			state.first_seen = stamp;
 			state.last_seen = stamp;
 			state.hits = 1;
@@ -873,6 +889,8 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 		}
 		state.last_seen = stamp;
 		state.point = 0.6 * state.point + 0.4 * point;
+		state.pixel.x = 0.6 * state.pixel.x + 0.4 * pixel.x;
+		state.pixel.y = 0.6 * state.pixel.y + 0.4 * pixel.y;
 		if (state.hits >= temporal_min_hits_) {
 			state.confirmed = true;
 		}
@@ -969,11 +987,28 @@ void LineDetectorNode::publishDiagnostics(
 	_diagnostics_pub->publish(msg);
 }
 
+std::vector<cv::Point> LineDetectorNode::confirmedDebugPixels() const
+{
+	std::vector<cv::Point> pixels;
+	pixels.reserve(temporal_voxels_.size());
+	for (const auto & item : temporal_voxels_) {
+		if (!item.second.confirmed) {
+			continue;
+		}
+		pixels.emplace_back(
+			static_cast<int>(std::round(item.second.pixel.x)),
+			static_cast<int>(std::round(item.second.pixel.y)));
+	}
+	return pixels;
+}
+
 void LineDetectorNode::publishDebugImages(
 	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 	const cv::Mat & gray_image,
 	const int2 * line_points,
-	int line_points_len)
+	int line_points_len,
+	const std::vector<CandidatePoint> & accepted_candidates,
+	const std::vector<cv::Point> & confirmed_pixels)
 {
 	if (!debug_image_publish_enabled_ || !camera_msg || gray_image.empty()) {
 		return;
@@ -1011,6 +1046,18 @@ void LineDetectorNode::publishDebugImages(
 		const int y = line_points[i].y;
 		if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
 			cv::circle(overlay, cv::Point(x, y), 2, cv::Scalar(0, 0, 255), -1);
+		}
+	}
+	for (const auto & candidate : accepted_candidates) {
+		const int x = candidate.pixel.x;
+		const int y = candidate.pixel.y;
+		if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
+			cv::circle(overlay, candidate.pixel, 3, cv::Scalar(0, 255, 255), -1);
+		}
+	}
+	for (const auto & pixel : confirmed_pixels) {
+		if (0 <= pixel.x && pixel.x < overlay.cols && 0 <= pixel.y && pixel.y < overlay.rows) {
+			cv::circle(overlay, pixel, 4, cv::Scalar(0, 255, 0), -1);
 		}
 	}
 
@@ -1205,14 +1252,15 @@ void LineDetectorNode::line_callback()
 		_line_pixels_pub->publish(px_msg);
 	}
 
-	publishDebugImages(camera_msg, cv_ptr->image, line_points, *line_points_len);
-
 	if (*line_points_len == 0) {
 		const rclcpp::Time stamp(depth_msg->header.stamp);
 		const bool yaw_gated = isYawGated();
 		std::vector<Eigen::Vector3d> confirmed =
 			updateTemporalConfidence({}, stamp, yaw_gated, stats);
 		publishConfirmedOrEmpty(confirmed, depth_msg->header.stamp);
+		publishDebugImages(
+			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			{}, confirmedDebugPixels());
 		publishDiagnostics(stats, "empty line detection");
 		delete[] line_points;
 		delete line_points_len;
@@ -1240,6 +1288,9 @@ void LineDetectorNode::line_callback()
 	std::vector<Eigen::Vector3d> confirmed_points =
 		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
 	publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
+	publishDebugImages(
+		camera_msg, cv_ptr->image, line_points, *line_points_len,
+		clustered_points, confirmedDebugPixels());
 	publishDiagnostics(stats, yaw_gated ? "yaw gated" : "updated");
 
 	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
