@@ -401,11 +401,8 @@ class MapPadder(Node):
         out.data.frombytes(grid.tobytes())
         self._pub.publish(out)
 
-        # Dropped n_active = int(cmask.sum()) from the log line — that
-        # reduces a (bb_w × bb_h) bool array on every publish (millions
-        # of cells at the worst case) purely to print a count.
         self.get_logger().info(
-            f'{len(active)} tiles  '
+            f'corridor={len(self._cumulative_corridor)} wall={len(wall_ring)}  '
             f'{bb_w}x{bb_h} ({bb_w*res:.0f}x{bb_h*res:.0f}m)')
 
 
