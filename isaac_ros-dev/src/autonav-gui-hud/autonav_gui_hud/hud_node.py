@@ -15,10 +15,10 @@ from collections import deque
 try:
     import rclpy
     from rclpy.node import Node
-    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2
+    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry
     from geometry_msgs.msg import PoseWithCovarianceStamped
-    from std_msgs.msg import Float32, Int32MultiArray
+    from std_msgs.msg import Float32, Int32MultiArray, Bool
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
         _HAS_PC2 = True
@@ -2080,6 +2080,29 @@ class HudWindow(QMainWindow):
             ind.raise_()
             ind.hide()
 
+        # Auto-mode badge in the upper-right corner. The 'A' key toggles
+        # _auto_mode (handled in keyPressEvent); the badge re-paints to
+        # reflect the state. Parent is the central widget so it floats
+        # over the layout; _position_auto_badge keeps it pinned to the
+        # top-right on resize.
+        self._auto_mode = False
+        self._auto_badge_on_style = (
+            "color: #0f0; font-size: 13px; font-weight: bold;"
+            " font-family: monospace; background-color: rgba(0, 40, 0, 200);"
+            " border: 1px solid #0f0; border-radius: 4px; padding: 3px 8px;"
+        )
+        self._auto_badge_off_style = (
+            "color: #666; font-size: 13px; font-weight: bold;"
+            " font-family: monospace; background-color: rgba(20, 20, 20, 180);"
+            " border: 1px solid #444; border-radius: 4px; padding: 3px 8px;"
+        )
+        self._auto_badge = QLabel("AUTO OFF", central)
+        self._auto_badge.setStyleSheet(self._auto_badge_off_style)
+        self._auto_badge.setAlignment(Qt.AlignCenter)
+        self._auto_badge.adjustSize()
+        self._auto_badge.raise_()
+        self._auto_badge.show()
+
         self._update_selection()
 
         self._nav_timer = QTimer()
@@ -2097,9 +2120,7 @@ class HudWindow(QMainWindow):
         # entered (gracefully no-ops when the ROS node is None).
         self._ekf_status_timer = QTimer()
         self._ekf_status_timer.setInterval(200)  # 5 Hz
-        self._ekf_status_timer.timeout.connect(
-            lambda: self._ekf_pulse_tick(time.monotonic())
-        )
+        self._ekf_status_timer.timeout.connect(self._ekf_status_tick)
         self._ekf_status_timer.start()
 
         # The widget tree was built using dark hex codes; flip to whichever
@@ -4277,10 +4298,109 @@ class HudWindow(QMainWindow):
         self._gui_log_msg("Screen unlocked")
 
     def resizeEvent(self, event):
-        """Keep the lock overlay sized to the window."""
+        """Keep the lock overlay sized to the window and the auto badge pinned."""
         super().resizeEvent(event)
         if self._lock_overlay is not None:
             self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._position_auto_badge()
+
+    # -----------------------------------------------------------------
+    # Auto mode
+    # -----------------------------------------------------------------
+    def _ekf_status_tick(self):
+        """5 Hz tick: drive the EKF participation pulse and pull the
+        latest /autonomous_mode into the corner badge. Combined into
+        one slot to keep timer count down."""
+        self._ekf_pulse_tick(time.monotonic())
+        self._sync_auto_mode_from_topic()
+
+    def _toggle_auto_mode(self):
+        """A-key handler. Publish a fake X-button rising edge on /joy
+        so control.cpp toggles its autonomousMode (it watches button
+        index 3). Update the badge optimistically; _sync_auto_mode_from_topic
+        will overwrite from the real /autonomous_mode topic once
+        control.cpp confirms — that's the authoritative state."""
+        self._auto_mode = not self._auto_mode
+        self._apply_auto_badge()
+        self._publish_fake_x_button_press()
+        self._gui_log_msg(f"Auto mode: {'ON' if self._auto_mode else 'OFF'}")
+
+    def _apply_auto_badge(self):
+        """Re-paint the auto-mode badge from _auto_mode."""
+        if self._auto_mode:
+            self._auto_badge.setText("AUTO ON")
+            self._auto_badge.setStyleSheet(self._auto_badge_on_style)
+        else:
+            self._auto_badge.setText("AUTO OFF")
+            self._auto_badge.setStyleSheet(self._auto_badge_off_style)
+        self._auto_badge.adjustSize()
+        self._position_auto_badge()
+        self._auto_badge.raise_()
+
+    def _publish_fake_x_button_press(self):
+        """Publish Joy(buttons[3]=1) and a release 200ms later. The
+        rising edge from 0→1 is what control.cpp triggers on; the
+        release lets a subsequent press fire again. Matches
+        t002_automator._send_x_button_to_control. No-op if ROS isn't
+        available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'joy_pub'):
+            return
+        try:
+            # Joy is only importable when _HAS_ROS — pull the class
+            # off the publisher's msg_type so this method doesn't need
+            # the import in HudWindow's scope.
+            JoyMsg = node.joy_pub.msg_type
+            press = JoyMsg()
+            press.buttons = [0] * 8
+            press.axes = [0.0] * 4
+            press.buttons[3] = 1
+            node.joy_pub.publish(press)
+
+            def _release():
+                try:
+                    rel = JoyMsg()
+                    rel.buttons = [0] * 8
+                    rel.axes = [0.0] * 4
+                    node.joy_pub.publish(rel)
+                except Exception as e:
+                    self._gui_log_msg(f"Auto release publish failed: {e}")
+            QTimer.singleShot(200, _release)
+        except Exception as e:
+            self._gui_log_msg(f"Failed to publish fake X-button to /joy: {e}")
+
+    def _sync_auto_mode_from_topic(self):
+        """Read the latest /autonomous_mode value the HudNode has seen
+        and reconcile _auto_mode with it. Called from the existing
+        5 Hz status timer. Skips silently if ROS isn't wired up or
+        the topic hasn't published yet."""
+        node = self._ros_node
+        if node is None:
+            return
+        latest = getattr(node, 'latest_autonomous_mode', None)
+        if latest is None:
+            return
+        if latest != self._auto_mode:
+            self._auto_mode = bool(latest)
+            self._apply_auto_badge()
+            self._gui_log_msg(
+                f"Auto mode (from /autonomous_mode): "
+                f"{'ON' if self._auto_mode else 'OFF'}"
+            )
+
+    def _position_auto_badge(self):
+        """Pin the auto-mode badge to the upper-right of the central widget."""
+        if not hasattr(self, '_auto_badge') or self._auto_badge is None:
+            return
+        parent = self._auto_badge.parentWidget()
+        if parent is None:
+            return
+        margin = 8
+        self._auto_badge.adjustSize()
+        x = parent.width() - self._auto_badge.width() - margin
+        y = margin
+        self._auto_badge.move(max(x, 0), y)
+        self._auto_badge.raise_()
 
     _STATUS_BTN_SELECTED = (
         "QPushButton {"
@@ -4500,6 +4620,14 @@ class HudWindow(QMainWindow):
         # Ctrl+Shift+L is intercepted at the application-level event
         # filter (see eventFilter) so it works from any focus context,
         # including QLineEdit. No handling needed here.
+
+        # 'A' toggles auto mode. No modifiers so it doesn't fight Ctrl+A
+        # or similar; intentionally only handled at the window level so
+        # that typing 'a' into a focused QLineEdit (send_goal / GPS
+        # field / lock password) still enters the character.
+        if key == Qt.Key_A and not event.modifiers():
+            self._toggle_auto_mode()
+            return
 
         # --- Scrub mode: arrows move the slider, Enter exits ---
         if self._scrub_mode:
@@ -6500,6 +6628,21 @@ if _HAS_ROS:
                 self._cb_line_pixels, _SENSOR_QOS,
             )
 
+            # Auto-mode wiring. The control node toggles its internal
+            # autonomousMode on a rising edge of /joy buttons[3] (X
+            # button on the Xbox controller) and publishes the result
+            # to /autonomous_mode. The GUI publishes a fake X-button
+            # press to /joy when the operator presses 'A' on the
+            # keyboard, and subscribes to /autonomous_mode to keep the
+            # corner badge in sync with the actual robot state — same
+            # pattern as t002_automator._send_x_button_to_control.
+            self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
+            self.joy_pub = self.create_publisher(Joy, '/joy', 10)
+            self.create_subscription(
+                Bool, '/autonomous_mode',
+                self._cb_autonomous_mode, _RELIABLE_QOS,
+            )
+
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
             try:
@@ -6628,6 +6771,14 @@ if _HAS_ROS:
                 ys = pairs[:, 1]
             self.latest_line_pixels = (xs, ys, w, h)
             self.latest_line_pixels_t = time.monotonic()
+
+        def _cb_autonomous_mode(self, msg):
+            # control.cpp publishes this whenever autonomousMode flips
+            # (and once on startup with the initial value). HudWindow's
+            # 5 Hz sync tick reads this and updates the corner badge,
+            # so the GUI badge always reflects the *actual* robot state
+            # rather than what we last published.
+            self.latest_autonomous_mode = bool(msg.data)
 
 
 def main(args=None):
