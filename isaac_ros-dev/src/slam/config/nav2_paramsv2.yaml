@@ -194,6 +194,13 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+          # inf_is_valid: false → unmeasured beams in the LaserScan are
+          # ignored entirely (no raytrace, no mark). The scan is now
+          # clipped to the lidar's actual forward FOV (180°) in
+          # slam.launch.py, but this is belt-and-suspenders: even if
+          # some beam slips through as inf, it won't clear a cell the
+          # sensor can't actually see.
+          inf_is_valid: false
           # Asymmetric ranges: mark obstacles short-range (dynamics
           # hygiene) but raytrace-clear free space all the way out to
           # the lidar's full reach. This makes the lidar's current view

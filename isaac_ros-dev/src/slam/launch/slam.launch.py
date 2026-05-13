@@ -210,8 +210,17 @@ def generate_launch_description():
             'target_frame':   'base_link',
             'min_height':     -0.10,
             'max_height':      1.50,
-            'angle_min':      -3.141592,
-            'angle_max':       3.141592,
+            # Forward 180° only. The SICK multiScan is 360° natively but
+            # the back half is occluded by the robot body / mast. Emitting
+            # the back half as inf in /scan_pca_filtered caused Nav2's
+            # obstacle_layer to raytrace-clear cells behind the robot
+            # even though the lidar can't actually refute obstacles there
+            # (no real beam → can't say "this cell is free"). Clipping
+            # the scan to the lidar's effective FOV means obstacle_layer
+            # only marks and clears within the forward view, exactly
+            # matching what the sensor can actually observe.
+            'angle_min':      -1.5708,
+            'angle_max':       1.5708,
             'angle_increment': 0.0087,
             'scan_time':       0.1,
             'range_min':       0.30,
