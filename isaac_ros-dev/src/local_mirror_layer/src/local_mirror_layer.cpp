@@ -229,10 +229,15 @@ void LocalMirrorLayer::updateCosts(
           const int8_t src_val = msg->data[sy * src_w + sx];
           const unsigned char incoming = interpretCost(src_val);
 
-          // FREE input doesn't override stored marks (the whole point
-          // of the accumulator). NO_INFORMATION input never overrides
-          // either — it's "no opinion".
-          if (incoming == FREE_SPACE || incoming == NO_INFORMATION) {
+          // NO_INFORMATION input never overrides — "no opinion" from
+          // source means we keep whatever we already had.
+          if (incoming == NO_INFORMATION) {
+            continue;
+          }
+          // FREE input requires allow_decrease=true to override.
+          // Otherwise we're in strict accumulator mode and FREE
+          // cells from the source can't clear stored marks.
+          if (incoming == FREE_SPACE && !allow_decrease_) {
             continue;
           }
 
@@ -245,11 +250,18 @@ void LocalMirrorLayer::updateCosts(
             continue;
           }
           const unsigned int idx = my * size_x_ + mx;
-          const unsigned char existing = costmap_[idx];
-          if (existing == NO_INFORMATION || incoming > existing ||
-            (allow_decrease_ && incoming != NO_INFORMATION))
-          {
+          if (allow_decrease_) {
+            // Within source window: mirror exactly, including FREE
+            // overriding stored marks. The local's own raytracing /
+            // temporal handling has already filtered transient
+            // obstacles within the source window, so what we receive
+            // is the trusted ground truth at this moment.
             costmap_[idx] = incoming;
+          } else {
+            const unsigned char existing = costmap_[idx];
+            if (existing == NO_INFORMATION || incoming > existing) {
+              costmap_[idx] = incoming;
+            }
           }
         }
       }

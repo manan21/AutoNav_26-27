@@ -257,8 +257,8 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
-        # Strictly accumulating: a FREE cell from the local does NOT clear a previously-marked global cell. As the local rolls past an obstacle, the global remembers it.
-        allow_decrease: false
+        # Within the local's source window, the global mirrors exactly — including FREE cells overriding stale marks. The local's raytracing already filters transient obstacles (lidar smears, etc.), so anything the local currently sees as FREE really is free. Outside the source window, mirrored cells persist (the source msg never covers them again, so they stay) — that's how the global remembers obstacles as the robot rolls past them.
+        allow_decrease: true
         track_unknown_space: true
 
       inflation_layer:

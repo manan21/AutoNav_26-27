@@ -95,6 +95,18 @@ class MapPadder(Node):
         self._bb_min_ty = None
         self._bb_max_tx = None
         self._bb_max_ty = None
+        # Cumulative corridor: once a tile has been part of the active
+        # corridor (robot footprint + goal + plan + 1-ring buffer), it
+        # stays UNKNOWN forever. New walls are only added in tiles that
+        # have never been in the corridor. This prevents map_padder
+        # from "eating away" cells behind the robot as the corridor
+        # follows the plan forward — old corridor cells never flip
+        # back to LETHAL walls.
+        self._cumulative_corridor = set()
+        # Wall ring (1-tile frontier outside cumulative corridor).
+        # Tracked separately for change-detection (skip publish if
+        # nothing changed).
+        self._prev_wall_ring = set()
 
         # /plan arrives on every controller tick (~20 Hz); republishing
         # the whole padded grid that fast saturates global_costmap's
@@ -291,25 +303,38 @@ class MapPadder(Node):
             for px, py in self._plan_poses:
                 seeds.add(self._tile_of(px, py))
 
-        # ── 2. flood one ring of 8-neighbours ────────────────────────
-        active = self._ring(seeds)
+        # ── 2. cumulative corridor + retreating wall ─────────────────
+        # Per design intent: every seed tile gets a 1-ring of UNKNOWN
+        # buffer around it (the corridor). Cells outside the corridor
+        # but adjacent to it form a 1-tile-thick LETHAL wall that
+        # bounds Dijkstra's search. As the corridor extends (robot
+        # moves, plan grows, goal shifts), the wall PUSHES OUTWARD —
+        # old wall cells that the corridor reaches become UNKNOWN.
+        # Cells that have ever been corridor stay UNKNOWN forever:
+        # no eating-away of the map behind the robot.
+        new_corridor = self._ring(seeds)
+        prev_size = len(self._cumulative_corridor)
+        self._cumulative_corridor |= new_corridor
 
-        if active == self._prev_active and self._prev_active:
+        # 1-tile-thick wall ring around the cumulative corridor.
+        wall_ring = self._ring(self._cumulative_corridor) - self._cumulative_corridor
+
+        # Skip publish if nothing extended (cumulative corridor and
+        # wall ring are both unchanged).
+        if len(self._cumulative_corridor) == prev_size and \
+                wall_ring == self._prev_wall_ring:
             return
-        self._prev_active = set(active)
+        self._prev_wall_ring = set(wall_ring)
 
-        if not active:
+        all_tiles = self._cumulative_corridor | wall_ring
+        if not all_tiles:
             return
 
         # ── 3. monotonically-growing bounding box ────────────────────
-        # Compute the tight active-set BB this cycle, then union it
-        # with the running BB so we never shrink. See _bb_min_tx
-        # docstring for why this matters (local_mirror_layer cell
-        # preservation across resize).
-        cur_min_tx = min(t[0] for t in active)
-        cur_max_tx = max(t[0] for t in active)
-        cur_min_ty = min(t[1] for t in active)
-        cur_max_ty = max(t[1] for t in active)
+        cur_min_tx = min(t[0] for t in all_tiles)
+        cur_max_tx = max(t[0] for t in all_tiles)
+        cur_min_ty = min(t[1] for t in all_tiles)
+        cur_max_ty = max(t[1] for t in all_tiles)
 
         if self._bb_min_tx is None:
             self._bb_min_tx, self._bb_max_tx = cur_min_tx, cur_max_tx
@@ -336,26 +361,27 @@ class MapPadder(Node):
             bb_h = min(bb_h, MAX_GRID_SIDE)
 
         # ── 4. tile mask → cell mask ─────────────────────────────────
+        # Mask is the CUMULATIVE corridor (every tile ever in a 1-ring
+        # of any seed across this session). Cells outside the
+        # cumulative corridor but inside the BB end up as LETHAL walls.
         n_tx = max_tx - min_tx + 1
         n_ty = max_ty - min_ty + 1
         tmask = np.zeros((n_ty, n_tx), dtype=np.bool_)
-        for tx, ty in active:
-            tmask[ty - min_ty, tx - min_tx] = True
+        for tx, ty in self._cumulative_corridor:
+            if min_tx <= tx <= max_tx and min_ty <= ty <= max_ty:
+                tmask[ty - min_ty, tx - min_tx] = True
 
         cmask = np.repeat(np.repeat(tmask, cpt, axis=0),
                           cpt, axis=1)[:bb_h, :bb_w]
 
         # ── 5. build grid: LETHAL walls + UNKNOWN corridor ───────────
-        # Cells OUTSIDE the active corridor are LETHAL (100). These
-        # are the intraversable wall cells map_padder is designed
-        # around — they bound Dijkstra's search to the narrow
-        # corridor, which is what makes the global planner fast.
-        # Cells INSIDE the corridor (active tiles + their 1-ring
-        # 8-neighbor flood — the "buffer") are UNKNOWN (-1). The
-        # planner can traverse them (allow_unknown: true). The local
-        # mirror layer overlays obstacle cells from
-        # /local_costmap/costmap on top — map_padder itself never
-        # contributes sensor data to the global.
+        # Default LETHAL (100); cumulative-corridor cells flip to
+        # UNKNOWN (-1). The wall (LETHAL) hugs the corridor on its
+        # current frontier; old wall cells that the corridor has since
+        # reached are inside cumulative_corridor and thus UNKNOWN. The
+        # planner sees a tight, monotonically-growing free corridor
+        # bounded by intraversable walls — Dijkstra collapses to the
+        # corridor, which keeps planning fast.
         grid = self._grid_buf[:bb_h, :bb_w]
         grid.fill(LETHAL)
         grid[cmask] = UNKNOWN
