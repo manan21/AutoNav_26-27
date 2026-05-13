@@ -113,7 +113,7 @@ controller_server:
       min_vel_y: 0.0
       max_vel_x: 0.55
       max_vel_y: 0.0
-      max_vel_theta: 0.70
+      max_vel_theta: 0.65
       min_speed_xy: 0.0
       max_speed_xy: 0.55
       min_speed_theta: 0.15
@@ -125,8 +125,8 @@ controller_server:
       decel_lim_theta: -0.9
       vx_samples: 20
       vy_samples: 5
-      vtheta_samples: 20
-      sim_time: 1.5            # was 1.7 — shorter sim makes DWB score nearer trajectories, less room for "creative" shortcuts
+      vtheta_samples: 24
+      sim_time: 1.2            # short horizon reduces turn overcommit when camera-visible line evidence drops out
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -134,16 +134,10 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      # PURE PATH-TRACKER MODE: no BaseObstacle / ObstacleFootprint
-      # critics. The global planner already computed /plan around all
-      # obstacles using global_costmap (which includes static_layer
-      # from /map_padded + obstacle_layer + line_layer + inflation), so
-      # DWB doesn't need to second-guess obstacle safety — it just has
-      # to ride the path. Removing those critics also fixes the
-      # "robot freezes because every candidate trajectory touches some
-      # cost cell" failure mode that high ObstacleFootprint.scale causes
-      # under wide inflation.
-      critics: ["RotateToGoal", "Oscillation", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      # Keep path-locking high, but include a conservative obstacle critic
+      # so DWB cannot cut through recently seen local line costs during turns.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.08
       PathAlign.scale: 64.0
       # forward_point_distance: 0.29 m — the geometric midpoint along
       # the robot X-axis between the rear drive wheels (at X=0 in
@@ -230,6 +224,9 @@ local_costmap:
         line_topic: "/line_points"
         transform_tolerance: 0.2
         max_message_age_ms: 750
+        observation_persistence_ms: 3500
+        observation_persistence_resolution_m: 0.10
+        max_persisted_points: 12000
         clearing: True
         rolling_window: True
         publish_costmap: True

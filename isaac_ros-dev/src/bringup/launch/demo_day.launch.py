@@ -114,7 +114,7 @@ def generate_launch_description():
             "temporal_voxel_size_m": 0.10,
             "temporal_min_hits": 2,
             "temporal_confirm_window_ms": 750,
-            "confirmed_hold_ms": 800,
+            "confirmed_hold_ms": 3500,
             "yaw_rate_gate_rad_s": 0.6,
             "debug_image_publish_enabled": True,
             "debug_image_write_enabled": False,

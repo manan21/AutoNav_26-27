@@ -47,6 +47,8 @@
 #include "rclcpp/parameter_events_filter.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
+#include <cmath>
+
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 
 using nav2_costmap_2d::LETHAL_OBSTACLE;
@@ -82,7 +84,10 @@ LineLayer::LineLayer()
   publish_costmap_(false),
   clearing_(true),
   transform_tolerance_(0.2),
-  max_message_age_ms_(750)
+  max_message_age_ms_(750),
+  observation_persistence_ms_(0),
+  observation_persistence_resolution_m_(0.10),
+  max_persisted_points_(12000)
 {
 }
 
@@ -100,6 +105,9 @@ LineLayer::onInitialize()
   declareParameter("clearing", rclcpp::ParameterValue(true));
   declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
   declareParameter("max_message_age_ms", rclcpp::ParameterValue(750));
+  declareParameter("observation_persistence_ms", rclcpp::ParameterValue(0));
+  declareParameter("observation_persistence_resolution_m", rclcpp::ParameterValue(0.10));
+  declareParameter("max_persisted_points", rclcpp::ParameterValue(12000));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
@@ -107,6 +115,14 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "clearing", clearing_);
   node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
   node->get_parameter(name_ + "." + "max_message_age_ms", max_message_age_ms_);
+  node->get_parameter(name_ + "." + "observation_persistence_ms", observation_persistence_ms_);
+  node->get_parameter(
+    name_ + "." + "observation_persistence_resolution_m",
+    observation_persistence_resolution_m_);
+  node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
+  observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
+  observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
+  max_persisted_points_ = std::max(0, max_persisted_points_);
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -205,6 +221,100 @@ std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPoin
   }
 
   return transformed_points;
+}
+
+bool LineLayer::hasObservationPersistence() const
+{
+  return clearing_ && observation_persistence_ms_ > 0 && max_persisted_points_ > 0;
+}
+
+std::uint64_t LineLayer::persistenceKey(double x, double y) const
+{
+  const auto qx = static_cast<std::int32_t>(
+    std::llround(x / observation_persistence_resolution_m_));
+  const auto qy = static_cast<std::int32_t>(
+    std::llround(y / observation_persistence_resolution_m_));
+  return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(qx)) << 32) |
+         static_cast<std::uint32_t>(qy);
+}
+
+void LineLayer::rememberPersistentPoints(
+  const std::vector<geometry_msgs::msg::Vector3> & points,
+  const rclcpp::Time & stamp)
+{
+  if (!hasObservationPersistence()) {
+    return;
+  }
+
+  for (const auto & point : points) {
+    const auto key = persistenceKey(point.x, point.y);
+    auto it = persisted_points_.find(key);
+    if (it == persisted_points_.end()) {
+      persisted_points_.emplace(key, PersistentPoint{point, stamp});
+    } else {
+      it->second = PersistentPoint{point, stamp};
+    }
+  }
+
+  while (
+    max_persisted_points_ > 0 &&
+    persisted_points_.size() > static_cast<std::size_t>(max_persisted_points_))
+  {
+    auto oldest = persisted_points_.begin();
+    for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ++it) {
+      if (it->second.stamp.nanoseconds() < oldest->second.stamp.nanoseconds()) {
+        oldest = it;
+      }
+    }
+    persisted_points_.erase(oldest);
+  }
+}
+
+std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const rclcpp::Time & now)
+{
+  std::vector<geometry_msgs::msg::Vector3> points;
+  if (!hasObservationPersistence()) {
+    return points;
+  }
+
+  const rclcpp::Duration max_age =
+    rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
+  for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
+    if ((now - it->second.stamp) > max_age) {
+      it = persisted_points_.erase(it);
+      continue;
+    }
+    points.push_back(it->second.point);
+    ++it;
+  }
+  return points;
+}
+
+void LineLayer::stampPoints(
+  nav2_costmap_2d::Costmap2D & master_grid,
+  int min_i, int min_j, int max_i, int max_j,
+  const std::vector<geometry_msgs::msg::Vector3> & points)
+{
+  for (const auto & point : points) {
+    const double x = point.x;
+    const double y = point.y;
+
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!master_grid.worldToMap(x, y, mx, my)) {
+      continue;
+    }
+
+    if (
+      static_cast<int>(mx) < min_i || static_cast<int>(mx) >= max_i ||
+      static_cast<int>(my) < min_j || static_cast<int>(my) >= max_j)
+    {
+      continue;
+    }
+
+    const int index_new = static_cast<int>(my * size_x_ + mx);
+    costmap_[index_new] = LETHAL_OBSTACLE;
+  }
 }
 
 void LineLayer::publishCostmap() {
@@ -425,9 +535,17 @@ LineLayer::updateCosts(
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
 
+  auto node = node_.lock();
+  if (!node) {
+    return;
+  }
+  const rclcpp::Time now = node->now();
+
   auto clear_layer = [&]() {
     if (clearing_) {
       resetMaps();
+      const auto persisted_points = activePersistentPoints(now);
+      stampPoints(master_grid, min_i, min_j, max_i, max_j, persisted_points);
     }
     updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     current_ = true;
@@ -450,7 +568,7 @@ LineLayer::updateCosts(
   auto last = buffer_.read();
   if (!last ){
     RCLCPP_DEBUG_THROTTLE(
-      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      rclcpp::get_logger("nav2_costmap_2d"), *node->get_clock(), 2000,
       "line_layer buffer empty; waiting for line points");
     clear_layer();
     return;
@@ -458,13 +576,8 @@ LineLayer::updateCosts(
   auto last_msg = *last;
   if (!last_msg) {
     RCLCPP_WARN_THROTTLE(
-      rclcpp::get_logger("nav2_costmap_2d"), *node_.lock()->get_clock(), 2000,
+      rclcpp::get_logger("nav2_costmap_2d"), *node->get_clock(), 2000,
       "line_layer received an empty buffered message");
-    clear_layer();
-    return;
-  }
-  auto node = node_.lock();
-  if (!node) {
     clear_layer();
     return;
   }
@@ -473,7 +586,6 @@ LineLayer::updateCosts(
     return;
   }
   const rclcpp::Time message_stamp(last_msg->header.stamp, node->get_clock()->get_clock_type());
-  const rclcpp::Time now = node->now();
   const rclcpp::Duration max_age =
     rclcpp::Duration::from_nanoseconds(max_message_age_ms_ * 1000000LL);
   if (max_message_age_ms_ >= 0 && message_stamp.nanoseconds() > 0 && (now - message_stamp) > max_age) {
@@ -492,65 +604,28 @@ LineLayer::updateCosts(
     return;
   }
 
-  // In clearing mode (local costmap default), wipe the previous frame's
-  // marks before stamping the new ones — the layer reflects "what we see
-  // right now". In non-clearing mode (global costmap), skip the reset so
-  // cells accumulate across publishes.
+  // In clearing mode (local costmap default), wipe this layer before
+  // stamping current plus short-lived remembered marks. In non-clearing
+  // mode (global costmap), skip the reset so cells accumulate across publishes.
   if (clearing_) {
     resetMaps();
   }
 
-  const std::vector<geometry_msgs::msg::Vector3> & points = *transformed_points;
+  const std::vector<geometry_msgs::msg::Vector3> * points = &(*transformed_points);
+  std::vector<geometry_msgs::msg::Vector3> persisted_points;
+  if (hasObservationPersistence()) {
+    rememberPersistentPoints(*transformed_points, now);
+    persisted_points = activePersistentPoints(now);
+    points = &persisted_points;
+  }
 
   #ifdef DEBUG_2
-  RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "line point len: %zu", points.size());
+  RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "line point len: %zu", points->size());
   #endif
 
 
   
-  // add points to costmap, include bounds checking
-  for (auto &point : points) {
-    // now we need to compute the map coordinates for the observation
-
-
-    double x = point.x;
-    double y = point.y;
-
-    #ifdef DEBUG_n 
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "x, y = (%f, %f)", x, y);
-    #endif
-
-    unsigned int mx = 0;
-    unsigned int my = 0;
-    if (!master_grid.worldToMap(x, y, mx, my)) {
-      // Point lies outside this costmap window.
-      continue;
-    }
-
-    // Update window is [min_i, max_i) x [min_j, max_j).
-    if (
-      static_cast<int>(mx) < min_i || static_cast<int>(mx) >= max_i ||
-      static_cast<int>(my) < min_j || static_cast<int>(my) >= max_j)
-    {
-
-      #ifdef DEBUG_n
-      //RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "bounds: (%d, %d), (%d, %d)",min_i, max_i, min_j, max_j); 
-      RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "input: (%u), (%u)", mx, my); 
-      #endif
-      continue;
-    }
-    unsigned char cost = LETHAL_OBSTACLE; // maybe more dynamic down the line
-    
-    int index_new = static_cast<int>(my * size_x_ + mx);
-    costmap_[index_new] = cost; // overwrite this layer only
-
-    #ifdef DEBUG_n
-    RCLCPP_INFO(rclcpp::get_logger("nav2_costmap_2d"), "grid coords: (%u,%u)", mx, my); 
-    #endif
-
-
-
-  }
+  stampPoints(master_grid, min_i, min_j, max_i, max_j, *points);
 
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
   current_ = true;
