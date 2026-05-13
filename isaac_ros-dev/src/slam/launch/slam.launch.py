@@ -245,8 +245,8 @@ def generate_launch_description():
             'target_frame':   'base_link',
             'min_height':     -0.10,
             'max_height':      1.50,
-            'angle_min':      -1.3963,   # -80° (160° clearing range)
-            'angle_max':       1.3963,   # +80°
+            'angle_min':      -1.2217,   # -70° (140° clearing range)
+            'angle_max':       1.2217,   # +70°
             'angle_increment': 0.0087,
             'scan_time':       0.1,
             'range_min':       0.30,
