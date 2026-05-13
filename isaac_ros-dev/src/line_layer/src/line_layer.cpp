@@ -122,7 +122,7 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
   observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
-  max_persisted_points_ = std::max(0, max_persisted_points_);
+  // Negative means unlimited, zero disables persistence, positive caps memory.
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -225,7 +225,10 @@ std::optional<std::vector<geometry_msgs::msg::Vector3>> LineLayer::transformPoin
 
 bool LineLayer::hasObservationPersistence() const
 {
-  return clearing_ && observation_persistence_ms_ > 0 && max_persisted_points_ > 0;
+  if (max_persisted_points_ == 0) {
+    return false;
+  }
+  return !clearing_ || observation_persistence_ms_ > 0;
 }
 
 std::uint64_t LineLayer::persistenceKey(double x, double y) const
@@ -280,7 +283,7 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
   const rclcpp::Duration max_age =
     rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
-    if ((now - it->second.stamp) > max_age) {
+    if (clearing_ && (now - it->second.stamp) > max_age) {
       it = persisted_points_.erase(it);
       continue;
     }
@@ -544,9 +547,9 @@ LineLayer::updateCosts(
   auto clear_layer = [&]() {
     if (clearing_) {
       resetMaps();
-      const auto persisted_points = activePersistentPoints(now);
-      stampPoints(master_grid, min_i, min_j, max_i, max_j, persisted_points);
     }
+    const auto persisted_points = activePersistentPoints(now);
+    stampPoints(master_grid, min_i, min_j, max_i, max_j, persisted_points);
     updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     current_ = true;
     if (publish_costmap_) {

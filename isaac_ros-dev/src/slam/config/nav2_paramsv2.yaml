@@ -277,7 +277,7 @@ global_costmap:
         enabled: True
         source_topic: /local_costmap/costmap
         # Accumulator mode: FREE cells from the local rolling window do not erase
-        # global memory. Clear the global costmap explicitly to remove ghosts.
+        # global memory.
         allow_decrease: false
         track_unknown_space: true
 
@@ -287,6 +287,10 @@ global_costmap:
         line_topic: "/line_points"
         transform_tolerance: 0.2
         max_message_age_ms: 750
+        # Global line memory is indefinite: negative max means no memory cap.
+        observation_persistence_ms: 0
+        observation_persistence_resolution_m: 0.10
+        max_persisted_points: -1
         clearing: False
         rolling_window: False
         publish_costmap: False

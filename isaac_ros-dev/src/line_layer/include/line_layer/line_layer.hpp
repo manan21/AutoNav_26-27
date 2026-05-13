@@ -84,7 +84,9 @@ public:
   virtual void reset()
   {
     resetMaps();
-    persisted_points_.clear();
+    if (clearing_) {
+      persisted_points_.clear();
+    }
     current_ = false;
     need_recalculation_ = true;
   }
