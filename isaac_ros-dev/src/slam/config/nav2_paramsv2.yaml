@@ -231,51 +231,35 @@ global_costmap:
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
       resolution: 0.10
-      # static_layer drives the global costmap geometry from /map_padded. map_padder now publishes a fixed 160x160 m canvas every cycle (centered on map (0,0)), so dimensions never change after the first publish — that's what prevents matchSize() from wiping obstacle_layer / line_layer cells. The width/height/origin below are only used until the first /map_padded arrives.
-      width: 160
-      height: 160
-      origin_x: -80.0
-      origin_y: -80.0
+      # static_layer drives the global costmap geometry from /map_padded, which is a dynamic bounding box covering robot footprint + goal + plan. The width/height/origin below are only the pre-first-/map_padded fallback.
+      width: 6
+      height: 6
+      origin_x: -3.0
+      origin_y: -3.0
       track_unknown_space: true
-      # Three obstacle sources composed by max-merge:
-      #   static_layer  → /map_padded → corridor walls (LETHAL outside, UNKNOWN inside) — drives geometry and bounds Dijkstra's search.
-      #   obstacle_layer → /scan_pca_filtered (same as local), clearing: False → lidar marks accumulate forever inside the canvas.
-      #   line_layer    → /line_points (same as local), clearing: false → line marks accumulate forever inside the canvas.
-      # inflation_radius matches the local's 1.10 m so the planner respects the same clearance the controller does.
-      plugins: ["static_layer", "obstacle_layer", "line_layer", "inflation_layer"]
+      # NO sensor data is fed directly into the global costmap.
+      # The two contributors are:
+      #   static_layer       → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
+      #   local_mirror_layer → /local_costmap/costmap → the ONLY obstacle path. Mirrors local cells with max-merge, accumulates forever, preserves cells across master-costmap resizes.
+      # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
         first_map_only: false
+        # Treat UNKNOWN cells in /map_padded as FREE_SPACE for the planner — Dijkstra can route through. (Default Nav2 maps -1 to NO_INFORMATION; with allow_unknown:true the planner still works, but FREE keeps the cost surface cleaner.)
+        trinary_costmap: false
+        unknown_cost_value: -1
 
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      local_mirror_layer:
+        plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
-        # Same source as local costmap → cells land at identical world positions. clearing/raytracing disabled so the global accumulates lidar marks permanently inside the stable map_padder canvas. Cells leaving the local rolling window persist here forever.
-        observation_sources: filtered_scan
-        filtered_scan:
-          topic: /scan_pca_filtered
-          observation_persistence: 0.0
-          clearing: False
-          marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 0.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
-          obstacle_min_range: 0.0
-
-      line_layer:
-        plugin: "line_layer::LineLayer"
-        enabled: True
-        line_topic: "/line_points"
-        transform_tolerance: 0.2
-        max_message_age_ms: 750
-        rolling_window: False
-        publish_costmap: False
-        # Accumulate line marks across publishes — never wipe the layer. Requires map_padder to publish a stable-sized canvas (no matchSize() wipes).
-        clearing: false
+        source_topic: /local_costmap/costmap
+        # Strictly accumulating: a FREE cell from the local does NOT clear a previously-marked global cell. As the local rolls past an obstacle, the global remembers it.
+        allow_decrease: false
+        track_unknown_space: true
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

@@ -495,7 +495,9 @@ void LineDetectorNode::publishEmptyLineSet(
 {
 	auto empty_message = autonav_interfaces::msg::LinePoints();
 	empty_message.header.frame_id = target_frame_;
-	empty_message.header.stamp = stamp;
+	// Same rationale as publishConfirmedOrEmpty — stamp with now() so
+	// the empty publish doesn't appear "stale" to downstream gates.
+	empty_message.header.stamp = this->now();
 	last_valid_message_ = empty_message;
 	has_last_valid_message_ = false;
 	publishEmptyPointCloud(stamp);
@@ -918,7 +920,13 @@ void LineDetectorNode::publishConfirmedOrEmpty(
 
 	auto message = autonav_interfaces::msg::LinePoints();
 	message.header.frame_id = target_frame_;
-	message.header.stamp = stamp;
+	// Stamp with now(), not the depth frame's timestamp. The points
+	// published here are the *current* temporally-confirmed obstacle
+	// set (held for `confirmed_hold_ms`); they should pass downstream
+	// freshness gates (e.g. line_layer's max_message_age_ms) on every
+	// republish, not be rejected because they trace back to a depth
+	// frame that's now seconds old.
+	message.header.stamp = this->now();
 	message.points.reserve(points.size());
 	for (const auto & point : points) {
 		geometry_msgs::msg::Vector3 vec_msg;

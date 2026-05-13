@@ -1,28 +1,27 @@
 """
-Map Padder — tight seed-and-flood inside a fixed-size canvas.
+Map Padder — pure geometric extent driver for the global costmap.
 
 Seeds (tiles of interest):
-  • SLAM tiles   — every 1×1 m tile with real SLAM data
-  • Robot tile   — single tile the robot occupies
-  • Goal tile    — single tile the goal is in
-  • Line tiles   — straight line from robot to goal
-  • Path tiles   — tiles along the current /plan
+  • Robot window tiles — the local-costmap footprint around base_link
+  • Goal tile          — single tile the goal is in
+  • Line tiles         — straight line from robot to goal
+  • Path tiles         — tiles along the current /plan
 
-Every seed gets its 8 neighbours activated (1-ring flood).
-Everything else is LETHAL (100) — the planner can't enter it.
+Every seed gets its 8 neighbours activated (1-ring flood). The output
+is a bounding-box-sized OccupancyGrid where ACTIVE cells are UNKNOWN
+(-1) and inactive cells are also UNKNOWN — i.e. map_padder no longer
+contaminates the global with LETHAL "corridor walls" or SLAM-derived
+cell values. The global is intentionally a pure mirror of the local
+(via the local_mirror_layer plugin) plus this static_layer's
+geometry; the only sensor data path into the global is the local
+costmap topic, never raw /scan or /map.
 
-Result: tight walls hugging SLAM data and a narrow 3-tile-wide
-corridor to distant goals.  As the robot moves and SLAM expands,
-the active region grows organically.
-
-Every publish uses the SAME grid dimensions and origin
-(MAX_GRID_SIDE × MAX_GRID_SIDE cells centered on map (0,0)). This
-prevents nav2's static_layer from resizing the master costmap, which
-would in turn fire matchSize() on every layer and wipe the
-accumulated cells in obstacle_layer and line_layer (both run with
-clearing: False in the global costmap so the planner remembers past
-obstacles). The "grow / shrink" behaviour now manifests as
-LETHAL↔UNKNOWN cell transitions inside the stable canvas.
+The bounding box GROWS and SHRINKS with the active region so that
+Dijkstra always plans over a tight, robot-and-goal-hugging grid —
+exactly the "map_padder makes the planner fast" property the user
+relies on. /map is still used as a SUBSCRIPTION trigger so we get
+periodic publish cadence, but its cell contents are no longer pasted
+into /map_padded.
 """
 
 import array
@@ -57,6 +56,11 @@ class MapPadder(Node):
         self.declare_parameter('output_topic', '/map_padded')
         self.declare_parameter('goal_topic', '/goal_pose')
         self.declare_parameter('plan_topic', '/plan')
+        # Half-side of the local-costmap window in meters. Seeds the
+        # corridor around the robot so the global covers exactly the
+        # ground the local-mirror layer can stamp into. Matches the
+        # local costmap's width/2 = 3.0 m in nav2_paramsv2.yaml.
+        self.declare_parameter('local_window_radius_m', 3.0)
 
         self._tile = self.get_parameter('tile_size_m').value
         self._out_res = self.get_parameter('output_resolution').value
@@ -64,6 +68,8 @@ class MapPadder(Node):
         output_topic = self.get_parameter('output_topic').value
         goal_topic = self.get_parameter('goal_topic').value
         plan_topic = self.get_parameter('plan_topic').value
+        self._local_window_radius_m = self.get_parameter(
+            'local_window_radius_m').value
 
         self._tf_buf = Buffer()
         self._tf_lis = TransformListener(self._tf_buf, self)
@@ -71,13 +77,19 @@ class MapPadder(Node):
         self._latest_goal = None
         self._latest_map = None
         self._plan_poses = None
-
-        self._ds = None
-        self._ds_ox = self._ds_oy = 0.0
-        self._ds_w = self._ds_h = 0
-        self._ds_res = 0.0
-        self._slam_tiles = set()
         self._prev_active = None
+        # Bounding box of the published canvas accumulates monotonically:
+        # once the corridor extends to some tile, the canvas always
+        # includes it. Local_mirror_layer's matchSize replays cells into
+        # the new master coordinates on every resize, but anything that
+        # falls outside the new master gets DROPPED. Monotonic growth
+        # ensures we never shrink past previously-stamped obstacle cells
+        # — that's how "global remembers past obstacles" survives plan
+        # tightening, goal reaching, etc.
+        self._bb_min_tx = None
+        self._bb_min_ty = None
+        self._bb_max_tx = None
+        self._bb_max_ty = None
 
         # /plan arrives on every controller tick (~20 Hz); republishing
         # the whole padded grid that fast saturates global_costmap's
@@ -165,9 +177,12 @@ class MapPadder(Node):
     # ── callbacks ────────────────────────────────────────────────────
 
     def _on_map(self, msg):
+        # /map is used only as a periodic publish trigger now — the map
+        # contents are no longer pasted into /map_padded (sensor data
+        # may not reach the global costmap; that's the local mirror's
+        # job). We still cache it so plan / goal callbacks can publish
+        # without waiting for the next /map tick.
         self._latest_map = msg
-        self._ds = None
-        self._slam_tiles = set()
         self._publish(msg)
 
     def _on_goal(self, msg):
@@ -193,16 +208,18 @@ class MapPadder(Node):
         self._pending_plan_publish = True
 
     def _publish_initial_stub(self):
-        """Emit a placeholder OccupancyGrid at the FINAL fixed size so
-        static_layer never resizes the master after this point. Sized at
-        MAX_GRID_SIDE × MAX_GRID_SIDE so subsequent real publishes have
-        identical dimensions and origin → no resize → no matchSize() →
-        accumulated cells in obstacle_layer / line_layer persist. All
-        cells start UNKNOWN; the first real /map carves the corridor.
+        """Emit a placeholder OccupancyGrid sized to the local-costmap
+        window so Nav2's static_layer has something to latch onto
+        before the first /map. The bounding box will grow on the first
+        real publish; static_layer will resize the master at that
+        point (which fires matchSize() on local_mirror_layer — whose
+        matchSize override preserves accumulated cells across the
+        resize). All cells start UNKNOWN so they don't contaminate the
+        global with phantom obstacles.
         """
         res = self._out_res if self._out_res > 0 else 0.10
-        cells = MAX_GRID_SIDE
-        side_m = cells * res
+        side_m = 2.0 * self._local_window_radius_m
+        cells = max(1, int(round(side_m / res)))
         stub = OccupancyGrid()
         stub.header.frame_id = 'map'
         stub.header.stamp = self.get_clock().now().to_msg()
@@ -220,7 +237,7 @@ class MapPadder(Node):
         self._pub.publish(stub)
         self.get_logger().info(
             f'Initial /map_padded stub: {cells}x{cells} cells '
-            f'({side_m:.0f}m square @ {res}m res, all UNKNOWN)')
+            f'({side_m:.1f}m square @ {res}m res, all UNKNOWN)')
 
     def _plan_throttle_tick(self):
         if self._pending_plan_publish and self._latest_map:
@@ -230,83 +247,41 @@ class MapPadder(Node):
     # ── core ─────────────────────────────────────────────────────────
 
     def _publish(self, msg):
-        slam_res = msg.info.resolution
-        if slam_res <= 0:
+        if msg.info.resolution <= 0:
             return
 
         tile = self._tile
-
-        # ── downsample SLAM (cached) ─────────────────────────────────
-        if self._ds is None:
-            # np.frombuffer on the incoming array.array is zero-copy
-            # (buffer protocol). The previous bytearray() wrap copied
-            # the whole /map; on a 1600×1600 grid that's 2.56 MB per
-            # /map arrival saved.
-            raw = np.frombuffer(msg.data, dtype=np.int8
-                                ).reshape(msg.info.height, msg.info.width)
-            factor = max(1, round(self._out_res / slam_res)) \
-                if self._out_res > slam_res * 1.5 else 1
-            self._ds_res = slam_res * factor
-            self._ds = self._downsample_max(raw, factor) \
-                if factor > 1 else raw.copy()
-            self._ds_ox = msg.info.origin.position.x
-            self._ds_oy = msg.info.origin.position.y
-            self._ds_h, self._ds_w = self._ds.shape
-            # Audit B4: canvas resolution must equal _out_res so the
-            # main publish's grid dimensions match the __init__ stub —
-            # otherwise static_layer would resize the master costmap
-            # on the first real publish, firing matchSize() on every
-            # layer and wiping accumulated cells in obstacle_layer /
-            # line_layer. In typical operation slam_toolbox publishes
-            # at _out_res so _ds_res == _out_res; if they ever diverge
-            # (slam_res that doesn't divide _out_res cleanly), warn
-            # loudly and pin canvas to _out_res anyway — SLAM cell
-            # paste below will then drift sub-cell, but the global
-            # costmap stays stable, which is the more important
-            # invariant.
-            if abs(self._ds_res - self._out_res) > 1e-6:
-                self.get_logger().warn(
-                    f'slam_res={slam_res:.4f}m × factor={factor} = '
-                    f'{self._ds_res:.4f}m, but out_res='
-                    f'{self._out_res:.4f}m. Canvas pinned to out_res '
-                    f'to keep static_layer stable; SLAM paste may '
-                    f'drift in distant cells. Configure slam_toolbox '
-                    f'resolution to match map_padder out_res.')
-
-        ds = self._ds
-        # Canvas resolution is ALWAYS _out_res — must match the
-        # __init__ stub. See B4 audit note above.
         res = self._out_res
 
         # ── 1. seeds ─────────────────────────────────────────────────
+        # No SLAM tiles anymore — the global costmap mirrors the local
+        # via local_mirror_layer, which is the only obstacle path into
+        # the global. Map_padder is purely geometric.
         seeds = set()
 
-        # SLAM tiles (cached — recomputed only when /map changes)
-        if not self._slam_tiles:
-            cpt = max(1, round(tile / res))
-            for yr in range(0, self._ds_h, cpt):
-                wy = self._ds_oy + yr * res
-                for xr in range(0, self._ds_w, cpt):
-                    wx = self._ds_ox + xr * res
-                    blk = ds[yr:yr + cpt, xr:xr + cpt]
-                    if np.any(blk != UNKNOWN):
-                        self._slam_tiles.add(self._tile_of(wx, wy))
-        seeds |= self._slam_tiles
-
-        # Robot tile
+        # Robot footprint (the local-costmap window — 3 m radius). At
+        # standstill this guarantees the global covers exactly the same
+        # ground the local does, so the local_mirror_layer can stamp
+        # local's cells into the global with no positional drop-outs.
         rxy = self._robot_xy()
         if rxy:
-            seeds.add(self._tile_of(*rxy))
+            rx, ry = rxy
+            half = self._local_window_radius_m
+            tx0, ty0 = self._tile_of(rx - half, ry - half)
+            tx1, ty1 = self._tile_of(rx + half, ry + half)
+            for tx in range(tx0, tx1 + 1):
+                for ty in range(ty0, ty1 + 1):
+                    seeds.add((tx, ty))
 
-        # Goal tile + straight line from robot to goal
+        # Goal tile + straight line from robot to goal — extends the
+        # global toward distant GPS waypoints.
         if self._latest_goal:
             gx, gy = self._latest_goal
             seeds.add(self._tile_of(gx, gy))
-            origin = rxy or (self._ds_ox + self._ds_w * res / 2,
-                             self._ds_oy + self._ds_h * res / 2)
-            seeds |= self._line_tiles(origin[0], origin[1], gx, gy)
+            if rxy is not None:
+                seeds |= self._line_tiles(rxy[0], rxy[1], gx, gy)
 
-        # Plan path tiles
+        # Plan path tiles — keeps the corridor following the latest plan.
         if self._plan_poses:
             for px, py in self._plan_poses:
                 seeds.add(self._tile_of(px, py))
@@ -314,66 +289,58 @@ class MapPadder(Node):
         # ── 2. flood one ring of 8-neighbours ────────────────────────
         active = self._ring(seeds)
 
-        if active == self._prev_active and self._slam_tiles:
+        if active == self._prev_active and self._prev_active:
             return
         self._prev_active = set(active)
 
         if not active:
             return
 
-        # ── 3. fixed canvas (map-frame, centered on origin) ──────────
-        # Same dimensions / origin every publish so nav2's static_layer
-        # never triggers a master resize. Grow / shrink happens by
-        # flipping cells inside this stable canvas, not by changing the
-        # grid extents.
-        bb_w = MAX_GRID_SIDE
-        bb_h = MAX_GRID_SIDE
-        bb_ox = -(MAX_GRID_SIDE * res) / 2.0
-        bb_oy = -(MAX_GRID_SIDE * res) / 2.0
+        # ── 3. monotonically-growing bounding box ────────────────────
+        # Compute the tight active-set BB this cycle, then union it
+        # with the running BB so we never shrink. See _bb_min_tx
+        # docstring for why this matters (local_mirror_layer cell
+        # preservation across resize).
+        cur_min_tx = min(t[0] for t in active)
+        cur_max_tx = max(t[0] for t in active)
+        cur_min_ty = min(t[1] for t in active)
+        cur_max_ty = max(t[1] for t in active)
+
+        if self._bb_min_tx is None:
+            self._bb_min_tx, self._bb_max_tx = cur_min_tx, cur_max_tx
+            self._bb_min_ty, self._bb_max_ty = cur_min_ty, cur_max_ty
+        else:
+            self._bb_min_tx = min(self._bb_min_tx, cur_min_tx)
+            self._bb_max_tx = max(self._bb_max_tx, cur_max_tx)
+            self._bb_min_ty = min(self._bb_min_ty, cur_min_ty)
+            self._bb_max_ty = max(self._bb_max_ty, cur_max_ty)
+
+        min_tx, max_tx = self._bb_min_tx, self._bb_max_tx
+        min_ty, max_ty = self._bb_min_ty, self._bb_max_ty
+
+        bb_ox = min_tx * tile
+        bb_oy = min_ty * tile
         cpt = max(1, round(tile / res))
+        bb_w = (max_tx - min_tx + 1) * cpt
+        bb_h = (max_ty - min_ty + 1) * cpt
 
-        # ── 4. tile mask → cell mask ─────────────────────────────────
-        # Canvas spans bb_w cells = bb_w*res meters → bb_w*res/tile tiles.
-        n_tx = bb_w // cpt
-        n_ty = bb_h // cpt
-        # Tile-index of the canvas's bottom-left corner.
-        min_tx = int(math.floor(bb_ox / tile))
-        min_ty = int(math.floor(bb_oy / tile))
+        if bb_w > MAX_GRID_SIDE or bb_h > MAX_GRID_SIDE:
+            self.get_logger().warn(
+                f'Bounding box {bb_w}x{bb_h} exceeds MAX_GRID_SIDE; clamped')
+            bb_w = min(bb_w, MAX_GRID_SIDE)
+            bb_h = min(bb_h, MAX_GRID_SIDE)
 
-        tmask = np.zeros((n_ty, n_tx), dtype=np.bool_)
-        for tx, ty in active:
-            lx = tx - min_tx
-            ly = ty - min_ty
-            # Drop tiles outside the fixed canvas — robot or goal beyond
-            # ±(MAX_GRID_SIDE*res/2). Logged below as a warning so it's
-            # visible if the course exceeds canvas range.
-            if 0 <= lx < n_tx and 0 <= ly < n_ty:
-                tmask[ly, lx] = True
-
-        cmask = np.repeat(np.repeat(tmask, cpt, axis=0),
-                          cpt, axis=1)[:bb_h, :bb_w]
-
-        # ── 5. build grid ────────────────────────────────────────────
-        # Reuse the pre-allocated buffer instead of allocating a fresh
-        # (bb_h, bb_w) ndarray per publish. .fill() is in-place.
+        # ── 4. build grid: ALL UNKNOWN (-1) ──────────────────────────
+        # We no longer fill LETHAL outside the corridor or paste SLAM
+        # data — that contaminated the global with cells the local had
+        # never observed. Every cell is UNKNOWN (-1); the planner has
+        # `allow_unknown: true` so it can route freely inside the
+        # bounding box. Obstacle marks come exclusively via
+        # local_mirror_layer reading /local_costmap/costmap.
         grid = self._grid_buf[:bb_h, :bb_w]
-        grid.fill(LETHAL)
-        grid[cmask] = UNKNOWN
+        grid.fill(UNKNOWN)
 
-        # Paste SLAM data into active corridor
-        ox = round((self._ds_ox - bb_ox) / res)
-        oy = round((self._ds_oy - bb_oy) / res)
-        sy0, sx0 = max(0, -oy), max(0, -ox)
-        dy0, dx0 = max(0, oy), max(0, ox)
-        ch = min(self._ds_h - sy0, bb_h - dy0)
-        cw = min(self._ds_w - sx0, bb_w - dx0)
-        if ch > 0 and cw > 0:
-            region = grid[dy0:dy0+ch, dx0:dx0+cw]
-            slam = ds[sy0:sy0+ch, sx0:sx0+cw]
-            mask = cmask[dy0:dy0+ch, dx0:dx0+cw]
-            region[mask] = slam[mask]
-
-        # ── 6. publish ───────────────────────────────────────────────
+        # ── 5. publish ───────────────────────────────────────────────
         out = OccupancyGrid()
         out.header.frame_id = msg.header.frame_id
         out.header.stamp = self.get_clock().now().to_msg()
@@ -384,8 +351,6 @@ class MapPadder(Node):
         out.info.origin.position.y = bb_oy
         out.info.origin.position.z = msg.info.origin.position.z
         out.info.origin.orientation = msg.info.origin.orientation
-        # frombytes pattern saves one alloc vs array.array(typecode, bytes)
-        # — relevant at 1600×1600 where each publish's data field is 2.56 MB.
         out.data = array.array('b')
         out.data.frombytes(grid.tobytes())
         self._pub.publish(out)

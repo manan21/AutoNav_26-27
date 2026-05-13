@@ -1,0 +1,5 @@
+<library path="local_mirror_layer_core">
+  <class type="local_mirror_layer::LocalMirrorLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Subscribes to a source OccupancyGrid (typically the local costmap) and accumulates its cells into the host costmap via max-merge. Cells persist across host-costmap resizes.</description>
+  </class>
+</library>
