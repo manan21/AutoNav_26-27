@@ -821,6 +821,19 @@ class HudWindow(QMainWindow):
             "QPushButton:pressed { background-color: #1a1a1a; }"
         )
 
+        # Selected-state style for the input fields: green border so
+        # the operator can see which row arrow-nav is on. Stored on
+        # self because _update_selection reads it.
+        self._send_field_base_style = send_field_style
+        self._send_field_sel_style = (
+            "QLineEdit {"
+            "  background-color: #1a2a1a; color: #dcdcdc;"
+            "  border: 2px solid #0f0; border-radius: 3px;"
+            "  padding: 3px 5px; font-size: 11px; font-family: monospace;"
+            "}"
+        )
+        self._send_btn_base_style = send_btn_style
+
         send_grid = QGridLayout()
         send_grid.setSpacing(4)
 
@@ -838,6 +851,17 @@ class HudWindow(QMainWindow):
         send_grid.addWidget(lbl_goal, 0, 0)
         send_grid.addWidget(self._send_goal_input, 0, 1)
         send_grid.addWidget(btn_send_goal, 0, 2)
+        # Arrow-key nav participation. Up/Down through these in col 0
+        # of the launch-page nav grid. Enter on the QLineEdit focuses
+        # it (for typing); Enter on the button submits. See
+        # _update_selection / keyPressEvent for the QLineEdit-aware
+        # paths.
+        self._launch_nav_buttons.append(
+            (self._send_goal_input, "Send Goal Args", send_field_style)
+        )
+        self._launch_nav_buttons.append(
+            (btn_send_goal, "Send", send_btn_style)
+        )
 
         lbl_gps = QLabel("Send GPS")
         lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
@@ -853,6 +877,12 @@ class HudWindow(QMainWindow):
         send_grid.addWidget(lbl_gps, 1, 0)
         send_grid.addWidget(self._send_gps_input, 1, 1)
         send_grid.addWidget(btn_send_gps, 1, 2)
+        self._launch_nav_buttons.append(
+            (self._send_gps_input, "Send GPS Args", send_field_style)
+        )
+        self._launch_nav_buttons.append(
+            (btn_send_gps, "Send", send_btn_style)
+        )
 
         send_grid.setColumnStretch(0, 0)
         send_grid.setColumnStretch(1, 1)
@@ -2500,6 +2530,10 @@ class HudWindow(QMainWindow):
     def _on_send_goal_clicked(self):
         """Run ./config/send_goal.sh with the args from the textfield."""
         args = self._send_goal_input.text().strip()
+        # Hand focus back to the main window so arrow-key nav resumes
+        # instead of staying trapped inside the QLineEdit.
+        self._send_goal_input.clearFocus()
+        self.setFocus(Qt.OtherFocusReason)
         self._run_one_shot_script(
             label="Send Goal",
             script="./config/send_goal.sh",
@@ -2515,6 +2549,8 @@ class HudWindow(QMainWindow):
         """
         raw = self._send_gps_input.text().strip()
         args = re.sub(r'[,\s]+', ' ', raw).strip()
+        self._send_gps_input.clearFocus()
+        self.setFocus(Qt.OtherFocusReason)
         self._run_one_shot_script(
             label="Send GPS",
             script="./config/send_GPS_waypoint.sh",
@@ -4276,10 +4312,16 @@ class HudWindow(QMainWindow):
         self._focus_lock_password()
 
     def _focus_lock_password(self):
-        """Aggressively pull keyboard focus onto the password field.
-        Called from _lock_screen and from the event filter when the
-        operator clicks anywhere on the overlay or hits Ctrl+Shift+L
-        while locked."""
+        """Force the password field to receive keyboard events.
+
+        We don't trust setFocus alone — on this Jetson + fullscreen
+        Qt5 stack, setFocus on a just-shown widget silently no-ops
+        often enough that the operator gets stranded. ``grabKeyboard()``
+        is the hammer: it routes every keyboard event in the
+        application to this widget until ``releaseKeyboard()``,
+        regardless of who has focus. We still call setFocus so the
+        caret shows in the QLineEdit, but the grab is what actually
+        guarantees typing works."""
         pw = self._lock_password_input
         if pw is None or not self._screen_locked:
             return
@@ -4291,6 +4333,10 @@ class HudWindow(QMainWindow):
             self.activateWindow()
             pw.raise_()
             pw.setFocus(Qt.OtherFocusReason)
+            try:
+                pw.grabKeyboard()
+            except Exception:
+                pass
         # Run now AND on the next tick AND again after 50ms — covers
         # every Qt focus-routing edge case we've observed.
         _do_focus()
@@ -4323,11 +4369,17 @@ class HudWindow(QMainWindow):
 
     def _unlock_screen(self):
         self._screen_locked = False
-        if self._lock_overlay is not None:
-            self._lock_overlay.hide()
         if self._lock_password_input is not None:
+            # Release the keyboard grab before hiding; releasing after
+            # hide is a no-op and would leave the grab dangling.
+            try:
+                self._lock_password_input.releaseKeyboard()
+            except Exception:
+                pass
             self._lock_password_input.clear()
             self._lock_password_input.setVisible(False)
+        if self._lock_overlay is not None:
+            self._lock_overlay.hide()
         self._lock_password_visible = False
         # Restore the HUD's default blank cursor.
         self.setCursor(Qt.BlankCursor)
@@ -4469,41 +4521,41 @@ class HudWindow(QMainWindow):
 
         if self._screen_locked:
             et = event.type()
+            # Anything destined for a widget *inside* the lock overlay
+            # is allowed through unchanged — the password QLineEdit,
+            # but also its parent overlay/labels in case focus drifted
+            # (e.g. the overlay container itself ends up with focus
+            # after raise_/show). Only events going to the rest of the
+            # GUI get blocked.
+            in_overlay = (
+                self._lock_overlay is not None and
+                isinstance(obj, QWidget) and
+                (obj is self._lock_overlay or
+                 self._lock_overlay.isAncestorOf(obj))
+            )
             if et == QEvent.KeyPress:
-                # Ctrl+Shift+L is already handled by the early intercept
-                # above (re-shows the password field while locked).
-                # Let the password field handle its own typing.
-                if (self._lock_password_input is not None and
-                        obj is self._lock_password_input):
+                if in_overlay:
                     return False
-                # Swallow everything else.
                 return True
-            if et in (QEvent.KeyRelease, QEvent.ShortcutOverride):
-                # Block shortcut delivery too — otherwise QShortcut
-                # objects elsewhere in Qt could still fire on key
-                # combos we want suppressed.
-                if (self._lock_password_input is not None and
-                        obj is self._lock_password_input):
+            if et in (QEvent.KeyRelease, QEvent.ShortcutOverride,
+                      QEvent.InputMethod, QEvent.InputMethodQuery):
+                # Block shortcut + IME delivery outside the overlay too.
+                # IME events are how some Linux input stacks actually
+                # commit characters into a QLineEdit; if we silently
+                # blocked them the field would look unresponsive even
+                # with focus correct.
+                if in_overlay:
                     return False
                 return True
             if et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
                       QEvent.MouseButtonDblClick, QEvent.Wheel):
-                # Mouse clicks: only the password field should be
-                # interactable. Letting the click reach the line edit
-                # is what gives it focus when the operator clicks it.
-                if (self._lock_password_input is not None and
-                        obj is self._lock_password_input):
+                if in_overlay:
+                    # Click anywhere on the overlay re-focuses the
+                    # password field — a rescue path if focus ever
+                    # drifted away from the QLineEdit.
+                    if et == QEvent.MouseButtonPress:
+                        self._focus_lock_password()
                     return False
-                # Click anywhere on the lock overlay (title, hint,
-                # empty space) → swallow the click but force focus
-                # onto the password field. Rescue path when focus
-                # drifted away from the line edit.
-                if (et == QEvent.MouseButtonPress and
-                        self._lock_overlay is not None and
-                        isinstance(obj, QWidget) and
-                        (obj is self._lock_overlay or
-                         self._lock_overlay.isAncestorOf(obj))):
-                    self._focus_lock_password()
                 return True
 
         if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
@@ -4735,7 +4787,13 @@ class HudWindow(QMainWindow):
         elif key in (Qt.Key_Right, Qt.Key_Left):
             n_cols = len(self._nav_groups)
             new_col = (self._nav_col + (1 if key == Qt.Key_Right else -1)) % n_cols
-            cur_logical = self._nav_logical_rows[self._nav_col][self._nav_row]
+            # Clamp nav_row into _nav_logical_rows for the source col.
+            # The launch page swaps in a longer button list than the
+            # main page (we just added more rows for send_goal/GPS),
+            # so _nav_logical_rows[0]'s length can lag the group size.
+            src_rows = self._nav_logical_rows[self._nav_col]
+            src_idx = min(self._nav_row, len(src_rows) - 1)
+            cur_logical = src_rows[src_idx]
             tgt_rows = self._nav_logical_rows[new_col]
             # Find best match: closest logical row <= current, prefer upper
             best_idx = 0
@@ -4762,9 +4820,16 @@ class HudWindow(QMainWindow):
                 cell, _, _ = self._cur_btn()
                 self._toggle_sensor_expand(cell)
             else:
-                btn, _, _ = self._cur_btn()
-                if btn.isEnabled():
-                    btn.click()
+                widget, _, _ = self._cur_btn()
+                if isinstance(widget, QLineEdit):
+                    # Hand keyboard focus to the field so the operator
+                    # can type. Pressing Enter inside the field fires
+                    # returnPressed → _on_send_*_clicked, which calls
+                    # clearFocus to hand control back to nav.
+                    widget.setFocus(Qt.OtherFocusReason)
+                    widget.selectAll()
+                elif widget.isEnabled():
+                    widget.click()
         elif key == Qt.Key_Space:
             if self._pb_state in ('playing', 'paused', 'ended'):
                 self._on_play_pause()
@@ -4799,6 +4864,14 @@ class HudWindow(QMainWindow):
                         widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
                         widget.setStyleSheet(T(self._sensor_frame_style))
+                elif isinstance(widget, QLineEdit):
+                    # QLineEdit nav participation. Don't call setText —
+                    # that would clobber the user's typed value. Highlight
+                    # via stylesheet instead.
+                    if is_selected:
+                        widget.setStyleSheet(T(self._send_field_sel_style))
+                    else:
+                        widget.setStyleSheet(T(base_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
