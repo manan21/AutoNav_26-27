@@ -187,28 +187,41 @@ local_costmap:
         # into /scan_pca_filtered so SLAM and this layer see the same
         # 2-D representation. Every return in this scan is an obstacle
         # (ground / ramp already filtered by PCA grade classification).
-        observation_sources: filtered_scan
-        filtered_scan:
+        # Two observation sources to split marking and clearing FOVs:
+        #   mark_scan  → /scan_pca_filtered       (180°, marking only)
+        #   clear_scan → /scan_pca_filtered_clear (160°, clearing only)
+        # The outer 10° wedge on each side marks obstacles but doesn't
+        # raytrace-clear them — the lidar's beam density / accuracy
+        # falls off at the FOV edges, so we don't let those edge rays
+        # claim "this cell is free." Stored marks in that wedge persist
+        # until the local rolling window drops them.
+        observation_sources: mark_scan clear_scan
+
+        mark_scan:
           topic: /scan_pca_filtered
           observation_persistence: 0.0
-          clearing: True
           marking: True
+          clearing: False
           data_type: "LaserScan"
-          # inf_is_valid: false → unmeasured beams in the LaserScan are
-          # ignored entirely (no raytrace, no mark). The scan is now
-          # clipped to the lidar's actual forward FOV (180°) in
-          # slam.launch.py, but this is belt-and-suspenders: even if
-          # some beam slips through as inf, it won't clear a cell the
-          # sensor can't actually see.
           inf_is_valid: false
-          # Asymmetric ranges: mark obstacles short-range (dynamics
-          # hygiene) but raytrace-clear free space all the way out to
-          # the lidar's full reach. This makes the lidar's current view
-          # of free space override any stale marks from earlier scans
-          # or (in global's case) from the static map.
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+          # raytrace ranges unused (clearing: False), but set for safety
+          raytrace_max_range: 0.0
+          raytrace_min_range: 0.0
+
+        clear_scan:
+          topic: /scan_pca_filtered_clear
+          observation_persistence: 0.0
+          marking: False
+          clearing: True
+          data_type: "LaserScan"
+          inf_is_valid: false
+          # raytrace-clear free space all the way out to the lidar's
+          # full reach. Marking ranges unused (marking: False).
           raytrace_max_range: 25.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 2.5
+          obstacle_max_range: 0.0
           obstacle_min_range: 0.0
 
       line_layer:

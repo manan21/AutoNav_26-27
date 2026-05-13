@@ -200,6 +200,17 @@ def generate_launch_description():
     # heights count. -0.10 m → 1.50 m covers everything from just below
     # the wheels to ~1.5 m above the chassis, which is more than enough
     # for any AutoNav obstacle. angle_increment 0.0087 rad ≈ 0.5°.
+    # Asymmetric marking vs clearing FOV: mark anything the lidar sees
+    # in the full 180° forward view, but only clear (raytrace-free) the
+    # central 160° (±80°). The outer 10° wedge on each side is "trust
+    # the sensor's hits, don't trust its claim that a cell is free" —
+    # the lidar's beam density / angular accuracy is worst at the
+    # extremes, so we don't let those rays raytrace-clear stored marks.
+    # Two converters share the same input pointcloud:
+    #   /scan_pca_filtered      → 180°, marking source
+    #   /scan_pca_filtered_clear→ 160°, clearing source
+    # The local obstacle_layer in nav2_paramsv2.yaml lists both as
+    # observation_sources, with marking/clearing flags split.
     pca_pc2_to_scan = Node(
         package='pointcloud_to_laserscan',
         executable='pointcloud_to_laserscan_node',
@@ -210,17 +221,8 @@ def generate_launch_description():
             'target_frame':   'base_link',
             'min_height':     -0.10,
             'max_height':      1.50,
-            # Forward 180° only. The SICK multiScan is 360° natively but
-            # the back half is occluded by the robot body / mast. Emitting
-            # the back half as inf in /scan_pca_filtered caused Nav2's
-            # obstacle_layer to raytrace-clear cells behind the robot
-            # even though the lidar can't actually refute obstacles there
-            # (no real beam → can't say "this cell is free"). Clipping
-            # the scan to the lidar's effective FOV means obstacle_layer
-            # only marks and clears within the forward view, exactly
-            # matching what the sensor can actually observe.
-            'angle_min':      -1.5708,
-            'angle_max':       1.5708,
+            'angle_min':      -1.5708,   # -90° (full 180° marking)
+            'angle_max':       1.5708,   # +90°
             'angle_increment': 0.0087,
             'scan_time':       0.1,
             'range_min':       0.30,
@@ -230,6 +232,30 @@ def generate_launch_description():
         remappings=[
             ('cloud_in', '/scan_pca_filtered_points'),
             ('scan',     '/scan_pca_filtered'),
+        ],
+    )
+
+    pca_pc2_to_scan_clear = Node(
+        package='pointcloud_to_laserscan',
+        executable='pointcloud_to_laserscan_node',
+        name='pca_cloud_to_laserscan_clear',
+        output='screen',
+        parameters=[{
+            'use_sim_time':    LaunchConfiguration('use_sim_time'),
+            'target_frame':   'base_link',
+            'min_height':     -0.10,
+            'max_height':      1.50,
+            'angle_min':      -1.3963,   # -80° (160° clearing range)
+            'angle_max':       1.3963,   # +80°
+            'angle_increment': 0.0087,
+            'scan_time':       0.1,
+            'range_min':       0.30,
+            'range_max':      25.0,
+            'use_inf':         True,
+        }],
+        remappings=[
+            ('cloud_in', '/scan_pca_filtered_points'),
+            ('scan',     '/scan_pca_filtered_clear'),
         ],
     )
 
@@ -287,6 +313,7 @@ def generate_launch_description():
         ekf_global,
         navsat_transform,
         pca_pc2_to_scan,
+        pca_pc2_to_scan_clear,
         map_padder,
         gui_ready_emit,
     ])
