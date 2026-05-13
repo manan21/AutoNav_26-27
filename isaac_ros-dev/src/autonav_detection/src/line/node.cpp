@@ -66,7 +66,7 @@ public:
 		this->declare_parameter("temporal_voxel_size_m", 0.10);
 		this->declare_parameter("temporal_min_hits", 2);
 		this->declare_parameter("temporal_confirm_window_ms", 750);
-		this->declare_parameter("confirmed_hold_ms", 3500);
+		this->declare_parameter("confirmed_hold_ms", 10000);
 		this->declare_parameter("odom_topic", "/local_ekf/odom");
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
@@ -267,7 +267,7 @@ private:
 	double  temporal_voxel_size_m_ = 0.10;
 	int     temporal_min_hits_ = 2;
 	int64_t temporal_confirm_window_ms_ = 750;
-	int64_t confirmed_hold_ms_ = 3500;
+	int64_t confirmed_hold_ms_ = 10000;
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
