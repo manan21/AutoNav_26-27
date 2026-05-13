@@ -7,7 +7,7 @@
 5. Turn on the Xbox joystick by pressing the middle button (light should be white and steady).
 6. Now paste the following commands one by one:
     * `ssh jetson`
-    * `./AutoNav_25-26/env/docker/run-container.sh`
+    * `AUTONAV_JETSON_IP=192.168.55.1 ./AutoNav_25-26/env/docker/run-container.sh`
     * **WAIT UNTIL THE CONTAINER BOOTS UP**
     * `ros2 launch control control_dev.launch.py`
 7. Wait for the node to boot up (Arduino connected, Motor Controller connected, Joystick connected).
@@ -37,7 +37,7 @@ The GUI is the recommended way to bring up the full sensor stack and run the rob
 5. Turn on the Xbox joystick by pressing the middle button (light should be white and steady).
 6. **Terminal 1 — start the container:**
     * `ssh jetson`
-    * `./AutoNav_25-26/env/docker/run-container.sh`
+    * `AUTONAV_JETSON_IP=192.168.55.1 ./AutoNav_25-26/env/docker/run-container.sh`
     * **WAIT UNTIL THE CONTAINER BOOTS UP**
 7. **On the robot itself (small screen) — start the GUI**:
     * Sign in on the Jetson directly (using its attached keyboard/screen).
