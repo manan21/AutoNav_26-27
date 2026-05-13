@@ -3,24 +3,19 @@
 
 #include "behaviortree_cpp_v3/action_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "tf2_ros/buffer.h"
 
 namespace gradient_escape
 {
 
-/**
- * @brief BT node that bends the goal when it's behind the robot.
- *
- * If the goal is behind the robot (relative angle exceeds a threshold),
- * this node computes an intermediate waypoint ahead of the robot and
- * offset toward the goal's side.  The robot naturally arcs toward the
- * real goal.  If the goal is already in front, it passes through
- * unchanged.
- *
- * Ports:
- *   input_goal   — the real goal from NavigateToPose
- *   output_goal  — the (possibly bent) goal for ComputePathToPose
- */
+// Emits a forward intermediate goal *only* when both the real goal
+// and the previously-planned path are behind the robot. In every
+// other case (goal-in-front-of-robot, path-in-front, or path-behind
+// while goal-in-front) the input_goal is passed straight through.
+// The "path behind but goal in front" case is intentionally left to
+// the backup-recovery BT node — that's a breadcrumb-backtrack
+// problem, not a goal-bending problem.
 class GoalBender : public BT::SyncActionNode
 {
 public:
@@ -31,12 +26,11 @@ public:
     return {
       BT::InputPort<geometry_msgs::msg::PoseStamped>("input_goal"),
       BT::OutputPort<geometry_msgs::msg::PoseStamped>("output_goal"),
-      BT::InputPort<double>("bend_distance", 1.5,
-        "Distance (m) ahead for the intermediate waypoint"),
-      BT::InputPort<double>("angle_threshold", 1.57,
-        "Angle (rad) beyond which the goal is considered 'behind'"),
-      BT::InputPort<double>("bend_angle", 1.05,
-        "Offset angle (rad, ~60 deg) toward the goal side"),
+      BT::InputPort<double>("bend_distance", 1.5, "Forward intermediate-goal distance (m)"),
+      BT::InputPort<double>("angle_threshold", 1.57, "Behind-robot angle threshold (rad)"),
+      BT::InputPort<double>("bend_angle", 1.05, "Forward-bend angle offset (rad)"),
+      BT::InputPort<nav_msgs::msg::Path>("previous_path", "Last path from ComputePathToPose; enables path-direction trigger"),
+      BT::InputPort<int>("path_lookahead_index", 5, "Waypoint index used to test path direction"),
     };
   }
 

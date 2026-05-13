@@ -15,13 +15,19 @@ from collections import deque
 try:
     import rclpy
     from rclpy.node import Node
-    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu
+    from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry
     from geometry_msgs.msg import PoseWithCovarianceStamped
-    from std_msgs.msg import Float32
+    from std_msgs.msg import Float32, Int32MultiArray, Bool
+    try:
+        from sensor_msgs_py import point_cloud2 as _pc2
+        _HAS_PC2 = True
+    except ImportError:
+        _HAS_PC2 = False
     _HAS_ROS = True
 except ImportError:
     _HAS_ROS = False
+    _HAS_PC2 = False
 
 try:
     import yaml
@@ -51,7 +57,7 @@ import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from matplotlib.patches import Polygon
+from matplotlib.patches import Polygon, Ellipse
 
 
 # ── OSM tile helpers ──────────────────────────────────────────────────
@@ -159,6 +165,7 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QScrollArea,
@@ -359,6 +366,18 @@ class HudWindow(QMainWindow):
             'GPS':      ('gps',  'ekf_local_odom'),
             'SLAM':     ('pose', 'ekf_global_odom'),
         }
+        # Per-device override of the "input is still considered
+        # fresh" window. The default ``_ekf_msg_age_max_s`` (1 s) is
+        # right for high-rate streams like /odom and the SICK IMU —
+        # losing freshness within a second means the source genuinely
+        # stopped. /gps_fix publishes at 0.5–10 Hz, so a 1 s window
+        # repeatedly times out between fixes and the GPS dot snaps
+        # in and out of the pulse instead of breathing smoothly. A
+        # 5 s window keeps the dot pulsing across the slow intervals
+        # while still going stale promptly if GPS actually dies.
+        self._ekf_pulse_input_max_age_s = {
+            'GPS': 5.0,
+        }
         # EKF status rows (the "is this filter publishing?" indicators
         # added to the device list). Maps dot name → ekf-output
         # last_msg_t key. _ekf_pulse_tick drives these solid green
@@ -367,6 +386,21 @@ class HudWindow(QMainWindow):
             'Local EKF': 'ekf_local_odom',
             'Map EKF':   'ekf_global_odom',
         }
+
+        # Screen lock state. When _screen_locked is True an opaque
+        # overlay covers the central widget and an application-wide
+        # event filter (installed at end of __init__) intercepts every
+        # KeyPress / mouse event so the operator can neither click
+        # buttons nor type into focused widgets. Ctrl+Shift+L toggles
+        # the lock; while locked, Ctrl+Shift+L reveals the password
+        # field, and the field unlocks on a correct password + Enter.
+        self._screen_locked = False
+        self._lock_password = "@cro123"
+        self._lock_overlay = None
+        self._lock_password_input = None
+        self._lock_password_visible = False
+        self._lock_hint_label = None
+        self._lock_status_label = None
 
         # Container connection state
         self._container_connected = False
@@ -379,6 +413,16 @@ class HudWindow(QMainWindow):
         self._lidar_cap = None    # cv2.VideoCapture
         self._cam_im = None       # matplotlib imshow handle
         self._lidar_im = None     # matplotlib imshow handle
+        # Camera/lidar overlays: scatter for detected line pixels and a
+        # patches.Ellipse for the GPS covariance — created lazily on
+        # first data, hidden when the source topic goes stale.
+        self._cam_lines_scatter = None
+        self._gps_cov_ellipse = None
+        # Freshness window for "is this overlay topic live right now?"
+        # The camera/lidar/GPS overlays clear themselves once the source
+        # has been silent for longer than this, so an inactive detector
+        # leaves the raw image / plain BEV / plain map untouched.
+        self._overlay_fresh_s = 1.0
         self._video_fps = 30      # must match recorder's VIDEO_FPS
 
         # --- Central widget + top-level 3-column layout ---
@@ -617,9 +661,16 @@ class HudWindow(QMainWindow):
             ("Camera", ["Camera"], "./config/run-zed.sh"),
             ("Lidar", ["Lidar"], "./config/run-lidar.sh"),
             ("GPS", ["GPS"], "./config/run-gps.sh"),
+            # PCA DETECT must come up before SLAM. slam_toolbox is
+            # configured to subscribe to /scan_pca_filtered (the
+            # grade detector's obstacle cloud collapsed to 2D via
+            # pca_pc2_to_scan in slam.launch.py). If SLAM starts
+            # first, slam_toolbox starves of scans, never produces
+            # /pose or the map→odom TF, and the Nav2 lifecycle
+            # stalls at "Activating planner_server."
+            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
-            ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
@@ -737,6 +788,104 @@ class HudWindow(QMainWindow):
         self._launch_nav_buttons.append(
             (self._mission_btn, "Run Mission", mission_off_style)
         )
+
+        # --- One-shot script runners: send_goal.sh / send_GPS_waypoint.sh ---
+        # Each row is [label | QLineEdit args | Send button]. The button
+        # fires the script (wrapped for the container) with the args
+        # string appended; output is captured into _process_buffers
+        # under the label so it shows up in the terminal display when
+        # the device dot is selected (no dot is wired for these, so the
+        # operator selects via the existing dot UI — output is mostly
+        # informational anyway).
+        sep_send = QFrame()
+        sep_send.setFrameShape(QFrame.HLine)
+        sep_send.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_send.setFixedHeight(1)
+        launch_layout.addWidget(sep_send)
+
+        send_field_style = (
+            "QLineEdit {"
+            "  background-color: #1a1a1a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 3px;"
+            "  padding: 4px 6px; font-size: 11px; font-family: monospace;"
+            "}"
+            "QLineEdit:focus { border: 1px solid #0af; }"
+        )
+        send_btn_style = (
+            "QPushButton {"
+            "  background-color: #2a2a2a; color: #0af;"
+            "  border: 1px solid #0af; border-radius: 4px;"
+            "  padding: 6px 8px; font-size: 11px;"
+            "}"
+            "QPushButton:hover { background-color: #3a3a3a; }"
+            "QPushButton:pressed { background-color: #1a1a1a; }"
+        )
+
+        # Selected-state style for the input fields: green border so
+        # the operator can see which row arrow-nav is on. Stored on
+        # self because _update_selection reads it.
+        self._send_field_base_style = send_field_style
+        self._send_field_sel_style = (
+            "QLineEdit {"
+            "  background-color: #1a2a1a; color: #dcdcdc;"
+            "  border: 2px solid #0f0; border-radius: 3px;"
+            "  padding: 3px 5px; font-size: 11px; font-family: monospace;"
+            "}"
+        )
+        self._send_btn_base_style = send_btn_style
+
+        send_grid = QGridLayout()
+        send_grid.setSpacing(4)
+
+        lbl_goal = QLabel("Send Goal")
+        lbl_goal.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
+        self._send_goal_input = QLineEdit()
+        self._send_goal_input.setStyleSheet(send_field_style)
+        btn_send_goal = QPushButton("Send")
+        btn_send_goal.setStyleSheet(send_btn_style)
+        btn_send_goal.setFocusPolicy(Qt.NoFocus)
+        btn_send_goal.setFixedWidth(60)
+        btn_send_goal.clicked.connect(self._on_send_goal_clicked)
+        self._send_goal_input.returnPressed.connect(self._on_send_goal_clicked)
+        send_grid.addWidget(lbl_goal, 0, 0)
+        send_grid.addWidget(self._send_goal_input, 0, 1)
+        send_grid.addWidget(btn_send_goal, 0, 2)
+        # Arrow-key nav participation. Up/Down through these in col 0
+        # of the launch-page nav grid. Enter on the QLineEdit focuses
+        # it (for typing); Enter on the button submits. See
+        # _update_selection / keyPressEvent for the QLineEdit-aware
+        # paths.
+        self._launch_nav_buttons.append(
+            (self._send_goal_input, "Send Goal Args", send_field_style)
+        )
+        self._launch_nav_buttons.append(
+            (btn_send_goal, "Send", send_btn_style)
+        )
+
+        lbl_gps = QLabel("Send GPS")
+        lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
+        self._send_gps_input = QLineEdit()
+        self._send_gps_input.setStyleSheet(send_field_style)
+        btn_send_gps = QPushButton("Send")
+        btn_send_gps.setStyleSheet(send_btn_style)
+        btn_send_gps.setFocusPolicy(Qt.NoFocus)
+        btn_send_gps.setFixedWidth(60)
+        btn_send_gps.clicked.connect(self._on_send_gps_clicked)
+        self._send_gps_input.returnPressed.connect(self._on_send_gps_clicked)
+        send_grid.addWidget(lbl_gps, 1, 0)
+        send_grid.addWidget(self._send_gps_input, 1, 1)
+        send_grid.addWidget(btn_send_gps, 1, 2)
+        self._launch_nav_buttons.append(
+            (self._send_gps_input, "Send GPS Args", send_field_style)
+        )
+        self._launch_nav_buttons.append(
+            (btn_send_gps, "Send", send_btn_style)
+        )
+
+        send_grid.setColumnStretch(0, 0)
+        send_grid.setColumnStretch(1, 1)
+        send_grid.setColumnStretch(2, 0)
+        launch_layout.addLayout(send_grid)
 
         launch_layout.addStretch()
 
@@ -1013,6 +1162,33 @@ class HudWindow(QMainWindow):
         sep_a.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
         sep_a.setFixedHeight(1)
         dev_layout.addWidget(sep_a)
+
+        # One-shot: stop container → pull current branch → start container
+        # → connect → colcon build. Long-running (minutes); runs in a
+        # worker thread and streams status into _dev_set_status. The
+        # button disables itself while the chain is in flight so a
+        # double-click can't kick off two builds in parallel.
+        lbl_quick = QLabel("QUICK ACTIONS")
+        lbl_quick.setAlignment(Qt.AlignCenter)
+        lbl_quick.setStyleSheet(group_label_style)
+        dev_layout.addWidget(lbl_quick)
+
+        self._dev_full_rebuild_btn = QPushButton("Load branch changes and build")
+        self._dev_full_rebuild_btn.setStyleSheet(dev_btn_compact)
+        self._dev_full_rebuild_btn.setFocusPolicy(Qt.NoFocus)
+        self._dev_full_rebuild_btn.clicked.connect(self._dev_full_rebuild)
+        dev_layout.addWidget(self._dev_full_rebuild_btn)
+        self._dev_nav_buttons.append(
+            (self._dev_full_rebuild_btn, "Load branch changes and build", dev_btn_compact)
+        )
+        self._dev_full_rebuild_running = False
+
+        # Separator
+        sep_b = QFrame()
+        sep_b.setFrameShape(QFrame.HLine)
+        sep_b.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
+        sep_b.setFixedHeight(1)
+        dev_layout.addWidget(sep_b)
 
         # Git pull
         lbl_git = QLabel("GIT")
@@ -1397,8 +1573,12 @@ class HudWindow(QMainWindow):
             v.addWidget(t)
             return f, v
 
-        # Camera — image canvas for video playback
-        cam_cell, cam_layout = _plot_cell("Camera")
+        # Camera — image canvas for video playback. The title flips
+        # between "Camera RAW" and "Camera CUDA" depending on whether
+        # the CUDA line detector is publishing /line_detection/line_pixels.
+        cam_cell, cam_layout = _plot_cell("Camera RAW")
+        self._cam_title_label = cam_layout.itemAt(0).widget()
+        self._cam_title_text = "Camera RAW"
         self._cam_fig, self._cam_ax, self._cam_canvas = _make_dark_canvas()
         self._cam_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._cam_ax.set_facecolor('#111111')
@@ -1418,8 +1598,12 @@ class HudWindow(QMainWindow):
         self._cam_canvas.setMinimumSize(50, 50)
         cam_layout.addWidget(self._cam_canvas, stretch=1)
 
-        # Lidar — image canvas for video playback
-        lidar_cell, lidar_layout = _plot_cell("Lidar")
+        # Lidar — image canvas for video playback. Title flips between
+        # "LIDAR Heightband" (plain BEV) and "LIDAR PCA" when the grade
+        # detector is publishing /scan_pca_filtered_points.
+        lidar_cell, lidar_layout = _plot_cell("LIDAR Heightband")
+        self._lidar_title_label = lidar_layout.itemAt(0).widget()
+        self._lidar_title_text = "LIDAR Heightband"
         self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas()
         self._lidar_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._lidar_ax.set_facecolor('#111111')
@@ -1439,8 +1623,14 @@ class HudWindow(QMainWindow):
         self._lidar_canvas.setMinimumSize(50, 50)
         lidar_layout.addWidget(self._lidar_canvas, stretch=1)
 
-        # GPS — map plot with satellite background (no axis clutter)
+        # GPS — map plot with satellite background (no axis clutter).
+        # Title flips to "GPS Covariance [fix]" when the message
+        # carries a usable position_covariance. The red dot is the
+        # latest NavSatFix (not a rolling mean); the ellipse is the
+        # 2σ contour of that fix's reported error distribution.
         gps_cell, gps_layout = _plot_cell("GPS")
+        self._gps_title_label = gps_layout.itemAt(0).widget()
+        self._gps_title_text = "GPS"
         self._gps_fig, self._gps_ax, self._gps_canvas = _make_dark_canvas()
         self._gps_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._gps_ax.set_facecolor('#111111')
@@ -1918,6 +2108,29 @@ class HudWindow(QMainWindow):
             ind.raise_()
             ind.hide()
 
+        # Auto-mode badge in the upper-right corner. The 'A' key toggles
+        # _auto_mode (handled in keyPressEvent); the badge re-paints to
+        # reflect the state. Parent is the central widget so it floats
+        # over the layout; _position_auto_badge keeps it pinned to the
+        # top-right on resize.
+        self._auto_mode = False
+        self._auto_badge_on_style = (
+            "color: #0f0; font-size: 13px; font-weight: bold;"
+            " font-family: monospace; background-color: rgba(0, 40, 0, 200);"
+            " border: 1px solid #0f0; border-radius: 4px; padding: 3px 8px;"
+        )
+        self._auto_badge_off_style = (
+            "color: #666; font-size: 13px; font-weight: bold;"
+            " font-family: monospace; background-color: rgba(20, 20, 20, 180);"
+            " border: 1px solid #444; border-radius: 4px; padding: 3px 8px;"
+        )
+        self._auto_badge = QLabel("AUTO OFF", central)
+        self._auto_badge.setStyleSheet(self._auto_badge_off_style)
+        self._auto_badge.setAlignment(Qt.AlignCenter)
+        self._auto_badge.adjustSize()
+        self._auto_badge.raise_()
+        self._auto_badge.show()
+
         self._update_selection()
 
         self._nav_timer = QTimer()
@@ -1935,14 +2148,22 @@ class HudWindow(QMainWindow):
         # entered (gracefully no-ops when the ROS node is None).
         self._ekf_status_timer = QTimer()
         self._ekf_status_timer.setInterval(200)  # 5 Hz
-        self._ekf_status_timer.timeout.connect(
-            lambda: self._ekf_pulse_tick(time.monotonic())
-        )
+        self._ekf_status_timer.timeout.connect(self._ekf_status_tick)
         self._ekf_status_timer.start()
 
         # The widget tree was built using dark hex codes; flip to whichever
         # theme is selected (light by default).
         self._apply_theme()
+
+        # Application-wide event filter. This is what makes the screen
+        # lock actually block input: when _screen_locked is True the
+        # filter swallows every KeyPress / mouse event in the GUI
+        # process, except those targeted at the lock overlay's password
+        # field. Installed unconditionally so we don't have to manage
+        # install/uninstall on lock/unlock.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
     # -----------------------------------------------------------------
     # Theme helpers
@@ -2304,6 +2525,82 @@ class HudWindow(QMainWindow):
                 break
         self._refresh_terminal_display()
 
+    def _on_send_goal_clicked(self):
+        """Run ./config/send_goal.sh with the args from the textfield."""
+        args = self._send_goal_input.text().strip()
+        # Hand focus back to the main window so arrow-key nav resumes
+        # instead of staying trapped inside the QLineEdit.
+        self._send_goal_input.clearFocus()
+        self.setFocus(Qt.OtherFocusReason)
+        self._run_one_shot_script(
+            label="Send Goal",
+            script="./config/send_goal.sh",
+            args=args,
+        )
+
+    def _on_send_gps_clicked(self):
+        """Run ./config/send_GPS_waypoint.sh with the args from the textfield.
+
+        Commas in the field (e.g. ``37.23028, -80.42502``) are normalized
+        to spaces so the script's positional <lat> <lon> [radius] parser
+        accepts the input as-pasted from a maps app.
+        """
+        raw = self._send_gps_input.text().strip()
+        args = re.sub(r'[,\s]+', ' ', raw).strip()
+        self._send_gps_input.clearFocus()
+        self.setFocus(Qt.OtherFocusReason)
+        self._run_one_shot_script(
+            label="Send GPS",
+            script="./config/send_GPS_waypoint.sh",
+            args=args,
+        )
+
+    def _run_one_shot_script(self, label, script, args):
+        """Fire-and-forget runner for the send_goal/send_GPS scripts.
+
+        Wraps the command for the container the same way device launches
+        do, captures stdout into the per-label buffer, and selects the
+        label so the terminal display shows the output. The Popen is
+        kept in _process_objects so _poll_process_output reaps it when
+        it exits.
+        """
+        if not self._container_connected:
+            self._gui_log_msg(f"Cannot run {label}: container not connected")
+            return
+
+        # Shell-safe arg pass-through. The args string is appended
+        # verbatim to the script invocation inside the docker exec
+        # bash -lc '...' wrapper; the user owns the quoting of their
+        # own input (matches how they'd run it from a shell).
+        cmd = f"{script} {args}".strip()
+        exec_cmd = self._wrap_container_cmd(cmd, label=label)
+        buf = self._process_buffers.setdefault(label, [])
+        buf.append(f"$ {cmd}\n")
+        try:
+            proc = subprocess.Popen(
+                exec_cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self._process_objects[label] = proc
+
+            def _reader():
+                try:
+                    for line in proc.stdout:
+                        buf.append(line)
+                except Exception:
+                    pass
+            t = threading.Thread(target=_reader, daemon=True)
+            t.start()
+            self._process_readers[label] = t
+            self._gui_log_msg(f"{label}: {cmd}")
+        except Exception as e:
+            buf.append(f"[Failed to start: {e}]\n")
+
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+
     def _show_main_page(self):
         """Switch OPTIONS column back to the main page."""
         self._options_stack.setCurrentIndex(0)
@@ -2387,6 +2684,11 @@ class HudWindow(QMainWindow):
         self._dev_update_branch_label()
         self._dev_update_container_status()
         self._dev_status_timer.start()
+        # Audit the Load-branch-changes-and-build state each time the
+        # operator returns to this page — if the previous worker died
+        # without resetting the flag, the button would otherwise stay
+        # disabled and the status label stuck at "Starting…".
+        self._dev_rebuild_self_heal()
 
     def _show_branches_page(self):
         """Switch OPTIONS column to the Branch switcher sub-page (index 5)."""
@@ -2773,6 +3075,277 @@ class HudWindow(QMainWindow):
         if getattr(self, '_dev_container_btn_label', None) != desired:
             self._dev_container_btn_label = desired
             self._set_btn_label(self._dev_container_btn, desired)
+
+    # ── Quick action: stop → pull → start → connect → build ──────────
+    # Runs the whole chain in a worker thread so the multi-minute
+    # colcon build doesn't freeze the GUI event loop. Status updates
+    # come back to the UI thread via QTimer.singleShot(0, ...) so the
+    # _dev_set_status label stays in sync without subclassing QThread.
+    _DEV_REBUILD_LABEL = "Load branch changes and build"
+
+    def _dev_rebuild_self_heal(self):
+        """Detect a stale 'running' state and reset it.
+
+        ``_dev_full_rebuild_running`` is cleared by the worker thread's
+        ``finally`` block. That ``finally`` does not run when the
+        worker thread dies abnormally — a hung ``subprocess.run`` /
+        ``proc.wait()``, the main process being force-killed mid-build,
+        the daemon worker being torn down by the OS on GUI close, etc.
+        When that happens the flag is stuck True forever: the button
+        is permanently disabled and the status label is permanently
+        "Starting…", even though nothing is actually running.
+
+        We use the worker Thread's own ``is_alive()`` as the source of
+        truth — if a build was supposedly in flight but the thread
+        isn't alive, the state is by definition stale. Returns True
+        if it had to clean up.
+        """
+        if not getattr(self, '_dev_full_rebuild_running', False):
+            return False
+        t = getattr(self, '_dev_full_rebuild_thread', None)
+        if t is not None and t.is_alive():
+            return False  # genuinely running, leave it alone
+        # Stale — the worker died without clearing the flag.
+        self._dev_full_rebuild_running = False
+        if hasattr(self, '_dev_full_rebuild_btn'):
+            self._dev_full_rebuild_btn.setEnabled(True)
+        # Clear the misleading "Starting…" status so the user knows
+        # the GUI noticed.
+        self._dev_set_status(
+            "Previous build state was stale — reset.", color='#888')
+        return True
+
+    def _dev_full_rebuild(self):
+        # Self-heal first: if the previous run died abnormally, this
+        # click should be treated as fresh, not silently ignored.
+        self._dev_rebuild_self_heal()
+        if getattr(self, '_dev_full_rebuild_running', False):
+            return  # genuinely in flight — ignore the click
+        self._dev_full_rebuild_running = True
+        self._dev_full_rebuild_btn.setEnabled(False)
+        # Allocate the per-process terminal buffer the way every other
+        # launched device does, switch the terminal selection to it,
+        # and refresh. The worker thread streams every step's output
+        # into this buffer so the user sees the colcon build line by
+        # line in the side terminal instead of one delayed dump at the
+        # end (which is what subprocess.run with capture_output would
+        # give us).
+        label = self._DEV_REBUILD_LABEL
+        buf = [f"=== {label} ===\n"]
+        self._process_buffers[label] = buf
+        self._selected_process = label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+        self._dev_set_status("Starting…", color='#ff0')
+        # Bounce back to the main options screen — pressing this button
+        # is the operator saying "get the robot ready"; they want to be
+        # back on the launch screen so the streaming colcon build is
+        # visible in the side terminal while they wait.
+        self._show_main_page()
+        QApplication.processEvents()
+        # Stash the worker Thread so _dev_rebuild_self_heal can use
+        # is_alive() to detect that a previous build died without
+        # firing its finally block.
+        self._dev_full_rebuild_thread = threading.Thread(
+            target=self._dev_full_rebuild_worker,
+            args=(label, buf),
+            daemon=True,
+        )
+        self._dev_full_rebuild_thread.start()
+
+    def _dev_ui_status(self, text, color='#888'):
+        """Thread-safe wrapper around _dev_set_status. Schedules the
+        actual setText call on the Qt event loop so worker threads
+        don't touch QLabel widgets directly."""
+        QTimer.singleShot(
+            0, lambda t=text, c=color: self._dev_set_status(t, color=c))
+
+    def _dev_full_rebuild_worker(self, label, buf):
+        """Background chain for the Load-branch-changes-and-build
+        button. Every step's stdout/stderr is appended to ``buf`` so
+        the side terminal (which reads ``_process_buffers[label]``)
+        shows the build live, line by line, the same way every other
+        launched device does.
+        """
+        def log(text):
+            """Append text to the per-process buffer with a trailing
+            newline. Safe to call from this worker thread — list.append
+            is atomic in CPython and the UI thread only reads."""
+            if not text:
+                return
+            if not text.endswith('\n'):
+                text += '\n'
+            buf.append(text)
+
+        try:
+            # 0. Tear down every running launch via the GUI's normal
+            # stop path. Without this, buttons stayed green after a
+            # rebuild because the inner ROS nodes died with the
+            # container faster than the GUI noticed. _toggle_device
+            # touches Qt widgets, so schedule on the UI thread.
+            running_labels = [
+                L for L, st in self._launch_states.items() if st
+            ]
+            self._dev_ui_status(
+                f"[0/5] Tearing down {len(running_labels)} launches…",
+                color='#ff0')
+            log(f"Tearing down launches: {running_labels}")
+            for L in running_labels:
+                QTimer.singleShot(0, lambda lab=L: self._toggle_device(lab))
+            time.sleep(1.5)  # let the UI-thread teardowns drain
+
+            # 1. Stop container (no-op if already stopped).
+            self._dev_ui_status(
+                f"[1/5] Stopping container {self._container_name}…",
+                color='#ff0')
+            log(f"$ docker stop {self._container_name}")
+            try:
+                r = subprocess.run(
+                    ['docker', 'stop', self._container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+                log(r.stdout)
+                log(r.stderr)
+            except Exception as e:
+                # Non-fatal — the container may already be down. The
+                # start step below will surface real issues.
+                log(f"[stop] {e}")
+
+            # 2. git pull --ff-only on the host repo.
+            self._dev_ui_status(
+                "[2/5] git pull --ff-only…", color='#ff0')
+            log("$ git pull --ff-only")
+            rc, out, err = self._dev_run_git(
+                ['pull', '--ff-only'], timeout=120)
+            log(out)
+            log(err)
+            if rc != 0:
+                msg = (err or out or 'unknown').splitlines()[-1]
+                self._dev_ui_status(
+                    f"Pull failed: {msg}", color='#f44')
+                log(f"[!] Pull failed: {msg}")
+                return
+
+            # 3. Start container detached.
+            self._dev_ui_status(
+                f"[3/5] Starting container {self._container_name}…",
+                color='#ff0')
+            log(f"$ bash {self._dev_run_script} --no-attach")
+            if not os.path.isfile(self._dev_run_script):
+                self._dev_ui_status(
+                    f"Missing script: {self._dev_run_script}",
+                    color='#f44')
+                log(f"[!] Missing script: {self._dev_run_script}")
+                return
+            try:
+                subprocess.Popen(
+                    ['bash', self._dev_run_script, '--no-attach'],
+                    cwd=self._dev_host_repo,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                self._dev_ui_status(
+                    f"Start failed: {e}", color='#f44')
+                log(f"[!] Start failed: {e}")
+                return
+
+            # 4. Wait until docker reports the container running.
+            #    The 1 s poll loop matches _dev_update_container_status.
+            self._dev_ui_status(
+                "[4/5] Waiting for container to come up…",
+                color='#ff0')
+            log("Waiting for container to come up (60 s ceiling)…")
+            ready = False
+            for _ in range(60):
+                try:
+                    r = subprocess.run(
+                        ['docker', 'ps', '--quiet', '--filter',
+                         'status=running', '--filter',
+                         f'name=^/{self._container_name}$'],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if r.stdout.strip():
+                        ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            if not ready:
+                self._dev_ui_status(
+                    "Container did not come up within 60 s.",
+                    color='#f44')
+                log("[!] Container did not come up within 60 s.")
+                return
+            log("Container is up.")
+            # Connect on the UI thread (touches widgets + state).
+            QTimer.singleShot(0, self._connect_container)
+
+            # 5. colcon build — STREAMING. Popen with PIPE + an inline
+            # reader feeds each line into the per-process buffer as it
+            # arrives, so the side terminal shows progress live. We
+            # also register the Popen in _process_objects[label] so
+            # the GUI's 2 Hz poll timer cleans up the entry and writes
+            # the "[Process exited with code N]" trailer the way it
+            # does for any other launched device. closeEvent will
+            # SIGTERM/SIGKILL this Popen if the user closes the GUI
+            # mid-build (the local docker-exec proc forwards signals
+            # to the in-container colcon).
+            self._dev_ui_status(
+                "[5/5] colcon build --symlink-install (this can "
+                "take several minutes)…", color='#ff0')
+            build_cmd = (
+                "cd /autonav/isaac_ros-dev && "
+                "source /opt/ros/humble/setup.bash && "
+                "colcon build --symlink-install"
+            )
+            log(
+                f"$ docker exec -u admin {self._container_name} "
+                f"/bin/bash -lc '{build_cmd}'"
+            )
+            try:
+                proc = subprocess.Popen(
+                    ['docker', 'exec', '-u', 'admin',
+                     self._container_name, '/bin/bash', '-lc',
+                     build_cmd],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+            except Exception as e:
+                self._dev_ui_status(
+                    f"Build launch failed: {e}", color='#f44')
+                log(f"[!] Build launch failed: {e}")
+                return
+            self._process_objects[label] = proc
+            try:
+                for line in proc.stdout:
+                    buf.append(line)
+                proc.wait()
+            except Exception as e:
+                log(f"[reader] {e}")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            rc = proc.returncode
+            if rc == 0:
+                self._dev_ui_status(
+                    "Load branch changes and build: OK",
+                    color='#0f0')
+                log("[OK] colcon build finished cleanly")
+            else:
+                self._dev_ui_status(
+                    f"Build failed (rc={rc})", color='#f44')
+                log(f"[!] Build failed (rc={rc})")
+        finally:
+            # Re-enable the button on the UI thread no matter how the
+            # chain exited — failure paths must not leave it disabled.
+            def _reset():
+                self._dev_full_rebuild_running = False
+                self._dev_full_rebuild_btn.setEnabled(True)
+            QTimer.singleShot(0, _reset)
 
     def _toggle_test(self, tid):
         """Start or stop a test by its ID."""
@@ -3622,6 +4195,279 @@ class HudWindow(QMainWindow):
         self._gui_log.append(f"[{ts}] {msg}\n")
         self._refresh_terminal_display()
 
+    # -----------------------------------------------------------------
+    # Screen lock
+    # -----------------------------------------------------------------
+    def _build_lock_overlay(self):
+        """Lazily build the fullscreen lock overlay widget."""
+        overlay = QWidget(self)
+        overlay.setObjectName("lockOverlay")
+        overlay.setStyleSheet(
+            "QWidget#lockOverlay { background-color: rgba(0, 0, 0, 235); }"
+        )
+        overlay.setAutoFillBackground(True)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+
+        v = QVBoxLayout(overlay)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setAlignment(Qt.AlignCenter)
+        v.addStretch()
+
+        title = QLabel("\U0001F512  SCREEN LOCKED")
+        f = QFont()
+        f.setPointSize(36)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #dcdcdc; background: transparent; border: none;")
+        v.addWidget(title)
+
+        hint = QLabel("Press Ctrl+Shift+L to unlock")
+        hf = QFont()
+        hf.setPointSize(14)
+        hint.setFont(hf)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: #888; background: transparent; border: none;")
+        v.addWidget(hint)
+        self._lock_hint_label = hint
+
+        pw = QLineEdit()
+        pw.setEchoMode(QLineEdit.Password)
+        pw.setPlaceholderText("password")
+        pw.setAlignment(Qt.AlignCenter)
+        pw.setFixedWidth(320)
+        pw.setStyleSheet(
+            "QLineEdit {"
+            "  background-color: #1a1a1a; color: #dcdcdc;"
+            "  border: 1px solid #555; border-radius: 4px;"
+            "  padding: 8px 10px; font-size: 16px; font-family: monospace;"
+            "}"
+            "QLineEdit:focus { border: 1px solid #0af; }"
+        )
+        pw.returnPressed.connect(self._try_unlock)
+        # Strong focus + visible from the start. The previous two-step
+        # design (Ctrl+Shift+L to reveal) was fragile — keystrokes went
+        # to whichever widget had focus before the lock and the app
+        # event filter swallowed them. Showing the field immediately
+        # means the password input is always the obvious target.
+        pw.setFocusPolicy(Qt.StrongFocus)
+        # Center the line edit horizontally inside the QVBoxLayout via
+        # a wrapping QHBoxLayout — QLineEdit otherwise stretches.
+        pw_row = QHBoxLayout()
+        pw_row.addStretch()
+        pw_row.addWidget(pw)
+        pw_row.addStretch()
+        v.addLayout(pw_row)
+        self._lock_password_input = pw
+
+        status = QLabel("")
+        status.setAlignment(Qt.AlignCenter)
+        status.setStyleSheet("color: #f55; background: transparent; border: none;"
+                             " font-size: 12px;")
+        status.setVisible(False)
+        v.addWidget(status)
+        self._lock_status_label = status
+
+        v.addStretch()
+        overlay.hide()
+        self._lock_overlay = overlay
+        return overlay
+
+    def _toggle_screen_lock(self):
+        """Ctrl+Shift+L entry point (only called when unlocked)."""
+        if self._screen_locked:
+            return
+        self._lock_screen()
+
+    def _lock_screen(self):
+        if self._lock_overlay is None:
+            self._build_lock_overlay()
+        # Password field is visible immediately. Keeping it hidden
+        # behind a second Ctrl+Shift+L stranded the operator when
+        # setFocus didn't take effect — without focus, the app event
+        # filter swallowed every keystroke and there was no obvious
+        # way to recover.
+        self._lock_password_visible = True
+        self._lock_password_input.setVisible(True)
+        self._lock_password_input.setEnabled(True)
+        self._lock_password_input.clear()
+        self._lock_status_label.setVisible(False)
+        self._lock_hint_label.setText("Type password and press Enter")
+        self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._lock_overlay.show()
+        self._lock_overlay.raise_()
+        # Show the cursor again so the operator can see they're locked
+        # (the HUD normally hides it).
+        self.setCursor(Qt.ArrowCursor)
+        self._screen_locked = True
+        self._gui_log_msg("Screen locked")
+        # Force focus to the password field. Deferred to the next event
+        # loop iteration: setFocus on a widget that was just shown — or
+        # one whose top-level didn't own keyboard focus before the lock
+        # — silently no-ops when called inline. The 50ms follow-up
+        # handles the case where Qt re-routes focus after the first
+        # tick (e.g. a sibling widget's deferred FocusIn races with us).
+        self._focus_lock_password()
+
+    def _focus_lock_password(self):
+        """Visually focus the password field. Typing is NOT routed via
+        Qt focus — see eventFilter, which manually relays printable
+        characters and Backspace/Enter into the QLineEdit while
+        _screen_locked is True. We tried grabKeyboard() here; on
+        Linux/X11 it does an X-server-wide keyboard grab that locks
+        the entire OS keyboard until release, which stranded the
+        operator from killing the GUI in another terminal. Don't."""
+        pw = self._lock_password_input
+        if pw is None or not self._screen_locked:
+            return
+        if self._lock_overlay is not None:
+            self._lock_overlay.raise_()
+        pw.raise_()
+        # setFocus is best-effort — used only to show the caret.
+        # The manual relay in eventFilter is the real input path.
+        pw.setFocus(Qt.OtherFocusReason)
+
+    def _show_lock_password_input(self):
+        """Ctrl+Shift+L while locked → re-focus the password field.
+        Kept for the legacy two-step flow's keystroke (and as a
+        rescue path if the operator clicked outside the field and
+        focus drifted)."""
+        if not self._screen_locked or self._lock_password_input is None:
+            return
+        if not self._lock_password_visible:
+            self._lock_password_visible = True
+            self._lock_password_input.setVisible(True)
+            self._lock_status_label.setVisible(False)
+            self._lock_hint_label.setText("Type password and press Enter")
+        self._focus_lock_password()
+
+    def _try_unlock(self):
+        if not self._screen_locked or self._lock_password_input is None:
+            return
+        if self._lock_password_input.text() == self._lock_password:
+            self._unlock_screen()
+        else:
+            self._lock_password_input.clear()
+            self._lock_status_label.setText("Incorrect password")
+            self._lock_status_label.setVisible(True)
+
+    def _unlock_screen(self):
+        self._screen_locked = False
+        if self._lock_password_input is not None:
+            self._lock_password_input.clear()
+            self._lock_password_input.setVisible(False)
+        if self._lock_overlay is not None:
+            self._lock_overlay.hide()
+        self._lock_password_visible = False
+        # Restore the HUD's default blank cursor.
+        self.setCursor(Qt.BlankCursor)
+        self._gui_log_msg("Screen unlocked")
+
+    def resizeEvent(self, event):
+        """Keep the lock overlay sized to the window and the auto badge pinned."""
+        super().resizeEvent(event)
+        if self._lock_overlay is not None:
+            self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._position_auto_badge()
+
+    # -----------------------------------------------------------------
+    # Auto mode
+    # -----------------------------------------------------------------
+    def _ekf_status_tick(self):
+        """5 Hz tick: drive the EKF participation pulse and pull the
+        latest /autonomous_mode into the corner badge. Combined into
+        one slot to keep timer count down."""
+        self._ekf_pulse_tick(time.monotonic())
+        self._sync_auto_mode_from_topic()
+
+    def _toggle_auto_mode(self):
+        """A-key handler. Publish a fake X-button rising edge on /joy
+        so control.cpp toggles its autonomousMode (it watches button
+        index 3). Update the badge optimistically; _sync_auto_mode_from_topic
+        will overwrite from the real /autonomous_mode topic once
+        control.cpp confirms — that's the authoritative state."""
+        self._auto_mode = not self._auto_mode
+        self._apply_auto_badge()
+        self._publish_fake_x_button_press()
+        self._gui_log_msg(f"Auto mode: {'ON' if self._auto_mode else 'OFF'}")
+
+    def _apply_auto_badge(self):
+        """Re-paint the auto-mode badge from _auto_mode."""
+        if self._auto_mode:
+            self._auto_badge.setText("AUTO ON")
+            self._auto_badge.setStyleSheet(self._auto_badge_on_style)
+        else:
+            self._auto_badge.setText("AUTO OFF")
+            self._auto_badge.setStyleSheet(self._auto_badge_off_style)
+        self._auto_badge.adjustSize()
+        self._position_auto_badge()
+        self._auto_badge.raise_()
+
+    def _publish_fake_x_button_press(self):
+        """Publish Joy(buttons[3]=1) and a release 200ms later. The
+        rising edge from 0→1 is what control.cpp triggers on; the
+        release lets a subsequent press fire again. Matches
+        t002_automator._send_x_button_to_control. No-op if ROS isn't
+        available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'joy_pub'):
+            return
+        try:
+            # Joy is only importable when _HAS_ROS — pull the class
+            # off the publisher's msg_type so this method doesn't need
+            # the import in HudWindow's scope.
+            JoyMsg = node.joy_pub.msg_type
+            press = JoyMsg()
+            press.buttons = [0] * 8
+            press.axes = [0.0] * 4
+            press.buttons[3] = 1
+            node.joy_pub.publish(press)
+
+            def _release():
+                try:
+                    rel = JoyMsg()
+                    rel.buttons = [0] * 8
+                    rel.axes = [0.0] * 4
+                    node.joy_pub.publish(rel)
+                except Exception as e:
+                    self._gui_log_msg(f"Auto release publish failed: {e}")
+            QTimer.singleShot(200, _release)
+        except Exception as e:
+            self._gui_log_msg(f"Failed to publish fake X-button to /joy: {e}")
+
+    def _sync_auto_mode_from_topic(self):
+        """Read the latest /autonomous_mode value the HudNode has seen
+        and reconcile _auto_mode with it. Called from the existing
+        5 Hz status timer. Skips silently if ROS isn't wired up or
+        the topic hasn't published yet."""
+        node = self._ros_node
+        if node is None:
+            return
+        latest = getattr(node, 'latest_autonomous_mode', None)
+        if latest is None:
+            return
+        if latest != self._auto_mode:
+            self._auto_mode = bool(latest)
+            self._apply_auto_badge()
+            self._gui_log_msg(
+                f"Auto mode (from /autonomous_mode): "
+                f"{'ON' if self._auto_mode else 'OFF'}"
+            )
+
+    def _position_auto_badge(self):
+        """Pin the auto-mode badge to the upper-right of the central widget."""
+        if not hasattr(self, '_auto_badge') or self._auto_badge is None:
+            return
+        parent = self._auto_badge.parentWidget()
+        if parent is None:
+            return
+        margin = 8
+        self._auto_badge.adjustSize()
+        x = parent.width() - self._auto_badge.width() - margin
+        y = margin
+        self._auto_badge.move(max(x, 0), y)
+        self._auto_badge.raise_()
+
     _STATUS_BTN_SELECTED = (
         "QPushButton {"
         "  background-color: #1a3a1a; color: #0f0;"
@@ -3631,7 +4477,92 @@ class HudWindow(QMainWindow):
     )
 
     def eventFilter(self, obj, event):
-        """Forward mouse clicks on matplotlib canvases to the parent sensor cell."""
+        """Block input while locked; otherwise forward canvas clicks.
+
+        Installed application-wide (see __init__), so this is called
+        for every event in the process. The lock path runs first and
+        must be cheap when unlocked — it's a single attribute read.
+        """
+        # Ctrl+Shift+L must work from anywhere, including while focus
+        # is in a QLineEdit (the send_goal/send_GPS fields). Without
+        # this app-level intercept, the line edit would swallow the
+        # key event and HudWindow.keyPressEvent would never see it.
+        if (event.type() == QEvent.KeyPress and
+                event.key() == Qt.Key_L and
+                (event.modifiers() & Qt.ControlModifier) and
+                (event.modifiers() & Qt.ShiftModifier)):
+            if self._screen_locked:
+                self._show_lock_password_input()
+            else:
+                self._toggle_screen_lock()
+            return True
+
+        if self._screen_locked:
+            et = event.type()
+            if et == QEvent.KeyPress:
+                # Manual key relay: don't depend on Qt's focus system
+                # to deliver keystrokes to the password QLineEdit.
+                # Instead, *intercept* every key event in the app and
+                # drive the QLineEdit directly via insert() /
+                # backspace() / returnPressed handler. This makes
+                # typing work regardless of which widget actually has
+                # focus or whether Qt routes events somewhere unexpected.
+                pw = self._lock_password_input
+                if pw is None:
+                    return True
+                k = event.key()
+                if k in (Qt.Key_Return, Qt.Key_Enter):
+                    self._try_unlock()
+                    return True
+                if k == Qt.Key_Backspace:
+                    pw.backspace()
+                    return True
+                if k == Qt.Key_Delete:
+                    pw.del_()
+                    return True
+                if k in (Qt.Key_Left,):
+                    pw.cursorBackward(False, 1)
+                    return True
+                if k in (Qt.Key_Right,):
+                    pw.cursorForward(False, 1)
+                    return True
+                if k == Qt.Key_Home:
+                    pw.home(False)
+                    return True
+                if k == Qt.Key_End:
+                    pw.end(False)
+                    return True
+                # Printable characters: insert into the password field.
+                # event.text() carries the OS-decoded character (e.g.
+                # '@' for Shift+2), so we don't have to reinvent
+                # keyboard layout handling.
+                text = event.text()
+                if text and text.isprintable():
+                    pw.insert(text)
+                    return True
+                # Non-printable / modifier-only keys: swallow.
+                return True
+            if et in (QEvent.KeyRelease, QEvent.ShortcutOverride,
+                      QEvent.InputMethod, QEvent.InputMethodQuery):
+                # All other keyboard-related events: swallow.
+                return True
+            if et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                      QEvent.MouseButtonDblClick, QEvent.Wheel):
+                # Clicks: only allow them on widgets inside the lock
+                # overlay (the password field gets caret placement /
+                # focus). Everything else swallowed.
+                in_overlay = (
+                    self._lock_overlay is not None and
+                    isinstance(obj, QWidget) and
+                    (obj is self._lock_overlay or
+                     self._lock_overlay.isAncestorOf(obj))
+                )
+                if in_overlay:
+                    if et == QEvent.MouseButtonPress:
+                        self._focus_lock_password()
+                    return False
+                return True
+
         if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
             cell = self._canvas_to_cell[obj]
             self._toggle_sensor_expand(cell)
@@ -3739,14 +4670,27 @@ class HudWindow(QMainWindow):
         self._refresh_terminal_display()
 
     def closeEvent(self, event):
-        """Terminate all subprocesses and stop all modes on window close."""
+        """Terminate all subprocesses and stop all modes on window
+        close. Blocks until every kill thread has reported done (or
+        hits its timeout) — historically these ran as daemon threads
+        that the OS tore down mid-flight, which left orphan ros2
+        binaries reparented to PID 1 in the container and showing as
+        "external" processes in the next GUI session.
+        """
         # Stop live mode if active
         if self._live_active:
             self._stop_live_mode()
 
-        # Kill all running processes
+        # Kick off every kill in parallel, then join. Per-thread cap
+        # of 12 s ≈ Phase 1 SIGINT (5 s) + Phase 2 SIGKILL (5 s) +
+        # slack for the name-based pkill fallback.
+        kill_threads = []
         for label, proc in list(self._process_objects.items()):
-            self._kill_process(proc, label)
+            t = self._kill_process(proc, label)
+            if t is not None:
+                kill_threads.append((label, t))
+        for _label, t in kill_threads:
+            t.join(timeout=12)
         self._process_objects.clear()
 
         # Disconnect container
@@ -3775,6 +4719,18 @@ class HudWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
+
+        # Ctrl+Shift+L is intercepted at the application-level event
+        # filter (see eventFilter) so it works from any focus context,
+        # including QLineEdit. No handling needed here.
+
+        # 'A' toggles auto mode. No modifiers so it doesn't fight Ctrl+A
+        # or similar; intentionally only handled at the window level so
+        # that typing 'a' into a focused QLineEdit (send_goal / GPS
+        # field / lock password) still enters the character.
+        if key == Qt.Key_A and not event.modifiers():
+            self._toggle_auto_mode()
+            return
 
         # --- Scrub mode: arrows move the slider, Enter exits ---
         if self._scrub_mode:
@@ -3836,7 +4792,13 @@ class HudWindow(QMainWindow):
         elif key in (Qt.Key_Right, Qt.Key_Left):
             n_cols = len(self._nav_groups)
             new_col = (self._nav_col + (1 if key == Qt.Key_Right else -1)) % n_cols
-            cur_logical = self._nav_logical_rows[self._nav_col][self._nav_row]
+            # Clamp nav_row into _nav_logical_rows for the source col.
+            # The launch page swaps in a longer button list than the
+            # main page (we just added more rows for send_goal/GPS),
+            # so _nav_logical_rows[0]'s length can lag the group size.
+            src_rows = self._nav_logical_rows[self._nav_col]
+            src_idx = min(self._nav_row, len(src_rows) - 1)
+            cur_logical = src_rows[src_idx]
             tgt_rows = self._nav_logical_rows[new_col]
             # Find best match: closest logical row <= current, prefer upper
             best_idx = 0
@@ -3863,9 +4825,16 @@ class HudWindow(QMainWindow):
                 cell, _, _ = self._cur_btn()
                 self._toggle_sensor_expand(cell)
             else:
-                btn, _, _ = self._cur_btn()
-                if btn.isEnabled():
-                    btn.click()
+                widget, _, _ = self._cur_btn()
+                if isinstance(widget, QLineEdit):
+                    # Hand keyboard focus to the field so the operator
+                    # can type. Pressing Enter inside the field fires
+                    # returnPressed → _on_send_*_clicked, which calls
+                    # clearFocus to hand control back to nav.
+                    widget.setFocus(Qt.OtherFocusReason)
+                    widget.selectAll()
+                elif widget.isEnabled():
+                    widget.click()
         elif key == Qt.Key_Space:
             if self._pb_state in ('playing', 'paused', 'ended'):
                 self._on_play_pause()
@@ -3900,6 +4869,14 @@ class HudWindow(QMainWindow):
                         widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
                         widget.setStyleSheet(T(self._sensor_frame_style))
+                elif isinstance(widget, QLineEdit):
+                    # QLineEdit nav participation. Don't call setText —
+                    # that would clobber the user's typed value. Highlight
+                    # via stylesheet instead.
+                    if is_selected:
+                        widget.setStyleSheet(T(self._send_field_sel_style))
+                    else:
+                        widget.setStyleSheet(T(base_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -3980,8 +4957,14 @@ class HudWindow(QMainWindow):
             self._sel_arrow_l = self._sel_frames_l[self._sel_frame_idx]
             self._sel_arrow_r = self._sel_frames_r[self._sel_frame_idx]
             widget, base_label, _ = self._cur_btn()
-            # Slider, sensor cells, and power cell don't support setText
-            if widget is not self.pb_slider and widget not in self._sensor_cells and widget is not self._power_cell:
+            # Slider / sensor cells / power cell don't support setText.
+            # QLineEdit DOES support setText, but calling it would
+            # overwrite the operator's typed args every 250ms — that
+            # was the "text keeps reverting to default" bug. Skip it.
+            if (widget is not self.pb_slider
+                    and widget not in self._sensor_cells
+                    and widget is not self._power_cell
+                    and not isinstance(widget, QLineEdit)):
                 widget.setText(
                     f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                 )
@@ -4205,16 +5188,39 @@ class HudWindow(QMainWindow):
         )
 
     def _kill_process(self, proc, label):
-        """Kill a launched process in a background thread so the GUI doesn't freeze."""
+        """Kill a launched process AND every descendant/orphan it
+        spawned, returning the kill Thread so callers can ``.join()``
+        when they need to block on completion (closeEvent does).
+        Fire-and-forget callers may discard the return value.
+
+        Kill plan, in order:
+          1. SIGINT to the wrapper PID and its process group — gives
+             bash traps + the ``ros2 run`` python wrapper a window to
+             clean up gracefully.
+          2. Recursive ps-tree walk → SIGKILL every descendant. Catches
+             grandchildren the previous ``--ppid $PID`` one-liner
+             missed.
+          3. SIGKILL the wrapper's process group (``kill -- -$PID``) —
+             catches anything that retained the group ID after being
+             reparented to PID 1 in the container.
+          4. Name-based ``pkill -f`` fallback for known orphan cases
+             (the CUDA ``line_detector`` and Eigen ``grade_detector``
+             survive their ``ros2 run`` python parent's SIGINT and
+             escape steps 2–3 because reparenting drops them off the
+             tree and out of the original PGID).
+        """
+        pid_tag = label.replace(' ', '_').replace('/', '_')
+
         def _do_kill():
             if self._container_connected:
-                pid_tag = label.replace(' ', '_').replace('/', '_')
                 try:
+                    # Phase 1: SIGINT — graceful path.
                     sigint_cmd = (
                         f"docker exec -u root {self._container_name} "
                         f"/bin/bash -c "
                         f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                        f"kill -INT $PID 2>/dev/null'"
+                        f"kill -INT $PID 2>/dev/null ; "
+                        f"kill -INT -- -$PID 2>/dev/null'"
                     )
                     subprocess.run(sigint_cmd, shell=True, timeout=5,
                                    capture_output=True)
@@ -4222,16 +5228,31 @@ class HudWindow(QMainWindow):
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
+                    # Phase 2 + 3: SIGKILL the recursive descendant
+                    # tree and the process group in one container hop.
                     force_cmd = (
                         f"docker exec -u root {self._container_name} "
-                        f"/bin/bash -c "
-                        f"'PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) && "
-                        f"CHILDREN=$(ps -o pid= --ppid $PID 2>/dev/null) && "
-                        f"kill -9 $PID $CHILDREN 2>/dev/null; "
+                        f"/bin/bash -c '"
+                        f"PID=$(cat /tmp/gui_pid_{pid_tag} 2>/dev/null) ; "
+                        f"_desc() {{ local p=$1 ; "
+                        f"for k in $(ps -o pid= --ppid \"$p\" 2>/dev/null) ; "
+                        f"do echo $k ; _desc $k ; done ; }} ; "
+                        f"ALL=$(_desc $PID 2>/dev/null) ; "
+                        f"kill -9 $PID $ALL 2>/dev/null ; "
+                        f"kill -9 -- -$PID 2>/dev/null ; "
                         f"rm -f /tmp/gui_pid_{pid_tag}'"
                     )
                     subprocess.run(force_cmd, shell=True, timeout=5,
                                    capture_output=True)
+                    # Phase 4: name-based fallback for known orphans.
+                    for pattern in self._orphan_pkill_patterns(label):
+                        orphan_cmd = (
+                            f"docker exec -u root {self._container_name} "
+                            f"/bin/bash -c "
+                            f"\"pkill -KILL -f '{pattern}' 2>/dev/null\""
+                        )
+                        subprocess.run(orphan_cmd, shell=True, timeout=5,
+                                       capture_output=True)
                 except Exception:
                     pass
             try:
@@ -4242,7 +5263,30 @@ class HudWindow(QMainWindow):
                     proc.kill()
                 except Exception:
                     pass
-        threading.Thread(target=_do_kill, daemon=True).start()
+
+        t = threading.Thread(target=_do_kill, daemon=True)
+        t.start()
+        return t
+
+    def _orphan_pkill_patterns(self, label):
+        """Cmdline substrings for processes that escape the ps-tree +
+        process-group kill in ``_kill_process``. Each entry is matched
+        via ``pkill -KILL -f`` inside the container, so it must be a
+        unique substring of the full cmdline — broad matches risk
+        killing unrelated processes that happen to share a token. Keep
+        the list narrow; add entries only for orphans observed in
+        practice.
+        """
+        return {
+            'LINE DETECT': [
+                'autonav_detection line_detector',
+                'autonav_detection/line_detector',
+            ],
+            'PCA DETECT': [
+                'autonav_detection grade_detector',
+                'autonav_detection/grade_detector',
+            ],
+        }.get(label, [])
 
     def _launch_cmd_for(self, label):
         """Return the raw command string for a device/test label."""
@@ -4518,6 +5562,9 @@ class HudWindow(QMainWindow):
         if self._cam_im is not None:
             self._cam_im.remove()
             self._cam_im = None
+        if self._cam_lines_scatter is not None:
+            self._cam_lines_scatter.remove()
+            self._cam_lines_scatter = None
         self._cam_no_video_txt.set_visible(False)
         self._cam_live_txt.set_visible(False)
         self._cam_ax.set_facecolor('#111111')
@@ -4543,6 +5590,15 @@ class HudWindow(QMainWindow):
         self._gps_map_extent = None
         self._gps_no_data_txt.set_visible(False)
         self._gps_live_txt.set_visible(False)
+        if self._gps_cov_ellipse is not None:
+            self._gps_cov_ellipse.remove()
+            self._gps_cov_ellipse = None
+        self._set_cell_title(
+            '_cam_title_text', '_cam_title_label', 'Camera RAW')
+        self._set_cell_title(
+            '_lidar_title_text', '_lidar_title_label', 'LIDAR Heightband')
+        self._set_cell_title(
+            '_gps_title_text', '_gps_title_label', 'GPS')
         self._gps_ax.set_facecolor('#111111')
         self._gps_canvas.draw_idle()
 
@@ -4967,6 +6023,15 @@ class HudWindow(QMainWindow):
         # Show "NO DATA AVAILABLE" placeholders (hidden when data arrives)
         self._cam_live_txt.set_visible(True)
         self._cam_no_video_txt.set_visible(False)
+        if self._cam_lines_scatter is not None:
+            self._cam_lines_scatter.remove()
+            self._cam_lines_scatter = None
+        self._set_cell_title(
+            '_cam_title_text', '_cam_title_label', 'Camera RAW')
+        self._set_cell_title(
+            '_lidar_title_text', '_lidar_title_label', 'LIDAR Heightband')
+        self._set_cell_title(
+            '_gps_title_text', '_gps_title_label', 'GPS')
         self._cam_canvas.draw_idle()
         self._lidar_live_txt.set_visible(True)
         self._lidar_no_video_txt.set_visible(False)
@@ -4981,6 +6046,9 @@ class HudWindow(QMainWindow):
         self._gps_trail.set_data([], [])
         self._gps_dot.set_data([], [])
         self._gps_coord_label.set_text('')
+        if self._gps_cov_ellipse is not None:
+            self._gps_cov_ellipse.remove()
+            self._gps_cov_ellipse = None
         self._gps_canvas.draw_idle()
         # Encoders: show live placeholder and clear plot
         self._odom_live_txt.set_visible(True)
@@ -5157,6 +6225,62 @@ class HudWindow(QMainWindow):
                             extent=[extent[0], extent[1], extent[2], extent[3]],
                             aspect='auto', zorder=0,
                         )
+            # 2σ covariance ellipse around the current fix. Drawn in
+            # degrees on the lat/lon axes — width/height come from the
+            # eigendecomposition of the East/North block, converted
+            # from meters to degrees with the local meridian scale.
+            cov = node.latest_gps_cov
+            self._set_cell_title(
+                '_gps_title_text', '_gps_title_label',
+                'GPS Covariance [fix]' if cov is not None else 'GPS',
+            )
+            if cov is not None:
+                cov_ee, cov_en, cov_nn = cov
+                trace = cov_ee + cov_nn
+                det = cov_ee * cov_nn - cov_en * cov_en
+                disc = max(0.0, trace * trace / 4.0 - det)
+                root = math.sqrt(disc)
+                lam1 = trace / 2.0 + root  # larger eigenvalue (m^2)
+                lam2 = max(0.0, trace / 2.0 - root)
+                # 2σ axes in meters.
+                a_m = 2.0 * math.sqrt(max(0.0, lam1))
+                b_m = 2.0 * math.sqrt(max(0.0, lam2))
+                # Orientation of the major axis. atan2 against the
+                # East/North block — angle measured CCW from East.
+                angle_rad = 0.5 * math.atan2(2.0 * cov_en,
+                                             cov_ee - cov_nn)
+                angle_deg = math.degrees(angle_rad)
+                m_per_deg_lat = 111320.0
+                m_per_deg_lon = m_per_deg_lat * max(
+                    1e-6, math.cos(math.radians(lat)))
+                # We render on a lat/lon axis where 1 deg lon ≠ 1 deg
+                # lat in meters; convert each principal axis as a
+                # vector and use the diameter (2 × radius) for Ellipse.
+                ca = math.cos(angle_rad)
+                sa = math.sin(angle_rad)
+                # Major-axis vector (a_m along the major dir) in deg.
+                maj_dlon = (a_m * ca) / m_per_deg_lon
+                maj_dlat = (a_m * sa) / m_per_deg_lat
+                min_dlon = (-b_m * sa) / m_per_deg_lon
+                min_dlat = (b_m * ca) / m_per_deg_lat
+                width_deg = 2.0 * math.hypot(maj_dlon, maj_dlat)
+                height_deg = 2.0 * math.hypot(min_dlon, min_dlat)
+                if self._gps_cov_ellipse is None:
+                    self._gps_cov_ellipse = Ellipse(
+                        (lon, lat), width=width_deg, height=height_deg,
+                        angle=angle_deg, facecolor='none',
+                        edgecolor='#ff5050', linewidth=1.2, alpha=0.85,
+                        zorder=4,
+                    )
+                    self._gps_ax.add_patch(self._gps_cov_ellipse)
+                else:
+                    self._gps_cov_ellipse.set_center((lon, lat))
+                    self._gps_cov_ellipse.width = width_deg
+                    self._gps_cov_ellipse.height = height_deg
+                    self._gps_cov_ellipse.angle = angle_deg
+                    self._gps_cov_ellipse.set_visible(True)
+            elif self._gps_cov_ellipse is not None:
+                self._gps_cov_ellipse.set_visible(False)
             any_scalar_changed = True
 
         # --- Odom: graduate raw /odom → /local_ekf/odom when the
@@ -5240,14 +6364,47 @@ class HudWindow(QMainWindow):
                 self._cam_im = self._cam_ax.imshow(img_rgb, aspect='equal')
             else:
                 self._cam_im.set_data(img_rgb)
-            self._cam_canvas.draw_idle()
             self._live_set_dot_received('Camera')
+
+            # Detected-line overlay. If the line detector is producing
+            # /line_detection/line_pixels, paint each pixel as a small
+            # red dot. When the topic goes silent we hide the scatter
+            # so the raw image is shown by itself — matching the
+            # "detector off → original image" behavior.
+            lp = node.latest_line_pixels
+            fresh = (now - node.latest_line_pixels_t) < self._overlay_fresh_s
+            self._set_cell_title(
+                '_cam_title_text', '_cam_title_label',
+                'Camera CUDA' if (lp is not None and fresh) else 'Camera RAW',
+            )
+            if lp is not None and fresh and lp[0].size > 0:
+                xs, ys = lp[0], lp[1]
+                if self._cam_lines_scatter is None:
+                    self._cam_lines_scatter = self._cam_ax.scatter(
+                        xs, ys, s=4, c='red', marker='.',
+                        linewidths=0, zorder=10,
+                    )
+                else:
+                    self._cam_lines_scatter.set_offsets(
+                        np.column_stack([xs, ys]))
+                    self._cam_lines_scatter.set_visible(True)
+            elif self._cam_lines_scatter is not None:
+                self._cam_lines_scatter.set_visible(False)
+
+            self._cam_canvas.draw_idle()
 
         # --- LiDAR ---
         scan = node.latest_scan
         if scan is not None:
             node.latest_scan = None
-            bev = self._render_lidar_bev(scan)
+            pca_xy = node.latest_pca_xy
+            pca_fresh = (now - node.latest_pca_t) < self._overlay_fresh_s
+            bev_pca = pca_xy if (pca_xy is not None and pca_fresh) else None
+            self._set_cell_title(
+                '_lidar_title_text', '_lidar_title_label',
+                'LIDAR PCA' if bev_pca is not None else 'LIDAR Heightband',
+            )
+            bev = self._render_lidar_bev(scan, pca_xy=bev_pca)
             bev = np.rot90(bev, 1)
             bev = np.fliplr(bev)
             self._lidar_live_txt.set_visible(False)
@@ -5267,6 +6424,20 @@ class HudWindow(QMainWindow):
         # has a dedicated always-on timer (self._ekf_status_timer in
         # __init__) so the pulse and the EKF Filters status rows
         # update whether or not Live mode is active.
+
+    def _set_cell_title(self, attr_text, attr_label, text):
+        """Update one of the sensor-cell title QLabels only when the
+        text changes — cheap no-op on every tick that the state
+        doesn't move, so we can call it every live tick without
+        triggering Qt restyle work.
+        """
+        if getattr(self, attr_text, None) == text:
+            return
+        lbl = getattr(self, attr_label, None)
+        if lbl is None:
+            return
+        lbl.setText(text)
+        setattr(self, attr_text, text)
 
     def _set_enc_title(self, text):
         """Flip the Encoders cell title between '(Odom)' and
@@ -5303,9 +6474,11 @@ class HudWindow(QMainWindow):
         if stamps is None:
             return
 
-        def _alive(key):
+        def _alive(key, max_age_s=None):
+            if max_age_s is None:
+                max_age_s = self._ekf_msg_age_max_s
             t = stamps.get(key, 0.0)
-            return t > 0.0 and (now_s - t) < self._ekf_msg_age_max_s
+            return t > 0.0 and (now_s - t) < max_age_s
 
         # Hue interpolated along the green→purple arc by a sine
         # wave at ``_ekf_pulse_freq_hz``. Phase advanced by the
@@ -5323,7 +6496,13 @@ class HudWindow(QMainWindow):
             dot = self.status_dots.get(dot_name)
             if dot is None:
                 continue
-            if _alive(input_key) and _alive(ekf_key):
+            # Per-device input-freshness override — slow inputs (GPS)
+            # use a longer window so the dot doesn't flicker between
+            # fixes. The EKF output side always uses the default
+            # window because it should be high-rate regardless.
+            input_max_age = self._ekf_pulse_input_max_age_s.get(
+                dot_name, self._ekf_msg_age_max_s)
+            if _alive(input_key, input_max_age) and _alive(ekf_key):
                 dot.setStyleSheet(pulse_style)
             # Else: leave whatever the prior tick set — the existing
             # alive/flash logic owns the dot's appearance in those
@@ -5339,13 +6518,18 @@ class HudWindow(QMainWindow):
             dot.setStyleSheet(self._DOT_ON if _alive(ekf_key) else self._DOT_OFF)
 
     @staticmethod
-    def _render_lidar_bev(scan, size=480):
+    def _render_lidar_bev(scan, size=480, pca_xy=None):
         """Render a LaserScan as a bird's-eye-view RGB image.
 
         Gray background = outside lidar range / unknown.
         White = driveable (clear path from robot to hit).
         Black = obstacle shadow (from hit outward to max range).
         Green dots = hit points. Red dot = robot origin.
+
+        ``pca_xy`` is an optional (N, 2) array of obstacle XY positions
+        in the same frame as the scan (lidar_footprint). When provided,
+        they are drawn as 3x3 red squares on top of everything else —
+        this is the PCA obstacle overlay.
         """
         img = np.full((size, size, 3), 128, dtype=np.uint8)  # gray background
         cx, cy = size // 2, size // 2
@@ -5384,6 +6568,21 @@ class HudWindow(QMainWindow):
                 # Green hit dot
                 if 0 <= ex < size and 0 <= ey < size:
                     img[ey, ex] = (0, 255, 0)
+
+        # PCA obstacle overlay — drawn before the robot dot so the
+        # origin stays distinguishable when obstacles are clustered
+        # near the robot.
+        if pca_xy is not None and len(pca_xy) > 0:
+            for px, py in pca_xy:
+                if not (np.isfinite(px) and np.isfinite(py)):
+                    continue
+                ex = int(cx + px * scale)
+                ey = int(cy - py * scale)
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        ny, nx = ey + dy, ex + dx
+                        if 0 <= ny < size and 0 <= nx < size:
+                            img[ny, nx] = (255, 0, 0)
 
         # Robot origin (red dot)
         for dy in range(-1, 2):
@@ -5436,6 +6635,19 @@ if _HAS_ROS:
             self.latest_image_rgb = None   # numpy RGB array
             self.latest_scan = None        # LaserScan message
             self.latest_gps = None         # (lat, lon)
+            # GPS position covariance (3x3, ENU, in m^2). Stashed
+            # separately from latest_gps so the live tick can draw the
+            # 2σ ellipse without changing the fix-consumption path.
+            self.latest_gps_cov = None     # (cov_ee, cov_en, cov_nn) m^2
+            # Detected line pixels overlay (cleared by the live tick
+            # once consumed; the topic-staleness check in HudWindow
+            # decides whether to draw).
+            self.latest_line_pixels = None # (xs, ys, width, height)
+            self.latest_line_pixels_t = 0.0
+            # PCA-filtered lidar obstacles (PointCloud2 → list of
+            # (x, y) tuples in the lidar_footprint frame).
+            self.latest_pca_xy = None      # numpy (N, 2) array
+            self.latest_pca_t = 0.0
             self.latest_odom = None        # (x, y, qz) — raw /odom
             self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
             self.latest_voltage = None     # float
@@ -5526,6 +6738,40 @@ if _HAS_ROS:
                 Odometry, '/global_ekf/odom',
                 self._cb_ekf_global_odom, _SENSOR_QOS,
             )
+            # PCA-filtered lidar obstacles (red dots on the BEV).
+            # Requires sensor_msgs_py to deserialize PointCloud2; if
+            # the helper isn't on the Python path we skip this overlay
+            # rather than crashing the GUI at startup.
+            if _HAS_PC2:
+                self.create_subscription(
+                    PointCloud2, '/scan_pca_filtered_points',
+                    self._cb_pca, _SENSOR_QOS,
+                )
+            # 2D line-pixel array from the line detector (red dots on
+            # the camera image). Published as std_msgs/Int32MultiArray
+            # so the native HUD only needs /opt/ros/humble on its
+            # Python path — no custom interface dependency. Wire
+            # format: data[0]=width, data[1]=height, data[2:] is
+            # interleaved [x0, y0, x1, y1, ...].
+            self.create_subscription(
+                Int32MultiArray, '/line_detection/line_pixels',
+                self._cb_line_pixels, _SENSOR_QOS,
+            )
+
+            # Auto-mode wiring. The control node toggles its internal
+            # autonomousMode on a rising edge of /joy buttons[3] (X
+            # button on the Xbox controller) and publishes the result
+            # to /autonomous_mode. The GUI publishes a fake X-button
+            # press to /joy when the operator presses 'A' on the
+            # keyboard, and subscribes to /autonomous_mode to keep the
+            # corner badge in sync with the actual robot state — same
+            # pattern as t002_automator._send_x_button_to_control.
+            self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
+            self.joy_pub = self.create_publisher(Joy, '/joy', 10)
+            self.create_subscription(
+                Bool, '/autonomous_mode',
+                self._cb_autonomous_mode, _RELIABLE_QOS,
+            )
 
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
@@ -5550,6 +6796,18 @@ if _HAS_ROS:
         def _cb_gps(self, msg):
             self.last_msg_t['gps'] = time.monotonic()
             self.latest_gps = (msg.latitude, msg.longitude)
+            # position_covariance is row-major 3x3 in ENU (m^2). Pull
+            # the 2x2 East/North block — that's what the GUI's lat/lon
+            # map view can render as a 2σ ellipse.
+            cov = msg.position_covariance
+            if cov is not None and len(cov) >= 5:
+                cov_ee = float(cov[0])
+                cov_en = float(cov[1])
+                cov_nn = float(cov[4])
+                if (math.isfinite(cov_ee) and math.isfinite(cov_en)
+                        and math.isfinite(cov_nn) and cov_ee > 0.0
+                        and cov_nn > 0.0):
+                    self.latest_gps_cov = (cov_ee, cov_en, cov_nn)
 
         def _cb_odom(self, msg):
             self.last_msg_t['odom'] = time.monotonic()
@@ -5603,6 +6861,54 @@ if _HAS_ROS:
 
         def _cb_soc(self, msg):
             self.latest_soc = msg.data
+
+        def _cb_pca(self, msg):
+            # PointCloud2 of grade/PCA-flagged obstacles in the lidar
+            # footprint frame. We only need the (x, y) for the BEV
+            # overlay — z is dropped because the BEV is 2D.
+            try:
+                pts = np.fromiter(
+                    (xy for xy in _pc2.read_points(
+                        msg, field_names=('x', 'y'), skip_nans=True)),
+                    dtype=np.dtype([('x', np.float32), ('y', np.float32)]),
+                )
+                if pts.size == 0:
+                    self.latest_pca_xy = np.empty((0, 2), dtype=np.float32)
+                else:
+                    self.latest_pca_xy = np.stack(
+                        [pts['x'], pts['y']], axis=1).astype(np.float32)
+                self.latest_pca_t = time.monotonic()
+            except Exception:
+                pass
+
+        def _cb_line_pixels(self, msg):
+            data = msg.data
+            if len(data) < 2:
+                return
+            w = int(data[0])
+            h = int(data[1])
+            pairs = np.asarray(data[2:], dtype=np.int32)
+            # data[2:] is interleaved [x0, y0, x1, y1, ...]; drop the
+            # tail if a malformed message arrives with an odd count.
+            if pairs.size % 2 != 0:
+                pairs = pairs[:-1]
+            if pairs.size == 0:
+                xs = np.empty(0, dtype=np.int32)
+                ys = np.empty(0, dtype=np.int32)
+            else:
+                pairs = pairs.reshape(-1, 2)
+                xs = pairs[:, 0]
+                ys = pairs[:, 1]
+            self.latest_line_pixels = (xs, ys, w, h)
+            self.latest_line_pixels_t = time.monotonic()
+
+        def _cb_autonomous_mode(self, msg):
+            # control.cpp publishes this whenever autonomousMode flips
+            # (and once on startup with the initial value). HudWindow's
+            # 5 Hz sync tick reads this and updates the corner badge,
+            # so the GUI badge always reflects the *actual* robot state
+            # rather than what we last published.
+            self.latest_autonomous_mode = bool(msg.data)
 
 
 def main(args=None):

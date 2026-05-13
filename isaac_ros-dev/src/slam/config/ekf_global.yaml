@@ -1,17 +1,50 @@
 ekf_global:
   ros__parameters:
-    frequency: 5.0
+    frequency: 30.0
     sensor_timeout: 0.1
+    two_d_mode: true
     map_frame: map
     odom_frame: odom
     base_link_frame: base_link
     world_frame: map
-    
-    
 
-    # [ x y z 
+    # slam_toolbox already publishes map -> odom. If this EKF also
+    # publishes TF, the two fight and Nav2 sees a chattering transform.
+    # We use this filter purely as a state estimator that emits
+    # /global_ekf/odom for downstream consumers.
+    publish_tf: false
+
+    # Explicit process_noise_covariance. Without this set,
+    # robot_localization falls back to its compile-time defaults
+    # (very low), which makes the EKF over-trust whatever measurement
+    # most recently arrived. With /odometry/gps reporting all-zero
+    # covariance, every GPS sample was nominally "perfect" and was
+    # yanking the state. Diagonal mirrors ekf_local so the two
+    # filters share the same assumed motion model.
+    # Order: x y z r p yaw vx vy vz vroll vpitch vyaw ax ay az.
+    process_noise_covariance: [
+      0.05,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.05,   0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.06,   0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.03,   0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.03,   0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.06,   0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025,   0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04,   0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01,   0.0,    0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01,   0.0,    0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02,   0.0,    0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.01,   0.0,    0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.01,   0.0,
+      0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015
+    ]
+
+
+
+    # [ x y z
     #   r p yw
-    #   dx dy dz 
+    #   dx dy dz
     #   dr dp dyw
     #   ax ay az ]
 
@@ -32,3 +65,31 @@ ekf_global:
                   true, false, false,
                   false, false, true,
                   false, false, false]
+
+    # ── GPS (XY only, via navsat_transform_node) ─────────────────────
+    # We fuse only the absolute XY position from /odometry/gps and
+    # nothing else: no Z, no yaw, no velocity. The per-fix covariance
+    # comes from NavSatFix.position_covariance (passed through by
+    # navsat_transform_node), so the EKF naturally down-weights bad
+    # fixes the receiver flags. The rejection threshold below is a
+    # Mahalanobis-distance gate that drops measurements more than
+    # 5 σ from the current estimate — protects against multipath
+    # spikes that the receiver may have under-reported.
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, false]
+    odom1_differential: false
+    odom1_relative: false
+    odom1_queue_size: 10
+    odom1_nodelay: false
+    # robot_localization param name correction. The valid names are
+    # ``<input>_pose_rejection_threshold`` and ``..._twist_rejection_threshold``
+    # — there is NO single ``<input>_rejection_threshold``. The earlier
+    # spelling was silently ignored, which let GPS (zero covariance,
+    # ~7.7 m disagreement with SLAM) leak through the gate and yank
+    # /global_ekf/odom by ~1 m at rest. 5.0 = Mahalanobis-σ outlier
+    # cutoff.
+    odom1_pose_rejection_threshold: 5.0

@@ -61,11 +61,13 @@ def generate_launch_description():
             core_pkg ,
     )
 
-    joy = Node(
-        package='joy',
-        executable='joy_node',
-        name='joy',
-    )
+    # joy_node is provided by control_dev.launch.py (the file the
+    # ``control`` IncludeLaunchDescription below pulls in). Launching
+    # it here too produced two /joy nodes under the same name, which
+    # was the "WARNING: there are nodes in the graph that share an
+    # exact name" the operator was seeing alongside the duplicate
+    # Nav2 nodes. control_dev fires 1 s after this launch starts via
+    # control_event below — joy is up before any consumer needs it.
 
     control = IncludeLaunchDescription(
         control_pkg
@@ -96,11 +98,10 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        joy,
         core,
         control_event,
         odom_event
-       
+
     ])
 
     

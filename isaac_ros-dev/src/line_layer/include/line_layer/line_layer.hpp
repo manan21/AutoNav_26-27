@@ -58,7 +58,10 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <cstdint>
 #include <optional>
+#include <unordered_map>
+#include <vector>
 
 namespace line_layer
 {
@@ -81,6 +84,9 @@ public:
   virtual void reset()
   {
     resetMaps();
+    if (clearing_) {
+      persisted_points_.clear();
+    }
     current_ = false;
     need_recalculation_ = true;
   }
@@ -98,7 +104,13 @@ private:
   bool need_recalculation_;
   bool rolling_window_;
   bool publish_costmap_;
+  // If true (default, used by local costmap), resetMaps() runs every cycle and the layer reflects only the current message. If false (used in the global costmap), resetMaps() is skipped so cells accumulate forever — required for global obstacle memory when map_padder maintains a stable-sized grid.
+  bool clearing_;
   double transform_tolerance_;
+  int64_t max_message_age_ms_;
+  int64_t observation_persistence_ms_;
+  double observation_persistence_resolution_m_;
+  int max_persisted_points_;
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
 
@@ -118,9 +130,26 @@ private:
   // when the wrapper sucks so you write a chiller one
   LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>> buffer_;
 
+  struct PersistentPoint
+  {
+    geometry_msgs::msg::Vector3 point;
+    rclcpp::Time stamp;
+  };
+  std::unordered_map<std::uint64_t, PersistentPoint> persisted_points_;
+
   void linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message);
   std::optional<std::vector<geometry_msgs::msg::Vector3>> transformPointsToGlobalFrame(
     const autonav_interfaces::msg::LinePoints & message);
+  bool hasObservationPersistence() const;
+  std::uint64_t persistenceKey(double x, double y) const;
+  void rememberPersistentPoints(
+    const std::vector<geometry_msgs::msg::Vector3> & points,
+    const rclcpp::Time & stamp);
+  std::vector<geometry_msgs::msg::Vector3> activePersistentPoints(const rclcpp::Time & now);
+  void stampPoints(
+    nav2_costmap_2d::Costmap2D & master_grid,
+    int min_i, int min_j, int max_i, int max_j,
+    const std::vector<geometry_msgs::msg::Vector3> & points);
 };
 
 }  // namespace nav2_gradient_costmap_plugin
