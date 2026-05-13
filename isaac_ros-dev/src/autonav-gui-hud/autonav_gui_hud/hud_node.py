@@ -840,7 +840,6 @@ class HudWindow(QMainWindow):
         lbl_goal = QLabel("Send Goal")
         lbl_goal.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
         self._send_goal_input = QLineEdit()
-        self._send_goal_input.setPlaceholderText("-r 10 0 0")
         self._send_goal_input.setStyleSheet(send_field_style)
         btn_send_goal = QPushButton("Send")
         btn_send_goal.setStyleSheet(send_btn_style)
@@ -866,7 +865,6 @@ class HudWindow(QMainWindow):
         lbl_gps = QLabel("Send GPS")
         lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
         self._send_gps_input = QLineEdit()
-        self._send_gps_input.setPlaceholderText("37.23028, -80.42502")
         self._send_gps_input.setStyleSheet(send_field_style)
         btn_send_gps = QPushButton("Send")
         btn_send_gps.setStyleSheet(send_btn_style)
@@ -4312,36 +4310,22 @@ class HudWindow(QMainWindow):
         self._focus_lock_password()
 
     def _focus_lock_password(self):
-        """Force the password field to receive keyboard events.
-
-        We don't trust setFocus alone — on this Jetson + fullscreen
-        Qt5 stack, setFocus on a just-shown widget silently no-ops
-        often enough that the operator gets stranded. ``grabKeyboard()``
-        is the hammer: it routes every keyboard event in the
-        application to this widget until ``releaseKeyboard()``,
-        regardless of who has focus. We still call setFocus so the
-        caret shows in the QLineEdit, but the grab is what actually
-        guarantees typing works."""
+        """Visually focus the password field. Typing is NOT routed via
+        Qt focus — see eventFilter, which manually relays printable
+        characters and Backspace/Enter into the QLineEdit while
+        _screen_locked is True. We tried grabKeyboard() here; on
+        Linux/X11 it does an X-server-wide keyboard grab that locks
+        the entire OS keyboard until release, which stranded the
+        operator from killing the GUI in another terminal. Don't."""
         pw = self._lock_password_input
         if pw is None or not self._screen_locked:
             return
-        def _do_focus():
-            if not self._screen_locked or pw is None:
-                return
-            if self._lock_overlay is not None:
-                self._lock_overlay.raise_()
-            self.activateWindow()
-            pw.raise_()
-            pw.setFocus(Qt.OtherFocusReason)
-            try:
-                pw.grabKeyboard()
-            except Exception:
-                pass
-        # Run now AND on the next tick AND again after 50ms — covers
-        # every Qt focus-routing edge case we've observed.
-        _do_focus()
-        QTimer.singleShot(0, _do_focus)
-        QTimer.singleShot(50, _do_focus)
+        if self._lock_overlay is not None:
+            self._lock_overlay.raise_()
+        pw.raise_()
+        # setFocus is best-effort — used only to show the caret.
+        # The manual relay in eventFilter is the real input path.
+        pw.setFocus(Qt.OtherFocusReason)
 
     def _show_lock_password_input(self):
         """Ctrl+Shift+L while locked → re-focus the password field.
@@ -4370,12 +4354,6 @@ class HudWindow(QMainWindow):
     def _unlock_screen(self):
         self._screen_locked = False
         if self._lock_password_input is not None:
-            # Release the keyboard grab before hiding; releasing after
-            # hide is a no-op and would leave the grab dangling.
-            try:
-                self._lock_password_input.releaseKeyboard()
-            except Exception:
-                pass
             self._lock_password_input.clear()
             self._lock_password_input.setVisible(False)
         if self._lock_overlay is not None:
@@ -4521,38 +4499,65 @@ class HudWindow(QMainWindow):
 
         if self._screen_locked:
             et = event.type()
-            # Anything destined for a widget *inside* the lock overlay
-            # is allowed through unchanged — the password QLineEdit,
-            # but also its parent overlay/labels in case focus drifted
-            # (e.g. the overlay container itself ends up with focus
-            # after raise_/show). Only events going to the rest of the
-            # GUI get blocked.
-            in_overlay = (
-                self._lock_overlay is not None and
-                isinstance(obj, QWidget) and
-                (obj is self._lock_overlay or
-                 self._lock_overlay.isAncestorOf(obj))
-            )
             if et == QEvent.KeyPress:
-                if in_overlay:
-                    return False
+                # Manual key relay: don't depend on Qt's focus system
+                # to deliver keystrokes to the password QLineEdit.
+                # Instead, *intercept* every key event in the app and
+                # drive the QLineEdit directly via insert() /
+                # backspace() / returnPressed handler. This makes
+                # typing work regardless of which widget actually has
+                # focus or whether Qt routes events somewhere unexpected.
+                pw = self._lock_password_input
+                if pw is None:
+                    return True
+                k = event.key()
+                if k in (Qt.Key_Return, Qt.Key_Enter):
+                    self._try_unlock()
+                    return True
+                if k == Qt.Key_Backspace:
+                    pw.backspace()
+                    return True
+                if k == Qt.Key_Delete:
+                    pw.del_()
+                    return True
+                if k in (Qt.Key_Left,):
+                    pw.cursorBackward(False, 1)
+                    return True
+                if k in (Qt.Key_Right,):
+                    pw.cursorForward(False, 1)
+                    return True
+                if k == Qt.Key_Home:
+                    pw.home(False)
+                    return True
+                if k == Qt.Key_End:
+                    pw.end(False)
+                    return True
+                # Printable characters: insert into the password field.
+                # event.text() carries the OS-decoded character (e.g.
+                # '@' for Shift+2), so we don't have to reinvent
+                # keyboard layout handling.
+                text = event.text()
+                if text and text.isprintable():
+                    pw.insert(text)
+                    return True
+                # Non-printable / modifier-only keys: swallow.
                 return True
             if et in (QEvent.KeyRelease, QEvent.ShortcutOverride,
                       QEvent.InputMethod, QEvent.InputMethodQuery):
-                # Block shortcut + IME delivery outside the overlay too.
-                # IME events are how some Linux input stacks actually
-                # commit characters into a QLineEdit; if we silently
-                # blocked them the field would look unresponsive even
-                # with focus correct.
-                if in_overlay:
-                    return False
+                # All other keyboard-related events: swallow.
                 return True
             if et in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
                       QEvent.MouseButtonDblClick, QEvent.Wheel):
+                # Clicks: only allow them on widgets inside the lock
+                # overlay (the password field gets caret placement /
+                # focus). Everything else swallowed.
+                in_overlay = (
+                    self._lock_overlay is not None and
+                    isinstance(obj, QWidget) and
+                    (obj is self._lock_overlay or
+                     self._lock_overlay.isAncestorOf(obj))
+                )
                 if in_overlay:
-                    # Click anywhere on the overlay re-focuses the
-                    # password field — a rescue path if focus ever
-                    # drifted away from the QLineEdit.
                     if et == QEvent.MouseButtonPress:
                         self._focus_lock_password()
                     return False
@@ -4952,8 +4957,14 @@ class HudWindow(QMainWindow):
             self._sel_arrow_l = self._sel_frames_l[self._sel_frame_idx]
             self._sel_arrow_r = self._sel_frames_r[self._sel_frame_idx]
             widget, base_label, _ = self._cur_btn()
-            # Slider, sensor cells, and power cell don't support setText
-            if widget is not self.pb_slider and widget not in self._sensor_cells and widget is not self._power_cell:
+            # Slider / sensor cells / power cell don't support setText.
+            # QLineEdit DOES support setText, but calling it would
+            # overwrite the operator's typed args every 250ms — that
+            # was the "text keeps reverting to default" bug. Skip it.
+            if (widget is not self.pb_slider
+                    and widget not in self._sensor_cells
+                    and widget is not self._power_cell
+                    and not isinstance(widget, QLineEdit)):
                 widget.setText(
                     f"{self._sel_arrow_l}  {base_label}  {self._sel_arrow_r}"
                 )
