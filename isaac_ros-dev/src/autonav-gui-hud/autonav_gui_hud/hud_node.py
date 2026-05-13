@@ -4211,7 +4211,12 @@ class HudWindow(QMainWindow):
             "QLineEdit:focus { border: 1px solid #0af; }"
         )
         pw.returnPressed.connect(self._try_unlock)
-        pw.setVisible(False)
+        # Strong focus + visible from the start. The previous two-step
+        # design (Ctrl+Shift+L to reveal) was fragile — keystrokes went
+        # to whichever widget had focus before the lock and the app
+        # event filter swallowed them. Showing the field immediately
+        # means the password input is always the obvious target.
+        pw.setFocusPolicy(Qt.StrongFocus)
         # Center the line edit horizontally inside the QVBoxLayout via
         # a wrapping QHBoxLayout — QLineEdit otherwise stretches.
         pw_row = QHBoxLayout()
@@ -4243,13 +4248,17 @@ class HudWindow(QMainWindow):
     def _lock_screen(self):
         if self._lock_overlay is None:
             self._build_lock_overlay()
-        # Hide password field initially — operator must hit Ctrl+Shift+L
-        # again (or click) to reveal it.
-        self._lock_password_visible = False
-        self._lock_password_input.setVisible(False)
+        # Password field is visible immediately. Keeping it hidden
+        # behind a second Ctrl+Shift+L stranded the operator when
+        # setFocus didn't take effect — without focus, the app event
+        # filter swallowed every keystroke and there was no obvious
+        # way to recover.
+        self._lock_password_visible = True
+        self._lock_password_input.setVisible(True)
+        self._lock_password_input.setEnabled(True)
         self._lock_password_input.clear()
         self._lock_status_label.setVisible(False)
-        self._lock_hint_label.setText("Press Ctrl+Shift+L to unlock")
+        self._lock_hint_label.setText("Type password and press Enter")
         self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
         self._lock_overlay.show()
         self._lock_overlay.raise_()
@@ -4258,22 +4267,49 @@ class HudWindow(QMainWindow):
         self.setCursor(Qt.ArrowCursor)
         self._screen_locked = True
         self._gui_log_msg("Screen locked")
+        # Force focus to the password field. Deferred to the next event
+        # loop iteration: setFocus on a widget that was just shown — or
+        # one whose top-level didn't own keyboard focus before the lock
+        # — silently no-ops when called inline. The 50ms follow-up
+        # handles the case where Qt re-routes focus after the first
+        # tick (e.g. a sibling widget's deferred FocusIn races with us).
+        self._focus_lock_password()
+
+    def _focus_lock_password(self):
+        """Aggressively pull keyboard focus onto the password field.
+        Called from _lock_screen and from the event filter when the
+        operator clicks anywhere on the overlay or hits Ctrl+Shift+L
+        while locked."""
+        pw = self._lock_password_input
+        if pw is None or not self._screen_locked:
+            return
+        def _do_focus():
+            if not self._screen_locked or pw is None:
+                return
+            if self._lock_overlay is not None:
+                self._lock_overlay.raise_()
+            self.activateWindow()
+            pw.raise_()
+            pw.setFocus(Qt.OtherFocusReason)
+        # Run now AND on the next tick AND again after 50ms — covers
+        # every Qt focus-routing edge case we've observed.
+        _do_focus()
+        QTimer.singleShot(0, _do_focus)
+        QTimer.singleShot(50, _do_focus)
 
     def _show_lock_password_input(self):
-        """Reveal & focus the password field. Called by the event filter
-        when Ctrl+Shift+L is pressed while locked. Idempotent: if the
-        field is already visible, just refocus it without clearing —
-        otherwise repeated Ctrl+Shift+L would wipe a partially-typed
-        password."""
+        """Ctrl+Shift+L while locked → re-focus the password field.
+        Kept for the legacy two-step flow's keystroke (and as a
+        rescue path if the operator clicked outside the field and
+        focus drifted)."""
         if not self._screen_locked or self._lock_password_input is None:
             return
         if not self._lock_password_visible:
             self._lock_password_visible = True
             self._lock_password_input.setVisible(True)
-            self._lock_password_input.clear()
             self._lock_status_label.setVisible(False)
             self._lock_hint_label.setText("Type password and press Enter")
-        self._lock_password_input.setFocus(Qt.OtherFocusReason)
+        self._focus_lock_password()
 
     def _try_unlock(self):
         if not self._screen_locked or self._lock_password_input is None:
@@ -4458,6 +4494,16 @@ class HudWindow(QMainWindow):
                 if (self._lock_password_input is not None and
                         obj is self._lock_password_input):
                     return False
+                # Click anywhere on the lock overlay (title, hint,
+                # empty space) → swallow the click but force focus
+                # onto the password field. Rescue path when focus
+                # drifted away from the line edit.
+                if (et == QEvent.MouseButtonPress and
+                        self._lock_overlay is not None and
+                        isinstance(obj, QWidget) and
+                        (obj is self._lock_overlay or
+                         self._lock_overlay.isAncestorOf(obj))):
+                    self._focus_lock_password()
                 return True
 
         if event.type() == QEvent.MouseButtonPress and obj in self._canvas_to_cell:
