@@ -14,8 +14,17 @@ if [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
     source "${WORKSPACE_ROOT}/install/setup.bash"
 fi
 
-AUTONAV_FASTDDS_PROFILE_FILE_DEFAULT="${REPO_ROOT}/env/docker/fastdds_udp.xml"
-source "${REPO_ROOT}/env/docker/dds-env.sh"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${REPO_ROOT}/env/docker/fastdds_udp.xml}"
+export FASTDDS_DEFAULT_PROFILES_FILE="${FASTDDS_DEFAULT_PROFILES_FILE:-${FASTRTPS_DEFAULT_PROFILES_FILE}}"
+
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
+    if [[ -n "${!passthrough_var:-}" ]]; then
+        export "${passthrough_var}=${!passthrough_var}"
+    fi
+done
 
 if ! command -v rviz2 >/dev/null 2>&1; then
     echo "ERROR: rviz2 is not installed or not on PATH."
@@ -24,13 +33,12 @@ if ! command -v rviz2 >/dev/null 2>&1; then
 fi
 
 echo "run-rviz.sh: launching native RViz"
-echo "AUTONAV_DDS_DISCOVERY=${AUTONAV_DDS_DISCOVERY}"
 echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
 echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY}"
 if [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
     echo "WORKSPACE_OVERLAY=${WORKSPACE_ROOT}/install/setup.bash"
 fi
-for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI AUTONAV_JETSON_IP AUTONAV_DDS_DISCOVERY_PORT; do
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
     if [[ -n "${!passthrough_var:-}" ]]; then
         echo "${passthrough_var}=${!passthrough_var}"
     fi

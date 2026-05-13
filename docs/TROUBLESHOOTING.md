@@ -57,13 +57,11 @@ A flat **[Keyword index](#keyword-index)** at the very bottom maps topical keywo
 | First check | Why |
 |---|---|
 | `echo $ROS_DOMAIN_ID` matches the container | Default is `0`. Both ends must agree. |
-| `echo $ROS_DISCOVERY_SERVER` is `<reachable-jetson-ip>:11811` | Default remote RViz now uses a Fast DDS discovery server on the Jetson. |
 | `echo $RMW_IMPLEMENTATION` is `rmw_fastrtps_cpp` | We force FastDDS UDP. See [2026-04-22 DDS fix](#2026-04-22--dds-udp-discovery-forced). |
 | `FASTRTPS_DEFAULT_PROFILES_FILE` points at `env/docker/fastdds_udp.xml` | Forces UDP transport — shared-memory fails across machines. |
 | `ROS_LOCALHOST_ONLY=0` | Default is 0 but worth confirming. |
-| `docker rm -f koopa-kingdom` after changing DDS mode/IP | Existing containers keep their creation-time environment and must be recreated. |
 
-**Keywords**: rviz, dds, fastdds, fastrtps, rmw, ros_domain_id, ros_discovery_server, autonav_jetson_ip, rmw_implementation, fastdds_udp.xml, ros_localhost_only, remote-rviz, no-topics, discovery-server, shared-memory, udp-transport, rmw_fastrtps_cpp, network, laptop
+**Keywords**: rviz, dds, fastdds, fastrtps, rmw, ros_domain_id, rmw_implementation, fastdds_udp.xml, ros_localhost_only, remote-rviz, no-topics, discovery, shared-memory, udp-transport, rmw_fastrtps_cpp, network, laptop
 
 ## "colcon build fails: `'object_tracking_parameters' has no member`"
 
@@ -555,13 +553,6 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Triage tip**: Remote RViz can't see Jetson topics → confirm both env vars match on both ends.
 - **Keywords**: dds, fastdds, fastrtps, rmw, RMW_IMPLEMENTATION, FASTRTPS_DEFAULT_PROFILES_FILE, FASTDDS_DEFAULT_PROFILES_FILE, fastdds_udp.xml, udpv4, shared-memory, discovery, rviz-remote, rmw_fastrtps_cpp
 
-## 2026-05-13 — Fast DDS discovery server for remote RViz
-
-- **Cause**: UDP-only Fast DDS still relied on simple DDS discovery, which is brittle when the Jetson has multiple interfaces or multicast is blocked.
-- **Fix**: `AUTONAV_DDS_DISCOVERY=server` is now the default; set `AUTONAV_JETSON_IP=<reachable-jetson-ip>` so the launcher exports `ROS_DISCOVERY_SERVER=<ip>:11811` and starts `fastdds discovery` in the host-networked container.
-- **Triage tip**: If the laptop cannot list Jetson topics, confirm `ROS_DISCOVERY_SERVER` matches on the container, Jetson GUI, and laptop RViz, then recreate stale containers with `docker rm -f koopa-kingdom`.
-- **Keywords**: dds, fastdds, discovery-server, ROS_DISCOVERY_SERVER, AUTONAV_JETSON_IP, AUTONAV_DDS_DISCOVERY, fastdds discovery, rviz-remote, laptop
-
 ## 2026-04-22 — Headless container migration (X11 → DDS exposure)
 
 - **Commit**: `e63c968a` — 2026-04-22 — *"REplaced X11 forwarding with ROS graph exposure via DDS"*
@@ -960,7 +951,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `behavior-tree`, `bt`, `bt_nav.xml` → 2026-03-24 hardcoded BT, 2026-04-29 BT gating, 2026-04-30 retries, 2026-04-30 BT plugin, 2026-04-30 goal-bender, 2026-04-30 gradient-escape
 - `costmap`, `local-costmap`, `global-costmap`, `inflation`, `footprint`, `static-layer`, `rolling_window` → 2026-03-20 tilt, 2026-03-21 dimensions, 2026-03-21 ghost traces, 2026-04-15 footprint+inflation, 2026-04-22 rolling, 2026-04-22 geometry, 2026-04-25 PointCloud2 obstacles
 - `cuda`, `nvcc`, `-Wpedantic`, `kernel`, `line-detection` → 2026-04-22 thresholds, 2026-04-22 window size, 2026-05-05 -Wpedantic
-- `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch, 2026-05-13 discovery server
+- `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch
 - `docker`, `container`, `koopa-kingdom`, `entrypoint` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind
 - `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous
 - `gui`, `hud`, `hud_node.py`, `[GUI_READY]`, `dot`, `live-mode` → 2026-04-24 live-mode, 2026-04-24 playback, 2026-04-24 QoS, 2026-04-24 terminal, 2026-04-24 buttons, 2026-04-28 (5 entries), 2026-05-06 startup race, 2026-05-06 5s pacing, 2026-05-06 run-detect
@@ -974,7 +965,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `colcon`, `build-error`, `object_tracking_parameters` → 2026-05-04 wrapper saga
 - `costmap-tilted`, `costmap-inverted` → 2026-03-20 local costmap tilt, 2026-05-06 frame rotations
 - `crash`, `null-deref`, `segfault` → 2026-04-04 null deref, 2026-04-22 numpy, 2026-04-28 stoi
-- `discovery-broken`, `awaiting-live-data` → 2026-04-22 DDS, 2026-04-24 QoS mismatch, 2026-05-13 discovery server
+- `discovery-broken`, `awaiting-live-data` → 2026-04-22 DDS, 2026-04-24 QoS mismatch
 - `drift`, `right-drift`, `straight-line-drift` → 2026-04-29 left encoder
 - `flicker`, `ghost-obstacle`, `stale` → 2026-03-21 ghost traces, 2026-03-24 line-hold, 2026-03-26 line-layer staleness
 - `lag`, `slow`, `performance` → 2026-04-28 (multiple), 2026-05-05 (PCA performance entries)
@@ -992,9 +983,9 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `bt_nav.xml`, `bt2.xml` → 2026-03-24 BT path, 2026-04-30 retries, 2026-04-30 goal bender
 - `core_bringup.launch.py`, `pre_slam.launch.py`, `sensors.launch.py`, `demo_day.launch.py`, `bringup.launch.py` → 2025-04-16 SLAM, 2026-03-24 staggered delays, 2026-03-24 demo-day eth, 2026-05-06 missing deps
 - `ekf_local.yaml`, `slam.yaml`, `nav2_paramsv2.yaml` → many entries
-- `env/docker/run-container.sh`, `env/docker/dds-env.sh`, `entrypoint.sh`, `entrypoint_additions/*.sh`, `fastdds_udp.xml` → 2025-12-03 USB, 2026-04-06 user race, 2026-04-08 X11, 2026-04-15 X11 (multi), 2026-04-17 INA226 unbind, 2026-04-22 DDS, 2026-04-22 headless, 2026-05-13 discovery server
+- `env/docker/run-container.sh`, `entrypoint.sh`, `entrypoint_additions/*.sh`, `fastdds_udp.xml` → 2025-12-03 USB, 2026-04-06 user race, 2026-04-08 X11, 2026-04-15 X11 (multi), 2026-04-17 INA226 unbind, 2026-04-22 DDS, 2026-04-22 headless
 - `grade_detector.yaml`, `line_detector.yaml`, `zed_override.yaml` → many detection / ZED entries
-- `hud_node.py`, `run_gui.sh`, `run-gui.sh` → all 2026-04-24 / 2026-04-28 / 2026-05-06 GUI entries, 2026-05-13 discovery server
+- `hud_node.py`, `run_gui.sh`, `run-gui.sh` → all 2026-04-24 / 2026-04-28 / 2026-05-06 GUI entries
 - April 17 2026 Jetson incident report (SharePoint), `docs/zed.md`, `docs/sick.md`, `PACKAGES.md` → cross-references throughout
 - `wheel_odom_pub.cpp`, `control.cpp`, `motor_controller.cpp`, `xbox.cpp` → control & odom entries
 - `slam.launch.py`, `nav.launch.py`, `nav.launch.py`, `dual_ekf_navsat.launch.py` → 2026-03-24 BT path, 2026-04-30 (multiple), 2026-05-06 5s pacing, 2026-05-06 startup race

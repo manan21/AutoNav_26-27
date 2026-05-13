@@ -8,7 +8,7 @@ CONTAINER_NAME="koopa-kingdom"
 HOST_WORKDIR="$HOME/AutoNav_25-26"
 CONTAINER_WORKDIR="/autonav"
 ENTRYPOINT="/usr/local/bin/scripts/entrypoint.sh"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(dirname ${BASH_SOURCE[0]})"
 
 # FLAGS
 NO_ATTACH=0
@@ -27,8 +27,9 @@ PLATFORM=$(uname -m)
 # USERNAME
 USERNAME="${USERNAME:-admin}"
 CONTAINER_GUI="${AUTONAV_CONTAINER_GUI:-0}"
-AUTONAV_FASTDDS_PROFILE_FILE_DEFAULT="${CONTAINER_WORKDIR}/env/docker/fastdds_udp.xml"
-source "${SCRIPT_DIR}/dds-env.sh"
+RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-${CONTAINER_WORKDIR}/env/docker/fastdds_udp.xml}"
+FASTDDS_DEFAULT_PROFILES_FILE="${FASTDDS_DEFAULT_PROFILES_FILE:-${FASTRTPS_DEFAULT_PROFILES_FILE}}"
 
 _detect_local_x_display() {
     local socket display
@@ -113,24 +114,19 @@ else
     echo "Run RViz locally on the laptop with the same DDS/ROS settings."
 fi
 
-echo "DDS discovery mode: ${AUTONAV_DDS_DISCOVERY}"
-echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
-echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY}"
-if [[ "${AUTONAV_DDS_DISCOVERY}" == "server" ]]; then
-    echo "ROS_DISCOVERY_SERVER=${ROS_DISCOVERY_SERVER}"
-fi
-
 DOCKER_ARGS=()
 
 # ENVIRONMENT VARIABLES
 # ENVIRONMENT VARIABLES
+DOCKER_ARGS+=("-e" "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}")
+DOCKER_ARGS+=("-e" "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}")
 DOCKER_ARGS+=("-e" "USER=${USERNAME}")
 DOCKER_ARGS+=("-e" "USERNAME=${USERNAME}")
 DOCKER_ARGS+=("-e" "HOST_USER_UID=$(id -u)")
 DOCKER_ARGS+=("-e" "HOST_USER_GID=$(id -g)")
 DOCKER_ARGS+=("-e" "WORKDIR=${CONTAINER_WORKDIR}")
 
-for passthrough_var in ROS_DOMAIN_ID ROS_LOCALHOST_ONLY RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI AUTONAV_DDS_DISCOVERY AUTONAV_DDS_DISCOVERY_PORT AUTONAV_JETSON_IP; do
+for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
     if [[ -n "${!passthrough_var:-}" ]]; then
         DOCKER_ARGS+=("-e" "${passthrough_var}=${!passthrough_var}")
     fi
@@ -297,12 +293,14 @@ attach_shell() {
 
     local exec_args=(
         docker exec -i -t -u "${USERNAME}"
+        -e "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"
+        -e "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}"
         -e "HOME=/home/${USERNAME}"
         -e "USER=${USERNAME}"
         -e "USERNAME=${USERNAME}"
     )
 
-    for passthrough_var in ROS_DOMAIN_ID ROS_LOCALHOST_ONLY RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI AUTONAV_DDS_DISCOVERY AUTONAV_DDS_DISCOVERY_PORT AUTONAV_JETSON_IP; do
+    for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
         if [[ -n "${!passthrough_var:-}" ]]; then
             exec_args+=("-e" "${passthrough_var}=${!passthrough_var}")
         fi
@@ -324,7 +322,9 @@ attach_shell() {
 
     if (($# == 0)); then
         "${exec_args[@]}" /bin/bash -lc \
-            "source /opt/ros/humble/setup.bash && \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
+             source /opt/ros/humble/setup.bash && \
              if [ -f /autonav/isaac_ros-dev/install/setup.bash ]; then \
                  source /autonav/isaac_ros-dev/install/setup.bash; \
              fi; \
@@ -337,7 +337,9 @@ attach_shell() {
              exec /bin/bash -i"
     else
         "${exec_args[@]}" /bin/bash -lc \
-            "if [ '${CONTAINER_GUI}' = '1' ]; then \
+            "export ROS_DOMAIN_ID='${ROS_DOMAIN_ID:-0}'; \
+             export ROS_LOCALHOST_ONLY='${ROS_LOCALHOST_ONLY:-0}'; \
+             if [ '${CONTAINER_GUI}' = '1' ]; then \
                  export DISPLAY='${DISPLAY:-:0}'; \
                  export XAUTHORITY='${XAUTH_FILE}'; \
                  export XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR}'; \
@@ -364,89 +366,10 @@ wait_for_container_user() {
     return 1
 }
 
-_container_env_value() {
-    local key="$1"
-    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null \
-        | awk -F= -v key="${key}" '$1 == key {print substr($0, length(key) + 2); exit}'
-}
-
-verify_existing_container_dds_env() {
-    local key expected actual mismatch
-    mismatch=0
-
-    local dds_env_vars=(
-        ROS_DOMAIN_ID
-        ROS_LOCALHOST_ONLY
-        RMW_IMPLEMENTATION
-        ROS_DISCOVERY_SERVER
-        FASTRTPS_DEFAULT_PROFILES_FILE
-        FASTDDS_DEFAULT_PROFILES_FILE
-        AUTONAV_DDS_DISCOVERY
-        AUTONAV_DDS_DISCOVERY_PORT
-    )
-
-    if [[ -n "${AUTONAV_JETSON_IP:-}" ]]; then
-        dds_env_vars+=(AUTONAV_JETSON_IP)
-    fi
-    if [[ -n "${CYCLONEDDS_URI:-}" ]]; then
-        dds_env_vars+=(CYCLONEDDS_URI)
-    fi
-
-    for key in "${dds_env_vars[@]}"; do
-        expected="${!key:-}"
-        actual="$(_container_env_value "${key}")"
-        if [[ "${actual}" != "${expected}" ]]; then
-            echo "DDS env mismatch for existing container ${CONTAINER_NAME}: ${key}" >&2
-            echo "  expected: ${expected:-<unset>}" >&2
-            echo "  actual:   ${actual:-<unset>}" >&2
-            mismatch=1
-        fi
-    done
-
-    if [[ "${mismatch}" == "1" ]]; then
-        echo "ERROR: Existing container ${CONTAINER_NAME} was created with stale DDS settings." >&2
-        echo "Recreate it so remote RViz discovery works:" >&2
-        echo "  docker rm -f ${CONTAINER_NAME}" >&2
-        echo "  AUTONAV_JETSON_IP=<reachable-jetson-ip> ./env/docker/run-container.sh" >&2
-        return 1
-    fi
-}
-
-ensure_fastdds_discovery_server() {
-    [[ "${AUTONAV_DDS_DISCOVERY}" == "server" ]] || return 0
-
-    local server_host="${AUTONAV_DISCOVERY_SERVER_HOST}"
-    local server_port="${AUTONAV_DISCOVERY_SERVER_PORT}"
-
-    if ! docker exec -u "${USERNAME}" "${CONTAINER_NAME}" /bin/bash -lc \
-        "source /opt/ros/humble/setup.bash && command -v fastdds >/dev/null 2>&1"; then
-        echo "ERROR: fastdds CLI is not available in ${CONTAINER_NAME} after sourcing ROS 2." >&2
-        echo "Install/provide the Fast DDS CLI or use AUTONAV_DDS_DISCOVERY=simple." >&2
-        return 1
-    fi
-
-    if docker exec -u "${USERNAME}" \
-        -e "AUTONAV_DISCOVERY_SERVER_PORT=${server_port}" \
-        "${CONTAINER_NAME}" /bin/bash -lc \
-        "ps -eo args= | grep '[f]astdds discovery' | grep -q -- \"-p \${AUTONAV_DISCOVERY_SERVER_PORT}\""; then
-        echo "Fast DDS discovery server already running on UDP ${server_port}."
-        return 0
-    fi
-
-    echo "Starting Fast DDS discovery server on ${server_host}:${server_port}."
-    docker exec -d -u "${USERNAME}" \
-        -e "AUTONAV_DISCOVERY_SERVER_HOST=${server_host}" \
-        -e "AUTONAV_DISCOVERY_SERVER_PORT=${server_port}" \
-        "${CONTAINER_NAME}" /bin/bash -lc \
-        'source /opt/ros/humble/setup.bash && exec fastdds discovery -l "${AUTONAV_DISCOVERY_SERVER_HOST}" -p "${AUTONAV_DISCOVERY_SERVER_PORT}" >/tmp/autonav_fastdds_discovery.log 2>&1'
-}
-
 # RE-USE EXISTING CONTAINER
 if [ "$(docker ps -a --quiet --filter status=running --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME is already running."
-    verify_existing_container_dds_env
     wait_for_container_user
-    ensure_fastdds_discovery_server
     if [[ $NO_ATTACH -eq 1 ]]; then
         echo "--no-attach set; leaving container running detached."
         exit 0
@@ -459,10 +382,8 @@ fi
 # Check if container exists but is stopped
 if [ "$(docker ps -a --quiet --filter status=exited --filter name=^/${CONTAINER_NAME}$)" ]; then
     echo "Container $CONTAINER_NAME exists but is stopped. Starting..."
-    verify_existing_container_dds_env
     docker start "$CONTAINER_NAME" >/dev/null
     wait_for_container_user
-    ensure_fastdds_discovery_server
     if [[ $NO_ATTACH -eq 1 ]]; then
         echo "--no-attach set; leaving container running detached."
         exit 0
@@ -491,7 +412,6 @@ docker run -d \
     sleep infinity >/dev/null
 
 wait_for_container_user
-ensure_fastdds_discovery_server
 if [[ $NO_ATTACH -eq 1 ]]; then
     echo "--no-attach set; leaving container running detached."
     exit 0

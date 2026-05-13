@@ -26,7 +26,7 @@ If you go manual, run them in this order — each subsystem typically depends on
 
 ## RViz
 
-RViz now runs **locally on your own Linux laptop** (not in the container) — see the main `README.md` for the `AUTONAV_JETSON_IP` + `ROS_DISCOVERY_SERVER` setup. Once it's open, set the base frame to `map` and add the visualizations you need (TF, costmaps, point clouds).
+RViz now runs **locally on your own Linux laptop** (not in the container) — see the main `README.md` for the `ROS_DOMAIN_ID` setup. Once it's open, set the base frame to `map` and add the visualizations you need (TF, costmaps, point clouds).
 
 You don't strictly need RViz on demo day — if the **Goal Pose** is already set in code (or you're using a waypoint script), the robot can run without anyone watching RViz.
 

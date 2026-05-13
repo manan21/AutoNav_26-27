@@ -5,7 +5,7 @@ First, plug the USB into the computer. This USB is used for the SSH connection t
 ```bash
 ssh jetson
 cd AutoNav_25-26
-AUTONAV_JETSON_IP=192.168.55.1 ./env/docker/run-container.sh   # launches the container
+./env/docker/run-container.sh   # launches the container
 ```
 
 ## Connecting to the Jetson from your own Laptop
@@ -30,7 +30,7 @@ Then the same start sequence works from your own laptop:
 ```bash
 ssh jetson
 cd AutoNav_25-26
-AUTONAV_JETSON_IP=192.168.55.1 ./env/docker/run-container.sh
+./env/docker/run-container.sh
 ```
 
 ## First-time GUI install (Jetson host)
@@ -47,7 +47,7 @@ Once the container is up, open a **second** `ssh jetson` session (X11-forwarded 
 
 ```bash
 cd ~/AutoNav_25-26
-AUTONAV_JETSON_IP=192.168.55.1 ./isaac_ros-dev/config/run-gui.sh
+./isaac_ros-dev/config/run-gui.sh
 ```
 
 From here, everything is point-and-click — no manual `ros2 launch` needed.
@@ -95,7 +95,7 @@ Creates a `frames<numbers>.pdf` in the current directory.
 # SSH to Jetson, pull your code
 docker stop koopa-kingdom
 cd AutoNav_25-26
-AUTONAV_JETSON_IP=192.168.55.1 ./env/docker/run-container.sh
+./env/docker/run-container.sh
 colcon build --symlink-install
 source install/setup.bash       # only needed when adding a new package
 ```
@@ -107,15 +107,12 @@ git submodule update --init
 (We hit this once by accidentally deleting `isaac_ros-dev/`.)
 
 # Launch RViz (locally, on your Linux machine)
-We no longer run RViz inside the container — run it on your own Linux laptop with ROS2 Humble installed. The Jetson now runs a Fast DDS discovery server for remote RViz, so use the Jetson IP that the laptop can reach:
+We no longer run RViz inside the container — run it on your own Linux laptop with ROS2 Humble installed. As long as `ROS_DOMAIN_ID` matches the container (default `0`) and your network can reach the Jetson, topics will show up:
 ```bash
-AUTONAV_JETSON_IP=<reachable-jetson-ip> ./isaac_ros-dev/config/run-rviz.sh
+export ROS_DOMAIN_ID=0
+rviz2
 ```
-Start the Jetson container with the same address:
-```bash
-AUTONAV_JETSON_IP=<reachable-jetson-ip> ./env/docker/run-container.sh
-```
-If topics don't appear, check `ROS_DISCOVERY_SERVER=<reachable-jetson-ip>:11811` and the FastDDS profile at `env/docker/fastdds_udp.xml` on both ends.
+If topics don't appear, check the FastDDS profile at `env/docker/fastdds_udp.xml` is in use on both ends.
 
 # Move files between container and Jetson
 ```bash

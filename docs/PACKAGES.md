@@ -160,10 +160,10 @@ A 1920×720 PyQt5 control panel. **Runs natively on the Jetson host, NOT in the 
 | | |
 |---|---|
 | **One-time install** | `sudo ./install.sh` (PyQt5, matplotlib, opencv-headless, numpy, PIL) |
-| **Launch** | `AUTONAV_JETSON_IP=192.168.55.1 ./isaac_ros-dev/config/run-gui.sh` (wrapper) or `AUTONAV_JETSON_IP=192.168.55.1 ./run_gui.sh` (direct) |
+| **Launch** | `./isaac_ros-dev/config/run-gui.sh` (wrapper) or `./run_gui.sh` (direct) |
 | **Build** | `ament_python` (entry point: `hud_node = autonav_gui_hud.hud_node:main`) |
 
-The launchers source ROS2, apply the shared DDS settings (`ROS_DOMAIN_ID`, Fast DDS UDP profile, and `ROS_DISCOVERY_SERVER` when `AUTONAV_DDS_DISCOVERY=server`), point Qt5 at the system plugin path, and pick a `DISPLAY` (`:0` by default; X11 forwarding works for remote use).
+The launchers source ROS2, set `ROS_DOMAIN_ID`, point Qt5 at the system plugin path, and pick a `DISPLAY` (`:0` by default; X11 forwarding works for remote use).
 
 ### Launch panel + readiness handshake
 
