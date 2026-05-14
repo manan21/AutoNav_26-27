@@ -320,10 +320,13 @@ class _CameraFrameWorker(QObject):
     # array (downscaled, contiguous; HxW for mask, HxWx3 for raw/overlay),
     # overlay_xy (Nx2) or None, line_fresh, source ('raw'|'mask'|'overlay')
 
-    def __init__(self, max_dim=480, min_interval_s=0.0, parent=None):
+    def __init__(self, max_dim=320, min_interval_s=0.0, parent=None):
         super().__init__(parent)
-        # 480 px max dim is plenty for the ~400 px-wide HUD camera panel
-        # and keeps matplotlib's per-frame Agg cost ~1 ms even on Jetson.
+        # 320 px max dim — panel is ~400 px wide on screen, but the
+        # canvas is now dpi=40 so anything bigger just wastes set_data
+        # bytes that matplotlib will resample down anyway. Combined
+        # with the canvas DPI drop this keeps a single paint < ~5 ms
+        # on Jetson.
         # min_interval_s=0 lets the worker emit as fast as the source can
         # supply; latest-wins drops backpressure. The active source rate
         # is now determined upstream — typically the line detector's
@@ -488,8 +491,12 @@ class _LidarFrameWorker(QObject):
 
     frame_ready = pyqtSignal(object, str)   # img (HxWx3 RGB), source
 
-    def __init__(self, size=480, parent=None):
+    def __init__(self, size=320, parent=None):
         super().__init__(parent)
+        # 320 px BEV — half the previous 480 px, ~4x fewer pixels for
+        # matplotlib to set_data and Agg to paint. Combined with the
+        # cam/lidar canvas dpi=40 drop, this is what makes the GUI keep
+        # its 30 FPS target even with both sensor panels active.
         self._size = int(size)
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
@@ -553,35 +560,56 @@ class _LidarFrameWorker(QObject):
             self.frame_ready.emit(img, source)
 
     @staticmethod
-    def _render_pca_bev(scan, size):
-        """Vectorized BEV from the PCA LaserScan — hits only."""
+    def _draw_robot_marker(img, cx, cy):
+        """Forward-pointing red triangle at the robot origin. Replaces
+        the old 3x3 red square so it can't be mistaken for a PCA
+        obstacle hit (which is also red, but square). cv2.fillPoly is
+        a single C call that releases the GIL — no per-frame cost
+        worth measuring. The triangle's apex points +x in render
+        space, which lands as 'up = forward' on screen after the
+        worker's rot90 + fliplr orientation pass.
+        """
+        if _HAS_CV2:
+            tri = np.array([
+                [cx - 4, cy - 4],
+                [cx - 4, cy + 4],
+                [cx + 5, cy],
+            ], dtype=np.int32)
+            cv2.fillPoly(img, [tri], (255, 0, 0))
+            return
+        # Fallback for cv2-less environments — a column scan that
+        # narrows linearly from base (dx=-4) to apex (dx=+5).
+        h, w = img.shape[:2]
+        for dx in range(-4, 6):
+            t = (dx + 4) / 9.0
+            half_h = max(0, int(round(4 * (1.0 - t))))
+            nx = cx + dx
+            for dy in range(-half_h, half_h + 1):
+                ny = cy + dy
+                if 0 <= ny < h and 0 <= nx < w:
+                    img[ny, nx] = (255, 0, 0)
+
+    @staticmethod
+    def _render_pca_bev(xy, size, max_range=10.0):
+        """Vectorized BEV from a PCA (N, 2) obstacle XY array (the same
+        array that `_cb_pca` decodes from /scan_pca_filtered_points).
+        """
         img = np.full((size, size, 3), 128, dtype=np.uint8)
         cx, cy = size // 2, size // 2
-        max_range = scan.range_max if scan.range_max > 0 else 10.0
         scale = (size // 2 - 2) / max_range
 
-        angles = (np.arange(len(scan.ranges)) * scan.angle_increment
-                  + scan.angle_min)
-        ranges = np.array(scan.ranges, dtype=np.float32)
+        if xy is not None and len(xy) > 0:
+            xs = (cx + xy[:, 0] * scale).astype(np.int32)
+            ys = (cy - xy[:, 1] * scale).astype(np.int32)
+            in_bounds = ((xs >= 1) & (xs < size - 1) &
+                         (ys >= 1) & (ys < size - 1))
+            xs = xs[in_bounds]
+            ys = ys[in_bounds]
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    img[ys + dy, xs + dx] = (255, 0, 0)
 
-        valid = (np.isfinite(ranges) & (ranges >= scan.range_min)
-                 & (ranges < max_range))
-        rs = ranges[valid]
-        as_ = angles[valid]
-        xs = (cx + rs * np.cos(as_) * scale).astype(np.int32)
-        ys = (cy - rs * np.sin(as_) * scale).astype(np.int32)
-        in_bounds = ((xs >= 1) & (xs < size - 1) &
-                     (ys >= 1) & (ys < size - 1))
-        xs = xs[in_bounds]
-        ys = ys[in_bounds]
-
-        # 3x3 red stamp per hit, broadcast in numpy — no Python loop
-        # over the points themselves.
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                img[ys + dy, xs + dx] = (255, 0, 0)
-
-        img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
+        _LidarFrameWorker._draw_robot_marker(img, cx, cy)
         return img
 
     @staticmethod
@@ -609,7 +637,7 @@ class _LidarFrameWorker(QObject):
         valid = np.isfinite(ranges) & (ranges >= scan.range_min)
 
         if not np.any(valid):
-            img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
+            _LidarFrameWorker._draw_robot_marker(img, cx, cy)
             return img
 
         cos_a = np.cos(angles)
@@ -661,7 +689,7 @@ class _LidarFrameWorker(QObject):
                     if 0 <= ex < size and 0 <= ey < size:
                         img[ey, ex] = (0, 255, 0)
 
-        img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
+        _LidarFrameWorker._draw_robot_marker(img, cx, cy)
         return img
 
 
@@ -688,9 +716,16 @@ from PyQt5.QtWidgets import (
 )
 
 
-def _make_dark_canvas(nrows=1, ncols=1, figsize=(3.6, 2.4)):
-    """Create a small matplotlib figure + canvas with a dark theme."""
-    fig = Figure(figsize=figsize, dpi=80, facecolor='#1e1e1e')
+def _make_dark_canvas(nrows=1, ncols=1, figsize=(3.6, 2.4), dpi=80):
+    """Create a small matplotlib figure + canvas with a dark theme.
+
+    The camera and lidar panels pass dpi=40 to halve the rasterized
+    pixmap size (and roughly quarter the Agg paint cost) — without
+    that, two image panels updating at 15+ Hz starve the main thread
+    and the GUI FPS collapses below the 30 Hz target. Plot panels
+    keep the default 80 dpi so axis ticks/labels stay crisp.
+    """
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor='#1e1e1e')
     fig.subplots_adjust(left=0.18, right=0.94, top=0.88, bottom=0.22)
     axes = fig.subplots(nrows, ncols)
     canvas = FigureCanvasQTAgg(fig)
@@ -844,7 +879,7 @@ class HudWindow(QMainWindow):
         # raw mode); the 'pca' source is a vectorized BEV from the
         # PCA-filtered LaserScan that already feeds nav2's costmap.
         # Submission decision is made on the ROS thread in _cb_scan
-        # and _cb_pca_scan: PCA wins when fresh, heightband fills in
+        # and _cb_pca: PCA wins when fresh, heightband fills in
         # otherwise.
         self._lidar_worker = _LidarFrameWorker(parent=self)
         self._lidar_worker.frame_ready.connect(self._on_lidar_frame_ready)
@@ -2147,7 +2182,10 @@ class HudWindow(QMainWindow):
         cam_cell, cam_layout = _plot_cell("Camera RAW")
         self._cam_title_label = cam_layout.itemAt(0).widget()
         self._cam_title_text = "Camera RAW"
-        self._cam_fig, self._cam_ax, self._cam_canvas = _make_dark_canvas()
+        # dpi=40 (instead of the default 80) so the rasterized pixmap is
+        # half the size and Agg paint is ~4x cheaper. Sensor panels are
+        # ~400 px wide on screen so we lose almost no perceptible detail.
+        self._cam_fig, self._cam_ax, self._cam_canvas = _make_dark_canvas(dpi=40)
         self._cam_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._cam_ax.set_facecolor('#111111')
         self._cam_ax.axis('off')
@@ -2180,7 +2218,9 @@ class HudWindow(QMainWindow):
         lidar_cell, lidar_layout = _plot_cell("LIDAR Heightband")
         self._lidar_title_label = lidar_layout.itemAt(0).widget()
         self._lidar_title_text = "LIDAR Heightband"
-        self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas()
+        # See camera canvas note: dpi=40 to keep two image panels on the
+        # main thread from collapsing the GUI's 30 FPS target.
+        self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas(dpi=40)
         self._lidar_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._lidar_ax.set_facecolor('#111111')
         self._lidar_ax.axis('off')
@@ -2554,17 +2594,17 @@ class HudWindow(QMainWindow):
 
         # Title row with the GUI-FPS readout pinned to the LEFT so it
         # doesn't sit underneath the AUTO ON/OFF badge that floats over
-        # the upper-right of the central widget. Operator uses the
-        # number to verify the Qt event loop is keeping its 30 FPS
-        # target — drops mean something downstream (sensor paints,
-        # plot redraws, etc.) is starving the main thread.
+        # the upper-right of the central widget. A right-side spacer
+        # of the same fixed width balances the layout so the title
+        # itself stays visually centered. Operator uses the number to
+        # verify the Qt event loop is keeping its 30 FPS target —
+        # drops mean something downstream (sensor paints, plot redraws,
+        # etc.) is starving the main thread.
         viz_title_row = QHBoxLayout()
         viz_title_row.setContentsMargins(0, 0, 0, 0)
+        _gui_fps_width = 110
         self._gui_fps_label = QLabel("GUI -- FPS")
-        self._gui_fps_label.setStyleSheet(
-            "border: none; color: #0f0; font-size: 10px;"
-            " font-family: monospace; padding: 0 8px;"
-        )
+        self._gui_fps_label.setFixedWidth(_gui_fps_width)
         self._gui_fps_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         viz_title_row.addWidget(self._gui_fps_label)
         lbl_viz = QLabel("PROCESS TERMINAL")
@@ -2572,7 +2612,16 @@ class HudWindow(QMainWindow):
         lbl_viz.setAlignment(Qt.AlignCenter)
         lbl_viz.setStyleSheet(section_title_style)
         viz_title_row.addWidget(lbl_viz, stretch=1)
+        # Invisible balancing spacer so the PROCESS TERMINAL title is
+        # centered across the *whole* row, not centered relative to the
+        # remaining space after the FPS label.
+        _gui_fps_spacer = QLabel("")
+        _gui_fps_spacer.setFixedWidth(_gui_fps_width)
+        viz_title_row.addWidget(_gui_fps_spacer)
         viz_layout.addLayout(viz_title_row)
+        # Initial color follows the current theme. _apply_theme() at
+        # the end of __init__ re-applies on the first dark→light flip.
+        self._apply_gui_fps_label_style()
 
         self._term_header = QLabel("Select a process from the status dots")
         self._term_header.setAlignment(Qt.AlignCenter)
@@ -2938,6 +2987,7 @@ class HudWindow(QMainWindow):
         self._recolor_widget_tree(self, color_map)
         self._restyle_canvases()
         self._restyle_terminal()
+        self._apply_gui_fps_label_style()
         # Re-run _update_selection so the selected button picks up the
         # newly-translated theme (its stylesheet was overwritten by the
         # last tick using the stored dark base_style).
@@ -6971,6 +7021,20 @@ class HudWindow(QMainWindow):
 
         self._cam_canvas.draw_idle()
 
+    def _apply_gui_fps_label_style(self):
+        """Theme-aware foreground: white text in dark mode, black in
+        light. Called on theme toggle + once at construction time. The
+        per-tick update only changes setText, never the stylesheet, so
+        color stays stable across paints.
+        """
+        if not hasattr(self, '_gui_fps_label') or self._gui_fps_label is None:
+            return
+        fg = '#ffffff' if self._theme == 'dark' else '#000000'
+        self._gui_fps_label.setStyleSheet(
+            f"border: none; color: {fg}; font-size: 10px;"
+            f" font-family: monospace; padding: 0 8px;"
+        )
+
     def _gui_fps_tick(self):
         """30 Hz QTimer tick. Records arrival time and updates the GUI
         FPS readout. Because QTimer is event-loop driven, late fires
@@ -6983,17 +7047,6 @@ class HudWindow(QMainWindow):
             span = self._gui_fps_deque[-1] - self._gui_fps_deque[0]
             if span > 0:
                 fps = (len(self._gui_fps_deque) - 1) / span
-                # Color-coded threshold around the 30 FPS target.
-                if fps >= 28.0:
-                    color = '#0f0'
-                elif fps >= 20.0:
-                    color = '#ff0'
-                else:
-                    color = '#f33'
-                self._gui_fps_label.setStyleSheet(
-                    f"border: none; color: {color}; font-size: 10px;"
-                    f" font-family: monospace; padding: 0 8px;"
-                )
                 self._gui_fps_label.setText(f"GUI {fps:5.1f} FPS")
 
     def _on_lidar_frame_ready(self, img, source):
@@ -7034,7 +7087,7 @@ class HudWindow(QMainWindow):
         in_fps = 0.0
         node = self._ros_node
         if node is not None:
-            in_ts = (node._pca_scan_in_ts if source == 'pca'
+            in_ts = (node._pca_in_ts if source == 'pca'
                      else node._lidar_in_ts)
             if len(in_ts) >= 2:
                 in_span = in_ts[-1] - in_ts[0]
@@ -7464,13 +7517,12 @@ if _HAS_ROS:
             self._mask_in_ts = deque(maxlen=20)
 
             # Lidar worker, set by HudWindow once the worker is built.
-            # _cb_scan and _cb_pca_scan submit directly to it so the
-            # BEV render runs at the lidar source rate (~20 Hz for the
-            # PCA path, slower for the Bresenham heightband).
+            # _cb_scan and _cb_pca submit directly to it so the BEV
+            # render runs at the lidar source rate (~20 Hz for the PCA
+            # path, slower for the Bresenham heightband).
             self.lidar_worker = None
-            self.latest_pca_scan_t = 0.0   # last /scan_pca_filtered receipt
             self._lidar_in_ts = deque(maxlen=20)
-            self._pca_scan_in_ts = deque(maxlen=20)
+            self._pca_in_ts = deque(maxlen=20)
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7521,14 +7573,6 @@ if _HAS_ROS:
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
-            )
-            # PCA-filtered 2-D LaserScan that already feeds nav2's
-            # obstacle layer (see pca_cloud_to_laserscan in
-            # slam.launch.py). The GUI uses this directly for the lidar
-            # PCA view — vectorized BEV, no overlay calculation.
-            self.create_subscription(
-                LaserScan, '/scan_pca_filtered',
-                self._cb_pca_scan, _SENSOR_QOS,
             )
             self.create_subscription(
                 NavSatFix, '/gps_fix', self._cb_gps, _SENSOR_QOS,
@@ -7669,24 +7713,13 @@ if _HAS_ROS:
             worker = getattr(self, 'lidar_worker', None)
             if worker is None:
                 return
-            # Defer to the PCA-driven heightband-free view whenever the
-            # grade detector is actively publishing — same pattern as
-            # the camera mask/raw fallback. Heightband only renders when
-            # the PCA scan has been silent for >1 s.
-            if (time.monotonic() - self.latest_pca_scan_t) < 1.0:
+            # Defer to the PCA path whenever the grade detector is
+            # actively publishing /scan_pca_filtered_points (same
+            # mask/raw fallback pattern as the camera). Heightband only
+            # renders when the PCA stream has been silent for >1 s.
+            if (time.monotonic() - self.latest_pca_t) < 1.0:
                 return
             worker.submit(msg, source='heightband')
-
-        def _cb_pca_scan(self, msg):
-            """/scan_pca_filtered — 2-D PCA-filtered LaserScan that
-            already feeds the costmap. Sent straight to the lidar worker
-            for the vectorized BEV view; no overlay calculation needed.
-            """
-            self.latest_pca_scan_t = time.monotonic()
-            self._pca_scan_in_ts.append(self.latest_pca_scan_t)
-            worker = getattr(self, 'lidar_worker', None)
-            if worker is not None:
-                worker.submit(msg, source='pca')
 
         def _cb_gps(self, msg):
             self.last_msg_t['gps'] = time.monotonic()
@@ -7759,8 +7792,8 @@ if _HAS_ROS:
 
         def _cb_pca(self, msg):
             # PointCloud2 of grade/PCA-flagged obstacles in the lidar
-            # footprint frame. We only need the (x, y) for the BEV
-            # overlay — z is dropped because the BEV is 2D.
+            # footprint frame. We only need the (x, y) for the BEV —
+            # z is dropped because the BEV is 2D.
             try:
                 pts = np.fromiter(
                     (xy for xy in _pc2.read_points(
@@ -7768,11 +7801,19 @@ if _HAS_ROS:
                     dtype=np.dtype([('x', np.float32), ('y', np.float32)]),
                 )
                 if pts.size == 0:
-                    self.latest_pca_xy = np.empty((0, 2), dtype=np.float32)
+                    xy = np.empty((0, 2), dtype=np.float32)
                 else:
-                    self.latest_pca_xy = np.stack(
+                    xy = np.stack(
                         [pts['x'], pts['y']], axis=1).astype(np.float32)
+                self.latest_pca_xy = xy
                 self.latest_pca_t = time.monotonic()
+                self._pca_in_ts.append(self.latest_pca_t)
+                # Hand the obstacle XY straight to the lidar worker for
+                # the PCA BEV view. Worker latest-wins drops any older
+                # frame; backpressure handles main-thread paint load.
+                worker = getattr(self, 'lidar_worker', None)
+                if worker is not None:
+                    worker.submit(xy, source='pca')
             except Exception:
                 pass
 
