@@ -316,33 +316,33 @@ class _CameraFrameWorker(QObject):
     loop free for keyboard/mouse and the other sensor boxes' paints.
     """
 
-    frame_ready = pyqtSignal(object, object, bool)
-    # rgb_array (downscaled, contiguous), overlay_xy (Nx2) or None, line_fresh
+    frame_ready = pyqtSignal(object, object, bool, str)
+    # array (downscaled, contiguous; HxW for mask, HxWx3 for raw/overlay),
+    # overlay_xy (Nx2) or None, line_fresh, source ('raw'|'mask'|'overlay')
 
-    def __init__(self, max_dim=480, min_interval_s=0.133, parent=None):
+    def __init__(self, max_dim=480, min_interval_s=0.0, parent=None):
         super().__init__(parent)
         # 480 px max dim is plenty for the ~400 px-wide HUD camera panel
         # and keeps matplotlib's per-frame Agg cost ~1 ms even on Jetson.
-        # min_interval_s = 0.133 caps emissions at ~7.5 Hz (half the ZED
-        # source rate). At 7.5 Hz the main thread has ~130 ms per frame
-        # to do set_data + draw_idle + paint, which keeps the camera
-        # display steady on Jetson instead of undulating between bursts
-        # and stalls. Latest-wins drops the in-between frames so the one
-        # we do display is always the most recent.
+        # min_interval_s=0 lets the worker emit as fast as the source can
+        # supply; latest-wins drops backpressure. The active source rate
+        # is now determined upstream — typically the line detector's
+        # debug/mask topic (4 Hz at publish_interval_ms=250) or the raw
+        # ZED stream (15 Hz) when the detector is silent.
         self._max_dim = int(max_dim)
         self._min_interval_s = float(min_interval_s)
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
-        self._pending = None      # (rgb_full, line_xy, line_fresh)
+        self._pending = None      # (arr, line_xy, line_fresh, source)
         self._last_emit_t = 0.0
         self._stop_event = threading.Event()
         self._worker = threading.Thread(
             target=self._run, name='camera-frame-worker', daemon=True)
         self._worker.start()
 
-    def submit(self, rgb_full, line_xy=None, line_fresh=False):
+    def submit(self, arr, line_xy=None, line_fresh=False, source='raw'):
         with self._cv:
-            self._pending = (rgb_full, line_xy, bool(line_fresh))
+            self._pending = (arr, line_xy, bool(line_fresh), str(source))
             self._cv.notify()
 
     def shutdown(self):
@@ -692,6 +692,11 @@ class HudWindow(QMainWindow):
         self._camera_cap = None   # cv2.VideoCapture
         self._lidar_cap = None    # cv2.VideoCapture
         self._cam_im = None       # matplotlib imshow handle
+        # Source tag for the current _cam_im so we know whether it's
+        # showing 3-channel RGB (raw / overlay) or 1-channel grayscale
+        # (mask). Used by _on_camera_frame_ready to decide whether to
+        # recreate the AxesImage with a different colormap.
+        self._cam_im_source = None
         self._lidar_im = None     # matplotlib imshow handle
         # Camera/lidar overlays: scatter for detected line pixels and a
         # patches.Ellipse for the GPS covariance — created lazily on
@@ -5716,6 +5721,7 @@ class HudWindow(QMainWindow):
         self._active_dots = set()
         # Clear video imshow handles
         self._cam_im = None
+        self._cam_im_source = None
         self._lidar_im = None
 
     def _release_video_captures(self):
@@ -5882,6 +5888,7 @@ class HudWindow(QMainWindow):
         if self._cam_im is not None:
             self._cam_im.remove()
             self._cam_im = None
+        self._cam_im_source = None
         if self._cam_lines_scatter is not None:
             self._cam_lines_scatter.remove()
             self._cam_lines_scatter = None
@@ -6485,6 +6492,7 @@ class HudWindow(QMainWindow):
         self._pwr_p_canvas.draw_idle()
 
         self._cam_im = None
+        self._cam_im_source = None
         self._lidar_im = None
 
         # Reset time/frame labels
@@ -6560,33 +6568,51 @@ class HudWindow(QMainWindow):
         self._gps_offline_txt.set_visible(False)
         self._gps_canvas.draw_idle()
 
-    def _on_camera_frame_ready(self, rgb_small, overlay, line_fresh):
+    def _on_camera_frame_ready(self, arr, overlay, line_fresh, source):
         """Main-thread slot: receives a downscaled camera frame from the
         camera worker and applies it to the matplotlib widgets. The heavy
         decoding / downscaling already happened off-thread; here we only
-        do the matplotlib set_data + (optional) overlay + draw_idle, which
-        on a ~480 px frame costs ~1 ms.
+        do the matplotlib set_data + draw_idle, which on a ~480 px frame
+        costs ~1 ms.
+
+        Two array shapes are accepted:
+          * HxWx3 RGB — for source='raw'/'overlay' (default colormap)
+          * HxW MONO8 — for source='mask' (cmap='gray', vmin/vmax pinned
+            so matplotlib doesn't autoscale every frame)
+        Changing source rebuilds the AxesImage; set_data alone won't
+        change the colormap and would render the mask in 'viridis'.
         """
         if not self._live_active:
             return  # Ignore late frames if we exited live mode.
         self._cam_live_txt.set_visible(False)
-        if self._cam_im is None:
-            self._cam_im = self._cam_ax.imshow(rgb_small, aspect='equal')
-        else:
-            # If the downscaled size changed (e.g. camera resolution
-            # changed mid-session), recreate so AxesImage extent stays
-            # consistent.
-            current = self._cam_im.get_array()
-            if current is None or current.shape != rgb_small.shape:
+
+        prev_source = getattr(self, '_cam_im_source', None)
+        need_recreate = (
+            self._cam_im is None or source != prev_source or
+            (self._cam_im.get_array() is None) or
+            (self._cam_im.get_array().shape != arr.shape)
+        )
+        if need_recreate:
+            if self._cam_im is not None:
                 self._cam_im.remove()
-                self._cam_im = self._cam_ax.imshow(rgb_small, aspect='equal')
+            if source == 'mask':
+                self._cam_im = self._cam_ax.imshow(
+                    arr, cmap='gray', vmin=0, vmax=255, aspect='equal')
             else:
-                self._cam_im.set_data(rgb_small)
+                self._cam_im = self._cam_ax.imshow(arr, aspect='equal')
+            self._cam_im_source = source
+        else:
+            self._cam_im.set_data(arr)
         self._live_set_dot_received('Camera')
 
+        if source == 'mask':
+            title = 'Camera MASK'
+        elif line_fresh:
+            title = 'Camera CUDA'
+        else:
+            title = 'Camera RAW'
         self._set_cell_title(
-            '_cam_title_text', '_cam_title_label',
-            'Camera CUDA' if line_fresh else 'Camera RAW',
+            '_cam_title_text', '_cam_title_label', title,
         )
         if overlay is not None and getattr(overlay, 'size', 0) > 0:
             if self._cam_lines_scatter is None:
@@ -7056,6 +7082,11 @@ if _HAS_ROS:
             # _cb_image hands frames here directly so the camera updates
             # at the ROS publish rate, not the live-tick poll rate.
             self.camera_worker = None
+            # Receipt time of the most recent /line_detection/debug/mask
+            # message. _cb_image checks this to decide whether to submit
+            # the raw camera (mask is silent) or defer to the mask path
+            # (detector is active).
+            self.latest_mask_image_t = 0.0
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7093,6 +7124,16 @@ if _HAS_ROS:
                 Image,
                 '/zed/zed_node/rgb/color/rect/image',
                 self._cb_image, 10,
+            )
+            # Debug MASK from the line detector. Single-channel binary
+            # threshold image; gated on subscriber count on the publisher
+            # side so subscribing here is what makes the detector start
+            # publishing it. When this stream goes silent (>1 s) _cb_image
+            # resumes feeding the raw camera to the worker.
+            self.create_subscription(
+                Image,
+                '/line_detection/debug/mask',
+                self._cb_mask_image, 10,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
@@ -7198,22 +7239,32 @@ if _HAS_ROS:
                 elif msg.encoding == 'rgba8':
                     img = img[:, :, :3]  # RGBA to RGB
                 self.latest_image_rgb = img
-                # Hand off directly to the GUI's camera worker (set by
-                # HudWindow once it's constructed). The worker runs on
-                # its own thread, so this returns immediately even though
-                # downscaling happens. Display frame rate is then driven
-                # by ROS publish rate (~15 Hz) instead of being capped by
-                # the 5 Hz Qt live-tick poll.
+                worker = getattr(self, 'camera_worker', None)
+                if worker is None:
+                    return
+                # Prefer the line detector's debug MASK when it's
+                # actively publishing — single-channel and matches what
+                # the detector "sees" as line. _cb_mask_image drives the
+                # display on that path; the raw camera is the fallback
+                # only when the detector is silent (mask gone stale).
+                if (time.monotonic() - self.latest_mask_image_t) < 1.0:
+                    return
+                worker.submit(img, None, False, source='raw')
+            except Exception:
+                pass
+
+        def _cb_mask_image(self, msg):
+            """/line_detection/debug/mask — MONO8 binary mask from the
+            detector's brightness threshold. Hand straight to the camera
+            worker; the slot will imshow it with cmap='gray'.
+            """
+            self.latest_mask_image_t = time.monotonic()
+            try:
+                img = np.frombuffer(msg.data, dtype=np.uint8)
+                img = img.reshape((msg.height, msg.width))
                 worker = getattr(self, 'camera_worker', None)
                 if worker is not None:
-                    lp = self.latest_line_pixels
-                    lp_t = self.latest_line_pixels_t
-                    lp_fresh = lp is not None and \
-                        (time.monotonic() - lp_t) < 1.0
-                    # latest_line_pixels is (xs, ys, w, h); worker only
-                    # needs (xs, ys).
-                    overlay_xy = (lp[0], lp[1]) if lp is not None else None
-                    worker.submit(img, overlay_xy, lp_fresh)
+                    worker.submit(img, None, True, source='mask')
             except Exception:
                 pass
 
