@@ -116,6 +116,21 @@ private:
   int64_t observation_persistence_ms_;
   double observation_persistence_resolution_m_;
   int max_persisted_points_;
+  // Line-specific inflation, baked into stampPoints so this layer can
+  // produce a different inflation radius than the global obstacle
+  // inflation_layer. The plugin order in nav2_paramsv2.yaml puts
+  // line_layer AFTER inflation_layer so the inflation_layer's larger
+  // obstacle radius doesn't re-inflate line cells.
+  double inflation_radius_;
+  double cost_scaling_factor_;
+  // Cached inflation kernel: (dy, dx, cost) triplets within the
+  // inflation radius. Rebuilt lazily when the master grid resolution
+  // changes (matchSize). Without a cache, each stampPoints call would
+  // recompute exp() for every cell × every line point.
+  struct InflationOffset { int dy; int dx; unsigned char cost; };
+  std::vector<InflationOffset> inflation_kernel_;
+  double inflation_kernel_resolution_;
+  void buildInflationKernel(double resolution);
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
 

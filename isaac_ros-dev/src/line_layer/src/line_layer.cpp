@@ -88,7 +88,10 @@ LineLayer::LineLayer()
   max_message_age_ms_(750),
   observation_persistence_ms_(0),
   observation_persistence_resolution_m_(0.10),
-  max_persisted_points_(12000)
+  max_persisted_points_(12000),
+  inflation_radius_(0.90),
+  cost_scaling_factor_(5.0),
+  inflation_kernel_resolution_(0.0)
 {
 }
 
@@ -109,6 +112,8 @@ LineLayer::onInitialize()
   declareParameter("observation_persistence_ms", rclcpp::ParameterValue(0));
   declareParameter("observation_persistence_resolution_m", rclcpp::ParameterValue(0.10));
   declareParameter("max_persisted_points", rclcpp::ParameterValue(12000));
+  declareParameter("inflation_radius", rclcpp::ParameterValue(0.90));
+  declareParameter("cost_scaling_factor", rclcpp::ParameterValue(5.0));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
@@ -121,6 +126,10 @@ LineLayer::onInitialize()
     name_ + "." + "observation_persistence_resolution_m",
     observation_persistence_resolution_m_);
   node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
+  node->get_parameter(name_ + "." + "inflation_radius", inflation_radius_);
+  node->get_parameter(name_ + "." + "cost_scaling_factor", cost_scaling_factor_);
+  inflation_radius_ = std::max(0.0, inflation_radius_);
+  cost_scaling_factor_ = std::max(0.01, cost_scaling_factor_);
   observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
   // Negative means unlimited, zero disables persistence, positive caps memory.
@@ -317,30 +326,90 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
   return points;
 }
 
+void LineLayer::buildInflationKernel(double resolution)
+{
+  inflation_kernel_.clear();
+  inflation_kernel_resolution_ = resolution;
+  if (resolution <= 0.0 || inflation_radius_ <= 0.0) {
+    // No inflation — just the LETHAL cell at the line itself.
+    inflation_kernel_.push_back({0, 0, LETHAL_OBSTACLE});
+    return;
+  }
+  const int radius_cells = static_cast<int>(
+    std::ceil(inflation_radius_ / resolution));
+  const double max_dist_sq = inflation_radius_ * inflation_radius_;
+  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+      const double dist_m = std::sqrt(
+        static_cast<double>(dx * dx + dy * dy)) * resolution;
+      if (dist_m * dist_m > max_dist_sq) {
+        continue;
+      }
+      unsigned char cost;
+      if (dx == 0 && dy == 0) {
+        cost = LETHAL_OBSTACLE;
+      } else {
+        // Standard nav2 inflation decay: exponential falloff with
+        // distance, scaled so cells near the line approach
+        // INSCRIBED_INFLATED_OBSTACLE and fall off to ~zero at the
+        // outer radius.
+        const double factor =
+          std::exp(-cost_scaling_factor_ * dist_m);
+        cost = static_cast<unsigned char>(
+          (INSCRIBED_INFLATED_OBSTACLE - 1) * factor);
+      }
+      inflation_kernel_.push_back(
+        {dy, dx, cost});
+    }
+  }
+}
+
 void LineLayer::stampPoints(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j,
   const std::vector<geometry_msgs::msg::Vector3> & points)
 {
-  for (const auto & point : points) {
-    const double x = point.x;
-    const double y = point.y;
+  // Lazy-rebuild the inflation kernel if resolution changed since
+  // last stamp (matchSize or first call). Cheap: just compares two
+  // doubles.
+  const double res = master_grid.getResolution();
+  if (inflation_kernel_.empty() ||
+      std::abs(res - inflation_kernel_resolution_) > 1e-6)
+  {
+    buildInflationKernel(res);
+  }
 
+  const int size_x_int = static_cast<int>(size_x_);
+  const int size_y_int = static_cast<int>(size_y_);
+
+  for (const auto & point : points) {
     unsigned int mx = 0;
     unsigned int my = 0;
-    if (!master_grid.worldToMap(x, y, mx, my)) {
+    if (!master_grid.worldToMap(point.x, point.y, mx, my)) {
       continue;
     }
+    const int cx = static_cast<int>(mx);
+    const int cy = static_cast<int>(my);
 
-    if (
-      static_cast<int>(mx) < min_i || static_cast<int>(mx) >= max_i ||
-      static_cast<int>(my) < min_j || static_cast<int>(my) >= max_j)
-    {
-      continue;
+    // Stamp the kernel around (cx, cy). Each offset's bounds are
+    // clipped against both the update window (min_i..max_i, min_j..max_j)
+    // and the layer's own grid. Max-merge so adjacent line cells whose
+    // inflation halos overlap take the higher cost at each shared
+    // location.
+    for (const auto & off : inflation_kernel_) {
+      const int nx = cx + off.dx;
+      const int ny = cy + off.dy;
+      if (nx < min_i || nx >= max_i || ny < min_j || ny >= max_j) {
+        continue;
+      }
+      if (nx < 0 || nx >= size_x_int || ny < 0 || ny >= size_y_int) {
+        continue;
+      }
+      const int idx = ny * size_x_int + nx;
+      if (costmap_[idx] < off.cost) {
+        costmap_[idx] = off.cost;
+      }
     }
-
-    const int index_new = static_cast<int>(my * size_x_ + mx);
-    costmap_[index_new] = LETHAL_OBSTACLE;
   }
 }
 
