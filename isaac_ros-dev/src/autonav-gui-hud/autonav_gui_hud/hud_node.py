@@ -601,12 +601,16 @@ class _LidarFrameWorker(QObject):
         if xy is not None and len(xy) > 0:
             xs = (cx + xy[:, 0] * scale).astype(np.int32)
             ys = (cy - xy[:, 1] * scale).astype(np.int32)
-            in_bounds = ((xs >= 1) & (xs < size - 1) &
-                         (ys >= 1) & (ys < size - 1))
+            # 2-pixel margin matches the 5x5 stamp below so the
+            # broadcast write below can't run off the canvas edges.
+            in_bounds = ((xs >= 2) & (xs < size - 2) &
+                         (ys >= 2) & (ys < size - 2))
             xs = xs[in_bounds]
             ys = ys[in_bounds]
-            for dy in range(-1, 2):
-                for dx in range(-1, 2):
+            # 5x5 red stamp per hit (was 3x3) — at the lower canvas dpi
+            # 3x3 disappeared after matplotlib's resample step.
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
                     img[ys + dy, xs + dx] = (255, 0, 0)
 
         _LidarFrameWorker._draw_robot_marker(img, cx, cy)
@@ -2204,9 +2208,14 @@ class HudWindow(QMainWindow):
         # Live FPS overlay (bottom-right). Updated from the frame-ready
         # slot; shows how close we're actually running to the 7.5 Hz
         # target so the operator can see paint-rate health at a glance.
+        # fontsize bumped to 14 because the canvas dpi dropped to 40 —
+        # matplotlib renders text at fontsize * dpi / 72 device pixels,
+        # so the previous fontsize=8 rendered shrunk after the dpi
+        # cut. 14 is the value that visually matches the old 8 at the
+        # previous dpi=80.
         self._cam_fps_txt = self._cam_ax.text(
             0.985, 0.02, '', transform=self._cam_ax.transAxes,
-            fontsize=8, color='#0f0', family='monospace',
+            fontsize=14, color='#0f0', family='monospace',
             ha='right', va='bottom', zorder=20,
         )
         self._cam_canvas.setMinimumSize(50, 50)
@@ -2218,9 +2227,14 @@ class HudWindow(QMainWindow):
         lidar_cell, lidar_layout = _plot_cell("LIDAR Heightband")
         self._lidar_title_label = lidar_layout.itemAt(0).widget()
         self._lidar_title_text = "LIDAR Heightband"
-        # See camera canvas note: dpi=40 to keep two image panels on the
-        # main thread from collapsing the GUI's 30 FPS target.
-        self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas(dpi=40)
+        # Square figsize so aspect='equal' on the BEV doesn't waste
+        # axes space. dpi=60 (vs camera's 40) because the lidar shows
+        # small ~few-pixel obstacle markers — at dpi=40 the resampled
+        # pixmap is so small the marks disappear. dpi=60 still gives a
+        # ~3x paint speedup over the original dpi=80 while keeping
+        # individual PCA dots clearly visible.
+        self._lidar_fig, self._lidar_ax, self._lidar_canvas = _make_dark_canvas(
+            figsize=(2.4, 2.4), dpi=60)
         self._lidar_fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
         self._lidar_ax.set_facecolor('#111111')
         self._lidar_ax.axis('off')
@@ -2236,9 +2250,10 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._lidar_live_txt.set_visible(False)
+        # Same dpi-compensation reasoning as the camera FPS text.
         self._lidar_fps_txt = self._lidar_ax.text(
             0.985, 0.02, '', transform=self._lidar_ax.transAxes,
-            fontsize=8, color='#0f0', family='monospace',
+            fontsize=14, color='#0f0', family='monospace',
             ha='right', va='bottom', zorder=20,
         )
         self._lidar_canvas.setMinimumSize(50, 50)
@@ -7627,15 +7642,17 @@ if _HAS_ROS:
                 Odometry, '/global_ekf/odom',
                 self._cb_ekf_global_odom, _SENSOR_QOS,
             )
-            # PCA-filtered lidar obstacles (red dots on the BEV).
-            # Requires sensor_msgs_py to deserialize PointCloud2; if
-            # the helper isn't on the Python path we skip this overlay
-            # rather than crashing the GUI at startup.
-            if _HAS_PC2:
-                self.create_subscription(
-                    PointCloud2, '/scan_pca_filtered_points',
-                    self._cb_pca, _SENSOR_QOS,
-                )
+            # PCA-filtered lidar obstacles. Subscribed unconditionally
+            # — the message type comes from sensor_msgs.msg (always
+            # available when rclpy is) and the GUI now does its own
+            # numpy-based PointCloud2 decode in _decode_pc2_xy so it
+            # doesn't depend on the optional sensor_msgs_py helper,
+            # which isn't installed on the Jetson's native Python path
+            # (only inside the container).
+            self.create_subscription(
+                PointCloud2, '/scan_pca_filtered_points',
+                self._cb_pca, _SENSOR_QOS,
+            )
             # 2D line-pixel array from the line detector (red dots on
             # the camera image). Published as std_msgs/Int32MultiArray
             # so the native HUD only needs /opt/ros/humble on its
@@ -7790,32 +7807,62 @@ if _HAS_ROS:
         def _cb_soc(self, msg):
             self.latest_soc = msg.data
 
+        @staticmethod
+        def _decode_pc2_xy(msg):
+            """Numpy-only PointCloud2 → (N, 2) float32 XY array decode.
+
+            Avoids sensor_msgs_py.read_points so the GUI works on the
+            Jetson's native Python interpreter where the helper isn't
+            installed. Assumes x and y are FLOAT32 fields, which is the
+            standard layout for /scan_pca_filtered_points (and indeed
+            every PointCloud2 in this stack).
+            """
+            try:
+                x_off = y_off = None
+                for f in msg.fields:
+                    if f.name == 'x':
+                        x_off = int(f.offset)
+                    elif f.name == 'y':
+                        y_off = int(f.offset)
+                if x_off is None or y_off is None:
+                    return np.empty((0, 2), dtype=np.float32)
+                n = int(msg.width) * int(msg.height)
+                step = int(msg.point_step)
+                if n <= 0 or step <= 0:
+                    return np.empty((0, 2), dtype=np.float32)
+                raw = np.frombuffer(msg.data, dtype=np.uint8)
+                if raw.size < n * step:
+                    return np.empty((0, 2), dtype=np.float32)
+                pts = raw[:n * step].reshape(n, step)
+                # 4-byte float32 slice → contiguous copy → frombuffer.
+                # tobytes() is one copy; faster than view+ascontiguousarray
+                # on the small slices typical of PCA clouds (<~5k points).
+                xs = np.frombuffer(
+                    pts[:, x_off:x_off + 4].tobytes(),
+                    dtype=np.float32, count=n)
+                ys = np.frombuffer(
+                    pts[:, y_off:y_off + 4].tobytes(),
+                    dtype=np.float32, count=n)
+                valid = np.isfinite(xs) & np.isfinite(ys)
+                return np.column_stack(
+                    [xs[valid], ys[valid]]).astype(np.float32, copy=False)
+            except Exception:
+                return np.empty((0, 2), dtype=np.float32)
+
         def _cb_pca(self, msg):
             # PointCloud2 of grade/PCA-flagged obstacles in the lidar
             # footprint frame. We only need the (x, y) for the BEV —
             # z is dropped because the BEV is 2D.
-            try:
-                pts = np.fromiter(
-                    (xy for xy in _pc2.read_points(
-                        msg, field_names=('x', 'y'), skip_nans=True)),
-                    dtype=np.dtype([('x', np.float32), ('y', np.float32)]),
-                )
-                if pts.size == 0:
-                    xy = np.empty((0, 2), dtype=np.float32)
-                else:
-                    xy = np.stack(
-                        [pts['x'], pts['y']], axis=1).astype(np.float32)
-                self.latest_pca_xy = xy
-                self.latest_pca_t = time.monotonic()
-                self._pca_in_ts.append(self.latest_pca_t)
-                # Hand the obstacle XY straight to the lidar worker for
-                # the PCA BEV view. Worker latest-wins drops any older
-                # frame; backpressure handles main-thread paint load.
-                worker = getattr(self, 'lidar_worker', None)
-                if worker is not None:
-                    worker.submit(xy, source='pca')
-            except Exception:
-                pass
+            xy = self._decode_pc2_xy(msg)
+            self.latest_pca_xy = xy
+            self.latest_pca_t = time.monotonic()
+            self._pca_in_ts.append(self.latest_pca_t)
+            # Hand the obstacle XY straight to the lidar worker for the
+            # PCA BEV view. Worker latest-wins drops any older frame;
+            # backpressure handles main-thread paint load.
+            worker = getattr(self, 'lidar_worker', None)
+            if worker is not None:
+                worker.submit(xy, source='pca')
 
         def _cb_line_pixels(self, msg):
             data = msg.data
