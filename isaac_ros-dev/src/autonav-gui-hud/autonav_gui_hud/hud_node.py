@@ -319,12 +319,16 @@ class _CameraFrameWorker(QObject):
     frame_ready = pyqtSignal(object, object, bool)
     # rgb_array (downscaled, contiguous), overlay_xy (Nx2) or None, line_fresh
 
-    def __init__(self, max_dim=480, min_interval_s=0.0, parent=None):
+    def __init__(self, max_dim=480, min_interval_s=0.133, parent=None):
         super().__init__(parent)
         # 480 px max dim is plenty for the ~400 px-wide HUD camera panel
         # and keeps matplotlib's per-frame Agg cost ~1 ms even on Jetson.
-        # 0 min-interval lets the worker emit at the source rate (15 Hz
-        # for the ZED 2i config); latest-wins handles backpressure.
+        # min_interval_s = 0.133 caps emissions at ~7.5 Hz (half the ZED
+        # source rate). At 7.5 Hz the main thread has ~130 ms per frame
+        # to do set_data + draw_idle + paint, which keeps the camera
+        # display steady on Jetson instead of undulating between bursts
+        # and stalls. Latest-wins drops the in-between frames so the one
+        # we do display is always the most recent.
         self._max_dim = int(max_dim)
         self._min_interval_s = float(min_interval_s)
         self._lock = threading.Lock()
@@ -562,15 +566,20 @@ class HudWindow(QMainWindow):
         self._tile_offline_logged = False
 
         # Camera frame worker — decouples display prep (downscale, overlay
-        # scaling) from the Qt main thread so the camera can paint at the
-        # full ZED 2i publish rate (15 Hz) without the main thread spending
-        # 5–20 ms per frame on full-res matplotlib renders. The ROS image
-        # callback submits directly to this worker, bypassing the 5 Hz
-        # _live_tick polling cap that previously capped camera FPS.
+        # scaling) from the Qt main thread so the camera can paint at a
+        # stable ~7.5 Hz (half the ZED 2i source rate) without the main
+        # thread spending 5–20 ms per frame on full-res matplotlib
+        # renders. The ROS image callback submits directly to this worker,
+        # bypassing the 5 Hz _live_tick polling cap that previously
+        # capped camera FPS.
         self._camera_worker = _CameraFrameWorker(parent=self)
         self._camera_worker.frame_ready.connect(self._on_camera_frame_ready)
         if self._ros_node is not None:
             self._ros_node.camera_worker = self._camera_worker
+        # Rolling window of recent frame-arrival timestamps for the FPS
+        # counter overlaid on the camera panel. deque is bounded so the
+        # average tracks the last ~10 frames (~1.3 s window at 7.5 Hz).
+        self._cam_fps_deque = deque(maxlen=10)
 
         # Rolling data buffers for plots
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
@@ -1866,6 +1875,14 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._cam_live_txt.set_visible(False)
+        # Live FPS overlay (bottom-right). Updated from the frame-ready
+        # slot; shows how close we're actually running to the 7.5 Hz
+        # target so the operator can see paint-rate health at a glance.
+        self._cam_fps_txt = self._cam_ax.text(
+            0.985, 0.02, '', transform=self._cam_ax.transAxes,
+            fontsize=8, color='#0f0', family='monospace',
+            ha='right', va='bottom', zorder=20,
+        )
         self._cam_canvas.setMinimumSize(50, 50)
         cam_layout.addWidget(self._cam_canvas, stretch=1)
 
@@ -6330,6 +6347,9 @@ class HudWindow(QMainWindow):
         if self._cam_lines_scatter is not None:
             self._cam_lines_scatter.remove()
             self._cam_lines_scatter = None
+        # Reset FPS tracker for the new session.
+        self._cam_fps_deque.clear()
+        self._cam_fps_txt.set_text('')
         self._set_cell_title(
             '_cam_title_text', '_cam_title_label', 'Camera RAW')
         self._set_cell_title(
@@ -6444,6 +6464,8 @@ class HudWindow(QMainWindow):
 
         # Hide live placeholders, clear imshow handles
         self._cam_live_txt.set_visible(False)
+        self._cam_fps_txt.set_text('')
+        self._cam_fps_deque.clear()
         self._cam_canvas.draw_idle()
         self._lidar_live_txt.set_visible(False)
         self._lidar_canvas.draw_idle()
@@ -6577,6 +6599,19 @@ class HudWindow(QMainWindow):
                 self._cam_lines_scatter.set_visible(True)
         elif self._cam_lines_scatter is not None:
             self._cam_lines_scatter.set_visible(False)
+
+        # FPS counter — rolling average over the last ~10 frame_ready
+        # signals. Measured at signal-arrival time, which corresponds to
+        # the rate the main thread is actually accepting paints at
+        # (set_data calls); not raw matplotlib paint events, but close
+        # enough for operator-visible health.
+        now = time.monotonic()
+        self._cam_fps_deque.append(now)
+        if len(self._cam_fps_deque) >= 2:
+            span = self._cam_fps_deque[-1] - self._cam_fps_deque[0]
+            if span > 0:
+                fps = (len(self._cam_fps_deque) - 1) / span
+                self._cam_fps_txt.set_text(f'{fps:.1f} FPS')
 
         self._cam_canvas.draw_idle()
 
