@@ -438,6 +438,190 @@ class _CameraFrameWorker(QObject):
         return np.ascontiguousarray(np.asarray(pil)), scale
 
 
+def _bresenham_line(img, x0, y0, x1, y1, color):
+    """Draw a line on a numpy image using Bresenham's algorithm. Module
+    scope so it's reachable from both _LidarFrameWorker and the legacy
+    static _render_lidar_bev (which the worker has now superseded but
+    that we keep around for the playback BEV path).
+    """
+    h, w = img.shape[:2]
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    while True:
+        if 0 <= y0 < h and 0 <= x0 < w:
+            img[y0, x0] = color
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x0 += sx
+        if e2 < dx:
+            err += dx
+            y0 += sy
+
+
+class _LidarFrameWorker(QObject):
+    """Off-thread lidar BEV rasterizer.
+
+    Two rendering modes, selected by the source tag at submit time:
+
+    * 'heightband' — full SICK 360° scan as a BEV with green hit dots,
+      white driveable lines, and black obstacle shadows. The classic
+      lidar debug view, but a few hundred Python Bresenham line draws
+      per frame; runs here on the worker so the main thread never
+      blocks on it.
+    * 'pca' — PCA-filtered 180° LaserScan, i.e. the same costmap-ready
+      scan that nav2's obstacle layer consumes from
+      pointcloud_to_laserscan in slam.launch.py. Just hits, no
+      shadows. Fully vectorized in numpy, sub-ms — what makes the
+      lidar panel keep pace with the lidar's true publish rate when
+      the grade detector is running.
+
+    Backpressure / latest-wins / slot_ready handshake mirror
+    _CameraFrameWorker so the lidar paint can't pile up Qt events
+    behind the camera or itself.
+    """
+
+    frame_ready = pyqtSignal(object, str)   # img (HxWx3 RGB), source
+
+    def __init__(self, size=480, parent=None):
+        super().__init__(parent)
+        self._size = int(size)
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._pending = None
+        self._slot_ready = threading.Event()
+        self._slot_ready.set()
+        self._stop_event = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run, name='lidar-frame-worker', daemon=True)
+        self._worker.start()
+
+    def submit(self, scan, source='heightband'):
+        with self._cv:
+            self._pending = (scan, str(source))
+            self._cv.notify()
+
+    def slot_ready(self):
+        """Main thread calls this at the start of each frame_ready slot
+        invocation to flow-control the worker (see _CameraFrameWorker).
+        """
+        self._slot_ready.set()
+
+    def shutdown(self):
+        self._stop_event.set()
+        self._slot_ready.set()
+        with self._cv:
+            self._cv.notify()
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            with self._cv:
+                while self._pending is None and not self._stop_event.is_set():
+                    self._cv.wait()
+                if self._stop_event.is_set():
+                    return
+                scan, source = self._pending
+                self._pending = None
+
+            # Backpressure: if the slot is still painting, drop this
+            # submit; latest-wins will supply a fresher scan when the
+            # slot acknowledges.
+            if not self._slot_ready.is_set():
+                continue
+
+            try:
+                if source == 'pca':
+                    img = self._render_pca_bev(scan, self._size)
+                else:
+                    img = self._render_heightband_bev(scan, self._size)
+            except Exception:
+                continue
+
+            # Match the orientation the previous in-place renderer
+            # established (rot90 + fliplr → +x forward / +y right on
+            # screen) so the panel looks identical to before.
+            img = np.rot90(img, 1)
+            img = np.fliplr(img)
+            img = np.ascontiguousarray(img)
+
+            self._slot_ready.clear()
+            self.frame_ready.emit(img, source)
+
+    @staticmethod
+    def _render_pca_bev(scan, size):
+        """Vectorized BEV from the PCA LaserScan — hits only."""
+        img = np.full((size, size, 3), 128, dtype=np.uint8)
+        cx, cy = size // 2, size // 2
+        max_range = scan.range_max if scan.range_max > 0 else 10.0
+        scale = (size // 2 - 2) / max_range
+
+        angles = (np.arange(len(scan.ranges)) * scan.angle_increment
+                  + scan.angle_min)
+        ranges = np.array(scan.ranges, dtype=np.float32)
+
+        valid = (np.isfinite(ranges) & (ranges >= scan.range_min)
+                 & (ranges < max_range))
+        rs = ranges[valid]
+        as_ = angles[valid]
+        xs = (cx + rs * np.cos(as_) * scale).astype(np.int32)
+        ys = (cy - rs * np.sin(as_) * scale).astype(np.int32)
+        in_bounds = ((xs >= 1) & (xs < size - 1) &
+                     (ys >= 1) & (ys < size - 1))
+        xs = xs[in_bounds]
+        ys = ys[in_bounds]
+
+        # 3x3 red stamp per hit, broadcast in numpy — no Python loop
+        # over the points themselves.
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                img[ys + dy, xs + dx] = (255, 0, 0)
+
+        img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
+        return img
+
+    @staticmethod
+    def _render_heightband_bev(scan, size):
+        """Bresenham BEV: white driveable + black shadows + green hits."""
+        img = np.full((size, size, 3), 128, dtype=np.uint8)
+        cx, cy = size // 2, size // 2
+        max_range = scan.range_max if scan.range_max > 0 else 10.0
+        scale = (size // 2 - 2) / max_range
+
+        angles = (np.arange(len(scan.ranges)) * scan.angle_increment
+                  + scan.angle_min)
+        ranges = np.array(scan.ranges, dtype=np.float32)
+
+        for i in range(len(ranges)):
+            r = ranges[i]
+            a = angles[i]
+            if not np.isfinite(r) or r < scan.range_min:
+                continue
+            sx = int(cx + max_range * math.cos(a) * scale)
+            sy = int(cy - max_range * math.sin(a) * scale)
+            if r >= max_range:
+                _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
+            else:
+                ex = int(cx + r * math.cos(a) * scale)
+                ey = int(cy - r * math.sin(a) * scale)
+                _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+                _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
+                if 0 <= ex < size and 0 <= ey < size:
+                    img[ey, ex] = (0, 255, 0)
+
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                ny, nx = cy + dy, cx + dx
+                if 0 <= ny < size and 0 <= nx < size:
+                    img[ny, nx] = (255, 0, 0)
+
+        return img
+
+
 from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
@@ -611,6 +795,31 @@ class HudWindow(QMainWindow):
         # counter overlaid on the camera panel. deque is bounded so the
         # average tracks the last ~10 frames (~1.3 s window at 7.5 Hz).
         self._cam_fps_deque = deque(maxlen=10)
+
+        # Lidar frame worker — same pattern as the camera worker. The
+        # 'heightband' source is the slow Bresenham BEV (kept for the
+        # raw mode); the 'pca' source is a vectorized BEV from the
+        # PCA-filtered LaserScan that already feeds nav2's costmap.
+        # Submission decision is made on the ROS thread in _cb_scan
+        # and _cb_pca_scan: PCA wins when fresh, heightband fills in
+        # otherwise.
+        self._lidar_worker = _LidarFrameWorker(parent=self)
+        self._lidar_worker.frame_ready.connect(self._on_lidar_frame_ready)
+        if self._ros_node is not None:
+            self._ros_node.lidar_worker = self._lidar_worker
+        self._lidar_fps_deque = deque(maxlen=10)
+
+        # Global GUI responsiveness metric. The QTimer is scheduled at
+        # 30 Hz (33 ms interval); if the main thread is busy, the slot
+        # fires late and the inter-tick rate drops below 30 FPS. Reading
+        # this lets the operator catch sensor paints starving the event
+        # loop in real time — keyboard/cursor responsiveness tracks
+        # this number directly.
+        self._gui_fps_deque = deque(maxlen=15)
+        self._gui_fps_timer = QTimer()
+        self._gui_fps_timer.setInterval(33)
+        self._gui_fps_timer.timeout.connect(self._gui_fps_tick)
+        self._gui_fps_timer.start()
 
         # Rolling data buffers for plots
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
@@ -1944,6 +2153,11 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._lidar_live_txt.set_visible(False)
+        self._lidar_fps_txt = self._lidar_ax.text(
+            0.985, 0.02, '', transform=self._lidar_ax.transAxes,
+            fontsize=8, color='#0f0', family='monospace',
+            ha='right', va='bottom', zorder=20,
+        )
         self._lidar_canvas.setMinimumSize(50, 50)
         lidar_layout.addWidget(self._lidar_canvas, stretch=1)
 
@@ -2295,11 +2509,25 @@ class HudWindow(QMainWindow):
         viz_layout = QVBoxLayout(viz_frame)
         viz_layout.setContentsMargins(10, 6, 10, 10)
 
+        # Title row with a GUI-FPS readout pinned to the right. Operator
+        # uses this to verify the Qt event loop is keeping its 30 FPS
+        # target — if it drops, something downstream (sensor paints,
+        # plot redraws, etc.) is starving the main thread.
+        viz_title_row = QHBoxLayout()
+        viz_title_row.setContentsMargins(0, 0, 0, 0)
         lbl_viz = QLabel("PROCESS TERMINAL")
         lbl_viz.setFont(section_title_font)
         lbl_viz.setAlignment(Qt.AlignCenter)
         lbl_viz.setStyleSheet(section_title_style)
-        viz_layout.addWidget(lbl_viz)
+        viz_title_row.addWidget(lbl_viz, stretch=1)
+        self._gui_fps_label = QLabel("GUI -- FPS")
+        self._gui_fps_label.setStyleSheet(
+            "border: none; color: #0f0; font-size: 10px;"
+            " font-family: monospace; padding: 0 8px;"
+        )
+        self._gui_fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        viz_title_row.addWidget(self._gui_fps_label)
+        viz_layout.addLayout(viz_title_row)
 
         self._term_header = QLabel("Select a process from the status dots")
         self._term_header.setAlignment(Qt.AlignCenter)
@@ -5040,6 +5268,14 @@ class HudWindow(QMainWindow):
                 self._camera_worker.shutdown()
         except Exception:
             pass
+        # Same for the lidar worker.
+        try:
+            if self._ros_node is not None:
+                self._ros_node.lidar_worker = None
+            if hasattr(self, '_lidar_worker') and self._lidar_worker is not None:
+                self._lidar_worker.shutdown()
+        except Exception:
+            pass
 
         # Stop live mode if active
         if self._live_active:
@@ -6385,9 +6621,11 @@ class HudWindow(QMainWindow):
         if self._cam_lines_scatter is not None:
             self._cam_lines_scatter.remove()
             self._cam_lines_scatter = None
-        # Reset FPS tracker for the new session.
+        # Reset FPS trackers for the new session.
         self._cam_fps_deque.clear()
         self._cam_fps_txt.set_text('')
+        self._lidar_fps_deque.clear()
+        self._lidar_fps_txt.set_text('')
         self._set_cell_title(
             '_cam_title_text', '_cam_title_label', 'Camera RAW')
         self._set_cell_title(
@@ -6505,6 +6743,8 @@ class HudWindow(QMainWindow):
         self._cam_fps_txt.set_text('')
         self._cam_fps_deque.clear()
         self._cam_canvas.draw_idle()
+        self._lidar_fps_txt.set_text('')
+        self._lidar_fps_deque.clear()
         self._lidar_live_txt.set_visible(False)
         self._lidar_canvas.draw_idle()
         self._gps_live_txt.set_visible(False)
@@ -6685,6 +6925,79 @@ class HudWindow(QMainWindow):
         self._cam_fps_txt.set_text(f'IN {in_fps:4.1f}  OUT {out_fps:4.1f}')
 
         self._cam_canvas.draw_idle()
+
+    def _gui_fps_tick(self):
+        """30 Hz QTimer tick. Records arrival time and updates the GUI
+        FPS readout. Because QTimer is event-loop driven, late fires
+        (caused by other slots monopolizing the main thread) directly
+        lower the measured rate — that's the whole point.
+        """
+        now = time.monotonic()
+        self._gui_fps_deque.append(now)
+        if len(self._gui_fps_deque) >= 2:
+            span = self._gui_fps_deque[-1] - self._gui_fps_deque[0]
+            if span > 0:
+                fps = (len(self._gui_fps_deque) - 1) / span
+                # Color-coded threshold around the 30 FPS target.
+                if fps >= 28.0:
+                    color = '#0f0'
+                elif fps >= 20.0:
+                    color = '#ff0'
+                else:
+                    color = '#f33'
+                self._gui_fps_label.setStyleSheet(
+                    f"border: none; color: {color}; font-size: 10px;"
+                    f" font-family: monospace; padding: 0 8px;"
+                )
+                self._gui_fps_label.setText(f"GUI {fps:5.1f} FPS")
+
+    def _on_lidar_frame_ready(self, img, source):
+        """Main-thread slot: receives a fully-rendered lidar BEV from
+        the lidar worker. Heightband and PCA rendering both produced
+        HxWx3 RGB arrays of the same size, so set_data without recreate
+        is the steady-state path; recreate only fires if size changed.
+        """
+        self._lidar_worker.slot_ready()
+        if not self._live_active:
+            return
+        self._lidar_live_txt.set_visible(False)
+        if self._lidar_im is None:
+            self._lidar_im = self._lidar_ax.imshow(img, aspect='equal')
+        else:
+            current = self._lidar_im.get_array()
+            if current is None or current.shape != img.shape:
+                self._lidar_im.remove()
+                self._lidar_im = self._lidar_ax.imshow(img, aspect='equal')
+            else:
+                self._lidar_im.set_data(img)
+        self._live_set_dot_received('Lidar')
+
+        self._set_cell_title(
+            '_lidar_title_text', '_lidar_title_label',
+            'LIDAR PCA' if source == 'pca' else 'LIDAR Heightband',
+        )
+
+        # FPS overlay: IN = ROS-callback arrival rate for the active
+        # lidar source; OUT = rate this slot is firing at.
+        now = time.monotonic()
+        self._lidar_fps_deque.append(now)
+        out_fps = 0.0
+        if len(self._lidar_fps_deque) >= 2:
+            out_span = self._lidar_fps_deque[-1] - self._lidar_fps_deque[0]
+            if out_span > 0:
+                out_fps = (len(self._lidar_fps_deque) - 1) / out_span
+        in_fps = 0.0
+        node = self._ros_node
+        if node is not None:
+            in_ts = (node._pca_scan_in_ts if source == 'pca'
+                     else node._lidar_in_ts)
+            if len(in_ts) >= 2:
+                in_span = in_ts[-1] - in_ts[0]
+                if in_span > 0:
+                    in_fps = (len(in_ts) - 1) / in_span
+        self._lidar_fps_txt.set_text(f'IN {in_fps:4.1f}  OUT {out_fps:4.1f}')
+
+        self._lidar_canvas.draw_idle()
 
     def _on_tile_network_changed(self, online):
         """Main-thread slot: log network state transitions once each."""
@@ -6873,26 +7186,12 @@ class HudWindow(QMainWindow):
             node.latest_image_rgb = None
 
         # --- LiDAR ---
-        scan = node.latest_scan
-        if scan is not None:
+        # The BEV render is now driven entirely by _LidarFrameWorker via
+        # the _on_lidar_frame_ready slot. Drain latest_scan so external
+        # probes don't see a stale ref; everything else (paint, title,
+        # FPS, dot) happens when the worker emits.
+        if node.latest_scan is not None:
             node.latest_scan = None
-            pca_xy = node.latest_pca_xy
-            pca_fresh = (now - node.latest_pca_t) < self._overlay_fresh_s
-            bev_pca = pca_xy if (pca_xy is not None and pca_fresh) else None
-            self._set_cell_title(
-                '_lidar_title_text', '_lidar_title_label',
-                'LIDAR PCA' if bev_pca is not None else 'LIDAR Heightband',
-            )
-            bev = self._render_lidar_bev(scan, pca_xy=bev_pca)
-            bev = np.rot90(bev, 1)
-            bev = np.fliplr(bev)
-            self._lidar_live_txt.set_visible(False)
-            if self._lidar_im is None:
-                self._lidar_im = self._lidar_ax.imshow(bev, aspect='equal')
-            else:
-                self._lidar_im.set_data(bev)
-            self._lidar_canvas.draw_idle()
-            self._live_set_dot_received('Lidar')
 
         # --- Redraw scalar plots (throttled to ~3 Hz) ---
         if any_scalar_changed and (now - getattr(self, '_last_live_redraw', 0)) > 0.33:
@@ -7073,28 +7372,6 @@ class HudWindow(QMainWindow):
         return img
 
 
-def _bresenham_line(img, x0, y0, x1, y1, color):
-    """Draw a line on a numpy image using Bresenham's algorithm."""
-    h, w = img.shape[:2]
-    dx = abs(x1 - x0)
-    dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx - dy
-    while True:
-        if 0 <= y0 < h and 0 <= x0 < w:
-            img[y0, x0] = color
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 > -dy:
-            err -= dy
-            x0 += sx
-        if e2 < dx:
-            err += dx
-            y0 += sy
-
-
 if _HAS_ROS:
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
@@ -7140,6 +7417,15 @@ if _HAS_ROS:
             # line-detector debug mask under publish_interval_ms: 250).
             self._camera_in_ts = deque(maxlen=20)
             self._mask_in_ts = deque(maxlen=20)
+
+            # Lidar worker, set by HudWindow once the worker is built.
+            # _cb_scan and _cb_pca_scan submit directly to it so the
+            # BEV render runs at the lidar source rate (~20 Hz for the
+            # PCA path, slower for the Bresenham heightband).
+            self.lidar_worker = None
+            self.latest_pca_scan_t = 0.0   # last /scan_pca_filtered receipt
+            self._lidar_in_ts = deque(maxlen=20)
+            self._pca_scan_in_ts = deque(maxlen=20)
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7190,6 +7476,14 @@ if _HAS_ROS:
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
+            )
+            # PCA-filtered 2-D LaserScan that already feeds nav2's
+            # obstacle layer (see pca_cloud_to_laserscan in
+            # slam.launch.py). The GUI uses this directly for the lidar
+            # PCA view — vectorized BEV, no overlay calculation.
+            self.create_subscription(
+                LaserScan, '/scan_pca_filtered',
+                self._cb_pca_scan, _SENSOR_QOS,
             )
             self.create_subscription(
                 NavSatFix, '/gps_fix', self._cb_gps, _SENSOR_QOS,
@@ -7325,7 +7619,29 @@ if _HAS_ROS:
 
         def _cb_scan(self, msg):
             self.last_msg_t['scan'] = time.monotonic()
+            self._lidar_in_ts.append(self.last_msg_t['scan'])
             self.latest_scan = msg
+            worker = getattr(self, 'lidar_worker', None)
+            if worker is None:
+                return
+            # Defer to the PCA-driven heightband-free view whenever the
+            # grade detector is actively publishing — same pattern as
+            # the camera mask/raw fallback. Heightband only renders when
+            # the PCA scan has been silent for >1 s.
+            if (time.monotonic() - self.latest_pca_scan_t) < 1.0:
+                return
+            worker.submit(msg, source='heightband')
+
+        def _cb_pca_scan(self, msg):
+            """/scan_pca_filtered — 2-D PCA-filtered LaserScan that
+            already feeds the costmap. Sent straight to the lidar worker
+            for the vectorized BEV view; no overlay calculation needed.
+            """
+            self.latest_pca_scan_t = time.monotonic()
+            self._pca_scan_in_ts.append(self.latest_pca_scan_t)
+            worker = getattr(self, 'lidar_worker', None)
+            if worker is not None:
+                worker.submit(msg, source='pca')
 
         def _cb_gps(self, msg):
             self.last_msg_t['gps'] = time.monotonic()
