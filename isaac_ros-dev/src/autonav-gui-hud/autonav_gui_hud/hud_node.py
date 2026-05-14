@@ -357,7 +357,7 @@ class _CameraFrameWorker(QObject):
                     self._cv.wait()
                 if self._stop_event.is_set():
                     return
-                rgb_full, line_xy, line_fresh = self._pending
+                arr_full, line_xy, line_fresh, source = self._pending
                 self._pending = None
 
             # Rate-limit emissions: drop into a sleep that yields to any
@@ -378,7 +378,7 @@ class _CameraFrameWorker(QObject):
                         continue
 
             try:
-                rgb_small, scale = self._downscale(rgb_full)
+                arr_small, scale = self._downscale(arr_full)
             except Exception:
                 continue
 
@@ -390,7 +390,7 @@ class _CameraFrameWorker(QObject):
                 overlay = np.column_stack([xs, ys])
 
             self._last_emit_t = time.monotonic()
-            self.frame_ready.emit(rgb_small, overlay, line_fresh)
+            self.frame_ready.emit(arr_small, overlay, line_fresh, source)
 
     def _downscale(self, rgb):
         h, w = rgb.shape[:2]
