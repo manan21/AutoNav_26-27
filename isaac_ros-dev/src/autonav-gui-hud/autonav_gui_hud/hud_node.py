@@ -300,6 +300,109 @@ class _TileFetcher(QObject):
             self.finished.emit(img, extent, -1, f'{tag}+reconnect')
 
 
+class _CameraFrameWorker(QObject):
+    """Off-thread camera display-prep worker.
+
+    Takes the ROS-thread-decoded RGB array, downscales to a bounded max
+    dimension, scales the optional line-detector overlay by the same
+    factor, and emits a ready-to-paint payload back to the main thread.
+    Latest-wins: if the worker is still busy when a new submit arrives,
+    the new frame overwrites the pending slot and the old one is dropped
+    — the right behavior for a live view where stale frames have no value.
+
+    On a 1920×1200 ZED frame the matplotlib AxesImage.set_data +
+    subsequent Agg paint cost 5–20 ms on the Qt main thread per frame.
+    Downscaling to ~720 px max brings that to ~1 ms, leaving the Qt event
+    loop free for keyboard/mouse and the other sensor boxes' paints.
+    """
+
+    frame_ready = pyqtSignal(object, object, bool)
+    # rgb_array (downscaled, contiguous), overlay_xy (Nx2) or None, line_fresh
+
+    def __init__(self, max_dim=480, min_interval_s=0.0, parent=None):
+        super().__init__(parent)
+        # 480 px max dim is plenty for the ~400 px-wide HUD camera panel
+        # and keeps matplotlib's per-frame Agg cost ~1 ms even on Jetson.
+        # 0 min-interval lets the worker emit at the source rate (15 Hz
+        # for the ZED 2i config); latest-wins handles backpressure.
+        self._max_dim = int(max_dim)
+        self._min_interval_s = float(min_interval_s)
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._pending = None      # (rgb_full, line_xy, line_fresh)
+        self._last_emit_t = 0.0
+        self._stop_event = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run, name='camera-frame-worker', daemon=True)
+        self._worker.start()
+
+    def submit(self, rgb_full, line_xy=None, line_fresh=False):
+        with self._cv:
+            self._pending = (rgb_full, line_xy, bool(line_fresh))
+            self._cv.notify()
+
+    def shutdown(self):
+        self._stop_event.set()
+        with self._cv:
+            self._cv.notify()
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            with self._cv:
+                while self._pending is None and not self._stop_event.is_set():
+                    self._cv.wait()
+                if self._stop_event.is_set():
+                    return
+                rgb_full, line_xy, line_fresh = self._pending
+                self._pending = None
+
+            # Rate-limit emissions: drop into a sleep that yields to any
+            # newer submits queueing in _pending. When we wake, if a new
+            # frame arrived we'll pick it up on the next loop instead of
+            # processing the stale one we just took.
+            wait = self._min_interval_s - (time.monotonic() - self._last_emit_t)
+            if wait > 0:
+                # Sleep but watch for shutdown; new submits overwrite
+                # _pending and we'll grab them on the next iteration.
+                self._stop_event.wait(timeout=wait)
+                if self._stop_event.is_set():
+                    return
+                with self._lock:
+                    if self._pending is not None:
+                        # A fresher frame is waiting — discard the one we
+                        # took and let the next loop iteration handle it.
+                        continue
+
+            try:
+                rgb_small, scale = self._downscale(rgb_full)
+            except Exception:
+                continue
+
+            overlay = None
+            if (line_xy is not None and line_fresh and
+                    getattr(line_xy[0], 'size', 0) > 0):
+                xs = np.asarray(line_xy[0], dtype=np.float32) * scale
+                ys = np.asarray(line_xy[1], dtype=np.float32) * scale
+                overlay = np.column_stack([xs, ys])
+
+            self._last_emit_t = time.monotonic()
+            self.frame_ready.emit(rgb_small, overlay, line_fresh)
+
+    def _downscale(self, rgb):
+        h, w = rgb.shape[:2]
+        largest = max(h, w)
+        if largest <= self._max_dim:
+            # Ensure contiguous so matplotlib's set_data avoids a copy.
+            return np.ascontiguousarray(rgb), 1.0
+        scale = self._max_dim / float(largest)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        # PIL bilinear is good quality for live monitoring and runs in C.
+        pil = PILImage.fromarray(rgb)
+        pil = pil.resize((new_w, new_h), PILImage.BILINEAR)
+        return np.ascontiguousarray(np.asarray(pil)), scale
+
+
 from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
@@ -457,6 +560,17 @@ class HudWindow(QMainWindow):
         self._tile_request_pending = False
         self._tile_network_online = None  # tri-state; mirrors fetcher's view
         self._tile_offline_logged = False
+
+        # Camera frame worker — decouples display prep (downscale, overlay
+        # scaling) from the Qt main thread so the camera can paint at the
+        # full ZED 2i publish rate (15 Hz) without the main thread spending
+        # 5–20 ms per frame on full-res matplotlib renders. The ROS image
+        # callback submits directly to this worker, bypassing the 5 Hz
+        # _live_tick polling cap that previously capped camera FPS.
+        self._camera_worker = _CameraFrameWorker(parent=self)
+        self._camera_worker.frame_ready.connect(self._on_camera_frame_ready)
+        if self._ros_node is not None:
+            self._ros_node.camera_worker = self._camera_worker
 
         # Rolling data buffers for plots
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
@@ -2296,6 +2410,12 @@ class HudWindow(QMainWindow):
         self._auto_badge.adjustSize()
         self._auto_badge.raise_()
         self._auto_badge.show()
+        # central hasn't been laid out yet at __init__ time, so its
+        # width() is still 0 and an immediate _position_auto_badge would
+        # clamp x to 0 (badge stuck in the top-left). Defer to after the
+        # event loop processes the show + first layout pass, when
+        # parent.width() reflects the real geometry.
+        QTimer.singleShot(0, self._position_auto_badge)
 
         self._update_selection()
 
@@ -4536,6 +4656,15 @@ class HudWindow(QMainWindow):
             self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
         self._position_auto_badge()
 
+    def showEvent(self, event):
+        """Re-pin the auto badge on first show and on any hide/show cycle.
+        resizeEvent alone has been seen to fire before the central widget
+        finishes its first layout pass, leaving the badge stranded in the
+        top-left corner until the next user action triggered a re-pin.
+        """
+        super().showEvent(event)
+        QTimer.singleShot(0, self._position_auto_badge)
+
     # -----------------------------------------------------------------
     # Auto mode
     # -----------------------------------------------------------------
@@ -4847,6 +4976,15 @@ class HudWindow(QMainWindow):
         try:
             if hasattr(self, '_tile_fetcher') and self._tile_fetcher is not None:
                 self._tile_fetcher.shutdown()
+        except Exception:
+            pass
+        # Detach + shut down the camera worker. Detach first so the ROS
+        # callback stops submitting before we tear the worker down.
+        try:
+            if self._ros_node is not None:
+                self._ros_node.camera_worker = None
+            if hasattr(self, '_camera_worker') and self._camera_worker is not None:
+                self._camera_worker.shutdown()
         except Exception:
             pass
 
@@ -6400,6 +6538,48 @@ class HudWindow(QMainWindow):
         self._gps_offline_txt.set_visible(False)
         self._gps_canvas.draw_idle()
 
+    def _on_camera_frame_ready(self, rgb_small, overlay, line_fresh):
+        """Main-thread slot: receives a downscaled camera frame from the
+        camera worker and applies it to the matplotlib widgets. The heavy
+        decoding / downscaling already happened off-thread; here we only
+        do the matplotlib set_data + (optional) overlay + draw_idle, which
+        on a ~480 px frame costs ~1 ms.
+        """
+        if not self._live_active:
+            return  # Ignore late frames if we exited live mode.
+        self._cam_live_txt.set_visible(False)
+        if self._cam_im is None:
+            self._cam_im = self._cam_ax.imshow(rgb_small, aspect='equal')
+        else:
+            # If the downscaled size changed (e.g. camera resolution
+            # changed mid-session), recreate so AxesImage extent stays
+            # consistent.
+            current = self._cam_im.get_array()
+            if current is None or current.shape != rgb_small.shape:
+                self._cam_im.remove()
+                self._cam_im = self._cam_ax.imshow(rgb_small, aspect='equal')
+            else:
+                self._cam_im.set_data(rgb_small)
+        self._live_set_dot_received('Camera')
+
+        self._set_cell_title(
+            '_cam_title_text', '_cam_title_label',
+            'Camera CUDA' if line_fresh else 'Camera RAW',
+        )
+        if overlay is not None and getattr(overlay, 'size', 0) > 0:
+            if self._cam_lines_scatter is None:
+                self._cam_lines_scatter = self._cam_ax.scatter(
+                    overlay[:, 0], overlay[:, 1], s=4, c='red', marker='.',
+                    linewidths=0, zorder=10,
+                )
+            else:
+                self._cam_lines_scatter.set_offsets(overlay)
+                self._cam_lines_scatter.set_visible(True)
+        elif self._cam_lines_scatter is not None:
+            self._cam_lines_scatter.set_visible(False)
+
+        self._cam_canvas.draw_idle()
+
     def _on_tile_network_changed(self, online):
         """Main-thread slot: log network state transitions once each."""
         self._tile_network_online = bool(online)
@@ -6577,42 +6757,14 @@ class HudWindow(QMainWindow):
             self._latest_soc_pct = soc_val
 
         # --- Camera ---
-        img_rgb = node.latest_image_rgb
-        if img_rgb is not None:
+        # Display is driven by the off-thread _CameraFrameWorker which the
+        # ROS callback feeds directly at the source rate (~15 Hz). The
+        # only thing we still do here is drain node.latest_image_rgb so
+        # external probes that read it (e.g. screenshot path) don't see
+        # stale data accumulate. The actual paint happens in
+        # _on_camera_frame_ready when the worker emits.
+        if node.latest_image_rgb is not None:
             node.latest_image_rgb = None
-            self._cam_live_txt.set_visible(False)
-            if self._cam_im is None:
-                self._cam_im = self._cam_ax.imshow(img_rgb, aspect='equal')
-            else:
-                self._cam_im.set_data(img_rgb)
-            self._live_set_dot_received('Camera')
-
-            # Detected-line overlay. If the line detector is producing
-            # /line_detection/line_pixels, paint each pixel as a small
-            # red dot. When the topic goes silent we hide the scatter
-            # so the raw image is shown by itself — matching the
-            # "detector off → original image" behavior.
-            lp = node.latest_line_pixels
-            fresh = (now - node.latest_line_pixels_t) < self._overlay_fresh_s
-            self._set_cell_title(
-                '_cam_title_text', '_cam_title_label',
-                'Camera CUDA' if (lp is not None and fresh) else 'Camera RAW',
-            )
-            if lp is not None and fresh and lp[0].size > 0:
-                xs, ys = lp[0], lp[1]
-                if self._cam_lines_scatter is None:
-                    self._cam_lines_scatter = self._cam_ax.scatter(
-                        xs, ys, s=4, c='red', marker='.',
-                        linewidths=0, zorder=10,
-                    )
-                else:
-                    self._cam_lines_scatter.set_offsets(
-                        np.column_stack([xs, ys]))
-                    self._cam_lines_scatter.set_visible(True)
-            elif self._cam_lines_scatter is not None:
-                self._cam_lines_scatter.set_visible(False)
-
-            self._cam_canvas.draw_idle()
 
         # --- LiDAR ---
         scan = node.latest_scan
@@ -6865,6 +7017,10 @@ if _HAS_ROS:
             # decides whether to draw).
             self.latest_line_pixels = None # (xs, ys, width, height)
             self.latest_line_pixels_t = 0.0
+            # Set by HudWindow once it constructs the camera worker.
+            # _cb_image hands frames here directly so the camera updates
+            # at the ROS publish rate, not the live-tick poll rate.
+            self.camera_worker = None
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7007,6 +7163,22 @@ if _HAS_ROS:
                 elif msg.encoding == 'rgba8':
                     img = img[:, :, :3]  # RGBA to RGB
                 self.latest_image_rgb = img
+                # Hand off directly to the GUI's camera worker (set by
+                # HudWindow once it's constructed). The worker runs on
+                # its own thread, so this returns immediately even though
+                # downscaling happens. Display frame rate is then driven
+                # by ROS publish rate (~15 Hz) instead of being capped by
+                # the 5 Hz Qt live-tick poll.
+                worker = getattr(self, 'camera_worker', None)
+                if worker is not None:
+                    lp = self.latest_line_pixels
+                    lp_t = self.latest_line_pixels_t
+                    lp_fresh = lp is not None and \
+                        (time.monotonic() - lp_t) < 1.0
+                    # latest_line_pixels is (xs, ys, w, h); worker only
+                    # needs (xs, ys).
+                    overlay_xy = (lp[0], lp[1]) if lp is not None else None
+                    worker.submit(img, overlay_xy, lp_fresh)
             except Exception:
                 pass
 
