@@ -7642,16 +7642,14 @@ if _HAS_ROS:
                 Odometry, '/global_ekf/odom',
                 self._cb_ekf_global_odom, _SENSOR_QOS,
             )
-            # PCA-filtered lidar obstacles. Subscribed unconditionally
-            # — the message type comes from sensor_msgs.msg (always
-            # available when rclpy is) and the GUI now does its own
-            # numpy-based PointCloud2 decode in _decode_pc2_xy so it
-            # doesn't depend on the optional sensor_msgs_py helper,
-            # which isn't installed on the Jetson's native Python path
-            # (only inside the container).
+            # PCA-filtered lidar obstacles. Subscribed to the 2D
+            # LaserScan that pca_cloud_to_laserscan publishes in
+            # slam.launch.py — that node already does the 3D → 2D
+            # projection for nav2's costmap, so we get a ready-to-render
+            # polar representation here with no PointCloud2 decode.
             self.create_subscription(
-                PointCloud2, '/scan_pca_filtered_points',
-                self._cb_pca, _SENSOR_QOS,
+                LaserScan, '/scan_pca_filtered',
+                self._cb_pca_scan, _SENSOR_QOS,
             )
             # 2D line-pixel array from the line detector (red dots on
             # the camera image). Published as std_msgs/Int32MultiArray
@@ -7807,62 +7805,40 @@ if _HAS_ROS:
         def _cb_soc(self, msg):
             self.latest_soc = msg.data
 
-        @staticmethod
-        def _decode_pc2_xy(msg):
-            """Numpy-only PointCloud2 → (N, 2) float32 XY array decode.
-
-            Avoids sensor_msgs_py.read_points so the GUI works on the
-            Jetson's native Python interpreter where the helper isn't
-            installed. Assumes x and y are FLOAT32 fields, which is the
-            standard layout for /scan_pca_filtered_points (and indeed
-            every PointCloud2 in this stack).
+        def _cb_pca_scan(self, msg):
+            """/scan_pca_filtered (2D LaserScan from
+            pca_cloud_to_laserscan). Polar → Cartesian for the valid
+            hits, then hand the (N, 2) array to the lidar worker for
+            the PCA BEV view.
             """
-            try:
-                x_off = y_off = None
-                for f in msg.fields:
-                    if f.name == 'x':
-                        x_off = int(f.offset)
-                    elif f.name == 'y':
-                        y_off = int(f.offset)
-                if x_off is None or y_off is None:
-                    return np.empty((0, 2), dtype=np.float32)
-                n = int(msg.width) * int(msg.height)
-                step = int(msg.point_step)
-                if n <= 0 or step <= 0:
-                    return np.empty((0, 2), dtype=np.float32)
-                raw = np.frombuffer(msg.data, dtype=np.uint8)
-                if raw.size < n * step:
-                    return np.empty((0, 2), dtype=np.float32)
-                pts = raw[:n * step].reshape(n, step)
-                # 4-byte float32 slice → contiguous copy → frombuffer.
-                # tobytes() is one copy; faster than view+ascontiguousarray
-                # on the small slices typical of PCA clouds (<~5k points).
-                xs = np.frombuffer(
-                    pts[:, x_off:x_off + 4].tobytes(),
-                    dtype=np.float32, count=n)
-                ys = np.frombuffer(
-                    pts[:, y_off:y_off + 4].tobytes(),
-                    dtype=np.float32, count=n)
-                valid = np.isfinite(xs) & np.isfinite(ys)
-                return np.column_stack(
-                    [xs[valid], ys[valid]]).astype(np.float32, copy=False)
-            except Exception:
-                return np.empty((0, 2), dtype=np.float32)
-
-        def _cb_pca(self, msg):
-            # PointCloud2 of grade/PCA-flagged obstacles in the lidar
-            # footprint frame. We only need the (x, y) for the BEV —
-            # z is dropped because the BEV is 2D.
-            xy = self._decode_pc2_xy(msg)
-            self.latest_pca_xy = xy
             self.latest_pca_t = time.monotonic()
             self._pca_in_ts.append(self.latest_pca_t)
-            # Hand the obstacle XY straight to the lidar worker for the
-            # PCA BEV view. Worker latest-wins drops any older frame;
-            # backpressure handles main-thread paint load.
-            worker = getattr(self, 'lidar_worker', None)
-            if worker is not None:
-                worker.submit(xy, source='pca')
+            try:
+                ranges = np.asarray(msg.ranges, dtype=np.float32)
+                if ranges.size == 0:
+                    xy = np.empty((0, 2), dtype=np.float32)
+                else:
+                    angles = (np.arange(ranges.size, dtype=np.float32)
+                              * msg.angle_increment + msg.angle_min)
+                    rmax = (msg.range_max
+                            if msg.range_max and msg.range_max > 0 else 10.0)
+                    valid = (np.isfinite(ranges) &
+                             (ranges >= msg.range_min) & (ranges < rmax))
+                    if not np.any(valid):
+                        xy = np.empty((0, 2), dtype=np.float32)
+                    else:
+                        rs = ranges[valid]
+                        as_ = angles[valid]
+                        xy = np.column_stack([
+                            (rs * np.cos(as_)).astype(np.float32),
+                            (rs * np.sin(as_)).astype(np.float32),
+                        ])
+                self.latest_pca_xy = xy
+                worker = getattr(self, 'lidar_worker', None)
+                if worker is not None:
+                    worker.submit(xy, source='pca')
+            except Exception:
+                pass
 
         def _cb_line_pixels(self, msg):
             data = msg.data
