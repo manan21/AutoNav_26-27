@@ -335,6 +335,15 @@ class _CameraFrameWorker(QObject):
         self._cv = threading.Condition(self._lock)
         self._pending = None      # (arr, line_xy, line_fresh, source)
         self._last_emit_t = 0.0
+        # Backpressure handshake with the main-thread slot. When set,
+        # the worker is free to emit. The slot calls slot_ready() at the
+        # start of each invocation to re-arm. Initially set so the first
+        # emit isn't blocked. Without this the cross-thread queued
+        # signal piles up paint events when the source rate (15 Hz
+        # camera) exceeds the main-thread paint capacity, which is what
+        # was making the displayed frame visibly lag the camera.
+        self._slot_ready = threading.Event()
+        self._slot_ready.set()
         self._stop_event = threading.Event()
         self._worker = threading.Thread(
             target=self._run, name='camera-frame-worker', daemon=True)
@@ -347,8 +356,20 @@ class _CameraFrameWorker(QObject):
 
     def shutdown(self):
         self._stop_event.set()
+        # Wake the worker if it's idling on either the submit cv or the
+        # rate-limit sleep. _slot_ready isn't currently waited on but
+        # set it anyway for symmetry — costs nothing.
+        self._slot_ready.set()
         with self._cv:
             self._cv.notify()
+
+    def slot_ready(self):
+        """Main thread calls this at the start of each frame_ready slot
+        invocation. The worker uses it to decide whether to emit the
+        next frame or drop it (latest-wins). Effective rate equals
+        whichever of the source / slot is slower — no signal backlog.
+        """
+        self._slot_ready.set()
 
     def _run(self):
         while not self._stop_event.is_set():
@@ -377,6 +398,15 @@ class _CameraFrameWorker(QObject):
                         # took and let the next loop iteration handle it.
                         continue
 
+            # Backpressure check before doing CPU work. If the previous
+            # frame_ready is still being painted, drop this submit;
+            # latest-wins will deliver a fresher one when slot_ready()
+            # is called again. Skipping the downscale here also keeps
+            # the worker thread idle during slow paints instead of
+            # spending cycles on frames that will be discarded.
+            if not self._slot_ready.is_set():
+                continue
+
             try:
                 arr_small, scale = self._downscale(arr_full)
             except Exception:
@@ -389,6 +419,7 @@ class _CameraFrameWorker(QObject):
                 ys = np.asarray(line_xy[1], dtype=np.float32) * scale
                 overlay = np.column_stack([xs, ys])
 
+            self._slot_ready.clear()
             self._last_emit_t = time.monotonic()
             self.frame_ready.emit(arr_small, overlay, line_fresh, source)
 
@@ -6582,6 +6613,10 @@ class HudWindow(QMainWindow):
         Changing source rebuilds the AxesImage; set_data alone won't
         change the colormap and would render the mask in 'viridis'.
         """
+        # Re-arm the worker first thing so it can downscale the next
+        # frame in parallel with our paint here. This is what bounds
+        # the Qt event queue to 1 paint deep regardless of source rate.
+        self._camera_worker.slot_ready()
         if not self._live_active:
             return  # Ignore late frames if we exited live mode.
         self._cam_live_txt.set_visible(False)
@@ -6626,18 +6661,28 @@ class HudWindow(QMainWindow):
         elif self._cam_lines_scatter is not None:
             self._cam_lines_scatter.set_visible(False)
 
-        # FPS counter — rolling average over the last ~10 frame_ready
-        # signals. Measured at signal-arrival time, which corresponds to
-        # the rate the main thread is actually accepting paints at
-        # (set_data calls); not raw matplotlib paint events, but close
-        # enough for operator-visible health.
+        # FPS counter — IN = ROS-callback arrival rate for the currently
+        # active source (raw or mask); OUT = rate this slot is firing at,
+        # which is what the operator actually sees painted. With the
+        # worker backpressure in place IN ≥ OUT always — if they diverge
+        # the main thread paint is the bottleneck, not the camera.
         now = time.monotonic()
         self._cam_fps_deque.append(now)
+        out_fps = 0.0
         if len(self._cam_fps_deque) >= 2:
-            span = self._cam_fps_deque[-1] - self._cam_fps_deque[0]
-            if span > 0:
-                fps = (len(self._cam_fps_deque) - 1) / span
-                self._cam_fps_txt.set_text(f'{fps:.1f} FPS')
+            out_span = self._cam_fps_deque[-1] - self._cam_fps_deque[0]
+            if out_span > 0:
+                out_fps = (len(self._cam_fps_deque) - 1) / out_span
+        in_fps = 0.0
+        node = self._ros_node
+        if node is not None:
+            in_ts = (node._mask_in_ts if source == 'mask'
+                     else node._camera_in_ts)
+            if len(in_ts) >= 2:
+                in_span = in_ts[-1] - in_ts[0]
+                if in_span > 0:
+                    in_fps = (len(in_ts) - 1) / in_span
+        self._cam_fps_txt.set_text(f'IN {in_fps:4.1f}  OUT {out_fps:4.1f}')
 
         self._cam_canvas.draw_idle()
 
@@ -7087,6 +7132,14 @@ if _HAS_ROS:
             # the raw camera (mask is silent) or defer to the mask path
             # (detector is active).
             self.latest_mask_image_t = 0.0
+            # Per-source IN-rate timestamp deques. Each ROS callback
+            # appends the wall-clock time of arrival; the GUI reads these
+            # to render the "IN" half of the camera FPS overlay so the
+            # operator can verify the source is truly running at the
+            # expected rate (15 Hz for /zed/.../image, 4 Hz for the
+            # line-detector debug mask under publish_interval_ms: 250).
+            self._camera_in_ts = deque(maxlen=20)
+            self._mask_in_ts = deque(maxlen=20)
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7228,6 +7281,7 @@ if _HAS_ROS:
 
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
+            self._camera_in_ts.append(self.last_msg_t['image'])
             try:
                 channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
                 img = np.frombuffer(msg.data, dtype=np.uint8)
@@ -7259,6 +7313,7 @@ if _HAS_ROS:
             worker; the slot will imshow it with cmap='gray'.
             """
             self.latest_mask_image_t = time.monotonic()
+            self._mask_in_ts.append(self.latest_mask_image_t)
             try:
                 img = np.frombuffer(msg.data, dtype=np.uint8)
                 img = img.reshape((msg.height, msg.width))
