@@ -7,7 +7,7 @@ ros2 launch zed_wrapper zed_camera.launch.py \
 launchpid=$!
 trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
 
-sleep 3
+sleep 0.5
 echo "[GUI_READY] Camera"
 
 wait "$launchpid"

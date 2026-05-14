@@ -1275,9 +1275,12 @@ class HudWindow(QMainWindow):
             # first, slam_toolbox starves of scans, never produces
             # /pose or the map→odom TF, and the Nav2 lifecycle
             # stalls at "Activating planner_server."
+            # LINE DETECT also goes before SLAM so the line-pixel
+            # stream is producing by the time the nav2 / line_layer
+            # plugins come up — same reasoning as PCA above.
             ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
-            ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
