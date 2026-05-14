@@ -903,7 +903,7 @@ class HudWindow(QMainWindow):
         # raw mode); the 'pca' source is a vectorized BEV from the
         # PCA-filtered LaserScan that already feeds nav2's costmap.
         # Submission decision is made on the ROS thread in _cb_scan
-        # and _cb_pca: PCA wins when fresh, heightband fills in
+        # and _cb_pca_scan: PCA wins when fresh, heightband fills in
         # otherwise.
         self._lidar_worker = _LidarFrameWorker(parent=self)
         self._lidar_worker.frame_ready.connect(self._on_lidar_frame_ready)
@@ -923,10 +923,33 @@ class HudWindow(QMainWindow):
         self._gui_fps_timer.timeout.connect(self._gui_fps_tick)
         self._gui_fps_timer.start()
 
-        # Rolling data buffers for plots
-        self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
-        self._gps_buf = {'lat': [], 'lon': []}
-        self._odom_buf = {'x': [], 'y': [], 'theta': []}
+        # Live mode state (defined before the rolling buffers so the
+        # maxlen constants are available for deque construction below).
+        self._live_active = False
+        self._live_timer = None      # QTimer for 10 Hz refresh
+        self._live_t0 = 0.0          # wall-clock start for power X axis
+        self._live_gps_maxlen = 100
+        self._live_odom_maxlen = 100
+
+        # Rolling data buffers for plots. deque(maxlen=...) auto-trims
+        # on append — eliminates the per-message O(N) slice-and-reassign
+        # that the old list-based buffers paid for every GPS / odom
+        # message in live mode.
+        self._power_buf = {
+            't': deque(),
+            'V': deque(),
+            'I': deque(),
+            'P': deque(),
+        }
+        self._gps_buf = {
+            'lat': deque(maxlen=self._live_gps_maxlen),
+            'lon': deque(maxlen=self._live_gps_maxlen),
+        }
+        self._odom_buf = {
+            'x':     deque(maxlen=self._live_odom_maxlen),
+            'y':     deque(maxlen=self._live_odom_maxlen),
+            'theta': deque(maxlen=self._live_odom_maxlen),
+        }
 
         # ETA estimation state (mirrors ina226_monitor approach)
         self._CAPACITY_AH = 20.476       # empirical usable capacity
@@ -935,15 +958,6 @@ class HudWindow(QMainWindow):
         self._latest_soc_pct = None      # latest SOC from electrical publisher (0-100)
         self._odom_tri_patch = None
         self._plots_dirty = False
-
-        # Live mode state
-        self._live_active = False
-        self._live_timer = None      # QTimer for 10 Hz refresh
-        self._live_t0 = 0.0          # wall-clock start for power X axis
-        _LIVE_GPS_MAXLEN = 100
-        _LIVE_ODOM_MAXLEN = 100
-        self._live_gps_maxlen = _LIVE_GPS_MAXLEN
-        self._live_odom_maxlen = _LIVE_ODOM_MAXLEN
 
         # EKF participation pulse state. Each device dot whose raw
         # input AND the EKF that consumes it are both fresh gets
@@ -2390,6 +2404,10 @@ class HudWindow(QMainWindow):
         self._pwr_v_fig, self._pwr_v_ax, self._pwr_v_canvas = _make_mini_canvas()
         _style_ax(self._pwr_v_ax)
         self._pwr_v_ax.set_ylim(20, 30)
+        # Hide x-axis labels permanently — set once at construction so
+        # _redraw_plots doesn't need to call set_xticklabels([]) every
+        # tick (which otherwise undoes itself after each set_xlim).
+        self._pwr_v_ax.tick_params(labelbottom=False)
         self._pwr_line_v, = self._pwr_v_ax.plot([], [], color='#4af', linewidth=1)
         self._pwr_v_live_txt = self._pwr_v_ax.text(
             0.5, 0.5, 'NO DATA', transform=self._pwr_v_ax.transAxes,
@@ -2413,6 +2431,7 @@ class HudWindow(QMainWindow):
         self._pwr_i_fig, self._pwr_i_ax, self._pwr_i_canvas = _make_mini_canvas()
         _style_ax(self._pwr_i_ax)
         self._pwr_i_ax.set_ylim(0, 6)
+        self._pwr_i_ax.tick_params(labelbottom=False)
         self._pwr_line_i, = self._pwr_i_ax.plot([], [], color='#f44', linewidth=1)
         self._pwr_i_live_txt = self._pwr_i_ax.text(
             0.5, 0.5, 'NO DATA', transform=self._pwr_i_ax.transAxes,
@@ -2436,6 +2455,7 @@ class HudWindow(QMainWindow):
         self._pwr_p_fig, self._pwr_p_ax, self._pwr_p_canvas = _make_mini_canvas()
         _style_ax(self._pwr_p_ax)
         self._pwr_p_ax.set_ylim(0, 100)
+        self._pwr_p_ax.tick_params(labelbottom=False)
         self._pwr_line_p, = self._pwr_p_ax.plot([], [], color='#4f4', linewidth=1)
         self._pwr_p_live_txt = self._pwr_p_ax.text(
             0.5, 0.5, 'NO DATA', transform=self._pwr_p_ax.transAxes,
@@ -6108,9 +6128,21 @@ class HudWindow(QMainWindow):
         self._gps_canvas.draw_idle()
 
     def _clear_buffers(self):
-        self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
-        self._gps_buf = {'lat': [], 'lon': []}
-        self._odom_buf = {'x': [], 'y': [], 'theta': []}
+        self._power_buf = {
+            't': deque(),
+            'V': deque(),
+            'I': deque(),
+            'P': deque(),
+        }
+        self._gps_buf = {
+            'lat': deque(maxlen=self._live_gps_maxlen),
+            'lon': deque(maxlen=self._live_gps_maxlen),
+        }
+        self._odom_buf = {
+            'x':     deque(maxlen=self._live_odom_maxlen),
+            'y':     deque(maxlen=self._live_odom_maxlen),
+            'theta': deque(maxlen=self._live_odom_maxlen),
+        }
         self._ema_eta_hours = None
         self._latest_soc_pct = None
         self._update_soc(0.0, force=True)
@@ -6495,7 +6527,7 @@ class HudWindow(QMainWindow):
         # Estimated time remaining — EMA-smoothed current draw
         avg_i = 0.0
         if self._power_buf['I']:
-            vals = list(self._power_buf['I'])
+            vals = self._power_buf['I']
             avg_i = sum(abs(v) for v in vals) / len(vals)
         if avg_i > 0.01:
             raw_hours = fraction * self._CAPACITY_AH / avg_i
@@ -6513,20 +6545,27 @@ class HudWindow(QMainWindow):
 
     def _redraw_plots(self):
         # --- Power mini oscilloscopes ---
-        t = list(self._power_buf['t'])
-        if t:
-            self._pwr_v_live_txt.set_visible(False)
-            self._pwr_i_live_txt.set_visible(False)
-            self._pwr_p_live_txt.set_visible(False)
-            xlim = (t[-1] - self.POWER_WINDOW_S, t[-1])
-            for line, buf_key, ax, canvas in [
+        pwr_t = self._power_buf['t']
+        if pwr_t:
+            # Guard set_visible/draw_idle behind a state transition so
+            # we don't invalidate Qt layout every 3 Hz tick. matplotlib
+            # text artists are already invisible after the first hide.
+            if getattr(self, '_pwr_live_txt_visible', True):
+                self._pwr_v_live_txt.set_visible(False)
+                self._pwr_i_live_txt.set_visible(False)
+                self._pwr_p_live_txt.set_visible(False)
+                self._pwr_live_txt_visible = False
+            t_last = pwr_t[-1]
+            xlim = (t_last - self.POWER_WINDOW_S, t_last)
+            # matplotlib.Line2D.set_data accepts deques directly; no
+            # need to materialize to list every redraw.
+            for line, buf_key, ax, canvas in (
                 (self._pwr_line_v, 'V', self._pwr_v_ax, self._pwr_v_canvas),
                 (self._pwr_line_i, 'I', self._pwr_i_ax, self._pwr_i_canvas),
                 (self._pwr_line_p, 'P', self._pwr_p_ax, self._pwr_p_canvas),
-            ]:
-                line.set_data(t, list(self._power_buf[buf_key]))
+            ):
+                line.set_data(pwr_t, self._power_buf[buf_key])
                 ax.set_xlim(*xlim)
-                ax.set_xticklabels([])
                 canvas.draw_idle()
             # Update numeric readouts with latest values
             self._pwr_val_v.setText(f"V: {self._power_buf['V'][-1]:.2f}")
@@ -6541,15 +6580,17 @@ class HudWindow(QMainWindow):
                 soc = max(0.0, min(1.0, (v - 20.0) / (29.4 - 20.0)))
             self._update_soc(soc)
         else:
-            self._pwr_v_live_txt.set_visible(True)
-            self._pwr_i_live_txt.set_visible(True)
-            self._pwr_p_live_txt.set_visible(True)
+            if not getattr(self, '_pwr_live_txt_visible', True):
+                self._pwr_v_live_txt.set_visible(True)
+                self._pwr_i_live_txt.set_visible(True)
+                self._pwr_p_live_txt.set_visible(True)
+                self._pwr_live_txt_visible = True
+                self._pwr_v_canvas.draw_idle()
+                self._pwr_i_canvas.draw_idle()
+                self._pwr_p_canvas.draw_idle()
             self._pwr_val_v.setText("V: --")
             self._pwr_val_i.setText("I: --")
             self._pwr_val_p.setText("P: --")
-            self._pwr_v_canvas.draw_idle()
-            self._pwr_i_canvas.draw_idle()
-            self._pwr_p_canvas.draw_idle()
 
         # --- GPS with satellite map ---
         lats = self._gps_buf['lat']
@@ -7078,14 +7119,23 @@ class HudWindow(QMainWindow):
         FPS readout. Because QTimer is event-loop driven, late fires
         (caused by other slots monopolizing the main thread) directly
         lower the measured rate — that's the whole point.
+
+        setText/f-string only fire when the integer FPS actually
+        changes — saves ~25–30 redundant Qt label updates per second
+        which themselves trigger layout invalidation.
         """
         now = time.monotonic()
         self._gui_fps_deque.append(now)
-        if len(self._gui_fps_deque) >= 2:
-            span = self._gui_fps_deque[-1] - self._gui_fps_deque[0]
-            if span > 0:
-                fps = (len(self._gui_fps_deque) - 1) / span
-                self._gui_fps_label.setText(f"GUI {fps:5.1f} FPS")
+        if len(self._gui_fps_deque) < 2:
+            return
+        span = self._gui_fps_deque[-1] - self._gui_fps_deque[0]
+        if span <= 0:
+            return
+        fps_int = int(round((len(self._gui_fps_deque) - 1) / span))
+        if fps_int == getattr(self, '_gui_fps_last_int', -1):
+            return
+        self._gui_fps_last_int = fps_int
+        self._gui_fps_label.setText(f"GUI {fps_int:2d} FPS")
 
     def _on_lidar_frame_ready(self, img, source):
         """Main-thread slot: receives a fully-rendered lidar BEV from
@@ -7164,10 +7214,7 @@ class HudWindow(QMainWindow):
             lat, lon = gps
             self._gps_buf['lat'].append(lat)
             self._gps_buf['lon'].append(lon)
-            # Trim to maxlen
-            if len(self._gps_buf['lat']) > self._live_gps_maxlen:
-                self._gps_buf['lat'] = self._gps_buf['lat'][-self._live_gps_maxlen:]
-                self._gps_buf['lon'] = self._gps_buf['lon'][-self._live_gps_maxlen:]
+            # deque(maxlen=N) auto-trims on append — no manual slice.
             self._gps_live_txt.set_visible(False)
             self._live_set_dot_received('GPS')
             # Fetch map tiles on first point or if position leaves extent.
@@ -7270,10 +7317,7 @@ class HudWindow(QMainWindow):
             self._odom_buf['x'].append(x)
             self._odom_buf['y'].append(y)
             self._odom_buf['theta'].append(yaw)
-            if len(self._odom_buf['x']) > self._live_odom_maxlen:
-                self._odom_buf['x'] = self._odom_buf['x'][-self._live_odom_maxlen:]
-                self._odom_buf['y'] = self._odom_buf['y'][-self._live_odom_maxlen:]
-                self._odom_buf['theta'] = self._odom_buf['theta'][-self._live_odom_maxlen:]
+            # deque(maxlen=N) auto-trims on append.
             self._live_set_dot_received('Encoders')
             any_scalar_changed = True
 
@@ -7425,11 +7469,21 @@ class HudWindow(QMainWindow):
         # EKF status rows: solid green while the filter is publishing,
         # gray when stale. These don't pulse — they're the "is this
         # filter alive?" answer, mirroring the device-list rows above.
+        # Cache last alive state per row so setStyleSheet only fires on
+        # transitions; without this every 5 Hz tick re-applies the same
+        # stylesheet on every row, triggering Qt style invalidation for
+        # no visible change.
+        if not hasattr(self, '_ekf_row_last_alive'):
+            self._ekf_row_last_alive = {}
         for dot_name, ekf_key in self._ekf_status_rows.items():
             dot = self.status_dots.get(dot_name)
             if dot is None:
                 continue
-            dot.setStyleSheet(self._DOT_ON if _alive(ekf_key) else self._DOT_OFF)
+            alive = _alive(ekf_key)
+            if self._ekf_row_last_alive.get(dot_name) == alive:
+                continue
+            self._ekf_row_last_alive[dot_name] = alive
+            dot.setStyleSheet(self._DOT_ON if alive else self._DOT_OFF)
 
     @staticmethod
     def _render_lidar_bev(scan, size=480, pca_xy=None):
@@ -7555,20 +7609,12 @@ if _HAS_ROS:
             self._mask_in_ts = deque(maxlen=20)
 
             # Lidar worker, set by HudWindow once the worker is built.
-            # _cb_scan and _cb_pca submit directly to it so the BEV
-            # render runs at the lidar source rate (~20 Hz for the PCA
-            # path, slower for the Bresenham heightband).
+            # _cb_scan (heightband) and _cb_pca_scan (PCA) submit
+            # directly to it so the BEV renders at the lidar source
+            # rate (~20 Hz) without going through the 5 Hz live tick.
             self.lidar_worker = None
             self._lidar_in_ts = deque(maxlen=20)
             self._pca_in_ts = deque(maxlen=20)
-            # Receipt time of the most recent /scan_pca_filtered
-            # (LaserScan, base_link frame) message. _cb_pca uses this
-            # to know whether the LaserScan path is currently active —
-            # if it is, _cb_pca skips its submit so the BEV doesn't
-            # alternate between two frames (the PointCloud2 is in
-            # lidar_footprint, which makes the same physical hit show
-            # up at a different (x, y) and visually flip-flops dots).
-            self.latest_pca_scan_t = 0.0
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7673,21 +7719,12 @@ if _HAS_ROS:
                 Odometry, '/global_ekf/odom',
                 self._cb_ekf_global_odom, _SENSOR_QOS,
             )
-            # PCA-filtered lidar obstacles. Two parallel sources:
-            #   * /scan_pca_filtered_points (PointCloud2 from
-            #     grade_detector) — always available when grade
-            #     detection is on, regardless of SLAM.
-            #   * /scan_pca_filtered      (LaserScan from
-            #     pca_cloud_to_laserscan in slam.launch.py) — simpler
-            #     decode, only present when SLAM is up.
-            # Both callbacks feed the same lidar worker with source='pca'
-            # and update latest_pca_t. Whichever arrives first wins via
-            # worker latest-wins; if both are up, the LaserScan path
-            # tends to win because its decode is cheaper.
-            self.create_subscription(
-                PointCloud2, '/scan_pca_filtered_points',
-                self._cb_pca, _SENSOR_QOS,
-            )
+            # PCA-filtered lidar obstacles. Single source — the 2D
+            # LaserScan that pca_cloud_to_laserscan publishes in
+            # slam.launch.py (target_frame: base_link). Mirroring the
+            # heightband path's "one input, one frame" design so the
+            # BEV dots can't flip-flop. Requires SLAM (specifically
+            # pca_cloud_to_laserscan) to be running.
             self.create_subscription(
                 LaserScan, '/scan_pca_filtered',
                 self._cb_pca_scan, _SENSOR_QOS,
@@ -7846,76 +7883,15 @@ if _HAS_ROS:
         def _cb_soc(self, msg):
             self.latest_soc = msg.data
 
-        @staticmethod
-        def _decode_pc2_xy(msg):
-            """Numpy-only PointCloud2 → (N, 2) float32 XY array decode.
-
-            Avoids sensor_msgs_py.read_points so the GUI works on the
-            Jetson's native Python interpreter where that helper isn't
-            installed. Assumes x and y are FLOAT32 fields, which is the
-            layout for /scan_pca_filtered_points.
-            """
-            try:
-                x_off = y_off = None
-                for f in msg.fields:
-                    if f.name == 'x':
-                        x_off = int(f.offset)
-                    elif f.name == 'y':
-                        y_off = int(f.offset)
-                if x_off is None or y_off is None:
-                    return np.empty((0, 2), dtype=np.float32)
-                n = int(msg.width) * int(msg.height)
-                step = int(msg.point_step)
-                if n <= 0 or step <= 0:
-                    return np.empty((0, 2), dtype=np.float32)
-                raw = np.frombuffer(msg.data, dtype=np.uint8)
-                if raw.size < n * step:
-                    return np.empty((0, 2), dtype=np.float32)
-                pts = raw[:n * step].reshape(n, step)
-                xs = np.frombuffer(
-                    pts[:, x_off:x_off + 4].tobytes(),
-                    dtype=np.float32, count=n)
-                ys = np.frombuffer(
-                    pts[:, y_off:y_off + 4].tobytes(),
-                    dtype=np.float32, count=n)
-                valid = np.isfinite(xs) & np.isfinite(ys)
-                return np.column_stack(
-                    [xs[valid], ys[valid]]).astype(np.float32, copy=False)
-            except Exception:
-                return np.empty((0, 2), dtype=np.float32)
-
-        def _cb_pca(self, msg):
-            """/scan_pca_filtered_points (PointCloud2 from
-            grade_detector). Always available when PCA detect is on,
-            even without SLAM. Numpy-only decode — no sensor_msgs_py
-            dependency on the native side.
-
-            Skips submission while the LaserScan path is publishing
-            (it transforms into base_link, this path is in
-            lidar_footprint; mixing the two frames in latest-wins
-            makes the BEV dots flip-flop). When the LaserScan goes
-            silent for >1 s, this path takes over.
-            """
-            xy = self._decode_pc2_xy(msg)
-            self.latest_pca_xy = xy
-            self.latest_pca_t = time.monotonic()
-            self._pca_in_ts.append(self.latest_pca_t)
-            if (time.monotonic() - self.latest_pca_scan_t) < 1.0:
-                return
-            worker = getattr(self, 'lidar_worker', None)
-            if worker is not None:
-                worker.submit(xy, source='pca')
-
         def _cb_pca_scan(self, msg):
             """/scan_pca_filtered (2D LaserScan from
-            pca_cloud_to_laserscan, in base_link frame). Polar →
-            Cartesian for the valid hits, then hand the (N, 2) array
-            to the lidar worker for the PCA BEV view. Preferred path
-            when up — `_cb_pca` defers to this to avoid frame mixing.
+            pca_cloud_to_laserscan, in base_link frame). Single PCA
+            input — mirroring heightband's one-input model so the BEV
+            dots can't flip between frames. Polar → Cartesian for the
+            valid hits, then hand the (N, 2) array to the lidar worker.
             """
             now = time.monotonic()
             self.latest_pca_t = now
-            self.latest_pca_scan_t = now
             self._pca_in_ts.append(now)
             try:
                 ranges = np.asarray(msg.ranges, dtype=np.float32)
