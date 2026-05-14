@@ -305,7 +305,13 @@ void LocalMirrorLayer::updateCosts(
     }
   }
 
-  // Push layer cells into the master with max-merge.
+  // Overwrite master where this layer has an opinion. Max-merging here
+  // would block raytrace clears from propagating: a cell the local has
+  // since raytrace-cleared (FREE_SPACE in the layer) can't downgrade an
+  // existing LETHAL in master under max-merge, which is what produces
+  // the "smearing into permanent walls" symptom. Layers further down
+  // the plugin chain (line_layer, inflation_layer) still max-merge on
+  // top of this, so lines re-stamp after any clears written here.
   min_i = std::max(0, min_i);
   min_j = std::max(0, min_j);
   max_i = std::min(static_cast<int>(master_grid.getSizeInCellsX()), max_i);
@@ -321,10 +327,7 @@ void LocalMirrorLayer::updateCosts(
         continue;
       }
       const unsigned int midx = j * master_size_x + i;
-      const unsigned char m = master_array[midx];
-      if (m == NO_INFORMATION || layer_cost > m) {
-        master_array[midx] = layer_cost;
-      }
+      master_array[midx] = layer_cost;
     }
   }
 

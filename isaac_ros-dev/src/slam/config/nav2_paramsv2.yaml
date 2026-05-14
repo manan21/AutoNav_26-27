@@ -276,9 +276,16 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
-        # Accumulator mode: FREE cells from the local rolling window do not erase
-        # global memory.
-        allow_decrease: false
+        # Trust local's raytrace clearing: FREE cells from the local propagate
+        # to the global so lidar-cleared cells stop smearing as permanent
+        # walls. Edge-of-FOV persistence is already provided upstream by the
+        # 180° mark / 140° clear split in slam.launch.py — those 20° wedges
+        # on each side keep edge marks alive in the local rolling grid until
+        # the window moves on, and the mirror inherits that persistence.
+        # Long-term line memory comes from the global line_layer below
+        # (direct /line_points subscription), which max-merges on top of
+        # this layer in plugin order.
+        allow_decrease: true
         track_unknown_space: true
 
       line_layer:

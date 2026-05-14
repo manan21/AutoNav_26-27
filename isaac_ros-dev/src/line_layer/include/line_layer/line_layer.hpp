@@ -58,7 +58,9 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -85,6 +87,7 @@ public:
   {
     resetMaps();
     if (clearing_) {
+      std::lock_guard<std::mutex> lock(persisted_points_mutex_);
       persisted_points_.clear();
     }
     current_ = false;
@@ -101,7 +104,9 @@ private:
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
 
   // Indicates that the entire gradient should be recalculated next time.
-  bool need_recalculation_;
+  // Atomic because the subscription thread sets it true in linePointCallback
+  // while the costmap-update thread reads and resets it in updateBounds.
+  std::atomic<bool> need_recalculation_;
   bool rolling_window_;
   bool publish_costmap_;
   // If true (default, used by local costmap), resetMaps() runs every cycle and the layer reflects only the current message. If false (used in the global costmap), resetMaps() is skipped so cells accumulate forever — required for global obstacle memory when map_padder maintains a stable-sized grid.
@@ -136,6 +141,11 @@ private:
     rclcpp::Time stamp;
   };
   std::unordered_map<std::uint64_t, PersistentPoint> persisted_points_;
+  // Guards persisted_points_ across the subscription thread (linePointCallback
+  // persists on receipt for "lines can never be lost" reliability) and the
+  // costmap-update thread (updateCosts stamps from persisted_points_, also
+  // retries persistence when callback TF was unavailable).
+  std::mutex persisted_points_mutex_;
 
   void linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message);
   std::optional<std::vector<geometry_msgs::msg::Vector3>> transformPointsToGlobalFrame(

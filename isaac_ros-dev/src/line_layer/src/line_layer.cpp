@@ -47,6 +47,7 @@
 #include "rclcpp/parameter_events_filter.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
@@ -153,11 +154,30 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       #ifdef DEBUG_
       RCLCPP_INFO(rclcpp::get_logger("nav_costmap_2d"), "CALM LUH CALLBACK");
       #endif
-      auto line = std::make_shared<autonav_interfaces::msg::LinePoints>(); 
+      auto line = std::make_shared<autonav_interfaces::msg::LinePoints>();
       line->header = message->header;
       line->points = message->points;
 
       buffer_.buffer(line);
+
+      // Persist on receipt — lines must be as reliable as obstacle marks,
+      // so we don't depend on updateCosts catching the message before
+      // /line_points publishes faster than the costmap's update_frequency
+      // (10 Hz upstream vs. 3 Hz global update = up to ~3 messages per
+      // update cycle that buffer_.read() would discard). TF lookup is
+      // done outside persisted_points_mutex_ so the subscription thread
+      // never holds the lock during the (potentially blocking) tf2 query.
+      // If TF isn't ready, updateCosts retries with the buffered message.
+      if (hasObservationPersistence()) {
+        auto transformed = transformPointsToGlobalFrame(*message);
+        if (transformed && !transformed->empty()) {
+          auto node = node_.lock();
+          if (node) {
+            rememberPersistentPoints(*transformed, node->now());
+          }
+        }
+      }
+
       current_ = false;
       need_recalculation_ = true;
 
@@ -249,6 +269,8 @@ void LineLayer::rememberPersistentPoints(
     return;
   }
 
+  std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+
   for (const auto & point : points) {
     const auto key = persistenceKey(point.x, point.y);
     auto it = persisted_points_.find(key);
@@ -263,12 +285,11 @@ void LineLayer::rememberPersistentPoints(
     max_persisted_points_ > 0 &&
     persisted_points_.size() > static_cast<std::size_t>(max_persisted_points_))
   {
-    auto oldest = persisted_points_.begin();
-    for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ++it) {
-      if (it->second.stamp.nanoseconds() < oldest->second.stamp.nanoseconds()) {
-        oldest = it;
-      }
-    }
+    auto oldest = std::min_element(
+      persisted_points_.begin(), persisted_points_.end(),
+      [](const auto & a, const auto & b) {
+        return a.second.stamp.nanoseconds() < b.second.stamp.nanoseconds();
+      });
     persisted_points_.erase(oldest);
   }
 }
@@ -280,8 +301,11 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
     return points;
   }
 
+  std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+
   const rclcpp::Duration max_age =
     rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
+  points.reserve(persisted_points_.size());
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
     if (clearing_ && (now - it->second.stamp) > max_age) {
       it = persisted_points_.erase(it);
@@ -617,6 +641,10 @@ LineLayer::updateCosts(
   const std::vector<geometry_msgs::msg::Vector3> * points = &(*transformed_points);
   std::vector<geometry_msgs::msg::Vector3> persisted_points;
   if (hasObservationPersistence()) {
+    // Retry path: the subscription thread already calls
+    // rememberPersistentPoints on receipt, but if TF wasn't ready then
+    // the points weren't persisted. Re-asserting here is idempotent
+    // (keyed by quantized position) and just refreshes the timestamp.
     rememberPersistentPoints(*transformed_points, now);
     persisted_points = activePersistentPoints(now);
     points = &persisted_points;
