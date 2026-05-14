@@ -586,7 +586,18 @@ class _LidarFrameWorker(QObject):
 
     @staticmethod
     def _render_heightband_bev(scan, size):
-        """Bresenham BEV: white driveable + black shadows + green hits."""
+        """BEV: white driveable + black shadows + green hits.
+
+        Uses cv2.line for the per-ray drawing when available. The pure
+        Python Bresenham inner loop was the cause of camera FPS
+        collapsing whenever the lidar panel was on — a Python loop
+        across ~1000 rays × ~200 pixel writes per ray holds the GIL
+        for tens of milliseconds, starving the main thread of paint
+        cycles. cv2.line is a C call that releases the GIL during each
+        invocation, so the main thread can paint the camera between
+        rays. Falls back to the pure-Python path if cv2 isn't on the
+        Jetson's Python path.
+        """
         img = np.full((size, size, 3), 128, dtype=np.uint8)
         cx, cy = size // 2, size // 2
         max_range = scan.range_max if scan.range_max > 0 else 10.0
@@ -595,30 +606,62 @@ class _LidarFrameWorker(QObject):
         angles = (np.arange(len(scan.ranges)) * scan.angle_increment
                   + scan.angle_min)
         ranges = np.array(scan.ranges, dtype=np.float32)
+        valid = np.isfinite(ranges) & (ranges >= scan.range_min)
 
-        for i in range(len(ranges)):
-            r = ranges[i]
-            a = angles[i]
-            if not np.isfinite(r) or r < scan.range_min:
-                continue
-            sx = int(cx + max_range * math.cos(a) * scale)
-            sy = int(cy - max_range * math.sin(a) * scale)
-            if r >= max_range:
-                _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
-            else:
-                ex = int(cx + r * math.cos(a) * scale)
-                ey = int(cy - r * math.sin(a) * scale)
-                _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
-                _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
-                if 0 <= ex < size and 0 <= ey < size:
-                    img[ey, ex] = (0, 255, 0)
+        if not np.any(valid):
+            img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
+            return img
 
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                ny, nx = cy + dy, cx + dx
-                if 0 <= ny < size and 0 <= nx < size:
-                    img[ny, nx] = (255, 0, 0)
+        cos_a = np.cos(angles)
+        sin_a = np.sin(angles)
+        sx_all = (cx + max_range * cos_a * scale).astype(np.int32)
+        sy_all = (cy - max_range * sin_a * scale).astype(np.int32)
+        ex_all = (cx + ranges * cos_a * scale).astype(np.int32)
+        ey_all = (cy - ranges * sin_a * scale).astype(np.int32)
+        is_hit = valid & (ranges < max_range)
+        is_clear = valid & (ranges >= max_range)
 
+        if _HAS_CV2:
+            white = (255, 255, 255)
+            black = (0, 0, 0)
+            clear_idx = np.where(is_clear)[0]
+            for i in clear_idx:
+                cv2.line(img, (cx, cy),
+                         (int(sx_all[i]), int(sy_all[i])), white, 1)
+            hit_idx = np.where(is_hit)[0]
+            for i in hit_idx:
+                ex = int(ex_all[i])
+                ey = int(ey_all[i])
+                cv2.line(img, (cx, cy), (ex, ey), white, 1)
+                cv2.line(img, (ex, ey),
+                         (int(sx_all[i]), int(sy_all[i])), black, 1)
+            # Green hit dots, fully vectorized.
+            hit_xs = ex_all[is_hit]
+            hit_ys = ey_all[is_hit]
+            in_bounds = ((hit_xs >= 0) & (hit_xs < size) &
+                         (hit_ys >= 0) & (hit_ys < size))
+            img[hit_ys[in_bounds], hit_xs[in_bounds]] = (0, 255, 0)
+        else:
+            # GIL-bound fallback. Only hit when cv2 isn't installed —
+            # the lidar panel will likely hammer the camera's paint
+            # rate here, but at least the geometry still draws.
+            for i in range(len(ranges)):
+                r = ranges[i]
+                if not np.isfinite(r) or r < scan.range_min:
+                    continue
+                sx = int(sx_all[i])
+                sy = int(sy_all[i])
+                if r >= max_range:
+                    _bresenham_line(img, cx, cy, sx, sy, (255, 255, 255))
+                else:
+                    ex = int(ex_all[i])
+                    ey = int(ey_all[i])
+                    _bresenham_line(img, cx, cy, ex, ey, (255, 255, 255))
+                    _bresenham_line(img, ex, ey, sx, sy, (0, 0, 0))
+                    if 0 <= ex < size and 0 <= ey < size:
+                        img[ey, ex] = (0, 255, 0)
+
+        img[cy - 1:cy + 2, cx - 1:cx + 2] = (255, 0, 0)
         return img
 
 
@@ -2509,24 +2552,26 @@ class HudWindow(QMainWindow):
         viz_layout = QVBoxLayout(viz_frame)
         viz_layout.setContentsMargins(10, 6, 10, 10)
 
-        # Title row with a GUI-FPS readout pinned to the right. Operator
-        # uses this to verify the Qt event loop is keeping its 30 FPS
-        # target — if it drops, something downstream (sensor paints,
+        # Title row with the GUI-FPS readout pinned to the LEFT so it
+        # doesn't sit underneath the AUTO ON/OFF badge that floats over
+        # the upper-right of the central widget. Operator uses the
+        # number to verify the Qt event loop is keeping its 30 FPS
+        # target — drops mean something downstream (sensor paints,
         # plot redraws, etc.) is starving the main thread.
         viz_title_row = QHBoxLayout()
         viz_title_row.setContentsMargins(0, 0, 0, 0)
-        lbl_viz = QLabel("PROCESS TERMINAL")
-        lbl_viz.setFont(section_title_font)
-        lbl_viz.setAlignment(Qt.AlignCenter)
-        lbl_viz.setStyleSheet(section_title_style)
-        viz_title_row.addWidget(lbl_viz, stretch=1)
         self._gui_fps_label = QLabel("GUI -- FPS")
         self._gui_fps_label.setStyleSheet(
             "border: none; color: #0f0; font-size: 10px;"
             " font-family: monospace; padding: 0 8px;"
         )
-        self._gui_fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._gui_fps_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         viz_title_row.addWidget(self._gui_fps_label)
+        lbl_viz = QLabel("PROCESS TERMINAL")
+        lbl_viz.setFont(section_title_font)
+        lbl_viz.setAlignment(Qt.AlignCenter)
+        lbl_viz.setStyleSheet(section_title_style)
+        viz_title_row.addWidget(lbl_viz, stretch=1)
         viz_layout.addLayout(viz_title_row)
 
         self._term_header = QLabel("Select a process from the status dots")
