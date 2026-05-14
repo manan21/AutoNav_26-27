@@ -21,7 +21,7 @@ lines:
     line_points_topic: "/line_points"
     target_frame: "odom"
     enable_timer: true
-    publish_interval_ms: 250          # min 50; controls publish cadence
+    publish_interval_ms: 100          # min 50; controls publish cadence. Was 250 (4 Hz) — bumped to 10 Hz so the line memory and costmap see updates every ~10 cm of travel at the robot's 1 m/s nominal speed. Achievable now that the host-side wrapper is built with -O3 and the detector reuses persistent CUDA buffers (no per-frame cudaMalloc).
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
     line_hold_timeout_ms: 800

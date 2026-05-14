@@ -123,6 +123,12 @@ private:
   // obstacle radius doesn't re-inflate line cells.
   double inflation_radius_;
   double cost_scaling_factor_;
+  // Cells within this distance of a line are pinned to
+  // INSCRIBED_INFLATED_OBSTACLE; the exponential decay starts from
+  // there. Matching nav2's InflationLayer formula — without this
+  // offset the raw exp(-k*r) falloff from the center makes the
+  // visible halo ~⅓ of the configured inflation_radius_.
+  double inscribed_radius_;
   // Cached inflation kernel: (dy, dx, cost) triplets within the
   // inflation radius. Rebuilt lazily when the master grid resolution
   // changes (matchSize). Without a cache, each stampPoints call would

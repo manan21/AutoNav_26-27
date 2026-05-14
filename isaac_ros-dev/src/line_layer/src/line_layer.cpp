@@ -91,6 +91,7 @@ LineLayer::LineLayer()
   max_persisted_points_(12000),
   inflation_radius_(0.90),
   cost_scaling_factor_(5.0),
+  inscribed_radius_(0.30),
   inflation_kernel_resolution_(0.0)
 {
 }
@@ -114,6 +115,7 @@ LineLayer::onInitialize()
   declareParameter("max_persisted_points", rclcpp::ParameterValue(12000));
   declareParameter("inflation_radius", rclcpp::ParameterValue(0.90));
   declareParameter("cost_scaling_factor", rclcpp::ParameterValue(5.0));
+  declareParameter("inscribed_radius", rclcpp::ParameterValue(0.30));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
@@ -128,8 +130,13 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
   node->get_parameter(name_ + "." + "inflation_radius", inflation_radius_);
   node->get_parameter(name_ + "." + "cost_scaling_factor", cost_scaling_factor_);
+  node->get_parameter(name_ + "." + "inscribed_radius", inscribed_radius_);
   inflation_radius_ = std::max(0.0, inflation_radius_);
   cost_scaling_factor_ = std::max(0.01, cost_scaling_factor_);
+  inscribed_radius_ = std::max(0.0, inscribed_radius_);
+  if (inscribed_radius_ > inflation_radius_) {
+    inscribed_radius_ = inflation_radius_;
+  }
   observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
   // Negative means unlimited, zero disables persistence, positive caps memory.
@@ -335,6 +342,18 @@ void LineLayer::buildInflationKernel(double resolution)
     inflation_kernel_.push_back({0, 0, LETHAL_OBSTACLE});
     return;
   }
+
+  // Match nav2_costmap_2d::InflationLayer's exact formula so line
+  // inflation visually matches obstacle inflation. Cells within
+  // `inscribed_radius_` of the center are pinned to
+  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL —
+  // LETHAL is reserved for the exact line cell so this layer doesn't
+  // re-trigger the global inflation_layer below it in plugin order).
+  // Past that radius, exponential decay from INSCRIBED toward zero.
+  // Without this, a raw exp(-k*dist) from the center fell off so
+  // sharply that the visible halo was ~0.30 m, not the configured
+  // 0.90 m.
+  const double inscribed = std::max(0.0, inscribed_radius_);
   const int radius_cells = static_cast<int>(
     std::ceil(inflation_radius_ / resolution));
   const double max_dist_sq = inflation_radius_ * inflation_radius_;
@@ -348,13 +367,11 @@ void LineLayer::buildInflationKernel(double resolution)
       unsigned char cost;
       if (dx == 0 && dy == 0) {
         cost = LETHAL_OBSTACLE;
+      } else if (dist_m <= inscribed) {
+        cost = INSCRIBED_INFLATED_OBSTACLE;
       } else {
-        // Standard nav2 inflation decay: exponential falloff with
-        // distance, scaled so cells near the line approach
-        // INSCRIBED_INFLATED_OBSTACLE and fall off to ~zero at the
-        // outer radius.
-        const double factor =
-          std::exp(-cost_scaling_factor_ * dist_m);
+        const double factor = std::exp(
+          -cost_scaling_factor_ * (dist_m - inscribed));
         cost = static_cast<unsigned char>(
           (INSCRIBED_INFLATED_OBSTACLE - 1) * factor);
       }
