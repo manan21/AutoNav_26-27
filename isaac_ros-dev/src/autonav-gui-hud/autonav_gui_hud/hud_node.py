@@ -591,8 +591,12 @@ class _LidarFrameWorker(QObject):
 
     @staticmethod
     def _render_pca_bev(xy, size, max_range=10.0):
-        """Vectorized BEV from a PCA (N, 2) obstacle XY array (the same
-        array that `_cb_pca` decodes from /scan_pca_filtered_points).
+        """BEV from a PCA (N, 2) obstacle XY array.
+
+        White rays from the robot origin to each hit (same visual
+        language as the heightband view's white driveable lines) plus
+        a 3x3 red stamp at each hit. Robot origin marker draws last so
+        it always overlays cleanly on top of overlapping rays.
         """
         img = np.full((size, size, 3), 128, dtype=np.uint8)
         cx, cy = size // 2, size // 2
@@ -601,16 +605,32 @@ class _LidarFrameWorker(QObject):
         if xy is not None and len(xy) > 0:
             xs = (cx + xy[:, 0] * scale).astype(np.int32)
             ys = (cy - xy[:, 1] * scale).astype(np.int32)
-            # 2-pixel margin matches the 5x5 stamp below so the
-            # broadcast write below can't run off the canvas edges.
-            in_bounds = ((xs >= 2) & (xs < size - 2) &
-                         (ys >= 2) & (ys < size - 2))
+            # 1-pixel margin matches the 3x3 stamp so the broadcast
+            # writes below can't run off the canvas edges.
+            in_bounds = ((xs >= 1) & (xs < size - 1) &
+                         (ys >= 1) & (ys < size - 1))
             xs = xs[in_bounds]
             ys = ys[in_bounds]
-            # 5x5 red stamp per hit (was 3x3) — at the lower canvas dpi
-            # 3x3 disappeared after matplotlib's resample step.
-            for dy in range(-2, 3):
-                for dx in range(-2, 3):
+
+            # White rays from origin → each hit. Drawn first so the
+            # red dots stamp on top of the line endpoints. cv2.line is
+            # a C call that releases the GIL during each invocation,
+            # so the main thread can keep painting the camera between
+            # rays even at high PCA point counts.
+            if _HAS_CV2:
+                white = (255, 255, 255)
+                for xi, yi in zip(xs, ys):
+                    cv2.line(img, (cx, cy),
+                             (int(xi), int(yi)), white, 1)
+            else:
+                for xi, yi in zip(xs, ys):
+                    _bresenham_line(
+                        img, cx, cy, int(xi), int(yi), (255, 255, 255))
+
+            # 3x3 red stamp per hit (was 5x5 — too chunky at clustered
+            # hits and overlapping into adjacent points).
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
                     img[ys + dy, xs + dx] = (255, 0, 0)
 
         _LidarFrameWorker._draw_robot_marker(img, cx, cy)
@@ -7541,6 +7561,14 @@ if _HAS_ROS:
             self.lidar_worker = None
             self._lidar_in_ts = deque(maxlen=20)
             self._pca_in_ts = deque(maxlen=20)
+            # Receipt time of the most recent /scan_pca_filtered
+            # (LaserScan, base_link frame) message. _cb_pca uses this
+            # to know whether the LaserScan path is currently active —
+            # if it is, _cb_pca skips its submit so the BEV doesn't
+            # alternate between two frames (the PointCloud2 is in
+            # lidar_footprint, which makes the same physical hit show
+            # up at a different (x, y) and visually flip-flops dots).
+            self.latest_pca_scan_t = 0.0
             # PCA-filtered lidar obstacles (PointCloud2 → list of
             # (x, y) tuples in the lidar_footprint frame).
             self.latest_pca_xy = None      # numpy (N, 2) array
@@ -7861,23 +7889,34 @@ if _HAS_ROS:
             grade_detector). Always available when PCA detect is on,
             even without SLAM. Numpy-only decode — no sensor_msgs_py
             dependency on the native side.
+
+            Skips submission while the LaserScan path is publishing
+            (it transforms into base_link, this path is in
+            lidar_footprint; mixing the two frames in latest-wins
+            makes the BEV dots flip-flop). When the LaserScan goes
+            silent for >1 s, this path takes over.
             """
             xy = self._decode_pc2_xy(msg)
             self.latest_pca_xy = xy
             self.latest_pca_t = time.monotonic()
             self._pca_in_ts.append(self.latest_pca_t)
+            if (time.monotonic() - self.latest_pca_scan_t) < 1.0:
+                return
             worker = getattr(self, 'lidar_worker', None)
             if worker is not None:
                 worker.submit(xy, source='pca')
 
         def _cb_pca_scan(self, msg):
             """/scan_pca_filtered (2D LaserScan from
-            pca_cloud_to_laserscan). Polar → Cartesian for the valid
-            hits, then hand the (N, 2) array to the lidar worker for
-            the PCA BEV view.
+            pca_cloud_to_laserscan, in base_link frame). Polar →
+            Cartesian for the valid hits, then hand the (N, 2) array
+            to the lidar worker for the PCA BEV view. Preferred path
+            when up — `_cb_pca` defers to this to avoid frame mixing.
             """
-            self.latest_pca_t = time.monotonic()
-            self._pca_in_ts.append(self.latest_pca_t)
+            now = time.monotonic()
+            self.latest_pca_t = now
+            self.latest_pca_scan_t = now
+            self._pca_in_ts.append(now)
             try:
                 ranges = np.asarray(msg.ranges, dtype=np.float32)
                 if ranges.size == 0:
