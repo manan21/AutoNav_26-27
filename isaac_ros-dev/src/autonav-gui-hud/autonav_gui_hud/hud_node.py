@@ -7909,9 +7909,20 @@ if _HAS_ROS:
                     else:
                         rs = ranges[valid]
                         as_ = angles[valid]
+                        # Y sign flipped to match the heightband view's
+                        # left/right orientation on screen. The PCA
+                        # LaserScan comes in base_link frame while
+                        # /scan_fullframe is in lidar_footprint —
+                        # whatever yaw mismatch exists between those
+                        # frames was inverting the rendered y axis for
+                        # the PCA path only. Negating sin() here mirrors
+                        # the points horizontally before the worker's
+                        # rot90+fliplr orientation pass, so they land
+                        # on the same screen side as the equivalent
+                        # heightband hits.
                         xy = np.column_stack([
                             (rs * np.cos(as_)).astype(np.float32),
-                            (rs * np.sin(as_)).astype(np.float32),
+                            -(rs * np.sin(as_)).astype(np.float32),
                         ])
                 self.latest_pca_xy = xy
                 worker = getattr(self, 'lidar_worker', None)
