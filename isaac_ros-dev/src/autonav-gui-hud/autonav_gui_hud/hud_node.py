@@ -2,6 +2,7 @@ import csv
 import io
 import math
 import os
+import queue
 import random
 import re
 import signal
@@ -156,6 +157,149 @@ def _fetch_map_for_gps(lats, lons, zoom=_GPS_TILE_ZOOM):
     extent = (bnd_lon_min, bnd_lon_max, bnd_lat_min, bnd_lat_max)
     return img, extent
 
+
+from PyQt5.QtCore import QObject, pyqtSignal
+
+
+# Competition operates in VA or MI. GPS fixes outside these boxes are bogus
+# (parser glitch, GPS in fault state reporting 0/0, etc.) — refuse to fetch
+# tiles for them. Otherwise a single bad fix during LIVE mode triggers a
+# multi-tile download for the middle of the Atlantic, which can pin the
+# worker for tens of seconds and never produces a useful image.
+_GPS_VALID_REGIONS = (
+    # (lat_min, lat_max, lon_min, lon_max)
+    (36.4, 39.7, -83.8, -75.1),    # Virginia (padded)
+    (41.5, 48.4, -90.5, -82.0),    # Michigan (Lower + Upper, padded)
+)
+
+
+def _gps_in_valid_region(lat, lon):
+    for lat_min, lat_max, lon_min, lon_max in _GPS_VALID_REGIONS:
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            return True
+    return False
+
+
+def _probe_tile_server(timeout=1.0):
+    """Return True if the tile server is reachable. 1 s default keeps the
+    offline-detection path snappy — failing this fast means we mark the
+    network down without blocking subsequent requests behind a 10 s tile
+    timeout."""
+    try:
+        req = urllib.request.Request(
+            'https://mt1.google.com/vt/lyrs=y&x=0&y=0&z=0',
+            headers={'User-Agent': 'AutoNavGUI/1.0'},
+            method='HEAD',
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 400
+    except Exception:
+        return False
+
+
+class _TileFetcher(QObject):
+    """Off-thread GPS tile fetcher.
+
+    Lives as a QObject with a daemon worker thread. The main (Qt) thread
+    posts requests via ``request()``; results come back on the main thread
+    via the ``finished`` signal (cross-thread emission is queued by Qt).
+
+    Network state is tri-state (None=unknown, True=online, False=offline)
+    so the first request always probes. While offline, requests short-
+    circuit and emit ``finished(None, None, ...)`` without attempting the
+    multi-tile fetch. A 60 s idle re-probe re-arms when wifi/hotspot
+    becomes available, and the last successful-area request is automatic-
+    ally retried on the offline → online transition so cached tiles for
+    the current area get populated as soon as the radio comes back.
+    """
+
+    finished = pyqtSignal(object, object, int, str)  # img, extent, req_id, tag
+    online_changed = pyqtSignal(bool)
+
+    _PROBE_INTERVAL_S = 60.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue = queue.Queue()
+        self._online = None
+        self._last_probe_t = 0.0
+        self._last_request = None  # (lats, lons, tag) for reconnect retry
+        self._stop_event = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run, name='gps-tile-fetcher', daemon=True)
+        self._worker.start()
+
+    def request(self, lats, lons, req_id, tag):
+        self._queue.put(('request', list(lats), list(lons), int(req_id), str(tag)))
+
+    def probe(self):
+        """Force a non-blocking probe (used by the GUI watchdog)."""
+        self._queue.put(('probe',))
+
+    def shutdown(self):
+        self._stop_event.set()
+        self._queue.put(('stop',))
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                item = self._queue.get(timeout=self._PROBE_INTERVAL_S)
+            except queue.Empty:
+                # Idle wakeup: probe + auto-retry on reconnect
+                self._auto_probe_and_retry()
+                continue
+            kind = item[0]
+            if kind == 'stop':
+                return
+            if kind == 'probe':
+                self._do_probe()
+                continue
+            if kind == 'request':
+                _, lats, lons, req_id, tag = item
+                self._handle_request(lats, lons, req_id, tag)
+
+    def _handle_request(self, lats, lons, req_id, tag):
+        if self._online is None:
+            self._do_probe()
+        elif self._online is False and \
+                (time.monotonic() - self._last_probe_t) > self._PROBE_INTERVAL_S:
+            self._do_probe()
+
+        if self._online is False:
+            self.finished.emit(None, None, req_id, tag)
+            return
+
+        img, extent = _fetch_map_for_gps(lats, lons)
+        if img is None:
+            # Fetch failed mid-flight — re-probe to mark offline if so
+            self._do_probe()
+        else:
+            self._last_request = (lats, lons, tag)
+        self.finished.emit(img, extent, req_id, tag)
+
+    def _do_probe(self):
+        self._last_probe_t = time.monotonic()
+        new_online = _probe_tile_server(timeout=1.0)
+        if new_online != self._online:
+            self._online = new_online
+            self.online_changed.emit(bool(new_online))
+        else:
+            self._online = new_online
+
+    def _auto_probe_and_retry(self):
+        if self._online is not False:
+            return
+        prev = self._online
+        self._do_probe()
+        if self._online is True and prev is False and self._last_request is not None:
+            lats, lons, tag = self._last_request
+            # req_id = -1 marks this as a worker-initiated retry; the main
+            # thread accepts it regardless of its current id counter so
+            # the just-reconnected fetch isn't dropped as stale.
+            img, extent = _fetch_map_for_gps(lats, lons)
+            self.finished.emit(img, extent, -1, f'{tag}+reconnect')
+
+
 from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
@@ -300,6 +444,19 @@ class HudWindow(QMainWindow):
         self._pb_pause_elapsed_ns = 0
         self._pb_elapsed_ns = 0
         self.sensor_value_labels = {}
+
+        # GPS tile fetcher — runs on a worker thread so the Qt event loop
+        # never blocks on the multi-tile HTTP fetch. Without this every
+        # cache-miss in LIVE mode stalled the whole HUD for N×10 s while
+        # urllib.urlopen waited for a tile that never came (no wifi). The
+        # main thread now posts a request and gets the result via signal.
+        self._tile_fetcher = _TileFetcher(self)
+        self._tile_fetcher.finished.connect(self._on_tile_fetch_finished)
+        self._tile_fetcher.online_changed.connect(self._on_tile_network_changed)
+        self._tile_request_id = 0
+        self._tile_request_pending = False
+        self._tile_network_online = None  # tri-state; mirrors fetcher's view
+        self._tile_offline_logged = False
 
         # Rolling data buffers for plots
         self._power_buf = {'t': deque(), 'V': deque(), 'I': deque(), 'P': deque()}
@@ -1657,6 +1814,15 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._gps_live_txt.set_visible(False)
+        # Shown when we have GPS but no map tile (offline + uncached area).
+        # Replaces the bare matplotlib background that would otherwise look
+        # like a blank/white screen and made operators think the GUI froze.
+        self._gps_offline_txt = self._gps_ax.text(
+            0.5, 0.5, 'OFFLINE — NO TILES CACHED\nFOR THIS AREA',
+            transform=self._gps_ax.transAxes, fontsize=8, color='#888',
+            ha='center', va='center', family='monospace',
+        )
+        self._gps_offline_txt.set_visible(False)
         self._gps_map_im = None          # imshow handle for map background
         self._gps_map_extent = None       # (lon_min, lon_max, lat_min, lat_max)
         self._gps_map_img = None          # numpy RGB array
@@ -4677,6 +4843,13 @@ class HudWindow(QMainWindow):
         binaries reparented to PID 1 in the container and showing as
         "external" processes in the next GUI session.
         """
+        # Shut down the GPS tile fetcher worker thread.
+        try:
+            if hasattr(self, '_tile_fetcher') and self._tile_fetcher is not None:
+                self._tile_fetcher.shutdown()
+        except Exception:
+            pass
+
         # Stop live mode if active
         if self._live_active:
             self._stop_live_mode()
@@ -5363,21 +5536,13 @@ class HudWindow(QMainWindow):
         self._cam_canvas.draw_idle()
         self._lidar_canvas.draw_idle()
 
-        # Pre-fetch OSM map tiles for GPS background
+        # Pre-fetch OSM map tiles for GPS background. Dispatched off-thread
+        # so the "Start Playback" click returns immediately even on a
+        # bag with many GPS points; the imshow goes up when the fetch
+        # callback fires.
         if gps_lats and gps_lons:
             self._gps_no_data_txt.set_visible(False)
-            img, extent = _fetch_map_for_gps(gps_lats, gps_lons)
-            if img is not None:
-                self._gps_map_img = img
-                self._gps_map_extent = extent
-                # Draw the map background once
-                if self._gps_map_im is not None:
-                    self._gps_map_im.remove()
-                self._gps_map_im = self._gps_ax.imshow(
-                    self._gps_map_img,
-                    extent=[extent[0], extent[1], extent[2], extent[3]],
-                    aspect='auto', zorder=0,
-                )
+            self._request_gps_map(gps_lats, gps_lons, 'playback-start')
         else:
             self._gps_no_data_txt.set_visible(True)
         self._gps_canvas.draw_idle()
@@ -5590,6 +5755,7 @@ class HudWindow(QMainWindow):
         self._gps_map_extent = None
         self._gps_no_data_txt.set_visible(False)
         self._gps_live_txt.set_visible(False)
+        self._gps_offline_txt.set_visible(False)
         if self._gps_cov_ellipse is not None:
             self._gps_cov_ellipse.remove()
             self._gps_cov_ellipse = None
@@ -6038,6 +6204,11 @@ class HudWindow(QMainWindow):
         self._lidar_canvas.draw_idle()
         self._gps_live_txt.set_visible(True)
         self._gps_no_data_txt.set_visible(False)
+        self._gps_offline_txt.set_visible(False)
+        # Reset per-session tile-fetch bookkeeping so log lines fire again
+        # on the next offline transition / first out-of-bounds fix.
+        self._tile_oob_logged = False
+        self._tile_request_pending = False
         # Clear GPS map background for a clean black screen
         if self._gps_map_im is not None:
             self._gps_map_im.remove()
@@ -6139,6 +6310,7 @@ class HudWindow(QMainWindow):
         self._lidar_live_txt.set_visible(False)
         self._lidar_canvas.draw_idle()
         self._gps_live_txt.set_visible(False)
+        self._gps_offline_txt.set_visible(False)
         self._gps_canvas.draw_idle()
         self._odom_live_txt.set_visible(False)
         self._odom_ax.grid(True, which='both', color='#333', linewidth=0.5)
@@ -6173,6 +6345,73 @@ class HudWindow(QMainWindow):
                 break
         self._update_selection()
 
+    # -----------------------------------------------------------------
+    # GPS tile fetch coordination (off-thread)
+    # -----------------------------------------------------------------
+    def _request_gps_map(self, lats, lons, tag):
+        """Post an async tile-fetch request; return False if rejected.
+
+        Rejections (validation, already pending, GPS out of VA/MI) are
+        silent on the hot path so the 5 Hz live tick doesn't spam logs.
+        Out-of-bounds GPS is logged once per LIVE session.
+        """
+        if not lats or not lons:
+            return False
+        last_lat, last_lon = lats[-1], lons[-1]
+        if not _gps_in_valid_region(last_lat, last_lon):
+            if not getattr(self, '_tile_oob_logged', False):
+                self._gui_log_msg(
+                    f'GPS fix ({last_lat:.4f}, {last_lon:.4f}) outside '
+                    'VA/MI bounds; skipping tile fetch')
+                self._tile_oob_logged = True
+            return False
+        if self._tile_request_pending:
+            return False
+        self._tile_request_id += 1
+        self._tile_request_pending = True
+        self._tile_fetcher.request(lats, lons, self._tile_request_id, tag)
+        return True
+
+    def _on_tile_fetch_finished(self, img, extent, req_id, tag):
+        """Main-thread slot: receives the fetched (or empty) tile image."""
+        # req_id == -1 marks a worker-initiated reconnect retry; accept
+        # regardless. Otherwise drop stale results.
+        if req_id != -1 and req_id != self._tile_request_id:
+            self._tile_request_pending = False
+            return
+        if req_id != -1:
+            self._tile_request_pending = False
+        if img is None or extent is None:
+            # No map this round — show the offline placeholder if we don't
+            # have any cached map at all yet.
+            if self._gps_map_im is None:
+                self._gps_offline_txt.set_visible(True)
+                self._gps_canvas.draw_idle()
+            return
+        self._gps_map_img = img
+        self._gps_map_extent = extent
+        if self._gps_map_im is not None:
+            self._gps_map_im.remove()
+        self._gps_map_im = self._gps_ax.imshow(
+            self._gps_map_img,
+            extent=[extent[0], extent[1], extent[2], extent[3]],
+            aspect='auto', zorder=0,
+        )
+        self._gps_offline_txt.set_visible(False)
+        self._gps_canvas.draw_idle()
+
+    def _on_tile_network_changed(self, online):
+        """Main-thread slot: log network state transitions once each."""
+        self._tile_network_online = bool(online)
+        if online:
+            if self._tile_offline_logged:
+                self._gui_log_msg('GPS tile server reachable; map fetches re-enabled')
+            self._tile_offline_logged = False
+        else:
+            if not self._tile_offline_logged:
+                self._gui_log_msg('GPS tile server unreachable; map fetches deferred until reconnect')
+                self._tile_offline_logged = True
+
     def _live_tick(self):
         """10 Hz poll: consume latest ROS data and update GUI cells."""
         node = self._ros_node
@@ -6196,35 +6435,17 @@ class HudWindow(QMainWindow):
                 self._gps_buf['lon'] = self._gps_buf['lon'][-self._live_gps_maxlen:]
             self._gps_live_txt.set_visible(False)
             self._live_set_dot_received('GPS')
-            # Fetch map tiles on first point or if position leaves extent
+            # Fetch map tiles on first point or if position leaves extent.
+            # Both paths route through the off-thread fetcher; the result
+            # arrives asynchronously in _on_tile_fetch_finished and does
+            # not block the live tick.
             if self._gps_map_extent is None:
-                img, extent = _fetch_map_for_gps([lat], [lon])
-                if img is not None:
-                    self._gps_map_img = img
-                    self._gps_map_extent = extent
-                    if self._gps_map_im is not None:
-                        self._gps_map_im.remove()
-                    self._gps_map_im = self._gps_ax.imshow(
-                        self._gps_map_img,
-                        extent=[extent[0], extent[1], extent[2], extent[3]],
-                        aspect='auto', zorder=0,
-                    )
-            elif self._gps_map_extent is not None:
+                self._request_gps_map([lat], [lon], 'live-first')
+            else:
                 e = self._gps_map_extent
                 if not (e[2] <= lat <= e[3] and e[0] <= lon <= e[1]):
-                    img, extent = _fetch_map_for_gps(
-                        self._gps_buf['lat'], self._gps_buf['lon'],
-                    )
-                    if img is not None:
-                        self._gps_map_img = img
-                        self._gps_map_extent = extent
-                        if self._gps_map_im is not None:
-                            self._gps_map_im.remove()
-                        self._gps_map_im = self._gps_ax.imshow(
-                            self._gps_map_img,
-                            extent=[extent[0], extent[1], extent[2], extent[3]],
-                            aspect='auto', zorder=0,
-                        )
+                    self._request_gps_map(
+                        self._gps_buf['lat'], self._gps_buf['lon'], 'live-extent')
             # 2σ covariance ellipse around the current fix. Drawn in
             # degrees on the lat/lon axes — width/height come from the
             # eigendecomposition of the East/North block, converted
