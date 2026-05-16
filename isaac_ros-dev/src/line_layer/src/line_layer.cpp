@@ -381,6 +381,54 @@ void LineLayer::buildInflationKernel(double resolution)
   }
 }
 
+void LineLayer::matchSize()
+{
+  // Base class resizes our costmap_ to match the master costmap's new
+  // geometry. After this call, costmap_ is freshly zeroed -- every
+  // line cell we previously stamped is gone.
+  nav2_costmap_2d::CostmapLayer::matchSize();
+
+  // persisted_points_ stores every observed line in world (map-frame)
+  // coordinates, keyed by quantized world position. We re-stamp every
+  // point into the new grid so the global costmap stays translationally
+  // locked to /map across resize events -- no flicker gap.
+  const double res = getResolution();
+  if (inflation_kernel_.empty() ||
+      std::abs(res - inflation_kernel_resolution_) > 1e-6)
+  {
+    buildInflationKernel(res);
+  }
+
+  std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+  if (persisted_points_.empty()) {
+    return;
+  }
+
+  const int size_x_int = static_cast<int>(size_x_);
+  const int size_y_int = static_cast<int>(size_y_);
+  for (const auto & kv : persisted_points_) {
+    const auto & p = kv.second.point;
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!worldToMap(p.x, p.y, mx, my)) {
+      continue;
+    }
+    const int cx = static_cast<int>(mx);
+    const int cy = static_cast<int>(my);
+    for (const auto & off : inflation_kernel_) {
+      const int nx = cx + off.dx;
+      const int ny = cy + off.dy;
+      if (nx < 0 || nx >= size_x_int || ny < 0 || ny >= size_y_int) {
+        continue;
+      }
+      const int idx = ny * size_x_int + nx;
+      if (costmap_[idx] < off.cost) {
+        costmap_[idx] = off.cost;
+      }
+    }
+  }
+}
+
 void LineLayer::stampPoints(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j,

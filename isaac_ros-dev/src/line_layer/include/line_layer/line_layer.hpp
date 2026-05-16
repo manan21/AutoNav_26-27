@@ -83,6 +83,17 @@ public:
     nav2_costmap_2d::Costmap2D & master_grid,
     int min_i, int min_j, int max_i, int max_j);
 
+  // matchSize() is fired by Nav2 whenever the master global costmap
+  // changes geometry (e.g., map_padder grows its bounding box). The
+  // base CostmapLayer implementation resizes this layer's costmap_
+  // buffer but leaves it zero-initialized -- which would briefly drop
+  // every persisted line observation until the next updateCosts cycle
+  // restamps from persisted_points_. The override below restamps
+  // immediately, using the world-frame coordinates stored in
+  // persisted_points_, so the global costmap stays translationally
+  // locked to /map across resize events with no flicker gap.
+  void matchSize() override;
+
   virtual void reset()
   {
     resetMaps();

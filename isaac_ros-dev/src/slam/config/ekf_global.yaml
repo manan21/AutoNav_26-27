@@ -8,10 +8,13 @@ ekf_global:
     base_link_frame: base_link
     world_frame: map
 
-    # slam_toolbox already publishes map -> odom. If this EKF also
-    # publishes TF, the two fight and Nav2 sees a chattering transform.
-    # We use this filter purely as a state estimator that emits
-    # /global_ekf/odom for downstream consumers.
+    # slam_toolbox owns the map -> odom transform (same as main, where
+    # GPS waypoint nav works). This EKF runs as a STATE ESTIMATOR ONLY,
+    # emitting /global_ekf/odom for downstream consumers and for
+    # diagnosing why GPS fusion drifts on this branch. publish_tf must
+    # stay false so the two sources never compete -- and to isolate
+    # whether bad /global_ekf/odom output was actually the cause of the
+    # longitudinal oscillations we previously attributed to SLAM snaps.
     publish_tf: false
 
     # Explicit process_noise_covariance. Without this set,

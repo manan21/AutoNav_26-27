@@ -80,8 +80,20 @@ slam_toolbox:
     enable_interactive_mode: false  # off: saves CPU on Jetson
 
     # General Parameters
-    # Off: with static map=odom TF, slam-correction snaps cause oscillations.
-    use_scan_matching: false
+    # ON. The previous static-map=odom workaround eliminated SLAM snap
+    # oscillations by removing all map yaw correction -- which broke
+    # GPS waypoint nav and the "-r 10 0 → diagonal" symptom (no path
+    # for yaw drift to be observed and fixed). Re-enabling scan
+    # matching is safe now because the corrections flow through
+    # /pose → ekf_global, which is a Kalman filter that smooths any
+    # step-change into a continuous ramp over 30-100 ms. DWB never
+    # sees a discrete jump. Worst-case correction bound: the
+    # correlation_search_space_dimension (0.5 m) limits any single
+    # match to a ±0.25 m delta; the 5σ Mahalanobis gate on /pose in
+    # ekf_global rejects anything further. With ekf_local pose-only
+    # (no wheel-velocity / yaw-rate fusion) the odom→base_link is
+    # clean, so the matcher isn't fighting a drifting odom.
+    use_scan_matching: true
     use_scan_barycenter: true
     # Only insert a keyframe after the robot has actually moved. 0.0 grew the pose graph at scan rate and slowed slam at distance.
     minimum_travel_distance: 0.5

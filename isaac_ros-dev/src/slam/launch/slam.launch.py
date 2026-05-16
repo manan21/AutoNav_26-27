@@ -48,9 +48,12 @@ def generate_launch_description():
 
     publish_period = DeclareLaunchArgument(
         'publish_period',
-        default_value='0.0',
-        description='SLAM map->odom TF publish period (s). 0.02 = 50 Hz, '
-                    '0.0 disables (static_transform_publisher owns the TF).')
+        default_value='0.02',
+        description='SLAM map->odom TF publish period (s). 0.02 = 50 Hz. '
+                    'slam_toolbox owns this transform (same as main, where '
+                    'GPS waypoint nav works). Set 0.0 only if something '
+                    'else broadcasts map->odom (no other publisher exists '
+                    'in this launch).')
 
     nav2_params_arg = DeclareLaunchArgument(
         'nav2_params',
@@ -119,21 +122,15 @@ def generate_launch_description():
         ]
     )
 
-    # Static identity map->odom owns the TF; slam_toolbox is silent on TF.
-    map_to_odom_static = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='map_to_odom_static',
-        output='screen',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-    )
-
-    # ── 2.25 Map EKF (map -> base_link, NO TF publish) ──────────────────
-    # Fuses slam_toolbox /pose, the Local EKF output, and (when
-    # enable_gps_fusion is true) /odometry/gps from navsat_transform.
-    # Emits /global_ekf/odom for downstream consumers. publish_tf is
-    # OFF in ekf_global.yaml because slam_toolbox already publishes
-    # the map -> odom transform.
+    # ── 2.25 Map EKF (state estimator ONLY, no TF publish) ──────────────
+    # slam_toolbox owns map->odom (transform_publish_period: 0.02 in
+    # the launch arg above, scan matching on in slam.yaml). This EKF
+    # runs purely as a state estimator emitting /global_ekf/odom for
+    # downstream consumers and for the investigation into whether
+    # /global_ekf/odom is the actual source of the longitudinal
+    # oscillations that were previously blamed on SLAM scan-match
+    # snaps. publish_tf is OFF in ekf_global.yaml so the two TF
+    # sources never coexist.
     ekf_global = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -309,7 +306,6 @@ def generate_launch_description():
         imu_cov_inflator,
         ekf_local,
         slam_toolbox,
-        map_to_odom_static,
         ekf_global,
         navsat_transform,
         pca_pc2_to_scan,
