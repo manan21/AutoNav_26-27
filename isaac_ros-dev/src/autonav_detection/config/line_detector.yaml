@@ -12,7 +12,14 @@
 # (2*half_window_size + 1) ^ 2 window) is bright on average AND has low
 # variance — i.e. it sits on a smooth, evenly lit white surface.
 
-lines:
+## NOTE: The launch file names this node `line_detection_node` (see
+## detection.launch.py — kept for historical compatibility with /line_points
+## consumers). Using the `/**:` wildcard so this YAML applies regardless of
+## node name; previously this file was keyed under `lines:` and silently
+## loaded *nothing* — the running detector was on cpp defaults the whole
+## time. Confirmed via `ros2 param get /line_detection_node ...` showing
+## values matching node.cpp defaults rather than this file.
+/**:
   ros__parameters:
     # ── I/O & timing ─────────────────────────────────────────────────────
     camera_topic: "/zed/zed_node/rgb/color/rect/image"
@@ -42,7 +49,14 @@ lines:
     cluster_min_aspect_ratio: 3.0
     cluster_link_distance_m: 0.18
     temporal_voxel_size_m: 0.10
-    temporal_min_hits: 2
+    # Was 2 → 1 for rapid first-appearance: a single confirmed voxel
+    # publishes immediately instead of waiting for a second hit inside the
+    # 750 ms window. Tradeoff: a single noisy frame paints a phantom line
+    # that holds for `confirmed_hold_ms`. Acceptable for lab validation
+    # where lines are clearly visible; revisit for outdoor missions if
+    # false positives become an issue (raise back to 2, or drop
+    # confirmed_hold_ms).
+    temporal_min_hits: 1
     temporal_confirm_window_ms: 750
     confirmed_hold_ms: 10000
     yaw_rate_gate_rad_s: 0.6
