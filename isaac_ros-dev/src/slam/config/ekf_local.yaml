@@ -11,22 +11,29 @@ ekf_node:
     world_frame: odom
 
     # ── Wheel odometry ──────────────────────────────────────────────
-    # Position-only fusion. The original config also fused vx
-    # (twist.covariance[0]=0.001 → σ≈3 cm/s) and vyaw
-    # (twist.covariance[35]=0.02 → σ≈0.14 rad/s). Both are unrealistically
-    # tight — robot_localization treats them as near-perfect, so any
-    # wheel-slip or encoder-rate jitter is fused as ground truth and
-    # immediately rewrites odom→base_link. slam_toolbox then snaps
-    # map→odom to compensate, and Nav2 sees the robot "bouncing" along
-    # its heading. By dropping the twist bits we let the EKF derive
-    # velocities from sequential pose updates instead, which is
-    # naturally smoother and bounded by the pose covariance (which is
-    # itself realistic at 0.01 m² σ≈10 cm).
+    # Pose + yaw-rate fusion. Linear-velocity (vx) is still dropped:
+    # its 3 cm/s σ was unrealistically tight and over-fused into a
+    # stop/go bounce against slam_toolbox snapping map→odom.
+    #
+    # vyaw is re-enabled here (vs the pose-only state this file was
+    # briefly in) because dropping it left the IMU yaw rate (via
+    # imu_cov_inflator below) as the *only* yaw-rate forcing
+    # function. Any gyro bias on the SICK then integrated unopposed
+    # into the EKF yaw, and GPS goal placement diverged from the
+    # real waypoint by the accumulated drift — observed at ~82° in
+    # an outdoor run. Cross-fusing wheel vyaw with IMU vyaw cancels
+    # the gyro bias so ekf_local's yaw stays anchored, which is
+    # what gps_handler_node's bootstrap needs to converge correctly.
+    # Same arrangement as main.
+    #
+    # If the stop/go bounce returns, the right next step is to widen
+    # /odom's twist covariance at the source (controller_autonav)
+    # rather than drop the fusion again.
     odom0: odom
     odom0_config: [true,  true,  false,
                    false, false, true,
                    false, false, false,
-                   false, false, false,
+                   false, false, true,
                    false, false, false]
     odom0_differential: false
     odom0_relative: false
