@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Openbox config for the autonav-kiosk user.
+
+  Goal: empty keyboard map and empty mouse map except the one binding
+  the kiosk needs (Ctrl+Shift+L -> screen lock). Alt+Tab, Alt+F4,
+  Super, Ctrl+Alt+T, Ctrl+Alt+Backspace etc. are intentionally absent
+  so the WM does not act on them.
+
+  Drop in to: /home/autonav-kiosk/.config/openbox/rc.xml
+-->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>no</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>0</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+
+  <placement>
+    <policy>UnderMouse</policy>
+    <center>yes</center>
+    <monitor>Active</monitor>
+    <primaryMonitor>1</primaryMonitor>
+  </placement>
+
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout></titleLayout>
+    <keepBorder>no</keepBorder>
+    <animateIconify>no</animateIconify>
+  </theme>
+
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names><name>kiosk</name></names>
+    <popupTime>0</popupTime>
+  </desktops>
+
+  <resize>
+    <drawContents>no</drawContents>
+    <popupShow>Never</popupShow>
+  </resize>
+
+  <margins>
+    <top>0</top>
+    <bottom>0</bottom>
+    <left>0</left>
+    <right>0</right>
+  </margins>
+
+  <dock>
+    <position>None</position>
+  </dock>
+
+  <!--
+    Only one keybinding: lock the screen.
+    Everything else (Alt+Tab, Alt+F4, Super, Ctrl+Alt+T,
+    Ctrl+Alt+Backspace, Ctrl+Alt+Fn) is intentionally unbound.
+  -->
+  <keyboard>
+    <chainQuitKey>none</chainQuitKey>
+    <keybind key="C-S-l">
+      <action name="Execute">
+        <command>xscreensaver-command -lock</command>
+      </action>
+    </keybind>
+  </keyboard>
+
+  <!--
+    Empty mouse map: no window dragging, no context menus, no resize
+    grips. The HUD owns the full screen and there is nothing to drag
+    or focus.
+  -->
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>0</doubleClickTime>
+    <screenEdgeWarpTime>0</screenEdgeWarpTime>
+  </mouse>
+
+  <applications>
+    <application class="*">
+      <fullscreen>yes</fullscreen>
+      <maximized>true</maximized>
+      <decor>no</decor>
+      <focus>yes</focus>
+      <layer>normal</layer>
+    </application>
+  </applications>
+
+</openbox_config>

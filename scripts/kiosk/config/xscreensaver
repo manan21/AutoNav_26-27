@@ -1,0 +1,48 @@
+# xscreensaver settings for the autonav-kiosk user.
+# Drop in to: /home/autonav-kiosk/.xscreensaver
+#
+# - mode blank: no screensaver hack, just a black screen.
+# - timeout 00:00:00 disables the idle timer; the kiosk locks only
+#   when the operator presses Ctrl+Shift+L (the WM binding).
+# - passwdTimeout 00:00:30: the unlock dialog stays up for 30s of
+#   inactivity before re-blanking. Tune if operators want more time.
+# - splash False: no "About xscreensaver" splash on startup.
+
+timeout:                0:00:00
+cycle:                  0:00:00
+lock:                   True
+lockTimeout:            0:00:00
+passwdTimeout:          0:00:30
+
+dpmsEnabled:            False
+dpmsQuickOff:           False
+
+grabDesktopImages:      False
+grabVideoFrames:        False
+chooseRandomImages:     False
+imageDirectory:
+
+mode:                   blank
+selected:               -1
+
+textMode:               literal
+textLiteral:            SCREEN LOCKED
+textFile:
+textProgram:
+textURL:
+
+fadeSeconds:            0:00:00
+fadeTicks:              0
+splash:                 False
+splashDuration:         0:00:00
+
+visualID:               default
+installColormap:        True
+verbose:                False
+timestamp:              True
+fade:                   False
+unfade:                 False
+captureStderr:          True
+ignoreUninstalledPrograms: True
+
+font:                   *-medium-r-*-*-*-180-*-*-*-*-*-*-*

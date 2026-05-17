@@ -1,0 +1,22 @@
+# PAM stack for xscreensaver unlock.
+# Drop in to: /etc/pam.d/xscreensaver  (root-owned, mode 0644).
+#
+# pam_faillock enforces rate limiting:
+#   deny=3         lock the account after 3 consecutive failures
+#   unlock_time=900 unlock automatically after 15 minutes
+#
+# The "deny=3" applies to the kiosk user specifically. If the operator
+# triple-fats the password, the screen stays locked for 15 minutes
+# (or until an admin runs `faillock --user autonav-kiosk --reset`
+# from an SSH session).
+#
+# system-auth is included for password verification (pam_unix or
+# whatever system-auth points at on this distro). On Ubuntu the
+# closest equivalent is common-auth.
+
+auth        required      pam_faillock.so preauth silent deny=3 unlock_time=900
+auth        required      pam_unix.so
+auth        [default=die] pam_faillock.so authfail deny=3 unlock_time=900
+
+account     required      pam_faillock.so
+account     required      pam_unix.so

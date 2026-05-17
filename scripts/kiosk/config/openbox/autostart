@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# Openbox autostart for the autonav-kiosk user.
+# Drop in to: /home/autonav-kiosk/.config/openbox/autostart
+#
+# Order matters: xscreensaver daemon must be running before the WM
+# binding tries to call xscreensaver-command -lock, otherwise the
+# first lock attempt logs an error and does nothing.
+
+# Belt-and-suspenders: clear any inherited X selections / keyboard
+# remaps that a previous interactive session might have left behind.
+xmodmap -e 'clear lock' 2>/dev/null || true
+setxkbmap -option '' 2>/dev/null || true
+
+# Disable the X screensaver / DPMS blanking. The HUD is meant to be
+# always-on while the operator is at the robot.
+xset s off
+xset -dpms
+xset s noblank
+
+# Hide the X cursor when idle. Optional but reduces clutter.
+unclutter -idle 0.5 -root &
+
+# Real screen locker daemon. Configured via ~/.xscreensaver
+# (lock=True, timeout=0 so it never auto-locks).
+xscreensaver -no-splash &
+
+# Launch the GUI. exec replaces this shell so killing the GUI ends
+# the Openbox session, which lightdm will respawn -> auto-recovery.
+exec /opt/autonav/run-gui.sh
