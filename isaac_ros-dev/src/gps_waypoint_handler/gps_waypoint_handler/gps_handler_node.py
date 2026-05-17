@@ -211,7 +211,12 @@ CANDIDATE_SMOOTH_ALPHA: float = 0.15
 # normal resync transients now ease in through the EWMA over ~0.6 s.
 CANDIDATE_SNAP_M: float = 10.0
 CANDIDATE_ENV_GAIN_M: float = 0.5
-CANDIDATE_ENV_FLOOR_M: float = 0.4
+# Raised from 0.4 -> 1.0 m. The "noise floor" was too tight for the
+# early-motion regime where the EKF θ is still refining and the raw
+# candidate naturally jitters more than steady-state GPS noise.
+# Wider floor avoids dropping legitimate corrections during the
+# bootstrap-to-converged transition.
+CANDIDATE_ENV_FLOOR_M: float = 1.0
 CANDIDATE_ENV_REJECT_K: float = 4.0
 CANDIDATE_ENV_MIN_R_M: float = 3.0
 
