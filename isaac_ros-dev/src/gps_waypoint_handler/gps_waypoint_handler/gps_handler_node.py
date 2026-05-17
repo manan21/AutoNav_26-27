@@ -94,7 +94,7 @@ FEEDBACK_HZ: float = 2.0
 # terminates promptly once the robot is essentially on the candidate
 # goal — earlier behavior was to keep refining indefinitely once the
 # robot got within ~0.2 m, blocking the next mission leg.
-SUCCESS_RADIUS_M: float = 0.75
+SUCCESS_RADIUS_M: float = 0.5
 """Default arrival radius for GPS / local / map goals, m. Sits below
 the IGVC AutoNav competition threshold so a goal counted as ``SUCCESS``
 locally is also a real arrival from the judges' perspective, but is
