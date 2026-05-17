@@ -1370,21 +1370,29 @@ class GpsHandlerNode(Node):
             )
         qx, qy, qz, qw = yaw_to_quat(yaw_goal)
 
-        # Hard publish rate limit. Every fresh /goal_pose or
-        # /goal_update kicks NAV2's BT into a planning pass; observed
-        # in the field as the robot lagging because it was constantly
-        # replanning. The previous gate published whenever the
-        # candidate moved more than GOAL_REPUBLISH_MIN_DELTA_M, which
-        # fired several times per second during candidate-smoother
-        # convergence. Replace with a strict "at most one publish per
-        # GOAL_REPUBLISH_HEARTBEAT_S" floor — NAV2 holds the previous
-        # goal in the interim and FollowPath/GoalUpdater absorb the
-        # small motion. The candidate smoother + EWMA already cap how
-        # far the goal can drift in 5 s.
+        # Hard publish rate limit — but ONLY after bootstrap_done.
+        # During bootstrap the handler cannot refine theta without
+        # translational GPS-vs-odom displacement. If the rate limit
+        # is in effect while bootstrap is incomplete the system can
+        # deadlock: controller demands heading alignment, won't drive
+        # forward without it, robot rotates in place, no translation,
+        # bootstrap can't progress, goal stays in wrong direction,
+        # controller keeps rotating. Observed in the field on
+        # 2026-05-17 — first leg of a 3-waypoint mission, robot
+        # spun for 90+ s with no progress.
+        #
+        # Letting the publisher run every tick (1 Hz) pre-bootstrap
+        # gives NAV2 fresh goal_pose updates as the (still-converging)
+        # heading_offset settles. The candidate jitter is enough for
+        # DWB's trajectory rollout to find a candidate with non-zero
+        # forward velocity, which translates the robot, which gives
+        # the handler the displacement it needs to bootstrap.
+        # Post-bootstrap, the rate limit kicks in and replan churn
+        # is suppressed as designed.
         now_pub_s = self._now_s()
         last_map = active.last_published_goal_map
         last_t = active.last_published_t_s
-        if last_map is not None and last_t is not None:
+        if last_map is not None and last_t is not None and self._bootstrap_done:
             since_last = now_pub_s - last_t
             if since_last < GOAL_REPUBLISH_HEARTBEAT_S:
                 # Skip the publish — but still update the marker below
