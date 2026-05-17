@@ -150,6 +150,18 @@ HEADING_RESYNC_WINDOW: int = 100
 HEADING_RESYNC_MIN_BASELINE_M: float = 2.0
 HEADING_RESYNC_VAR_DEG: float = 5.0
 
+# Health monitor thresholds. Surface DEGRADED / FAIL on
+# /gps_waypoint/health so the operator catches regressions
+# (frozen pose, runaway heading drift) before they wreck a
+# mission. Anchored to outdoor-mission empirical numbers:
+# a known-good run produced theta drift well under 0.1°/s,
+# the broken run produced 0.3-2°/s.
+HEALTH_WINDOW_S: float = 10.0
+HEALTH_DEGRADED_THETA_DEG: float = 5.0   # over HEALTH_WINDOW_S
+HEALTH_FAIL_THETA_DEG: float = 15.0      # over HEALTH_WINDOW_S
+HEALTH_ODOM_STALE_S: float = 1.0
+HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M: float = 5.0
+
 # Periodic unconditional heading refit (sim parity). Every
 # PERIODIC_REFIT_PERIOD_S, refit θ from the full window if it
 # disagrees with the EKF's current θ by more than the threshold.
@@ -529,6 +541,15 @@ class GpsHandlerNode(Node):
         self._marker_pub = self.create_publisher(
             Marker, "/gps_waypoint/candidate_marker", diag_qos
         )
+        # /gps_waypoint/health surfaces the kind of regressions that
+        # the May 2026 outdoor mission run exposed: stale /local_ekf/
+        # odom feeding a phantom robot pose into goal placement, and
+        # heading_offset drift indicating an upstream yaw bias. The
+        # GUI / operator can render this as a single status badge and
+        # see DEGRADED / FAIL before a real mission goes sideways.
+        self._health_pub = self.create_publisher(
+            String, "/gps_waypoint/health", diag_qos
+        )
 
         # ── Timers ──────────────────────────────────────────────────
         # /goal_pose republisher is gated on an active goal.
@@ -543,6 +564,17 @@ class GpsHandlerNode(Node):
             self._diag_tick,
             callback_group=self._estimator_cbg,
         )
+        # Health publisher at 1 Hz — emits one /gps_waypoint/health
+        # String per second so the GUI can render a status badge.
+        self._health_timer = self.create_timer(
+            1.0,
+            self._health_tick,
+            callback_group=self._estimator_cbg,
+        )
+        # Rolling theta history for drift-rate computation. Stores
+        # (wall_time_s, theta_rad) tuples; capped at HEALTH_WINDOW_S
+        # by the health tick so memory stays bounded.
+        self._theta_history: deque = deque()
 
         # ── Action server ───────────────────────────────────────────
         self._action_server = ActionServer(
@@ -1424,6 +1456,75 @@ class GpsHandlerNode(Node):
         d = String()
         d.data = json.dumps(payload, default=float)
         self._debug_pub.publish(d)
+
+    def _health_tick(self) -> None:
+        """Emit /gps_waypoint/health = OK | DEGRADED <reason> | FAIL <reason>.
+
+        Designed to fail loudly on the regression classes already
+        observed in the field:
+
+        - **FAIL ODOM_STALE**: /local_ekf/odom hasn't ticked in over
+          HEALTH_ODOM_STALE_S. This is the "frozen pose" mode where
+          ekf_global was 13 Hz of identical position values during
+          a moving mission. Without fresh pose, goals get placed in
+          phantom map XY.
+        - **FAIL BOOTSTRAP_STUCK**: the robot has moved more than
+          HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M of cumulative odom
+          distance but the handler hasn't bootstrapped — usually
+          means /gps_fix isn't reaching this node or GPS gating is
+          rejecting every sample.
+        - **DEGRADED THETA_DRIFT_<deg>°/<window>s**: heading_offset
+          has moved more than HEALTH_DEGRADED_THETA_DEG over the
+          last HEALTH_WINDOW_S. Indicates ekf_local yaw is drifting,
+          which makes goals migrate in map frame — the periodic
+          left-turn artifact from the May 2026 outdoor run.
+        - **FAIL THETA_DRIFT_…**: same metric exceeds the FAIL bound.
+
+        Falls through to OK when none of the gates trip.
+        """
+        with self._lock:
+            theta = self._ekf.theta
+            bootstrap_done = self._bootstrap_done
+            odom_stamp = self._last_odom_stamp_s
+            odom_distance = self._odom_distance_m
+            now_s = self._now_s()
+
+        # Update rolling theta history. Append-only here; pruning is
+        # cheap relative to the 1 Hz tick rate.
+        self._theta_history.append((now_s, theta))
+        cutoff = now_s - HEALTH_WINDOW_S
+        while self._theta_history and self._theta_history[0][0] < cutoff:
+            self._theta_history.popleft()
+
+        # Build status. First failing gate wins; OK is the fallthrough.
+        status: str = "OK"
+        reason: str = ""
+
+        odom_age = (now_s - odom_stamp) if odom_stamp is not None else None
+        if odom_age is None or odom_age > HEALTH_ODOM_STALE_S:
+            status = "FAIL"
+            reason = (
+                f"ODOM_STALE age="
+                f"{'never' if odom_age is None else f'{odom_age:.1f}s'}"
+            )
+        elif (not bootstrap_done) and odom_distance > HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M:
+            status = "FAIL"
+            reason = f"BOOTSTRAP_STUCK odom_dist={odom_distance:.1f}m"
+        elif len(self._theta_history) >= 2:
+            t0, theta0 = self._theta_history[0]
+            t1, theta1 = self._theta_history[-1]
+            window = max(t1 - t0, 1e-3)
+            d_deg = abs(math.degrees(wrap_pi(theta1 - theta0)))
+            if d_deg > HEALTH_FAIL_THETA_DEG:
+                status = "FAIL"
+                reason = f"THETA_DRIFT {d_deg:.1f}deg/{window:.0f}s"
+            elif d_deg > HEALTH_DEGRADED_THETA_DEG:
+                status = "DEGRADED"
+                reason = f"THETA_DRIFT {d_deg:.1f}deg/{window:.0f}s"
+
+        msg = String()
+        msg.data = f"{status}{(' ' + reason) if reason else ''}"
+        self._health_pub.publish(msg)
 
     # ── Action server ──────────────────────────────────────────────
 
