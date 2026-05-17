@@ -721,13 +721,17 @@ from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -1245,11 +1249,11 @@ class HudWindow(QMainWindow):
         btn_quit = QPushButton("Quit GUI")
         btn_quit.setStyleSheet(quit_style)
         btn_quit.setFocusPolicy(Qt.NoFocus)
-        # self.close() triggers closeEvent → _kill_process for every
-        # running launch. QApplication.quit() bypasses closeEvent, which
-        # left in-container ros2 stacks orphaned and accumulating as
-        # zombies across GUI restarts.
-        btn_quit.clicked.connect(self.close)
+        # _confirm_exit_password → PAM auth → self.close(). self.close()
+        # triggers closeEvent → _kill_process for every running launch,
+        # so we keep that path; QApplication.quit() would bypass it
+        # and leave in-container ros2 stacks orphaned.
+        btn_quit.clicked.connect(self._confirm_exit_password)
         options_layout.addWidget(btn_quit)
         self._nav_buttons.append((btn_quit, "Quit GUI", quit_style))
 
@@ -4909,30 +4913,83 @@ class HudWindow(QMainWindow):
     def _lock_screen(self):
         """Invoke the OS screen locker (xscreensaver).
 
-        The kiosk session binds Ctrl+Shift+L at the WM level so this
-        is normally redundant — but the in-process intercept in
-        eventFilter still fires from any focus context, including
-        QLineEdit, and is useful when running outside the kiosk shell
-        (e.g. on a dev workstation that has xscreensaver installed).
-
-        On a workstation without xscreensaver this is a no-op (a log
-        line plus a swallowed exception) — there is no fake password
-        prompt to replace it, by design: the in-app overlay was never
-        a real security boundary.
+        Lowers the main window first so xscreensaver's saver window
+        stays cleanly on top in the X stacking order — a fullscreen
+        Qt window can otherwise contend with override-redirect saver
+        windows under compositing WMs and leave visible seams.
         """
+        try:
+            self.lower()
+        except Exception:
+            pass
         try:
             subprocess.Popen(
                 ["xscreensaver-command", "-lock"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self._gui_log_msg("Screen lock requested")
-        except FileNotFoundError:
-            self._gui_log_msg(
-                "xscreensaver-command not found — screen lock unavailable"
+        except Exception:
+            pass
+
+    def _confirm_exit_password(self):
+        """Gate the Quit GUI button behind a PAM password check.
+
+        Same credential as the screen locker (system password of the
+        currently logged-in user, validated via PAM's `xscreensaver`
+        service — falls through to common-auth → pam_unix). On
+        success → self.close() so closeEvent fires and every
+        container-side ros2 launch is torn down cleanly.
+
+        Uses the Debian `python3-pam` C binding (module `PAM`), not
+        the PyPI `python-pam` package — same dependency the kiosk
+        plan already brings in.
+        """
+        pwd, ok = QInputDialog.getText(
+            self, "Confirm exit",
+            "Enter password to quit AutoNav GUI:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        try:
+            import PAM
+        except ImportError:
+            QMessageBox.warning(
+                self, "Cannot verify password",
+                "python3-pam is not installed; cannot confirm exit."
             )
-        except Exception as e:
-            self._gui_log_msg(f"Failed to invoke screen locker: {e}")
+            return
+
+        username = os.environ.get("USER", "")
+
+        def _conv(auth, queries, _user_data):
+            resp = []
+            for _query, qtype in queries:
+                if qtype == PAM.PAM_PROMPT_ECHO_OFF:
+                    resp.append((pwd, 0))
+                elif qtype == PAM.PAM_PROMPT_ECHO_ON:
+                    resp.append((username, 0))
+                else:
+                    resp.append(("", 0))
+            return resp
+
+        authed = False
+        try:
+            auth = PAM.pam()
+            auth.start("xscreensaver")
+            auth.set_item(PAM.PAM_USER, username)
+            auth.set_item(PAM.PAM_CONV, _conv)
+            auth.authenticate()
+            auth.acct_mgmt()
+            authed = True
+        except Exception:
+            authed = False
+
+        if authed:
+            self.close()
+        else:
+            QMessageBox.warning(self, "Incorrect password",
+                                "Authentication failed.")
 
     def resizeEvent(self, event):
         """Keep the auto badge pinned through window resizes."""
