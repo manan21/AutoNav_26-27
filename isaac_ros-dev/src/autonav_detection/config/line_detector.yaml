@@ -62,6 +62,16 @@
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
     debug_image_write_enabled: false
+    # Use the LATEST available TF instead of the TF at the exact depth
+    # stamp. The dynamic-TF receive lag in this stack (odom/base_link
+    # arriving 0.4-3 s behind the depth capture stamp) causes every
+    # per-stamp lookup to throw "extrapolation into the future" and zero
+    # points reach the costmap. With tf_use_latest=true the lookup
+    # succeeds and the rest of the pipeline runs; cost is a parallax
+    # error during motion of ~(velocity × tf_lag). At 1 m/s × 0.5 s that
+    # is ~0.5 m forward drift on the projected line — acceptable for
+    # competition speeds where lines are ~3-5 m away.
+    tf_use_latest: true
 
     # ── CERIAS line-pixel detector ───────────────────────────────────────
     # Stage 1: host-side binary mask. Pixels brighter than this are

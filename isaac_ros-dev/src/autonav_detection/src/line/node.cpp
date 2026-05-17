@@ -71,6 +71,15 @@ public:
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
 		this->declare_parameter("debug_image_write_enabled", false);
+		// When true, project pixels using the LATEST available TF instead
+		// of the TF at the exact depth-image stamp. Avoids "extrapolation
+		// into the future" failures when the dynamic-TF receive lag
+		// (odom/base_link arriving 0.4-3s behind the depth capture stamp)
+		// causes every per-frame lookup to throw. Tradeoff: introduces
+		// parallax error of ~(velocity × tf_lag) during motion — at 1 m/s
+		// and 0.5s lag, ~50 cm forward drift on the projected point.
+		// Safe for stationary or slow-moving testing.
+		this->declare_parameter("tf_use_latest", false);
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
 		// in cuda.cu; now plumbed through line_detector.yaml).
@@ -110,6 +119,7 @@ public:
 		yaw_rate_gate_rad_s_ = std::max<double>(0.0, this->get_parameter("yaw_rate_gate_rad_s").as_double());
 		debug_image_publish_enabled_ = this->get_parameter("debug_image_publish_enabled").as_bool();
 		debug_image_write_enabled_ = this->get_parameter("debug_image_write_enabled").as_bool();
+		tf_use_latest_ = this->get_parameter("tf_use_latest").as_bool();
 		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
 		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
 		sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
@@ -271,6 +281,7 @@ private:
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
+	bool    tf_use_latest_ = false;
 	double  brightness_threshold_ = 220.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;
@@ -587,24 +598,33 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	geometry_msgs::msg::TransformStamped base_transform;
 	
 	try {
-		const rclcpp::Time depth_stamp(depth_msg->header.stamp);
-		target_transform = tf_buffer.lookupTransform(
-			target_frame_,
-			frame_id, 
-			depth_stamp,
-			rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL)
-		);
-		base_transform = tf_buffer.lookupTransform(
-			"base_link",
-			frame_id,
-			depth_stamp,
-			rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL)
-		);
+		if (tf_use_latest_) {
+			// Time(0) tells TF2 to return the most recent available
+			// transform. Use this when dynamic-TF receive lag (odom
+			// arriving seconds behind the depth capture stamp) makes
+			// per-frame exact-stamp lookups fail.
+			const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		} else {
+			const rclcpp::Time depth_stamp(depth_msg->header.stamp);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		}
 		transform_available = true;
 	} catch (const tf2::TransformException& ex) {
 		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-			"TF not available at image stamp (%s/base_link <- %s): %s",
-			target_frame_.c_str(), frame_id.c_str(), ex.what());
+			"TF not available (%s/base_link <- %s, mode=%s): %s",
+			target_frame_.c_str(), frame_id.c_str(),
+			tf_use_latest_ ? "latest" : "stamped", ex.what());
 	}
 
 	int valid_count = 0;
