@@ -1000,8 +1000,21 @@ class GpsHandlerNode(Node):
         active = self._active
         if active is None or active.goal_world_xy is None:
             return None
-        if not self._bootstrap_done:
-            return None
+        # The bootstrap-done gate used to live here. It caused a
+        # deadlock in the field: NAV2 won't translate the robot
+        # without a goal, the handler's closed-form bootstrap can't
+        # fit without translational GPS-vs-odom displacement, so the
+        # robot sat idle waiting for a bootstrap that could never
+        # complete. The GPS waypoint simulation in
+        # Claude-Sandbox/GPS-Waypoint-Simulation does NOT have this
+        # gate — its agents emit a candidate from the very first
+        # tick using whatever the EKF's θ currently is (initially
+        # high-variance), drive toward it (wrong direction at
+        # first), and the resulting motion gives the EKF the
+        # displacement data it needs to refine θ. The candidate
+        # then converges to the true GPS goal as the agent moves.
+        # Mirror that behaviour: publish whatever candidate we can
+        # compute right now, even before bootstrap_done.
         if self._last_odom_xy is None:
             return None
         gx_w, gy_w = active.goal_world_xy
