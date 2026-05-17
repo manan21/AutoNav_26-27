@@ -116,14 +116,15 @@ controller_server:
       # Operator confirms they'll stay near the robot during testing.
       max_vel_x: 1.5
       max_vel_y: 0.0
-      # Reduced from 0.65 -> 0.40 after May-2026 outdoor data showed
-      # the controller saturating at ±0.65 rad/s on every goal-pose
-      # update from gps_handler. That made each tiny GPS re-projection
-      # (caused by heading_offset oscillation around its bias mean)
-      # produce a hard visible turn. 0.40 still lets DWB rotate at
-      # 23°/s, more than enough for goal alignment on the platform,
-      # but avoids the saturated-step response.
-      max_vel_theta: 0.40
+      # Restored to 0.65 after a 0.40 cap left the robot unable to
+      # finish rotating to face new goal poses — the controller would
+      # rotate in place indefinitely without ever transitioning to
+      # forward motion, which also starved gps_handler's bootstrap of
+      # the translational displacement it needs. Smoothing the
+      # per-resync turn step has to come from reducing the frequency
+      # of goal updates (gps_handler republish thresholds) rather
+      # than capping the controller's rotation rate.
+      max_vel_theta: 0.65
       min_speed_xy: 0.0
       max_speed_xy: 1.5
       min_speed_theta: 0.15
