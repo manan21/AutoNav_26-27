@@ -1370,20 +1370,23 @@ class GpsHandlerNode(Node):
             )
         qx, qy, qz, qw = yaw_to_quat(yaw_goal)
 
-        # Throttle goal_pose republishes when the candidate has barely
-        # moved. NAV2 BT triggers a planning pass on every fresh goal
-        # which manifested in the field as constant start/stop. Keep
-        # the heartbeat so a stalled NAV2 always recovers state.
+        # Hard publish rate limit. Every fresh /goal_pose or
+        # /goal_update kicks NAV2's BT into a planning pass; observed
+        # in the field as the robot lagging because it was constantly
+        # replanning. The previous gate published whenever the
+        # candidate moved more than GOAL_REPUBLISH_MIN_DELTA_M, which
+        # fired several times per second during candidate-smoother
+        # convergence. Replace with a strict "at most one publish per
+        # GOAL_REPUBLISH_HEARTBEAT_S" floor — NAV2 holds the previous
+        # goal in the interim and FollowPath/GoalUpdater absorb the
+        # small motion. The candidate smoother + EWMA already cap how
+        # far the goal can drift in 5 s.
         now_pub_s = self._now_s()
         last_map = active.last_published_goal_map
         last_t = active.last_published_t_s
         if last_map is not None and last_t is not None:
-            moved = math.hypot(gx_map - last_map[0], gy_map - last_map[1])
             since_last = now_pub_s - last_t
-            if (
-                moved < GOAL_REPUBLISH_MIN_DELTA_M
-                and since_last < GOAL_REPUBLISH_HEARTBEAT_S
-            ):
+            if since_last < GOAL_REPUBLISH_HEARTBEAT_S:
                 # Skip the publish — but still update the marker below
                 # so RViz keeps showing the (held) candidate.
                 with self._lock:
