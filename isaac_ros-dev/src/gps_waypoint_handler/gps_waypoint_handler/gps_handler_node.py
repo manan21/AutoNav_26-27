@@ -123,9 +123,13 @@ within the trailing N entries (≈10 s @ 10 Hz GPS) keeps the time
 span — and therefore the drift per pair — bounded."""
 
 # Goal republish gating (§3.3)
-GOAL_REPUBLISH_THETA_DEG: float = 1.0
-"""Republish on θ shift > ~1° since the last publish, in addition to
-the 1 Hz timer."""
+GOAL_REPUBLISH_THETA_DEG: float = 3.0
+"""Republish on θ shift > ~3° since the last publish, in addition to
+the 1 Hz timer. Raised from 1° based on May-2026 outdoor data: the
+controller saturated max_vel_theta on every 1° θ-step, producing a
+sharp turn per republish. With ~12° resync magnitudes the previous
+threshold made every resync trigger a republish; 3° lets small θ
+oscillations near the bias mean settle without commanding turns."""
 
 # Suppress goal-pose republishes when the candidate has barely moved.
 # NAV2's BT triggers a planning pass on every fresh /goal_pose, which
@@ -144,8 +148,16 @@ GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
 GOAL_POSE_HEARTBEAT_S: float = 10.0
 
 # Continuous heading resync (§3.4)
-HEADING_RESYNC_THRESHOLD_DEG: float = 10.0
-HEADING_RESYNC_COOLDOWN_S: float = 3.0
+# Raised from (10°, 3 s) to (15°, 5 s) after the May 2026 outdoor
+# run: with the encoder calibration applied, residual yaw bias is
+# small enough that θ oscillates around a stable mean rather than
+# diverging. Each resync still shifts the goal in map frame and
+# costs a sharp controller turn; firing only on >15° disagreement
+# (vs >10°) and only every 5 s (vs every 3 s) ignores the small
+# oscillations while still catching real drift. If a true drift
+# develops it will exceed 15° within 30 s and still get caught.
+HEADING_RESYNC_THRESHOLD_DEG: float = 15.0
+HEADING_RESYNC_COOLDOWN_S: float = 5.0
 HEADING_RESYNC_WINDOW: int = 100
 HEADING_RESYNC_MIN_BASELINE_M: float = 2.0
 HEADING_RESYNC_VAR_DEG: float = 5.0
