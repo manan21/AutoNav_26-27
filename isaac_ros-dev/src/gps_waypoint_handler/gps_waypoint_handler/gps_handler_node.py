@@ -442,7 +442,25 @@ class GpsHandlerNode(Node):
 
         # ── EKF + bootstrap state ───────────────────────────────────
         self._ekf: GpsEkf = GpsEkf()
-        self._bootstrap_done: bool = False
+        # The original design had a "bootstrap_done" graduation milestone
+        # — pre-bootstrap fixes hard-reset θ on every sample, post-bootstrap
+        # the EKF ran predict/update normally. That two-state machine
+        # caused field deadlocks: NAV2 wouldn't translate the robot
+        # without a goal, the bootstrap couldn't fit without translation,
+        # robot sat stuck. The unified design (matching the simulator at
+        # Claude-Sandbox/GPS-Waypoint-Simulation) is to run the EKF
+        # continuously from tick 1 with high initial θ variance — the
+        # first closed-form fit's Kalman gain is ≈1.0 anyway because
+        # P[2,2] starts at π², so a single soft update behaves like the
+        # old hard reset. Later updates have small gain and the candidate
+        # converges to the true GPS goal as the robot moves.
+        #
+        # Setting True from init means: the forced-reset bootstrap branch
+        # in _gps_callback is unreachable (kept for documentation/safety);
+        # _periodic_heading_refit and _maybe_resync_heading always use
+        # the Kalman update_theta_measurement path; the 5 s /goal_pose
+        # rate limit is active from the first goal.
+        self._bootstrap_done: bool = True
         self._gps_history: Deque[HistoryEntry] = deque(maxlen=GPS_HISTORY_LEN)
 
         # Datum (lat/lon of the very first valid GPS fix).
@@ -1410,7 +1428,7 @@ class GpsHandlerNode(Node):
         now_pub_s = self._now_s()
         last_map = active.last_published_goal_map
         last_t = active.last_published_t_s
-        if last_map is not None and last_t is not None and self._bootstrap_done:
+        if last_map is not None and last_t is not None:
             since_last = now_pub_s - last_t
             if since_last < GOAL_REPUBLISH_HEARTBEAT_S:
                 # Skip the publish — but still update the marker below
