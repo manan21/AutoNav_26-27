@@ -137,15 +137,26 @@ oscillations near the bias mean settle without commanding turns."""
 # tick of the smoother. Hold the published goal until the candidate
 # has actually moved enough to matter, OR the heartbeat interval has
 # elapsed (so a stalled NAV2 does eventually pick up state).
-GOAL_REPUBLISH_MIN_DELTA_M: float = 0.30
+# Raised from 0.30 -> 1.5 m after May 2026 outdoor data. The smoothed
+# candidate ticks in tens of cm even when θ is stable, and every move
+# past 0.30 m was pushing a fresh /goal_pose to NAV2 — which then
+# replanned. 1.5 m roughly matches a controller path-tolerance and
+# keeps the goal stationary unless real navigation-meaningful motion
+# of the candidate has occurred.
+GOAL_REPUBLISH_MIN_DELTA_M: float = 1.5
 GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
 
 # In-mission updates flow through /goal_update so the BT's
 # GoalUpdater decorator can absorb them without canceling FollowPath
-# (no stop/go). We still re-issue /goal_pose every this many seconds
-# as a heartbeat — if bt_navigator ever loses its action handle
-# (lifecycle blip, network drop) the next heartbeat re-creates it.
-GOAL_POSE_HEARTBEAT_S: float = 10.0
+# (no stop/go). The heartbeat re-issues /goal_pose periodically as a
+# safety net in case bt_navigator ever loses its action handle. The
+# heartbeat was 10 s; raised to 60 s because every heartbeat goes
+# through the NavigateToPose action and forces NAV2 to re-engage,
+# which (with the upstream candidate-smoother holding the goal
+# steady) looks identical to a fresh goal and triggers replanning.
+# /goal_update absorbs the small motion in between — only a true
+# lifecycle loss needs the bigger hammer.
+GOAL_POSE_HEARTBEAT_S: float = 60.0
 
 # Continuous heading resync (§3.4)
 # Raised from (10°, 3 s) to (15°, 5 s) after the May 2026 outdoor
@@ -193,7 +204,12 @@ HEADING_FORCE_RESYNC_VAR_DEG: float = 10.0
 
 # Candidate-goal smoother (§3.5)
 CANDIDATE_SMOOTH_ALPHA: float = 0.15
-CANDIDATE_SNAP_M: float = 5.0
+# Raised from 5.0 -> 10.0 m. Heading-resync events can move the raw
+# candidate 50+ m in one tick; SNAP=5 m made the smoother bypass and
+# adopt the new value verbatim every time, defeating the EWMA. SNAP=10
+# means only really large legitimate corrections bypass the filter —
+# normal resync transients now ease in through the EWMA over ~0.6 s.
+CANDIDATE_SNAP_M: float = 10.0
 CANDIDATE_ENV_GAIN_M: float = 0.5
 CANDIDATE_ENV_FLOOR_M: float = 0.4
 CANDIDATE_ENV_REJECT_K: float = 4.0
@@ -870,10 +886,24 @@ class GpsHandlerNode(Node):
             return
         diff = wrap_pi(bs_theta - self._ekf.theta)
         if abs(diff) > math.radians(HEADING_RESYNC_THRESHOLD_DEG):
-            self._ekf.reset_theta(
-                bs_theta,
-                theta_var=math.radians(HEADING_RESYNC_VAR_DEG) ** 2,
-            )
+            # After bootstrap, use a confidence-weighted Kalman update
+            # rather than a hard snap-replace. As P[2,2] shrinks the
+            # gain falls, so a converged θ becomes increasingly
+            # resistant to single noisy fits and the candidate goal
+            # in map frame actually converges instead of swinging on
+            # every resync. The bootstrap path retains reset_theta
+            # because there is no accumulated confidence to weigh
+            # against during cold start.
+            if self._bootstrap_done:
+                self._ekf.update_theta_measurement(
+                    bs_theta,
+                    theta_meas_std=math.radians(HEADING_RESYNC_VAR_DEG),
+                )
+            else:
+                self._ekf.reset_theta(
+                    bs_theta,
+                    theta_var=math.radians(HEADING_RESYNC_VAR_DEG) ** 2,
+                )
             self._heading_resync_until_s = (
                 self._now_s() + HEADING_RESYNC_COOLDOWN_S
             )
@@ -904,10 +934,19 @@ class GpsHandlerNode(Node):
             diff = wrap_pi(bs_theta - self._ekf.theta)
             if abs(diff) <= math.radians(PERIODIC_REFIT_THRESHOLD_DEG):
                 return
-            self._ekf.reset_theta(
-                bs_theta,
-                theta_var=math.radians(PERIODIC_REFIT_VAR_DEG) ** 2,
-            )
+            # Same A/B as _maybe_resync_heading: Kalman update post-
+            # bootstrap so periodic refits respect accumulated
+            # confidence; bootstrap path keeps the hard reset.
+            if self._bootstrap_done:
+                self._ekf.update_theta_measurement(
+                    bs_theta,
+                    theta_meas_std=math.radians(PERIODIC_REFIT_VAR_DEG),
+                )
+            else:
+                self._ekf.reset_theta(
+                    bs_theta,
+                    theta_var=math.radians(PERIODIC_REFIT_VAR_DEG) ** 2,
+                )
             self._heading_resync_count += 1
             self.get_logger().warn(
                 f"periodic heading refit: θ_old={math.degrees(self._ekf.theta - diff):+.2f}°, "

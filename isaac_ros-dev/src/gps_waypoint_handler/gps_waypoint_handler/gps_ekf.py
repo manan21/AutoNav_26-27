@@ -219,6 +219,41 @@ class GpsEkf:
         self.P[:, 2] = 0.0
         self.P[2, 2] = float(theta_var)
 
+    def update_theta_measurement(
+        self, theta_obs: float, theta_meas_std: float
+    ) -> bool:
+        """Scalar Kalman update on ``θ`` as a direct measurement.
+
+        Use this AFTER bootstrap completes, where we want successive
+        observations weighed against the EKF's accumulated confidence
+        rather than snap-replacing it. As ``P[2,2]`` shrinks across
+        many updates the Kalman gain on the next observation also
+        shrinks, so a converged ``θ`` becomes increasingly resistant
+        to single noisy fits. This is what makes the candidate goal
+        in map frame actually converge instead of swinging on every
+        resync event.
+
+        Measurement model: H = [0, 0, 1], R = theta_meas_std². The
+        gain ``K = P[:, 2] / (P[2,2] + R)`` is a 3-vector — the
+        accumulated cross-covariance entries propagate information
+        from the θ observation into x and y too.
+        """
+        R_theta = float(theta_meas_std) ** 2
+        innovation = wrap_pi(float(theta_obs) - self.x[2])
+        S = float(self.P[2, 2]) + R_theta
+        if S <= 0.0:
+            return False
+        K = self.P[:, 2] / S
+        self.x[0] += K[0] * innovation
+        self.x[1] += K[1] * innovation
+        self.x[2] = wrap_pi(self.x[2] + K[2] * innovation)
+        # H = [0,0,1] selects row 2: (I - K H) P  ≡  P - outer(K, P[2,:]).
+        self.P = self.P - np.outer(K, self.P[2, :])
+        # Re-symmetrize for numerical safety.
+        self.P = 0.5 * (self.P + self.P.T)
+        self.update_count += 1
+        return True
+
     # ── Properties ─────────────────────────────────────────────────
     @property
     def pos_xy(self) -> Tuple[float, float]:
