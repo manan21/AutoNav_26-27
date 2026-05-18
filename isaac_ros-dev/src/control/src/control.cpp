@@ -9,6 +9,7 @@
 #include "autonav_interfaces/srv/configure_control.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "nav2_msgs/srv/clear_entire_costmap.hpp"
 
 #include <iostream>
 #include <string>
@@ -88,6 +89,15 @@ class ControlNode : public rclcpp::Node {
     bool currX = false;
     bool prevX = false;
 
+    // Y button rising-edge -> clear global costmap. Testing aid during
+    // mission iteration when accumulated obstacle cells block planning.
+    // Index 2 matches the existing controller.set_y(joy_msg->buttons[2])
+    // mapping below. If a wrong container mount swaps X and Y, swap this
+    // index with the X autonomous-toggle index in joystick_callback.
+    bool currY_clear = false;
+    bool prevY_clear = false;
+    rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
+
     void joystick_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg) {
         last_joy_msg_time_ = this->now();
         currX = joy_msg->buttons[3];
@@ -114,6 +124,23 @@ class ControlNode : public rclcpp::Node {
 
         prevX = currX;
 
+        // Y rising-edge -> request global costmap clear. Fires in both
+        // AUTO and MANUAL modes since the costmap state is shared.
+        int curr_y_btn = (joy_msg->buttons.size() > 2) ? joy_msg->buttons[2] : 0;
+        currY_clear = curr_y_btn != 0;
+        if (!prevY_clear && currY_clear) {
+            if (clear_global_costmap_client_ && clear_global_costmap_client_->service_is_ready()) {
+                auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
+                clear_global_costmap_client_->async_send_request(req);
+                RCLCPP_INFO(this->get_logger(),
+                    "Y pressed -> /global_costmap/clear_entirely_global_costmap");
+            } else {
+                RCLCPP_WARN(this->get_logger(),
+                    "Y pressed but /global_costmap/clear_entirely_global_costmap is not ready");
+            }
+        }
+        prevY_clear = currY_clear;
+
         if(!autonomousMode){
             controller.set_b(joy_msg->buttons[1]);
             controller.set_x(joy_msg->buttons[3]);
@@ -121,18 +148,19 @@ class ControlNode : public rclcpp::Node {
 
             // Bumpers are not in a stable position across the controllers
             // / xpad-driver combinations we've seen on this Jetson: live
-            // /joy diagnostics on 2026-05-10 captured presses at indices
-            // {6, 7} in one session and {9, 10} in another. Rather than
-            // pin to one layout and silently break on the next swap, OR
-            // both index pairs. Trade-off: on a layout where 9/10 are
-            // stick clicks instead of bumpers, clicking a stick will
-            // also nudge the speed — non-critical UX cost vs. the
-            // bumpers becoming inert.
+            // /joy diagnostics captured presses at indices {6, 7} in the
+            // normal mount and {9, 10} in the wrong-container-mount
+            // layout. The mapping pairs right=6/9 and left=7/10. Rather
+            // than pin to one layout and silently break on the next
+            // swap, OR both index pairs. Trade-off: on a layout where
+            // 9/10 are stick clicks instead of bumpers, clicking a
+            // stick will also nudge the speed — non-critical UX cost
+            // vs. the bumpers becoming inert.
             auto safe_btn = [&joy_msg](size_t i) -> int {
                 return i < joy_msg->buttons.size() ? joy_msg->buttons[i] : 0;
             };
-            controller.set_right_bumper(safe_btn(6) || safe_btn(10));
-            controller.set_left_bumper(safe_btn(7) || safe_btn(9));
+            controller.set_right_bumper(safe_btn(6) || safe_btn(9));
+            controller.set_left_bumper(safe_btn(7) || safe_btn(10));
 
             controller.set_left_stick_x(joy_msg->axes[0]);
             controller.set_left_stick_y(joy_msg->axes[1]);
@@ -326,6 +354,12 @@ class ControlNode : public rclcpp::Node {
         //XBOX SUB
         controllerSub = this->create_subscription<sensor_msgs::msg::Joy>(
             controller_topic, 10, std::bind(&ControlNode::joystick_callback, this, std::placeholders::_1));
+
+        // Client backing the Y-button shortcut that clears the global
+        // costmap during testing. Service is hosted by nav2_costmap_2d
+        // on the global_costmap node.
+        clear_global_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+            "/global_costmap/clear_entirely_global_costmap");
 
         // ESTOP CALLBACK
 	
