@@ -253,7 +253,12 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
+        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
+        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
+        # without consuming the full 1.10 m inflation_radius, so tight
+        # IGVC gates still plan. Both local_costmap and global_costmap
+        # share the same value by intent (see global_costmap comment).
+        cost_scaling_factor: 3.0
         inflation_radius: 1.10
 
       always_send_full_costmap: True
@@ -329,7 +334,12 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
+        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
+        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
+        # without consuming the full 1.10 m inflation_radius, so tight
+        # IGVC gates still plan. Both local_costmap and global_costmap
+        # share the same value by intent (see global_costmap comment).
+        cost_scaling_factor: 3.0
         inflation_radius: 1.10
       always_send_full_costmap: True
 
