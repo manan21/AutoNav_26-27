@@ -21,9 +21,19 @@ class WheelOdomPublisher : public rclcpp::Node
 {
   public:
     WheelOdomPublisher()
-    : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0), 
+    : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0),
     wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0),
     left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923),
+    // ──────────────────────────────────────────────────────────────
+    // OSCILLATION-SENSITIVE — left_encoder_scale_ corrects the left
+    // encoder's ~1.6% oversample (commit 70e0dcb5). Without it, the
+    // wheel-derived yaw rate is biased and ekf_local's odom→base_link
+    // drifts in yaw; slam_toolbox then has to scan-match-correct
+    // map→odom against a moving target, producing the map-catching-
+    // up-with-robot snap and stall behavior. DO NOT remove or
+    // re-balance to 1.0 without re-running the encoder asymmetry
+    // self-diagnostic below and confirming the EMA ratio is ≈ 1.0.
+    // ──────────────────────────────────────────────────────────────
     left_encoder_scale_(1.0 / 1.016335)
     {
       encoder_subscription_ = this->create_subscription<autonav_interfaces::msg::Encoders>("encoders", 
@@ -222,7 +232,18 @@ class WheelOdomPublisher : public rclcpp::Node
       transform.transform.rotation.z = q.z();
       transform.transform.rotation.w = q.w();
 
-      // Send the transform
+      // ──────────────────────────────────────────────────────────────
+      // OSCILLATION-SENSITIVE — DO NOT define PUBLISH_TRANSFORM. The
+      // odom → base_link transform is owned by ekf_local (publish_tf:
+      // true in ekf_local.yaml). If this guard is also active, two
+      // nodes race on the same TF link and the resulting jitter
+      // propagates through slam_toolbox's scan-match correction loop
+      // as map↔odom drift, ultimately producing the canonical
+      // map-catching-up-with-robot snap and stall behavior. The
+      // wheel-odometry Odometry message ON /odom (above) is still
+      // consumed by ekf_local; that's how wheel data reaches the
+      // EKF without a duplicate TF publisher.
+      // ──────────────────────────────────────────────────────────────
       #ifdef PUBLISH_TRANSFORM
       tf_broadcaster_->sendTransform(transform);
       #endif
@@ -235,7 +256,7 @@ class WheelOdomPublisher : public rclcpp::Node
     int prev_left_encoder_count_, prev_right_encoder_count_;  // Previous encoder counts for delta calculation
     int left_encoder_count_, right_encoder_count_; // Left Encoder and Right Encoder count reading from control topic
     const int ticks_per_revolution_;  // Number of encoder ticks per wheel revolution
-    const double left_encoder_scale_; // Correction factor for left encoder over-counting (~2.7%)
+    const double left_encoder_scale_; // Correction factor for left encoder over-counting (~1.6%, see constructor comment).
     rclcpp::Time last_time_; //Time of the last callback to calculate dt
 
     serialib motorController;

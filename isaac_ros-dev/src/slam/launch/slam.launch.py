@@ -64,17 +64,19 @@ def generate_launch_description():
         ]),
         description='Path to Nav2 parameters file')
 
-    # ── GPS fusion toggle ────────────────────────────────────────────
-    # When true, the Map EKF (ekf_global) and navsat_transform_node
-    # come up alongside slam_toolbox, fusing /gps_fix into
-    # /global_ekf/odom as an XY-only anchor. Default flipped to false
-    # so the pipeline matches main: gps_handler_node does its own
-    # WGS84→local projection and reads /local_ekf/odom directly, with
-    # no ekf_global in the loop. ekf_global was observed publishing a
-    # frozen pose at 13 Hz during an outdoor mission, feeding the
-    # handler a phantom robot location and placing every GPS goal in
-    # the wrong map XY. Pass enable_gps_fusion:=true to re-enable
-    # after that is debugged.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — enable_gps_fusion default is 'false'
+    # because ekf_global was observed publishing a frozen pose at
+    # 13 Hz during an outdoor mission, feeding the handler a phantom
+    # robot location and placing every GPS goal in the wrong map XY.
+    # The downstream symptom was longitudinal start-stop oscillation
+    # as the controller chased a shifting goal. DO NOT flip this to
+    # 'true' by default until ekf_global's frozen-pose failure has
+    # been root-caused (suspected: GPS-driven yaw correction loop
+    # with insufficient process noise). gps_handler_node does its own
+    # WGS84→local projection and reads /local_ekf/odom directly, so
+    # the GPS goals still work without ekf_global in the loop.
+    # ────────────────────────────────────────────────────────────────
     enable_gps_fusion = DeclareLaunchArgument(
         'enable_gps_fusion',
         default_value='false',

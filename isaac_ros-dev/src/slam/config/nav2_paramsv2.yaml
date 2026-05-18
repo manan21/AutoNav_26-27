@@ -127,6 +127,12 @@ controller_server:
       max_vel_theta: 0.65
       min_speed_xy: 0.0
       max_speed_xy: 1.5
+      # ──────────────────────────────────────────────────────────────
+      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.15 prevents
+      # DWB from sampling near-zero angular trajectories that, paired
+      # with a jittering goal, produce yaw chatter in place. Lowering
+      # it has reintroduced in-place wobble.
+      # ──────────────────────────────────────────────────────────────
       min_speed_theta: 0.15
       acc_lim_x: 2.5
       acc_lim_y: 0.0
@@ -414,6 +420,26 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
+    # ────────────────────────────────────────────────────────────────
+    # 0.26 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
+    # despite DWB allowing max_vel_x=1.5 upstream. Two distinct
+    # constraints meet at this value — touching either side has cost:
+    #
+    # CONTROLLER-CHATTER-SENSITIVE upper bound: raising max_velocity[0]
+    #   has reproducibly reintroduced longitudinal start-stop chatter
+    #   because the controller overshoots whenever the goal updates,
+    #   and this clamp is the only thing keeping the overshoot inside
+    #   a few cm. Raise only after diagnosing the chatter chain end-
+    #   to-end (goal updates → DWB sampling → smoother cap). max_accel
+    #   / max_decel below are paired with this clamp.
+    #
+    # OSCILLATION-SENSITIVE lower bound: lowering below ~0.20 m/s
+    #   starves gps_handler_node's bootstrap of the translation it
+    #   needs to observe EKF heading from GPS displacement. Without
+    #   translation the wheel-encoder yaw bias goes unobserved, ekf
+    #   yaw drifts, slam_toolbox has to scan-match-correct map→odom
+    #   against a moving target → map-catching-up snap → stall.
+    # ────────────────────────────────────────────────────────────────
     max_velocity: [0.26, 0.0, 1.0]
     min_velocity: [-0.26, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]

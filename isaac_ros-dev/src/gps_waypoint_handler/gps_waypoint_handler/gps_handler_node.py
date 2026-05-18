@@ -123,6 +123,16 @@ within the trailing N entries (≈10 s @ 10 Hz GPS) keeps the time
 span — and therefore the drift per pair — bounded."""
 
 # Goal republish gating (§3.3)
+# ────────────────────────────────────────────────────────────────────
+# NOTE: currently UNUSED. Defined as design intent but the value is
+# never referenced when deciding whether to republish a goal. The
+# republish gate today is GOAL_REPUBLISH_HEARTBEAT_S only. Either
+# wire this into _publish_goal (compare theta_shift to this constant
+# before triggering republish) or delete it. Kept here so the design
+# rationale isn't lost: at 1° the controller saturated max_vel_theta
+# on every θ-step (CONTROLLER-CHATTER pattern), so the planned gate
+# was 3°.
+# ────────────────────────────────────────────────────────────────────
 GOAL_REPUBLISH_THETA_DEG: float = 3.0
 """Republish on θ shift > ~3° since the last publish, in addition to
 the 1 Hz timer. Raised from 1° based on May-2026 outdoor data: the
@@ -131,42 +141,51 @@ sharp turn per republish. With ~12° resync magnitudes the previous
 threshold made every resync trigger a republish; 3° lets small θ
 oscillations near the bias mean settle without commanding turns."""
 
-# Suppress goal-pose republishes when the candidate has barely moved.
-# NAV2's BT triggers a planning pass on every fresh /goal_pose, which
-# manifested in the field as the robot start-stop-start-stopping every
-# tick of the smoother. Hold the published goal until the candidate
-# has actually moved enough to matter, OR the heartbeat interval has
-# elapsed (so a stalled NAV2 does eventually pick up state).
-# Raised from 0.30 -> 1.5 m after May 2026 outdoor data. The smoothed
-# candidate ticks in tens of cm even when θ is stable, and every move
-# past 0.30 m was pushing a fresh /goal_pose to NAV2 — which then
-# replanned. 1.5 m roughly matches a controller path-tolerance and
-# keeps the goal stationary unless real navigation-meaningful motion
-# of the candidate has occurred.
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — GOAL_REPUBLISH_HEARTBEAT_S is the
+# active gate; the only thing throttling /goal_pose republishes to
+# one every ~5 s post-bootstrap. NAV2's BT triggers a planning pass
+# on every fresh /goal_pose, so a faster cadence produces a
+# replanning storm and the controller chatters. DO NOT LOWER below
+# ~3 s without re-architecting the in-mission update path (today
+# /goal_update absorbs small motion between heartbeats).
+#
+# NOTE: GOAL_REPUBLISH_MIN_DELTA_M is declared but NEVER READ in
+# this file (verified). The translational-delta gate the prose
+# describes is design intent that wasn't wired in. Either implement
+# it (compare distance to last_published_goal_map in _publish_goal)
+# or delete the constant. Documented here so the original tuning
+# rationale (1.5 m matches controller path-tolerance; 0.30 m was
+# the value that reproduced chatter) isn't lost.
+# ────────────────────────────────────────────────────────────────────
 GOAL_REPUBLISH_MIN_DELTA_M: float = 1.5
 GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
 
-# In-mission updates flow through /goal_update so the BT's
-# GoalUpdater decorator can absorb them without canceling FollowPath
-# (no stop/go). The heartbeat re-issues /goal_pose periodically as a
-# safety net in case bt_navigator ever loses its action handle. The
-# heartbeat was 10 s; raised to 60 s because every heartbeat goes
-# through the NavigateToPose action and forces NAV2 to re-engage,
-# which (with the upstream candidate-smoother holding the goal
-# steady) looks identical to a fresh goal and triggers replanning.
-# /goal_update absorbs the small motion in between — only a true
-# lifecycle loss needs the bigger hammer.
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — DO NOT lower without re-architecting
+# the in-mission update path. /goal_pose republishes go through the
+# NavigateToPose action and force bt_navigator to re-engage, which
+# looks identical to a fresh goal and triggers a full replan. 10 s
+# (the earlier value) produced periodic replanning the controller
+# couldn't fully absorb; 60 s lets /goal_update absorb normal
+# in-mission motion through the GoalUpdater decorator and saves
+# the heavyweight /goal_pose for true lifecycle loss.
+# ────────────────────────────────────────────────────────────────────
 GOAL_POSE_HEARTBEAT_S: float = 60.0
 
-# Continuous heading resync (§3.4)
-# Raised from (10°, 3 s) to (15°, 5 s) after the May 2026 outdoor
-# run: with the encoder calibration applied, residual yaw bias is
-# small enough that θ oscillates around a stable mean rather than
-# diverging. Each resync still shifts the goal in map frame and
-# costs a sharp controller turn; firing only on >15° disagreement
-# (vs >10°) and only every 5 s (vs every 3 s) ignores the small
-# oscillations while still catching real drift. If a true drift
-# develops it will exceed 15° within 30 s and still get caught.
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — heading resync cadence. Each resync
+# event corrects accumulated EKF yaw bias (which is map↔odom-adjacent
+# in that the bias originates upstream of slam_toolbox's correction
+# loop), but the symptom on the robot is a sharp controller turn per
+# resync. Firing too often (10°/3 s) reproduced the start-stop
+# pattern as a sequence of replans + turns the controller couldn't
+# fade between. 15°/5 s lets θ oscillate around the bias mean
+# without triggering, while still catching real drift (exceeds 15°
+# within 30 s). DO NOT lower threshold or shorten cooldown without
+# first verifying the encoder calibration / imu_cov_inflator chain
+# is still constraining yaw bias upstream.
+# ────────────────────────────────────────────────────────────────────
 HEADING_RESYNC_THRESHOLD_DEG: float = 15.0
 HEADING_RESYNC_COOLDOWN_S: float = 5.0
 HEADING_RESYNC_WINDOW: int = 100
@@ -202,20 +221,23 @@ HEADING_FORCE_RESYNC_MIN_BASELINE_M: float = 3.0
 HEADING_FORCE_RESYNC_DIFF_DEG: float = 20.0
 HEADING_FORCE_RESYNC_VAR_DEG: float = 10.0
 
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — candidate-goal smoother. UPSTREAM
+# defense against GPS jitter → goal-tick → replan-storm chatter.
+# DO NOT TUNE without watching /gps_waypoint/debug telemetry across
+# at least one full mission.
+# CANDIDATE_SMOOTH_ALPHA=0.15: ~6-tick (≈0.6 s @ 10 Hz) ease-in.
+# CANDIDATE_SNAP_M=10: anything below is EWMA-eased; anything above
+#   is a legitimate large correction that bypasses the smoother.
+#   Was 5 m and made every heading-resync bypass the EWMA, causing
+#   the goal to jump every tick.
+# CANDIDATE_ENV_FLOOR_M=1.0: noise floor of the 1/r envelope filter.
+#   Was 0.4 and dropped legitimate corrections during bootstrap.
+# ────────────────────────────────────────────────────────────────────
 # Candidate-goal smoother (§3.5)
 CANDIDATE_SMOOTH_ALPHA: float = 0.15
-# Raised from 5.0 -> 10.0 m. Heading-resync events can move the raw
-# candidate 50+ m in one tick; SNAP=5 m made the smoother bypass and
-# adopt the new value verbatim every time, defeating the EWMA. SNAP=10
-# means only really large legitimate corrections bypass the filter —
-# normal resync transients now ease in through the EWMA over ~0.6 s.
 CANDIDATE_SNAP_M: float = 10.0
 CANDIDATE_ENV_GAIN_M: float = 0.5
-# Raised from 0.4 -> 1.0 m. The "noise floor" was too tight for the
-# early-motion regime where the EKF θ is still refining and the raw
-# candidate naturally jitters more than steady-state GPS noise.
-# Wider floor avoids dropping legitimate corrections during the
-# bootstrap-to-converged transition.
 CANDIDATE_ENV_FLOOR_M: float = 1.0
 CANDIDATE_ENV_REJECT_K: float = 4.0
 CANDIDATE_ENV_MIN_R_M: float = 3.0

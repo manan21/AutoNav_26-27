@@ -79,20 +79,29 @@ slam_toolbox:
     stack_size_to_use: 40000000
     enable_interactive_mode: false  # off: saves CPU on Jetson
 
-    # General Parameters
-    # ON. The previous static-map=odom workaround eliminated SLAM snap
-    # oscillations by removing all map yaw correction -- which broke
-    # GPS waypoint nav and the "-r 10 0 → diagonal" symptom (no path
-    # for yaw drift to be observed and fixed). Re-enabling scan
-    # matching is safe now because the corrections flow through
-    # /pose → ekf_global, which is a Kalman filter that smooths any
-    # step-change into a continuous ramp over 30-100 ms. DWB never
-    # sees a discrete jump. Worst-case correction bound: the
-    # correlation_search_space_dimension (0.5 m) limits any single
-    # match to a ±0.25 m delta; the 5σ Mahalanobis gate on /pose in
-    # ekf_global rejects anything further. With ekf_local pose-only
-    # (no wheel-velocity / yaw-rate fusion) the odom→base_link is
-    # clean, so the matcher isn't fighting a drifting odom.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — map/odom drift control. DO NOT toggle
+    # use_scan_matching to false again. The previous static-map=odom
+    # workaround eliminated SLAM snap oscillations by removing ALL
+    # map yaw correction — which broke GPS waypoint nav (no path for
+    # yaw drift to be observed/fixed) and produced the "-r 10 0 →
+    # diagonal" symptom. With scan matching ON, corrections flow
+    # through /pose → ekf_global (a KF that smooths any step into a
+    # continuous ramp over 30-100 ms) and DWB never sees a discrete
+    # jump. The safety net is the THREE-PART invariant below — break
+    # any of them and the map↔odom oscillation returns:
+    #   • use_scan_matching: true  (this line)
+    #   • ekf_local pose-only — no wheel-velocity or IMU yaw-rate
+    #     fusion (see ekf_local.yaml).
+    #   • imu_cov_inflator running — gives the IMU realistic
+    #     covariance so ekf_local doesn't over-trust raw yaw rate.
+    # Worst-case correction bound: correlation_search_space_dimension
+    # (0.5 m) limits any single match to a ±0.25 m delta; the 5σ
+    # Mahalanobis gate on /pose in ekf_global rejects anything
+    # further. If you see "map catching up with robot" snap, the
+    # right answer is investigating which of the three invariants
+    # got broken, not turning off scan matching.
+    # ────────────────────────────────────────────────────────────────
     use_scan_matching: true
     use_scan_barycenter: true
     # Only insert a keyframe after the robot has actually moved. 0.0 grew the pose graph at scan rate and slowed slam at distance.
@@ -100,14 +109,18 @@ slam_toolbox:
     minimum_travel_heading: 0.3
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
-    # Bumped from 0.1 → 0.3. With sparse/ambiguous outdoor scans the
-    # correlative matcher can return a "match" at low response score
-    # that doesn't actually correspond to real overlap — and silently
-    # accepting such matches lets slam_toolbox conclude "robot didn't
-    # move much" when it did, snapping map→odom forward and producing
-    # the "map catching up with the robot" symptom. 0.3 makes the
-    # matcher reject low-confidence matches; if no match passes, the
-    # scan is dropped rather than fused incorrectly.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — DO NOT lower below 0.3. This gate is
+    # what rejects low-confidence scan matches against an existing
+    # submap. With sparse/ambiguous outdoor scans the correlative
+    # matcher can return a "match" at low response score that
+    # doesn't correspond to real overlap; silently accepting those
+    # makes slam_toolbox conclude "robot didn't move much" when it
+    # did, then snap map→odom forward — the canonical "map catching
+    # up with the robot" symptom that drove the longitudinal
+    # stall/oscillation. At 0.3, low-confidence scans are dropped
+    # entirely rather than fused incorrectly.
+    # ────────────────────────────────────────────────────────────────
     link_match_minimum_response_fine: 0.3
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 3.0
