@@ -86,7 +86,12 @@ from .gps_ekf import (
 # ── Constants (plan_manifest §3 / survey §7). No magic numbers below ──
 
 # Cadence (§3.1)
-NAV2_GOAL_HZ: float = 1.0
+# 5 Hz tick lets gps_handler refresh the goal-in-map-frame on roughly
+# every fresh GPS sample (RTK typically 5-10 Hz). At Phase C.1's
+# 0.50 m/s cap this keeps the BT's GoalUpdater absorbing fine-grained
+# corrections so the robot stops chasing a stale target ("lost dog"
+# wandering). Throttling lives in GOAL_REPUBLISH_HEARTBEAT_S below.
+NAV2_GOAL_HZ: float = 5.0
 FEEDBACK_HZ: float = 2.0
 
 # Convergence / arrival (§3.2)
@@ -142,13 +147,21 @@ threshold made every resync trigger a republish; 3° lets small θ
 oscillations near the bias mean settle without commanding turns."""
 
 # ────────────────────────────────────────────────────────────────────
-# CONTROLLER-CHATTER-SENSITIVE — GOAL_REPUBLISH_HEARTBEAT_S is the
-# active gate; the only thing throttling /goal_pose republishes to
-# one every ~5 s post-bootstrap. NAV2's BT triggers a planning pass
-# on every fresh /goal_pose, so a faster cadence produces a
-# replanning storm and the controller chatters. DO NOT LOWER below
-# ~3 s without re-architecting the in-mission update path (today
-# /goal_update absorbs small motion between heartbeats).
+# Post-PHASEA-A.3 / PHASEB: only the FIRST publish per leg goes to
+# /goal_pose (NavigateToPose action trigger). Every subsequent publish
+# flows through /goal_update, which the BT's GoalUpdater absorbs
+# without canceling FollowPath, and PHASEB's PathSignificantlyChanged
+# decorator suppresses planner cancel-restart on same-path replans.
+# The 5 s heartbeat that USED to be the chatter gate is therefore no
+# longer load-bearing — lowering it just gives the goal-in-map-frame
+# finer tracking of each GPS sample. 0.2 s pairs with NAV2_GOAL_HZ=5
+# above for ~5 Hz /goal_update during in-mission motion.
+#
+# The historical CONTROLLER-CHATTER-SENSITIVE warning that 3 s was
+# the floor applied when in-mission publishes hit /goal_pose. After
+# A.3 routed them to /goal_update, the protective stack is now the
+# RateController's 1 Hz planner gate (PHASEA A.1) plus PHASEB's
+# decorator — both insulate the controller from goal-update frequency.
 #
 # NOTE: GOAL_REPUBLISH_MIN_DELTA_M is declared but NEVER READ in
 # this file (verified). The translational-delta gate the prose
@@ -159,7 +172,7 @@ oscillations near the bias mean settle without commanding turns."""
 # the value that reproduced chatter) isn't lost.
 # ────────────────────────────────────────────────────────────────────
 GOAL_REPUBLISH_MIN_DELTA_M: float = 1.5
-GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
+GOAL_REPUBLISH_HEARTBEAT_S: float = 0.2
 
 # ────────────────────────────────────────────────────────────────────
 # CONTROLLER-CHATTER-SENSITIVE — DO NOT lower without re-architecting
