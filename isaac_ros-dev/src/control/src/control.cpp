@@ -462,7 +462,10 @@ class ControlNode : public rclcpp::Node {
                     if (std::abs(pitch_deg) > deadband_deg) {
                         const double ramp_max =
                             this->get_parameter("grade_comp_ramp_max_velocity_mps").as_double();
-                        linear_move = std::clamp(linear_move, -ramp_max, ramp_max);
+                        linear_move = std::clamp<float>(
+                            linear_move,
+                            static_cast<float>(-ramp_max),
+                            static_cast<float>(ramp_max));
                     }
                 }
             }
