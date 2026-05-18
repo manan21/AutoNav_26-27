@@ -126,18 +126,16 @@ class ControlNode : public rclcpp::Node {
 
         // Y rising-edge -> request global costmap clear. Fires in both
         // AUTO and MANUAL modes since the costmap state is shared.
+        // No service_is_ready() gate — rclcpp queues async_send_request
+        // regardless; we want the press to register even if the server
+        // is briefly busy clearing+rebuilding from a previous call.
         int curr_y_btn = (joy_msg->buttons.size() > 2) ? joy_msg->buttons[2] : 0;
         currY_clear = curr_y_btn != 0;
-        if (!prevY_clear && currY_clear) {
-            if (clear_global_costmap_client_ && clear_global_costmap_client_->service_is_ready()) {
-                auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
-                clear_global_costmap_client_->async_send_request(req);
-                RCLCPP_INFO(this->get_logger(),
-                    "Y pressed -> /global_costmap/clear_entirely_global_costmap");
-            } else {
-                RCLCPP_WARN(this->get_logger(),
-                    "Y pressed but /global_costmap/clear_entirely_global_costmap is not ready");
-            }
+        if (!prevY_clear && currY_clear && clear_global_costmap_client_) {
+            auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
+            clear_global_costmap_client_->async_send_request(req);
+            RCLCPP_INFO(this->get_logger(),
+                "Y pressed -> /global_costmap/clear_entirely_global_costmap");
         }
         prevY_clear = currY_clear;
 

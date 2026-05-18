@@ -69,9 +69,26 @@ target_include_directories(autonav_goal_bender_bt_node
 
 ament_target_dependencies(autonav_goal_bender_bt_node ${dep_pkgs})
 
+# === BT node plugin: PathSignificantlyChanged (PHASEB) ===
+
+add_library(autonav_path_significantly_changed_bt_node SHARED
+            src/path_significantly_changed_decorator.cpp)
+
+target_compile_definitions(autonav_path_significantly_changed_bt_node
+  PRIVATE BT_PLUGIN_EXPORT)
+
+target_include_directories(autonav_path_significantly_changed_bt_node
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+ament_target_dependencies(autonav_path_significantly_changed_bt_node ${dep_pkgs})
+
 # === Installation ===
 
-install(TARGETS ${lib_name} autonav_goal_bender_bt_node
+install(TARGETS ${lib_name}
+                autonav_goal_bender_bt_node
+                autonav_path_significantly_changed_bt_node
         DESTINATION lib)
 
 # === Ament work ===
