@@ -89,13 +89,12 @@ def generate_launch_description():
     ekf_local_config  = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
     ekf_global_config = os.path.join(pkg_share, 'config', 'ekf_global.yaml')
 
-    # Inflates /sick_scansegment_xd/imu's all-zero covariance so ekf_local can fuse yaw rate without over-trusting it.
-    imu_cov_inflator = Node(
-        package='imu_cov_inflator',
-        executable='imu_inflator_node',
-        name='imu_cov_inflator',
-        output='screen',
-    )
+    # imu_cov_inflator moved to pre_slam.launch.py. It's a sensor
+    # pre-processor (raw /sick_scansegment_xd/imu -> /imu_inflated with
+    # covariance set so consumers can weight it) — conceptually it lives
+    # alongside the lidar driver, not in the nav2 stack. Both consumers
+    # (ekf_local below; control_node's Phase D grade compensation) read
+    # /imu_inflated and stay unaware of where it's launched.
 
     # ── 0. Local EKF (odom -> base_link) ─────────────────────────────────
     # robot_localization can rotate IMU measurements into base_link using TF,
@@ -320,7 +319,7 @@ def generate_launch_description():
         nav2_params_arg,
         enable_gps_fusion,
         # nodes (in startup order)
-        imu_cov_inflator,
+        # imu_cov_inflator moved to pre_slam.launch.py
         ekf_local,
         slam_toolbox,
         ekf_global,
