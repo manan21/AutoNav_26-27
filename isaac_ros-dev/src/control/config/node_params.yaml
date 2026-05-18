@@ -21,10 +21,14 @@ control_node:
     # in autonomous. Live-tunable via `ros2 param set /control_node ...`.
     imu_topic: "/sick_scansegment_xd/imu_inflated"
     imu_a_fwd_sign: -1.0                       # SICK is upside-down; +1.0 for ZED-mount
-    grade_comp_enabled: false                  # lands inert — set true after bench-test confirms sign + magnitude
-    grade_comp_deadband_ms2: 0.5               # ~3 deg of pitch; ignores level-ground IMU noise
-    grade_comp_gain_per_ms2: 0.2               # at 15% grade (a_fwd ~2.54 m/s^2) yields 1.4x boost
-    grade_comp_max_uphill_multiplier: 1.6      # motor-current safety ceiling — do not exceed without checking spec
-    grade_comp_min_downhill_multiplier: 0.35   # damping floor — too low and the robot freewheels
+    grade_comp_enabled: false                  # lands inert — set true after bench-test confirms sign + direction
+    # Bounded linear pitch-to-multiplier map. Runaway impossible by
+    # construction: any pitch beyond ±grade_comp_max_deg clamps to the
+    # ±max_pct bound. Defaults yield multiplier ∈ [0.90, 1.10] for ANY
+    # IMU input.
+    grade_comp_max_deg: 10.0                   # angle at which we hit max effect
+    grade_comp_max_uphill_pct: 0.10            # max boost = 1.10x at +10 deg or steeper
+    grade_comp_max_downhill_pct: 0.10          # max damping = 0.90x at -10 deg or steeper
+    grade_comp_deadband_deg: 0.5               # small — just filters level-ground IMU jitter
     grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
     grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay

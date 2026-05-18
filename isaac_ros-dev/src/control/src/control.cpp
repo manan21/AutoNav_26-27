@@ -66,20 +66,24 @@ class ControlNode : public rclcpp::Node {
         // this param to +1.0.
         this->declare_parameter("imu_a_fwd_sign", -1.0);
         this->declare_parameter("grade_comp_enabled", false);
-        // Deadband around level (m/s^2). Below this the multiplier
-        // stays at 1.0. ~0.5 m/s^2 corresponds to about 3 degrees of
-        // pitch — covers IMU noise + small body roll without firing
-        // compensation on flat ground.
-        this->declare_parameter("grade_comp_deadband_ms2", 0.5);
-        // Multiplier slope (per m/s^2 of a_fwd above deadband).
-        // 0.2 per m/s^2: at 15 percent grade (a_fwd ~= 2.54 m/s^2) the
-        // multiplier is 1 + 0.2 * (2.54 - 0.5) = 1.4, giving solid
-        // boost without saturating the motor controller. Tune up if
-        // the robot still stalls with payload; tune down if motors
-        // saturate.
-        this->declare_parameter("grade_comp_gain_per_ms2", 0.2);
-        this->declare_parameter("grade_comp_max_uphill_multiplier", 1.6);
-        this->declare_parameter("grade_comp_min_downhill_multiplier", 0.35);
+        // Bounded linear map from pitch (deg) to multiplier delta.
+        // Mathematically incapable of runaway: input clamped to
+        // [-max_deg, +max_deg], output clamped to
+        // [1 - max_downhill_pct, 1 + max_uphill_pct].
+        //
+        //   pitch ≤ -max_deg   →   multiplier = 1 - max_downhill_pct
+        //   pitch =  0         →   multiplier = 1.0
+        //   pitch ≥ +max_deg   →   multiplier = 1 + max_uphill_pct
+        //   linear in between
+        //
+        // Deadband is small (±0.5°) — just filters IMU noise at level.
+        // Pitch is reconstructed from a_fwd via asin(a_fwd/g), with
+        // the input clamped so a transient |a_fwd| > g (from real
+        // forward acceleration) cannot produce NaN.
+        this->declare_parameter("grade_comp_max_deg", 10.0);
+        this->declare_parameter("grade_comp_max_uphill_pct", 0.10);
+        this->declare_parameter("grade_comp_max_downhill_pct", 0.10);
+        this->declare_parameter("grade_comp_deadband_deg", 0.5);
         // If no IMU message for this many seconds, multiplier reverts
         // to 1.0 — prevents stale-gravity compensation if the IMU
         // pipeline silently dies mid-mission.
@@ -266,37 +270,50 @@ class ControlNode : public rclcpp::Node {
         }
     }
 
-    // PHASE D — multiplier applied to autonomous motor commands.
-    // Returns 1.0 (no compensation) when:
+    // PHASE D — bounded linear-map multiplier. Returns 1.0 when:
     //   - feature disabled via param
     //   - IMU silent (timeout)
-    //   - in manual mode (only called from auto path anyway)
     //   - forward_command <= 0 (don't boost rotations or BackUp recovery)
-    //   - a_fwd inside deadband (level ground)
-    // Otherwise:
-    //   uphill (a_fwd > deadband):    1 + gain * (a_fwd - deadband), clamped to max
-    //   downhill (a_fwd < -deadband): 1 - gain * (|a_fwd| - deadband), clamped to min
+    //   - a_fwd is not finite (NaN/inf guard)
+    //   - |pitch| inside deadband (level ground)
+    //
+    // Otherwise, linear pitch-to-delta mapping, clamped at ±max_deg.
+    // The clamps make runaway impossible by construction:
+    //   pitch (clamped to ±max_deg) / max_deg gives t in [-1, +1]
+    //   delta = max_uphill_pct * t  (if t ≥ 0)
+    //         = max_downhill_pct * t  (if t < 0, so delta is negative)
+    //   multiplier = 1 + delta
+    // So with defaults (max_uphill_pct = max_downhill_pct = 0.10),
+    // multiplier ∈ [0.90, 1.10] REGARDLESS of IMU input.
     double grade_speed_multiplier(double forward_command) {
         if (!this->get_parameter("grade_comp_enabled").as_bool()) return 1.0;
         if (!have_imu_) return 1.0;
         const double timeout = this->get_parameter("grade_comp_imu_timeout_sec").as_double();
         if ((this->now() - last_imu_stamp_).seconds() > timeout) return 1.0;
         if (forward_command <= 0.0) return 1.0;
+        if (!std::isfinite(latest_a_fwd_)) return 1.0;
 
-        const double a_fwd = latest_a_fwd_;
-        const double deadband = this->get_parameter("grade_comp_deadband_ms2").as_double();
-        if (std::abs(a_fwd) < deadband) return 1.0;
+        // Reconstruct pitch from gravity projection. Clamp the
+        // a_fwd/g ratio to [-1, 1] BEFORE asin so a transient
+        // |a_fwd| > g (real forward acceleration spike, e.g. during
+        // a hard start) cannot return NaN.
+        constexpr double g = 9.81;
+        const double sin_pitch = std::clamp(latest_a_fwd_ / g, -1.0, 1.0);
+        const double pitch_deg = std::asin(sin_pitch) * 180.0 / M_PI;
 
-        const double gain = this->get_parameter("grade_comp_gain_per_ms2").as_double();
-        if (a_fwd > 0.0) {
-            const double max_mult =
-                this->get_parameter("grade_comp_max_uphill_multiplier").as_double();
-            return std::min(1.0 + gain * (a_fwd - deadband), max_mult);
-        } else {
-            const double min_mult =
-                this->get_parameter("grade_comp_min_downhill_multiplier").as_double();
-            return std::max(1.0 - gain * (std::abs(a_fwd) - deadband), min_mult);
-        }
+        const double deadband_deg =
+            this->get_parameter("grade_comp_deadband_deg").as_double();
+        if (std::abs(pitch_deg) < deadband_deg) return 1.0;
+
+        const double max_deg = this->get_parameter("grade_comp_max_deg").as_double();
+        const double max_up_pct =
+            this->get_parameter("grade_comp_max_uphill_pct").as_double();
+        const double max_dn_pct =
+            this->get_parameter("grade_comp_max_downhill_pct").as_double();
+
+        const double t = std::clamp(pitch_deg / max_deg, -1.0, 1.0);
+        const double delta = (t >= 0.0) ? (max_up_pct * t) : (max_dn_pct * t);
+        return 1.0 + delta;
     }
 
 
