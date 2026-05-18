@@ -92,6 +92,15 @@ class ControlNode : public rclcpp::Node {
         // robot still accelerates past the smoother cap on descent.
         this->declare_parameter("grade_comp_max_downhill_pct", 0.30);
         this->declare_parameter("grade_comp_deadband_deg", 0.5);
+        // Ramp-speed safety cap. When the robot detects it's on an
+        // incline (|pitch| > deadband), the base linear velocity is
+        // clamped to this value BEFORE the multiplier boost. Without
+        // this, a 0.75 m/s autonomous base × 3.0x boost would imply
+        // 2.25 m/s of motor throttle going uphill — catastrophic if
+        // the gravity load doesn't fully balance it. Set to a speed
+        // the robot can handle on a ramp regardless of multiplier
+        // (the boost still fires, just on the reduced base).
+        this->declare_parameter("grade_comp_ramp_max_velocity_mps", 0.30);
         // If no IMU message for this many seconds, multiplier reverts
         // to 1.0 — prevents stale-gravity compensation if the IMU
         // pipeline silently dies mid-mission.
@@ -278,6 +287,18 @@ class ControlNode : public rclcpp::Node {
         }
     }
 
+    // Reconstruct body-pitch (deg) from the EWMA-filtered a_fwd. The
+    // a_fwd/g ratio is clamped to [-1, 1] BEFORE asin so a transient
+    // |a_fwd| > g (forward-acceleration spike) returns ±90 deg instead
+    // of NaN. Returns 0 if no IMU data or input is non-finite.
+    double current_pitch_deg() {
+        if (!have_imu_) return 0.0;
+        if (!std::isfinite(latest_a_fwd_)) return 0.0;
+        constexpr double g = 9.81;
+        const double sin_pitch = std::clamp(latest_a_fwd_ / g, -1.0, 1.0);
+        return std::asin(sin_pitch) * 180.0 / M_PI;
+    }
+
     // PHASE D — bounded linear-map multiplier. Returns 1.0 when:
     //   - feature disabled via param
     //   - IMU silent (timeout)
@@ -303,14 +324,7 @@ class ControlNode : public rclcpp::Node {
         if (forward_command <= 0.0) return 1.0;
         if (!std::isfinite(latest_a_fwd_)) return 1.0;
 
-        // Reconstruct pitch from gravity projection. Clamp the
-        // a_fwd/g ratio to [-1, 1] BEFORE asin so a transient
-        // |a_fwd| > g (real forward acceleration spike, e.g. during
-        // a hard start) cannot return NaN.
-        constexpr double g = 9.81;
-        const double sin_pitch = std::clamp(latest_a_fwd_ / g, -1.0, 1.0);
-        const double pitch_deg = std::asin(sin_pitch) * 180.0 / M_PI;
-
+        const double pitch_deg = current_pitch_deg();
         const double deadband_deg =
             this->get_parameter("grade_comp_deadband_deg").as_double();
         if (std::abs(pitch_deg) < deadband_deg) return 1.0;
@@ -429,6 +443,29 @@ class ControlNode : public rclcpp::Node {
 
             linear_move = msg->linear.x;
             angular_move = msg->angular.z;
+
+            // PHASE D safety — when grade comp is enabled AND the robot
+            // is detected on an incline (|pitch| past deadband), cap the
+            // base linear velocity at grade_comp_ramp_max_velocity_mps
+            // BEFORE the grade-comp multiplier amplifies it. std::clamp
+            // only caps the upper bound — slower commands pass through
+            // unchanged, so the planner can still throttle down on the
+            // ramp. The multiplier still fires on the reduced base so
+            // the boost compensates for the gravity load.
+            if (this->get_parameter("grade_comp_enabled").as_bool() && have_imu_) {
+                const double timeout =
+                    this->get_parameter("grade_comp_imu_timeout_sec").as_double();
+                if ((this->now() - last_imu_stamp_).seconds() <= timeout) {
+                    const double pitch_deg = current_pitch_deg();
+                    const double deadband_deg =
+                        this->get_parameter("grade_comp_deadband_deg").as_double();
+                    if (std::abs(pitch_deg) > deadband_deg) {
+                        const double ramp_max =
+                            this->get_parameter("grade_comp_ramp_max_velocity_mps").as_double();
+                        linear_move = std::clamp(linear_move, -ramp_max, ramp_max);
+                    }
+                }
+            }
 
             left_wheel_speed = linear_move - ( angular_move * (WHEEL_BASE/2));
             right_wheel_speed = linear_move +( angular_move * (WHEEL_BASE/2));

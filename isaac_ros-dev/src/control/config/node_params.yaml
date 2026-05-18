@@ -41,5 +41,14 @@ control_node:
     # robot still accelerates past the smoother cap on descent.
     grade_comp_max_downhill_pct: 0.30          # max damping = 0.70x at -10 deg or steeper
     grade_comp_deadband_deg: 0.5               # small — just filters level-ground IMU jitter
+    # Ramp-speed safety cap (autonomous only). When |pitch| > deadband,
+    # the BASE linear velocity is clamped to this value BEFORE the
+    # multiplier boost. std::clamp only caps the upper bound — slower
+    # commands pass unchanged, so the planner can throttle DOWN on a
+    # ramp normally. The boost still fires on the reduced base so the
+    # gravity load is overcome. Sized to a conservative ramp cruise
+    # speed; raise if outdoor testing shows the robot stalls before
+    # the boost kicks in.
+    grade_comp_ramp_max_velocity_mps: 0.30     # caps cmd_vel.linear.x on inclines (autonomous only)
     grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
     grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay
