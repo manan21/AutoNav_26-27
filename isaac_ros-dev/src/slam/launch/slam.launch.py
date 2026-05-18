@@ -115,7 +115,16 @@ def generate_launch_description():
     )
 
     # ── 2. SLAM Toolbox ───────────────────────────────────────────────────
-    slam_toolbox = Node(
+    # Held behind a 5 s TimerAction. slam_toolbox does lazy initialization
+    # — it only starts publishing map->odom after the first scan it
+    # receives can be transformed into the odom frame. If the first
+    # /scan arrives before ekf_local has published any odom->base_link,
+    # slam silently buffers the scan and NEVER retries the lazy-init.
+    # The process stays alive but the map frame never appears, forcing
+    # an operator-side restart. 5 s gives ekf_local generous margin
+    # to seed its Kalman state from the first encoder + IMU samples
+    # and publish odom->base_link before slam touches its first scan.
+    slam_toolbox_node = Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
         name='slam_toolbox',
@@ -128,6 +137,7 @@ def generate_launch_description():
             }
         ]
     )
+    slam_toolbox = TimerAction(period=5.0, actions=[slam_toolbox_node])
 
     # ── 2.25 Map EKF (state estimator ONLY, no TF publish) ──────────────
     # slam_toolbox owns map->odom (transform_publish_period: 0.02 in

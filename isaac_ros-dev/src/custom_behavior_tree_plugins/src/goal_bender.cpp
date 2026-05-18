@@ -23,6 +23,12 @@ GoalBender::GoalBender(
   const BT::NodeConfiguration & config)
 : BT::SyncActionNode(name, config)
 {
+  // Publish the chosen goal each tick so map_padder can pad the
+  // corridor toward the actual planner target. RELIABLE QoS so map_padder
+  // doesn't miss the first tick when the corridor most needs to extend.
+  auto node = config.blackboard->get<rclcpp::Node::SharedPtr>("node");
+  nav_goal_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>(
+    "/nav_goal", rclcpp::QoS(1).reliable());
 }
 
 BT::NodeStatus GoalBender::tick()
@@ -51,6 +57,7 @@ BT::NodeStatus GoalBender::tick()
       "map", "base_link", tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
     setOutput("output_goal", goal);
+    if (nav_goal_pub_) nav_goal_pub_->publish(goal);
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -91,6 +98,7 @@ BT::NodeStatus GoalBender::tick()
   //                                       route.
   if (!(goal_behind && path_behind)) {
     setOutput("output_goal", goal);
+    if (nav_goal_pub_) nav_goal_pub_->publish(goal);
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -116,6 +124,7 @@ BT::NodeStatus GoalBender::tick()
   bent.pose.orientation = tf2::toMsg(q);
 
   setOutput("output_goal", bent);
+  if (nav_goal_pub_) nav_goal_pub_->publish(bent);
 
   RCLCPP_INFO(node->get_logger(),
     "GoalBender: goal+path both behind -> forward bend to (%.1f, %.1f)",

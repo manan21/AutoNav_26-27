@@ -460,8 +460,12 @@ velocity_smoother:
     #   yaw drifts, slam_toolbox has to scan-match-correct map→odom
     #   against a moving target → map-catching-up snap → stall.
     # ────────────────────────────────────────────────────────────────
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [-0.26, 0.0, -1.0]
+    # PHASE C.1: 0.26 -> 0.50 m/s cap raise. IGVC requires >= 1 mph
+    # (0.447 m/s) average; this is the conservative first step from
+    # PHASEC.md. C.2 (0.80 m/s) is gated on this run staying clean
+    # (no map<->odom snap, heading_resync_count flat).
+    max_velocity: [0.50, 0.0, 1.0]
+    min_velocity: [-0.50, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     # /local_ekf/odom is the EKF-fused output. Only matters if feedback

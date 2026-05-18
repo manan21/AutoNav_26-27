@@ -130,6 +130,13 @@ class MapPadder(Node):
         self._pub = self.create_publisher(OccupancyGrid, output_topic, map_qos)
         self.create_subscription(OccupancyGrid, input_topic, self._on_map, map_qos)
         self.create_subscription(PoseStamped, goal_topic, self._on_goal, 10)
+        # /nav_goal is GoalBender's per-tick output (bent goal when the
+        # original goal is behind the robot, pass-through otherwise).
+        # Subscribing here gives map_padder a 1 Hz refresh trigger AND
+        # ensures the corridor seeds the bent target — without this the
+        # planner returns "goal off global costmap" when GoalBender
+        # produces a bent target outside the unbent /goal_pose corridor.
+        self.create_subscription(PoseStamped, '/nav_goal', self._on_goal, 10)
         self.create_subscription(Path, plan_topic, self._on_plan, 10)
         self.create_timer(0.5, self._plan_throttle_tick)
 
