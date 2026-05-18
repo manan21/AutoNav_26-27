@@ -86,12 +86,13 @@ from .gps_ekf import (
 # ── Constants (plan_manifest §3 / survey §7). No magic numbers below ──
 
 # Cadence (§3.1)
-# 5 Hz tick lets gps_handler refresh the goal-in-map-frame on roughly
-# every fresh GPS sample (RTK typically 5-10 Hz). At Phase C.1's
-# 0.50 m/s cap this keeps the BT's GoalUpdater absorbing fine-grained
-# corrections so the robot stops chasing a stale target ("lost dog"
-# wandering). Throttling lives in GOAL_REPUBLISH_HEARTBEAT_S below.
-NAV2_GOAL_HZ: float = 5.0
+# Submit-best-candidate model: gps_handler's internal convergence
+# (gps_ekf + candidate smoother) runs on every GPS callback (~5-10 Hz
+# RTK rate), so by the time the 1 Hz publisher_tick reads the current
+# best candidate, the value is already the freshest converged estimate.
+# We submit at 1 Hz to keep nav2's BT load bounded; the per-sample
+# convergence is happening upstream regardless.
+NAV2_GOAL_HZ: float = 1.0
 FEEDBACK_HZ: float = 2.0
 
 # Convergence / arrival (§3.2)
@@ -153,9 +154,10 @@ oscillations near the bias mean settle without commanding turns."""
 # without canceling FollowPath, and PHASEB's PathSignificantlyChanged
 # decorator suppresses planner cancel-restart on same-path replans.
 # The 5 s heartbeat that USED to be the chatter gate is therefore no
-# longer load-bearing — lowering it just gives the goal-in-map-frame
-# finer tracking of each GPS sample. 0.2 s pairs with NAV2_GOAL_HZ=5
-# above for ~5 Hz /goal_update during in-mission motion.
+# longer load-bearing. 0.2 s is set so the 1 Hz publisher_tick is
+# NOT gated by this throttle (it allows every tick to publish), which
+# means the submit cadence is purely NAV2_GOAL_HZ (1 Hz). Internal
+# convergence runs upstream on every GPS callback regardless.
 #
 # The historical CONTROLLER-CHATTER-SENSITIVE warning that 3 s was
 # the floor applied when in-mission publishes hit /goal_pose. After
