@@ -4,6 +4,7 @@
 #include "motor_controller.hpp"
 #include "autonomous.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "autonav_interfaces/msg/encoders.hpp"
 #include "autonav_interfaces/srv/configure_control.hpp"
@@ -11,6 +12,8 @@
 #include "std_msgs/msg/bool.hpp"
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -43,6 +46,48 @@ class ControlNode : public rclcpp::Node {
             "/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_8583030363935190F141-if00");
 
         this->declare_parameter("estop_port", "/dev/ttyTHS1");
+
+        // PHASE D — grade compensation (gravity-vector approach). Reads
+        // the IMU's body-frame X accelerometer reading (which IS the
+        // gravity projection along the robot's longitudinal axis at
+        // quasi-static velocities), low-pass filters it, and multiplies
+        // the motor command by a clamped multiplier so the 20 lb
+        // payload doesn't stall on a 15 % grade going up, and the
+        // robot doesn't run away going down. Disabled by default — set
+        // `grade_comp_enabled: true` (or `ros2 param set ...`) to turn
+        // it on. First test should be on a tilt block with this flag
+        // OFF, watch a_fwd in the log to confirm sign and magnitude,
+        // then enable.
+        this->declare_parameter("imu_topic", "/sick_scansegment_xd/imu_inflated");
+        // SICK is upside-down on this robot (per imu_cov_inflator
+        // OSCILLATION-SENSITIVE comments). Sign = -1.0 flips the body-X
+        // accel reading so positive = nose-up = forward-opposing gravity.
+        // If you switch to /zed/zed_node/imu/data (right-side-up), set
+        // this param to +1.0.
+        this->declare_parameter("imu_a_fwd_sign", -1.0);
+        this->declare_parameter("grade_comp_enabled", false);
+        // Deadband around level (m/s^2). Below this the multiplier
+        // stays at 1.0. ~0.5 m/s^2 corresponds to about 3 degrees of
+        // pitch — covers IMU noise + small body roll without firing
+        // compensation on flat ground.
+        this->declare_parameter("grade_comp_deadband_ms2", 0.5);
+        // Multiplier slope (per m/s^2 of a_fwd above deadband).
+        // 0.2 per m/s^2: at 15 percent grade (a_fwd ~= 2.54 m/s^2) the
+        // multiplier is 1 + 0.2 * (2.54 - 0.5) = 1.4, giving solid
+        // boost without saturating the motor controller. Tune up if
+        // the robot still stalls with payload; tune down if motors
+        // saturate.
+        this->declare_parameter("grade_comp_gain_per_ms2", 0.2);
+        this->declare_parameter("grade_comp_max_uphill_multiplier", 1.6);
+        this->declare_parameter("grade_comp_min_downhill_multiplier", 0.35);
+        // If no IMU message for this many seconds, multiplier reverts
+        // to 1.0 — prevents stale-gravity compensation if the IMU
+        // pipeline silently dies mid-mission.
+        this->declare_parameter("grade_comp_imu_timeout_sec", 0.5);
+        // EWMA alpha on a_fwd. 0.2 = ~5-sample decay at 50 Hz IMU,
+        // smooths out wheel-driven body acceleration spikes so we
+        // estimate the slow-changing gravity component cleanly.
+        this->declare_parameter("grade_comp_alpha", 0.2);
 
         configure_server = this->create_service<autonav_interfaces::srv::ConfigureControl>
              ("configure_control", std::bind(&ControlNode::configure, this, std::placeholders::_1, std::placeholders::_2));
@@ -97,6 +142,12 @@ class ControlNode : public rclcpp::Node {
     bool currY_clear = false;
     bool prevY_clear = false;
     rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
+
+    // PHASE D — gravity-vector grade compensation state.
+    double latest_a_fwd_ = 0.0;             // EWMA-filtered body-X accel.
+    bool have_imu_ = false;
+    rclcpp::Time last_imu_stamp_{0, 0, RCL_ROS_TIME};
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub;
 
     void joystick_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg) {
         last_joy_msg_time_ = this->now();
@@ -194,8 +245,59 @@ class ControlNode : public rclcpp::Node {
                 motors.shutdown();
             }
 
-    }  
-    
+    }
+
+    // PHASE D — gravity-vector callback. Body-frame X accel reading
+    // contains both linear acceleration and the projection of gravity
+    // along base_link's forward axis. At quasi-static velocities (or
+    // when filtered) the gravity projection dominates: a_fwd = g*sin(pitch)
+    // for a nose-up slope. EWMA-filtered here so wheel-driven acceleration
+    // spikes don't contaminate the grade estimate.
+    void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
+        last_imu_stamp_ = this->now();
+        const double sign = this->get_parameter("imu_a_fwd_sign").as_double();
+        const double alpha = this->get_parameter("grade_comp_alpha").as_double();
+        const double raw_ax = sign * msg->linear_acceleration.x;
+        if (!have_imu_) {
+            latest_a_fwd_ = raw_ax;
+            have_imu_ = true;
+        } else {
+            latest_a_fwd_ = alpha * raw_ax + (1.0 - alpha) * latest_a_fwd_;
+        }
+    }
+
+    // PHASE D — multiplier applied to autonomous motor commands.
+    // Returns 1.0 (no compensation) when:
+    //   - feature disabled via param
+    //   - IMU silent (timeout)
+    //   - in manual mode (only called from auto path anyway)
+    //   - forward_command <= 0 (don't boost rotations or BackUp recovery)
+    //   - a_fwd inside deadband (level ground)
+    // Otherwise:
+    //   uphill (a_fwd > deadband):    1 + gain * (a_fwd - deadband), clamped to max
+    //   downhill (a_fwd < -deadband): 1 - gain * (|a_fwd| - deadband), clamped to min
+    double grade_speed_multiplier(double forward_command) {
+        if (!this->get_parameter("grade_comp_enabled").as_bool()) return 1.0;
+        if (!have_imu_) return 1.0;
+        const double timeout = this->get_parameter("grade_comp_imu_timeout_sec").as_double();
+        if ((this->now() - last_imu_stamp_).seconds() > timeout) return 1.0;
+        if (forward_command <= 0.0) return 1.0;
+
+        const double a_fwd = latest_a_fwd_;
+        const double deadband = this->get_parameter("grade_comp_deadband_ms2").as_double();
+        if (std::abs(a_fwd) < deadband) return 1.0;
+
+        const double gain = this->get_parameter("grade_comp_gain_per_ms2").as_double();
+        if (a_fwd > 0.0) {
+            const double max_mult =
+                this->get_parameter("grade_comp_max_uphill_multiplier").as_double();
+            return std::min(1.0 + gain * (a_fwd - deadband), max_mult);
+        } else {
+            const double min_mult =
+                this->get_parameter("grade_comp_min_downhill_multiplier").as_double();
+            return std::max(1.0 - gain * (std::abs(a_fwd) - deadband), min_mult);
+        }
+    }
 
 
     void publish_encoder_data() {
@@ -222,7 +324,16 @@ class ControlNode : public rclcpp::Node {
             Xbox::CommandData command = controller.calculateCommand();
 
             if(command.cmd == Xbox::MOVE){
-                motors.move(command.right_motor_speed * motors.getSpeed(), command.left_motor_speed * motors.getSpeed());
+                // PHASE D — also apply grade compensation in manual mode
+                // so the multiplier can be calibrated on a tilt block
+                // before relying on it in autonomous. Same forward-only
+                // gate as the autonomous path.
+                const double forward_cmd_manual = 0.5 * (
+                    command.left_motor_speed + command.right_motor_speed);
+                const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
+                motors.move(
+                    command.right_motor_speed * motors.getSpeed() * mult_manual,
+                    command.left_motor_speed * motors.getSpeed() * mult_manual);
             }
             else if(command.cmd == Xbox::SPEED_DOWN){
                 auto now = std::chrono::steady_clock::now();
@@ -248,7 +359,15 @@ class ControlNode : public rclcpp::Node {
             }  // end joy-watchdog else
         }
         else {
-           motors.move(right_wheel_speed * 40, left_wheel_speed * 40);
+           // PHASE D — apply gravity-vector grade compensation. Forward
+           // command = average of left/right wheel speeds (positive means
+           // forward intent). The multiplier is 1.0 unless climbing or
+           // descending past the deadband; clamped to safe motor-current
+           // bounds by grade_comp_max_uphill_multiplier /
+           // grade_comp_min_downhill_multiplier.
+           const double forward_cmd = 0.5 * (left_wheel_speed + right_wheel_speed);
+           const double mult = grade_speed_multiplier(forward_cmd);
+           motors.move(right_wheel_speed * 40 * mult, left_wheel_speed * 40 * mult);
 
         }
 
@@ -358,6 +477,18 @@ class ControlNode : public rclcpp::Node {
         // on the global_costmap node.
         clear_global_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
             "/global_costmap/clear_entirely_global_costmap");
+
+        // PHASE D — IMU subscription for gravity-vector grade compensation.
+        // imu_topic param defaults to /sick_scansegment_xd/imu_inflated
+        // (already on the bus for ekf_local; SICK is upside-down so the
+        // sign flip lives in imu_a_fwd_sign). Switch to /zed/zed_node/imu/data
+        // if the SICK path is unavailable; set imu_a_fwd_sign to +1.0
+        // for the ZED side.
+        const std::string imu_topic =
+            this->get_parameter("imu_topic").as_string();
+        imuSub = this->create_subscription<sensor_msgs::msg::Imu>(
+            imu_topic, 10,
+            std::bind(&ControlNode::imu_callback, this, std::placeholders::_1));
 
         // ESTOP CALLBACK
 	

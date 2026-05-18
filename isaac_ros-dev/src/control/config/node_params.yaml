@@ -10,3 +10,21 @@ control_node:
     controller_topic: "joy"
     encoder_topic: "encoders"
     path_planning_topic: "cmd_vel"
+
+    # \/ ------------------PHASE D grade compensation (gravity-vector approach)
+    # Reads the IMU's body-frame X accelerometer (= gravity projection
+    # along the longitudinal axis at quasi-static velocity) and scales
+    # the motor command on inclines so the 20 lb payload doesn't stall
+    # going up and the robot doesn't run away going down. Applied in
+    # BOTH manual and autonomous modes when forward_command > 0, so
+    # the gain can be calibrated on a tilt block before relying on it
+    # in autonomous. Live-tunable via `ros2 param set /control_node ...`.
+    imu_topic: "/sick_scansegment_xd/imu_inflated"
+    imu_a_fwd_sign: -1.0                       # SICK is upside-down; +1.0 for ZED-mount
+    grade_comp_enabled: false                  # lands inert — set true after bench-test confirms sign + magnitude
+    grade_comp_deadband_ms2: 0.5               # ~3 deg of pitch; ignores level-ground IMU noise
+    grade_comp_gain_per_ms2: 0.2               # at 15% grade (a_fwd ~2.54 m/s^2) yields 1.4x boost
+    grade_comp_max_uphill_multiplier: 1.6      # motor-current safety ceiling — do not exceed without checking spec
+    grade_comp_min_downhill_multiplier: 0.35   # damping floor — too low and the robot freewheels
+    grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
+    grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay
