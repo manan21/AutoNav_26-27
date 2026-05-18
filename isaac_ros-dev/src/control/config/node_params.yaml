@@ -27,8 +27,19 @@ control_node:
     # ±max_pct bound. Defaults yield multiplier ∈ [0.90, 1.10] for ANY
     # IMU input.
     grade_comp_max_deg: 10.0                   # angle at which we hit max effect
-    grade_comp_max_uphill_pct: 0.10            # max boost = 1.10x at +10 deg or steeper
-    grade_comp_max_downhill_pct: 0.10          # max damping = 0.90x at -10 deg or steeper
+    # Sized for the realistic IGVC physics: 90 lb robot, 15 % grade
+    # produces ~13.4 lbf of gravity opposing forward motion. To
+    # MAINTAIN cruise velocity uphill the motors need ~2.5x-4x the
+    # level-ground throttle (lower bound for grass, higher for paved).
+    # 2.0 (cap = 3.0x multiplier) targets the asphalt-to-mowed-grass
+    # band; raise to 3.0 (cap = 4.0x) if the robot still slows on
+    # the actual ramp with payload.
+    grade_comp_max_uphill_pct: 2.0             # max boost = 3.00x at +10 deg or steeper
+    # Downhill: gravity assists, so heavy damping isn't usually
+    # needed. 0.30 (floor = 0.70x) gives meaningful brake authority
+    # without freewheeling. Raise toward 0.65 (floor = 0.35x) if the
+    # robot still accelerates past the smoother cap on descent.
+    grade_comp_max_downhill_pct: 0.30          # max damping = 0.70x at -10 deg or steeper
     grade_comp_deadband_deg: 0.5               # small — just filters level-ground IMU jitter
     grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
     grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay

@@ -81,8 +81,16 @@ class ControlNode : public rclcpp::Node {
         // the input clamped so a transient |a_fwd| > g (from real
         // forward acceleration) cannot produce NaN.
         this->declare_parameter("grade_comp_max_deg", 10.0);
-        this->declare_parameter("grade_comp_max_uphill_pct", 0.10);
-        this->declare_parameter("grade_comp_max_downhill_pct", 0.10);
+        // Default tuned for a 90 lb robot on a 15 % grade: gravity
+        // component is ~13.4 lbf, so to maintain cruise the motors
+        // need ~2.5x-4x the level throttle (depending on surface).
+        // 2.0 (cap = 3.0x multiplier) hits the asphalt-to-grass band.
+        // Live-tunable; see node_params.yaml for the full rationale.
+        this->declare_parameter("grade_comp_max_uphill_pct", 2.0);
+        // Downhill side gets gravity assist, so a moderate damping
+        // cap is enough — 0.30 (floor = 0.70x). Tune up if the
+        // robot still accelerates past the smoother cap on descent.
+        this->declare_parameter("grade_comp_max_downhill_pct", 0.30);
         this->declare_parameter("grade_comp_deadband_deg", 0.5);
         // If no IMU message for this many seconds, multiplier reverts
         // to 1.0 — prevents stale-gravity compensation if the IMU
@@ -283,8 +291,10 @@ class ControlNode : public rclcpp::Node {
     //   delta = max_uphill_pct * t  (if t ≥ 0)
     //         = max_downhill_pct * t  (if t < 0, so delta is negative)
     //   multiplier = 1 + delta
-    // So with defaults (max_uphill_pct = max_downhill_pct = 0.10),
-    // multiplier ∈ [0.90, 1.10] REGARDLESS of IMU input.
+    // With defaults (max_uphill_pct = 2.0, max_downhill_pct = 0.30),
+    // multiplier ∈ [0.70, 3.00] REGARDLESS of IMU input. Sized to
+    // overcome ~13 lbf of gravity component on a 15 % grade for a
+    // 90 lb robot — see node_params.yaml for the physics breakdown.
     double grade_speed_multiplier(double forward_command) {
         if (!this->get_parameter("grade_comp_enabled").as_bool()) return 1.0;
         if (!have_imu_) return 1.0;
