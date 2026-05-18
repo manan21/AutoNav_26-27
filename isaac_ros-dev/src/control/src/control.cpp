@@ -547,14 +547,16 @@ class ControlNode : public rclcpp::Node {
 
         // PHASE D — IMU subscription for gravity-vector grade compensation.
         // imu_topic param defaults to /sick_scansegment_xd/imu_inflated
-        // (already on the bus for ekf_local; SICK is upside-down so the
-        // sign flip lives in imu_a_fwd_sign). Switch to /zed/zed_node/imu/data
-        // if the SICK path is unavailable; set imu_a_fwd_sign to +1.0
-        // for the ZED side.
+        // (already on the bus for ekf_local). MUST be BEST_EFFORT QoS —
+        // imu_cov_inflator publishes BEST_EFFORT (standard for high-rate
+        // sensor data), and a RELIABLE subscription gets the "incompatible
+        // QoS, no messages will be received" warning and silently drops
+        // everything. rclcpp::SensorDataQoS() is the standard preset
+        // (depth 5, best_effort) for exactly this.
         const std::string imu_topic =
             this->get_parameter("imu_topic").as_string();
         imuSub = this->create_subscription<sensor_msgs::msg::Imu>(
-            imu_topic, 10,
+            imu_topic, rclcpp::SensorDataQoS(),
             std::bind(&ControlNode::imu_callback, this, std::placeholders::_1));
 
         // ESTOP CALLBACK
