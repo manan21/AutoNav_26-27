@@ -23,11 +23,14 @@
         <!-- Replan at 2 Hz. The standard Nav2 approach to "what if the
              path becomes invalid?" is just to replan often enough that
              a fresh path naturally replaces a stale one within one
-             cycle. 2 Hz gives a 500 ms worst-case staleness window
+             cycle. 1 Hz gives a 1000 ms worst-case staleness window
              without the false-positive issues of an explicit
              IsPathValid check (which can fail-cascade into recovery on
-             a transient one-tick costmap blip). -->
-        <RateController hz="2.0">
+             a transient one-tick costmap blip). PHASEB's
+             PathSignificantlyChanged decorator absorbs same-path
+             replans so this slower cadence does not regress cmd_vel
+             continuity. -->
+        <RateController hz="1.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
             gps_handler_node. It subscribes to /goal_update; each tick
@@ -66,20 +69,28 @@
                 <Sequence name="PlanRecovery">
                   <ClearEntireCostmap name="ClearGlobalCostmap-Context"
                     service_name="global_costmap/clear_entirely_global_costmap"/>
-                  <!-- 0.3 s between retries — long enough for one fresh
-                       scan to repopulate the costmap after clearing,
-                       short enough that 3 retries complete in <1.5 s. -->
-                  <Wait wait_duration="0.3"/>
+                  <!-- 0.1 s between retries — PHASEA-tuned. Tight
+                       enough that 3 retries complete in <0.5 s
+                       (worst-case planner-retry stop). The single
+                       fresh scan that 0.3 s used to gate on is no
+                       longer the bottleneck: the FollowPathRecovery
+                       branch clears around-robot at a 1 m radius
+                       (A.5), so transient inflation along the path
+                       gets dealt with there rather than via planner
+                       retries. -->
+                  <Wait wait_duration="0.1"/>
                 </Sequence>
               </RecoveryNode>
             </Sequence>
           </GoalUpdater>
         </RateController>
         <!-- 2 retries for FollowPath. If DWB's progress_checker fires
-             (no 10cm of motion in 8s), we get to clear the local
-             costmap and try the SAME path again before escalating.
-             Sometimes the first stall is from a transient obstacle
-             that's gone the next time around. -->
+             (no 10cm of motion in 15s — PHASEA A.2), we clear a 1 m
+             radius around the robot (PHASEA A.5) and try the SAME
+             path again before escalating. The around-robot clear is
+             targeted: it frees the robot from transient inflation
+             without wiping the line obstacles it was successfully
+             avoiding. -->
         <RecoveryNode number_of_retries="2" name="FollowPathRecovery">
           <!-- FollowPath consumes whatever {path} is currently on the
                blackboard. When the RateController writes a new {path}
@@ -87,8 +98,9 @@
                with the new path automatically — no explicit
                invalidation check needed. -->
           <FollowPath path="{path}" controller_id="FollowPath"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context"
-            service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
+            service_name="local_costmap/clear_around_local_costmap"
+            reset_distance="1.0"/>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">

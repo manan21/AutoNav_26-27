@@ -386,13 +386,13 @@ class _ActiveGoal:
     # Drives the heartbeat gate of the goal-republish throttle so a
     # stalled NAV2 still picks up state every GOAL_REPUBLISH_HEARTBEAT_S.
     last_published_t_s: Optional[float] = None
-    # Wall-time-ish timestamp of the last /goal_pose (NavigateToPose
-    # action) publish — distinct from last_published_t_s above, which
-    # covers /goal_update too. In-mission corrections go to
-    # /goal_update so the BT's GoalUpdater can absorb them without
-    # canceling FollowPath; we still kick a /goal_pose every
-    # GOAL_POSE_HEARTBEAT_S as a safety belt against bt_navigator
-    # losing its action handle.
+    # Wall-time-ish timestamp tracking the heartbeat gate — historically
+    # this was the last /goal_pose publish, but as of PHASEA A.3 only the
+    # first publish of a leg goes to /goal_pose. Subsequent in-mission
+    # corrections (including heartbeat-due ticks) flow through
+    # /goal_update so the BT's GoalUpdater absorbs them without canceling
+    # FollowPath. The timer is still stamped on every heartbeat-due tick
+    # so we never roll back into a /goal_pose republish mid-leg.
     last_goal_pose_t_s: float = 0.0
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
@@ -1492,21 +1492,25 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
 
-        # Route: first publish of a leg AND periodic safety heartbeat
-        # go to /goal_pose (kicks NavigateToPose action / refreshes the
-        # action handle). All other in-mission corrections go to
-        # /goal_update so the BT's GoalUpdater absorbs them without
-        # canceling FollowPath — that's the fix for the stop/go.
+        # Route: ONLY the first publish of a leg goes to /goal_pose
+        # (kicks NavigateToPose action / sets the action handle). Every
+        # subsequent in-mission update — including the periodic safety
+        # heartbeat — flows through /goal_update so the BT's
+        # GoalUpdater absorbs it without canceling FollowPath. The
+        # heartbeat timer is still reset on heartbeat-due ticks so we
+        # never fall back to a /goal_pose cycle mid-leg (PHASEA A.3).
         first_pub = active.last_published_goal_map is None
         heartbeat_due = (
             now_pub_s - active.last_goal_pose_t_s
             > GOAL_POSE_HEARTBEAT_S
         )
-        if first_pub or heartbeat_due:
+        if first_pub:
             self._goal_pub.publish(msg)
             active.last_goal_pose_t_s = now_pub_s
         else:
             self._goal_update_pub.publish(msg)
+            if heartbeat_due:
+                active.last_goal_pose_t_s = now_pub_s
 
         # Marker for RViz — sphere at the smoothed candidate. The
         # 2 s lifetime auto-expires the marker if the publisher stops

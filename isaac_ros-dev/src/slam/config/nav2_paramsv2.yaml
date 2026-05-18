@@ -86,7 +86,10 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.1
-      movement_time_allowance: 8.0
+      # PHASEA A.2: 8.0 → 15.0 — covers transient inflation traversals
+      # so the controller does not declare itself stuck mid-line-cross
+      # and bounce into FollowPathRecovery on a 7 s cycle.
+      movement_time_allowance: 15.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
