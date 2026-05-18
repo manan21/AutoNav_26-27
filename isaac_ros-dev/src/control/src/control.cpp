@@ -299,29 +299,33 @@ class ControlNode : public rclcpp::Node {
         return std::asin(sin_pitch) * 180.0 / M_PI;
     }
 
-    // PHASE D — bounded linear-map multiplier. Returns 1.0 when:
+    // PHASE D — bounded, direction-aware multiplier. Returns 1.0 when:
     //   - feature disabled via param
     //   - IMU silent (timeout)
-    //   - forward_command <= 0 (don't boost rotations or BackUp recovery)
+    //   - |forward_command| < eps (pure rotation, no translation)
     //   - a_fwd is not finite (NaN/inf guard)
     //   - |pitch| inside deadband (level ground)
     //
-    // Otherwise, linear pitch-to-delta mapping, clamped at ±max_deg.
-    // The clamps make runaway impossible by construction:
-    //   pitch (clamped to ±max_deg) / max_deg gives t in [-1, +1]
-    //   delta = max_uphill_pct * t  (if t ≥ 0)
-    //         = max_downhill_pct * t  (if t < 0, so delta is negative)
-    //   multiplier = 1 + delta
-    // With defaults (max_uphill_pct = 2.0, max_downhill_pct = 0.30),
-    // multiplier ∈ [0.70, 3.00] REGARDLESS of IMU input. Sized to
-    // overcome ~13 lbf of gravity component on a 15 % grade for a
-    // 90 lb robot — see node_params.yaml for the physics breakdown.
+    // Otherwise: compensation depends on whether motion is AGAINST
+    // gravity or WITH it. Sign of (forward_command × pitch_deg) tells us:
+    //   pitch>0 (nose-up) and fwd>0: forward uphill   → AGAINST → boost
+    //   pitch>0 (nose-up) and fwd<0: reverse uphill   → WITH    → damp
+    //   pitch<0 (nose-down) and fwd>0: forward downhill → WITH    → damp
+    //   pitch<0 (nose-down) and fwd<0: reverse downhill → AGAINST → boost
+    //
+    // This prevents the failure mode where backing down a hill (BackUp
+    // recovery, for example) doesn't get gravity-damped and the robot
+    // accelerates downhill in reverse. Multiplier magnitude is set by
+    // |pitch| × the appropriate boost or damp pct, bounded:
+    //   multiplier ∈ [1 - max_downhill_pct, 1 + max_uphill_pct]
+    // With defaults (2.0, 0.30): multiplier ∈ [0.70, 3.00] for ANY
+    // IMU + motion combination.
     double grade_speed_multiplier(double forward_command) {
         if (!this->get_parameter("grade_comp_enabled").as_bool()) return 1.0;
         if (!have_imu_) return 1.0;
         const double timeout = this->get_parameter("grade_comp_imu_timeout_sec").as_double();
         if ((this->now() - last_imu_stamp_).seconds() > timeout) return 1.0;
-        if (forward_command <= 0.0) return 1.0;
+        if (std::abs(forward_command) < 1e-6) return 1.0;
         if (!std::isfinite(latest_a_fwd_)) return 1.0;
 
         const double pitch_deg = current_pitch_deg();
@@ -335,9 +339,21 @@ class ControlNode : public rclcpp::Node {
         const double max_dn_pct =
             this->get_parameter("grade_comp_max_downhill_pct").as_double();
 
-        const double t = std::clamp(pitch_deg / max_deg, -1.0, 1.0);
-        const double delta = (t >= 0.0) ? (max_up_pct * t) : (max_dn_pct * t);
-        return 1.0 + delta;
+        // |pitch| / max_deg, clamped to [0, 1]. Magnitude-only.
+        const double t = std::min(1.0, std::abs(pitch_deg) / max_deg);
+
+        // Sign of (pitch × forward) tells us motion direction relative
+        // to gravity. Positive product means BOTH pitch and motion have
+        // the same sign — which is "motion against gravity" (forward
+        // uphill or reverse downhill). Negative product means motion
+        // with gravity (forward downhill or reverse uphill).
+        const bool against_gravity = (pitch_deg * forward_command) > 0.0;
+
+        if (against_gravity) {
+            return 1.0 + max_up_pct * t;
+        } else {
+            return 1.0 - max_dn_pct * t;
+        }
     }
 
 
