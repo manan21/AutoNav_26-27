@@ -59,12 +59,12 @@ class ControlNode : public rclcpp::Node {
         // OFF, watch a_fwd in the log to confirm sign and magnitude,
         // then enable.
         this->declare_parameter("imu_topic", "/sick_scansegment_xd/imu_inflated");
-        // SICK is upside-down on this robot (per imu_cov_inflator
-        // OSCILLATION-SENSITIVE comments). Sign = -1.0 flips the body-X
-        // accel reading so positive = nose-up = forward-opposing gravity.
-        // If you switch to /zed/zed_node/imu/data (right-side-up), set
-        // this param to +1.0.
-        this->declare_parameter("imu_a_fwd_sign", -1.0);
+        // +1.0 is the correct convention for this stack. imu_cov_inflator
+        // rotates the raw SICK IMU into base_link before publishing on
+        // /sick_scansegment_xd/imu_inflated, so the body-X accel reading
+        // already comes out correctly oriented (nose-up = positive,
+        // nose-down = negative). Bench-tested 2026-05-18 on tilt block.
+        this->declare_parameter("imu_a_fwd_sign", 1.0);
         this->declare_parameter("grade_comp_enabled", false);
         // Bounded linear map from pitch (deg) to multiplier delta.
         // Mathematically incapable of runaway: input clamped to

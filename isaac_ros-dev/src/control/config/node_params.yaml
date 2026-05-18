@@ -20,7 +20,13 @@ control_node:
     # the gain can be calibrated on a tilt block before relying on it
     # in autonomous. Live-tunable via `ros2 param set /control_node ...`.
     imu_topic: "/sick_scansegment_xd/imu_inflated"
-    imu_a_fwd_sign: -1.0                       # SICK is upside-down; +1.0 for ZED-mount
+    # +1.0 is the correct convention for this stack — imu_cov_inflator
+    # rotates the SICK's raw IMU into base_link before publishing, so
+    # accel.x reads positive when the body's nose is up (gravity
+    # projects forward in body frame), which is what Phase D wants for
+    # uphill boost. Bench-tested on a tilt block 2026-05-18: nose-down
+    # gives negative accel.x (damping), nose-up gives positive (boost).
+    imu_a_fwd_sign: 1.0
     grade_comp_enabled: true                   # Phase D active by default — tilt-block bench-tested 2026-05-18
     # Bounded linear pitch-to-multiplier map. Runaway impossible by
     # construction: any pitch beyond ±grade_comp_max_deg clamps to the
