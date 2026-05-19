@@ -166,6 +166,15 @@ class ControlNode : public rclcpp::Node {
 
     // Debounce for bumper speed changes (500ms between changes)
     std::chrono::steady_clock::time_point last_speed_change_time_{};
+    // Motor-write rate gate. The /joy callback fires at 100 Hz with
+    // joy_node autorepeat, and unthrottled motor writes were sharing
+    // the same RoboteQ serial line with the 30 Hz encoder reads —
+    // the high write rate corrupted encoder responses (we saw
+    // /encoders publishing concatenated/truncated garbage that the
+    // wheel_odom MAX_ENCODER_DELTA filter then rejected, leaving
+    // /odom stuck). Cap motor writes at 33 Hz so the encoder reader
+    // gets clean intervals on the bus.
+    std::chrono::steady_clock::time_point last_motor_send_time_{};
 
     // /joy watchdog: timestamp of last received /joy. Initialized to
     // epoch so the watchdog also fires before the first /joy arrives.
@@ -344,6 +353,21 @@ class ControlNode : public rclcpp::Node {
         //                    from sticks when bumpers are held, so wheels
         //                    track the just-updated speed gear in real time.
         // PHASE D grade compensation applies in both manual and auto.
+        //
+        // Hard 33 Hz cap on motor writes regardless of /joy rate. The
+        // 100 Hz autorepeat path was saturating the RoboteQ serial
+        // line and corrupting concurrent encoder reads; rate gate
+        // restores clean read windows. Stick → motor latency goes
+        // back to up to 30 ms (matching the pre-fix/lines behaviour)
+        // but the encoder pipeline is what actually works.
+        constexpr long kMotorSendIntervalMs = 30;
+        const auto now_steady = std::chrono::steady_clock::now();
+        const auto since_last_send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_steady - last_motor_send_time_).count();
+        if (since_last_send_ms < kMotorSendIntervalMs) {
+            return;
+        }
+        last_motor_send_time_ = now_steady;
         const double forward_cmd_manual = 0.5 * (
             command.left_motor_speed + command.right_motor_speed);
         const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
