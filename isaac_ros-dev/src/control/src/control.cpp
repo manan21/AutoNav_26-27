@@ -105,10 +105,29 @@ class ControlNode : public rclcpp::Node {
         // to 1.0 — prevents stale-gravity compensation if the IMU
         // pipeline silently dies mid-mission.
         this->declare_parameter("grade_comp_imu_timeout_sec", 0.5);
-        // EWMA alpha on a_fwd. 0.2 = ~5-sample decay at 50 Hz IMU,
-        // smooths out wheel-driven body acceleration spikes so we
-        // estimate the slow-changing gravity component cleanly.
-        this->declare_parameter("grade_comp_alpha", 0.2);
+        // EWMA alpha on a_fwd. With robot-accel subtraction the
+        // remaining signal is mostly gravity, so we can afford a
+        // longer time constant for defense in depth: 0.05 ≈ 1 s decay
+        // at 50 Hz IMU. Ramp-entry response slows by ~700 ms vs the
+        // old 0.2 — well inside the multi-second ramp transit.
+        this->declare_parameter("grade_comp_alpha", 0.05);
+
+        // PHASE D — subtract the robot's own forward acceleration from
+        // the IMU a_fwd reading before reconstructing pitch. The IMU
+        // CANNOT distinguish gravity-projection from chassis
+        // acceleration; without subtraction, the multiplier boosts
+        // throttle, the boost accelerates the robot, the IMU sees more
+        // "tilt", and the loop runs away (oscillation observed
+        // 2026-05-18 on the bench). Robot a_fwd is computed from
+        // encoder counts at the 30 ms control tick — same wheel
+        // constants as wheel_odom_pub.
+        this->declare_parameter("grade_comp_robot_accel_subtract", true);
+        // EWMA alpha on the encoder-derived robot acceleration. 0.2 is
+        // moderate smoothing: the derivative of velocity is noisy, but
+        // we want enough rate to track the acceleration spike that's
+        // causing the oscillation. Increase (toward 1.0) for more
+        // responsive subtraction; decrease for smoother but laggier.
+        this->declare_parameter("grade_comp_robot_accel_alpha", 0.2);
 
         configure_server = this->create_service<autonav_interfaces::srv::ConfigureControl>
              ("configure_control", std::bind(&ControlNode::configure, this, std::placeholders::_1, std::placeholders::_2));
@@ -169,6 +188,17 @@ class ControlNode : public rclcpp::Node {
     bool have_imu_ = false;
     rclcpp::Time last_imu_stamp_{0, 0, RCL_ROS_TIME};
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSub;
+
+    // PHASE D — robot self-acceleration estimate, derived from encoder
+    // counts at the 30 ms control tick. Subtracted from IMU a_fwd in
+    // imu_callback so the EWMA tracks gravity projection only. Wheel
+    // constants mirror wheel_odom_pub.cpp:25-37 — keep in sync.
+    int prev_left_enc_count_ = 0;
+    int prev_right_enc_count_ = 0;
+    rclcpp::Time prev_enc_time_{0, 0, RCL_ROS_TIME};
+    double latest_v_fwd_robot_ = 0.0;       // raw most-recent v_fwd (m/s).
+    double latest_a_robot_fwd_ = 0.0;       // EWMA-filtered da/dt (m/s²).
+    bool have_robot_kinematics_ = false;
 
     void joystick_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg) {
         last_joy_msg_time_ = this->now();
@@ -350,17 +380,109 @@ class ControlNode : public rclcpp::Node {
 
     }
 
+    // PHASE D — encoder-derived robot self-acceleration. Runs every
+    // 30 ms from publish_encoder_data() after the two RoboteQ encoder
+    // reads complete. Computes instantaneous forward velocity from the
+    // wheel deltas using the same constants as wheel_odom_pub
+    // (wheel_radius, ticks_per_rev, left_encoder_scale — keep in sync
+    // or our subtraction won't match the IMU's actual sensed accel).
+    // Then differentiates v_fwd into a_fwd and EWMA-smooths.
+    //
+    // The sign convention matches wheel_odom_pub: left raw counts are
+    // negated before being used (the left motor is mounted reversed
+    // such that forward motion gives negative raw counts).
+    void update_robot_kinematics(int left_count, int right_count) {
+        // OSCILLATION-SENSITIVE — these constants must match
+        // wheel_odom_pub.cpp:25-37 or the subtracted robot-accel
+        // estimate will be biased and Phase D will still oscillate
+        // (just at a different gain). DO NOT change without also
+        // updating wheel_odom_pub.
+        constexpr double kWheelRadiusM = 0.12946;
+        constexpr double kTicksPerRev = 81923.0;
+        constexpr double kLeftEncoderScale = 1.0 / 1.016335;
+        constexpr int kMaxEncoderDelta = 20000;
+
+        const rclcpp::Time now = this->now();
+        if (!have_robot_kinematics_) {
+            prev_left_enc_count_ = left_count;
+            prev_right_enc_count_ = right_count;
+            prev_enc_time_ = now;
+            have_robot_kinematics_ = true;
+            return;
+        }
+
+        const double dt = (now - prev_enc_time_).seconds();
+        if (dt <= 1e-3 || dt > 0.5) {
+            // Timer hiccup or first-tick after long pause — reset
+            // baseline rather than emit a wild derivative.
+            prev_left_enc_count_ = left_count;
+            prev_right_enc_count_ = right_count;
+            prev_enc_time_ = now;
+            return;
+        }
+
+        // wheel_odom_pub negates left counts before differencing; we
+        // mirror that so the "forward = both wheels positive
+        // displacement" convention holds.
+        const int left_delta_for_motion = -(left_count - prev_left_enc_count_);
+        const int right_delta_for_motion = right_count - prev_right_enc_count_;
+
+        if (std::abs(left_delta_for_motion) > kMaxEncoderDelta ||
+            std::abs(right_delta_for_motion) > kMaxEncoderDelta) {
+            // Single-tick glitch — same guard as wheel_odom_pub
+            // (cpp:68-73). Reset baseline; emit nothing.
+            prev_left_enc_count_ = left_count;
+            prev_right_enc_count_ = right_count;
+            prev_enc_time_ = now;
+            return;
+        }
+
+        const double left_disp_m =
+            (2.0 * M_PI * kWheelRadiusM) *
+            (left_delta_for_motion / kTicksPerRev) *
+            kLeftEncoderScale;
+        const double right_disp_m =
+            (2.0 * M_PI * kWheelRadiusM) *
+            (right_delta_for_motion / kTicksPerRev);
+        const double v_inst = 0.5 * (left_disp_m + right_disp_m) / dt;
+
+        const double a_inst = (v_inst - latest_v_fwd_robot_) / dt;
+        const double alpha =
+            this->get_parameter("grade_comp_robot_accel_alpha").as_double();
+        if (std::isfinite(a_inst)) {
+            latest_a_robot_fwd_ = alpha * a_inst + (1.0 - alpha) * latest_a_robot_fwd_;
+        }
+        latest_v_fwd_robot_ = v_inst;
+
+        prev_left_enc_count_ = left_count;
+        prev_right_enc_count_ = right_count;
+        prev_enc_time_ = now;
+    }
+
     // PHASE D — gravity-vector callback. Body-frame X accel reading
     // contains both linear acceleration and the projection of gravity
     // along base_link's forward axis. At quasi-static velocities (or
     // when filtered) the gravity projection dominates: a_fwd = g*sin(pitch)
-    // for a nose-up slope. EWMA-filtered here so wheel-driven acceleration
-    // spikes don't contaminate the grade estimate.
+    // for a nose-up slope. With robot-accel subtraction enabled, the
+    // chassis a_fwd component is removed before EWMA so the filter
+    // tracks gravity only — breaks the boost→accel→more-boost positive
+    // feedback loop that produced oscillation 2026-05-18.
     void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
         last_imu_stamp_ = this->now();
         const double sign = this->get_parameter("imu_a_fwd_sign").as_double();
         const double alpha = this->get_parameter("grade_comp_alpha").as_double();
-        const double raw_ax = sign * msg->linear_acceleration.x;
+        double raw_ax = sign * msg->linear_acceleration.x;
+
+        // Subtract the encoder-derived robot self-acceleration. Both
+        // signals are in m/s² with forward-positive convention (the
+        // IMU after imu_a_fwd_sign normalization, the encoders by
+        // construction in update_robot_kinematics).
+        if (have_robot_kinematics_ &&
+            this->get_parameter("grade_comp_robot_accel_subtract").as_bool() &&
+            std::isfinite(latest_a_robot_fwd_)) {
+            raw_ax -= latest_a_robot_fwd_;
+        }
+
         if (!have_imu_) {
             latest_a_fwd_ = raw_ax;
             have_imu_ = true;
@@ -443,9 +565,18 @@ class ControlNode : public rclcpp::Node {
         autonav_interfaces::msg::Encoders encoder_msg;
         encoder_msg.left_motor_rpm = 0;
         encoder_msg.right_motor_rpm = 0;
-        encoder_msg.left_motor_count = motors.getLeftEncoderCount();
-        encoder_msg.right_motor_count = motors.getRightEncoderCount();
+        const int left_count_raw = motors.getLeftEncoderCount();
+        const int right_count_raw = motors.getRightEncoderCount();
+        encoder_msg.left_motor_count = left_count_raw;
+        encoder_msg.right_motor_count = right_count_raw;
         //RCLCPP_INFO(this->get_logger(), "LEC: %s", motors.getLeftEncoderCount());
+
+        // PHASE D — update robot self-acceleration estimate so the
+        // imu_callback can subtract it before EWMA. Runs every 30 ms
+        // here, IMU fires at 50 Hz; latest_a_robot_fwd_ is always
+        // within 30 ms of fresh, which is well under the IMU EWMA
+        // time constant.
+        update_robot_kinematics(left_count_raw, right_count_raw);
 
 
         std::string arduinoEncoderCounts = "L:";
