@@ -4191,22 +4191,6 @@ class HudWindow(QMainWindow):
                     "Load branch changes and build: OK",
                     color='#0f0')
                 log("[OK] colcon build finished cleanly")
-                # Kick off Pre-SLAM right after a clean build so the
-                # operator doesn't have to flip back to the main page
-                # and press it manually. UI-thread call (via singleShot)
-                # because _toggle_device touches widgets.
-                def _autostart_pre_slam():
-                    label = "Pre-SLAM"
-                    state = self._launch_states.get(label, False)
-                    if not state:
-                        self._gui_log_msg(
-                            "Auto-launching Pre-SLAM after rebuild.")
-                        self._toggle_device(label)
-                    else:
-                        self._gui_log_msg(
-                            "Pre-SLAM already running — skipping "
-                            "auto-launch after rebuild.")
-                QTimer.singleShot(0, _autostart_pre_slam)
             else:
                 self._dev_ui_status(
                     f"Build failed (rc={rc})", color='#f44')
