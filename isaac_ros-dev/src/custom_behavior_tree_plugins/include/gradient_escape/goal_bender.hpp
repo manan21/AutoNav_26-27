@@ -4,6 +4,7 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 
 namespace gradient_escape
@@ -35,6 +36,14 @@ public:
   }
 
   BT::NodeStatus tick() override;
+
+private:
+  // Publishes the chosen goal (bent or pass-through) every tick so
+  // map_padder can pad the corridor toward the actual planner target,
+  // not just the unbent /goal_pose. Without this, a bent goal lands
+  // outside the global costmap and the planner returns "goal off
+  // global costmap" failures.
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr nav_goal_pub_;
 };
 
 }  // namespace gradient_escape

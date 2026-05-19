@@ -2,6 +2,17 @@ ekf_node:
   ros__parameters:
     frequency: 30.0
     two_d_mode: true
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — ekf_local OWNS the odom → base_link
+    # transform. publish_tf MUST stay true here, and NO OTHER node in
+    # the stack may publish odom → base_link. The dual-publisher race
+    # produces the same map↔odom drift / stall oscillation described
+    # in slam.yaml: two estimators fight, the transform jitters, and
+    # gps_handler / DWB see a moving base_link. See the matching
+    # OSCILLATION-SENSITIVE guard around #ifdef PUBLISH_TRANSFORM in
+    # odom_handler/src/wheel_odom_pub.cpp — that guard is what keeps
+    # wheel_odom_pub from also publishing this TF.
+    # ────────────────────────────────────────────────────────────────
     publish_tf: true
     publish_acceleration: false
 
@@ -11,22 +22,31 @@ ekf_node:
     world_frame: odom
 
     # ── Wheel odometry ──────────────────────────────────────────────
-    # Position-only fusion. The original config also fused vx
-    # (twist.covariance[0]=0.001 → σ≈3 cm/s) and vyaw
-    # (twist.covariance[35]=0.02 → σ≈0.14 rad/s). Both are unrealistically
-    # tight — robot_localization treats them as near-perfect, so any
-    # wheel-slip or encoder-rate jitter is fused as ground truth and
-    # immediately rewrites odom→base_link. slam_toolbox then snaps
-    # map→odom to compensate, and Nav2 sees the robot "bouncing" along
-    # its heading. By dropping the twist bits we let the EKF derive
-    # velocities from sequential pose updates instead, which is
-    # naturally smoother and bounded by the pose covariance (which is
-    # itself realistic at 0.01 m² σ≈10 cm).
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — odom0_config is the canonical "ekf_local
+    # pose-only-ish" set that prevents the map↔odom drift / stall
+    # oscillation. DO NOT enable the wheel vx column (index 6) here.
+    # vx was previously enabled with a 3 cm/s σ that was
+    # unrealistically tight; the EKF over-fused linear velocity and
+    # produced a stop/go bounce against slam_toolbox snapping
+    # map→odom — the canonical "robot keeps stalling" symptom.
+    # vyaw IS enabled (index 11) so wheel-derived yaw rate
+    # cross-cancels gyro bias coming from the IMU path; dropping it
+    # left the IMU yaw rate (via imu_cov_inflator) as the *only*
+    # yaw-rate forcing function and any bias integrated unopposed
+    # (observed at ~82° drift in an outdoor run). Pose columns (x,
+    # y, yaw) are mandatory — they're what slam_toolbox uses to
+    # anchor map→odom.
+    #
+    # If the stop/go bounce returns, the right next step is to widen
+    # /odom's twist covariance at the source (controller_autonav)
+    # rather than drop the fusion again.
+    # ────────────────────────────────────────────────────────────────
     odom0: odom
     odom0_config: [true,  true,  false,
                    false, false, true,
                    false, false, false,
-                   false, false, false,
+                   false, false, true,
                    false, false, false]
     odom0_differential: false
     odom0_relative: false
@@ -38,11 +58,18 @@ ekf_node:
     odom0_pose_rejection_threshold: 5.0
 
     # ── SICK IMU (via imu_cov_inflator) ─────────────────────────────
-    # Bare /sick_scansegment_xd/imu reports zero covariance which
-    # robot_localization treats as "perfect" and over-fuses. The
-    # inflator republishes with σ² = 0.01 rad²/s² on yaw rate; this
-    # node subscribes to the inflated topic. Fusing IMU yaw rate
-    # constrains yaw drift far better than wheel encoders alone.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — DO NOT subscribe to the BARE
+    # /sick_scansegment_xd/imu topic. That topic reports ZERO
+    # covariance, which robot_localization treats as "perfect" and
+    # over-fuses: the EKF then snaps yaw to match any spike in the
+    # raw gyro and fights slam_toolbox's map→odom corrections, which
+    # is one path into the map↔odom drift / stall oscillation. The
+    # imu_cov_inflator node republishes the IMU at /…/imu_inflated
+    # with σ² = 0.01 rad²/s² on yaw rate. Keep this subscription
+    # pointed at the INFLATED topic, and keep imu_cov_inflator
+    # running.
+    # ────────────────────────────────────────────────────────────────
     imu0: /sick_scansegment_xd/imu_inflated
     imu0_config: [false, false, false,
                   false, false, false,

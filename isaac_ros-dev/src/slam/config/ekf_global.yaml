@@ -8,13 +8,18 @@ ekf_global:
     base_link_frame: base_link
     world_frame: map
 
-    # slam_toolbox owns the map -> odom transform (same as main, where
-    # GPS waypoint nav works). This EKF runs as a STATE ESTIMATOR ONLY,
-    # emitting /global_ekf/odom for downstream consumers and for
-    # diagnosing why GPS fusion drifts on this branch. publish_tf must
-    # stay false so the two sources never compete -- and to isolate
-    # whether bad /global_ekf/odom output was actually the cause of the
-    # longitudinal oscillations we previously attributed to SLAM snaps.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — publish_tf MUST stay false. slam_toolbox
+    # owns the map → odom transform. Flipping this to true puts two
+    # publishers on the same TF link, the map frame race-conditions
+    # between the two estimators, and the resulting jitter feeds
+    # straight into gps_handler's candidate computation → goal pose
+    # → controller as longitudinal oscillation. This EKF runs as a
+    # state estimator ONLY, emitting /global_ekf/odom for downstream
+    # diagnostics. Do not enable TF publish here until the planned
+    # navsat-XY-only fusion path is implemented (where ekf_global
+    # owns map → odom and slam_toolbox is demoted).
+    # ────────────────────────────────────────────────────────────────
     publish_tf: false
 
     # Explicit process_noise_covariance. Without this set,

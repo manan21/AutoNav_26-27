@@ -7,7 +7,15 @@ namespace
 
 constexpr int kMinLineComponentPixels = 20;
 constexpr float kMinLineMajorAxisPx = 12.0F;
-constexpr float kMinLineAspectRatio = 4.0F;
+// Image-space CC aspect gate. Was 4.0 which rejected T- and L-junctions:
+// when both arms of a T are bright and connected, the bounding rect of
+// all the pixels is roughly square (aspect ~2), failing the gate and
+// dropping the entire line into 0-1 trivial "kept components" with very
+// few of the original 16k+ bright pixels surviving. 2.0 admits T/L
+// junctions while still rejecting blob speckles (which are aspect ~1).
+// Round bright objects (cones, dots) are intentionally NOT this
+// detector's job — those are handled by the lidar/grade obstacle path.
+constexpr float kMinLineAspectRatio = 2.0F;
 
 // Persistent CUDA device buffers reused across every detect_line_pixels
 // call. Previously each frame allocated and freed all seven buffers
@@ -94,7 +102,16 @@ std::pair<int2 *, int *> filter_line_components(
         return std::make_pair(filtered_points, filtered_count);
     }
 
-    cv::Mat component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    // Persist the component_mask between frames; only allocate on size
+    // change. cv::Mat::zeros allocates fresh memory every frame; setTo(0)
+    // reuses the buffer. At 540x960 this is ~500 KB saved + a memset.
+    static cv::Mat component_mask;
+    if (component_mask.rows != height || component_mask.cols != width ||
+        component_mask.type() != CV_8UC1) {
+        component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    } else {
+        component_mask.setTo(0);
+    }
     for (int i = 0; i < count; ++i) {
         const int x = points[i].x;
         const int y = points[i].y;
@@ -109,6 +126,14 @@ std::pair<int2 *, int *> filter_line_components(
     const int num_labels =
         cv::connectedComponentsWithStats(component_mask, labels, stats, centroids, 8, CV_32S);
 
+    // Area-only CC filter. Previously this looped (num_labels × W × H) to
+    // collect each component's pixels for a cv::minAreaRect aspect/major
+    // check — ~50 ms per frame on 540 × 960 with many small ground-
+    // speckle components. The aspect filter also rejected curved /
+    // T/L-shaped lines (the user explicitly noted this), so it served
+    // neither speed nor accuracy. Now: O(num_labels) iterations only,
+    // keep every component above kMinLineComponentPixels. Shape
+    // classification is the CUDA kernel's job upstream.
     std::vector<uint8_t> keep_component(num_labels, 0);
     int kept_components = 0;
     for (int label = 1; label < num_labels; ++label) {
@@ -116,33 +141,8 @@ std::pair<int2 *, int *> filter_line_components(
         if (area < kMinLineComponentPixels) {
             continue;
         }
-
-        std::vector<cv::Point2f> component_points;
-        component_points.reserve(area);
-        for (int row = 0; row < height; ++row) {
-            const int * label_row = labels.ptr<int>(row);
-            for (int col = 0; col < width; ++col) {
-                if (label_row[col] == label) {
-                    component_points.emplace_back(
-                        static_cast<float>(col),
-                        static_cast<float>(row));
-                }
-            }
-        }
-
-        if (component_points.size() < static_cast<size_t>(kMinLineComponentPixels)) {
-            continue;
-        }
-
-        const cv::RotatedRect rect = cv::minAreaRect(component_points);
-        const float major_axis = std::max(rect.size.width, rect.size.height);
-        const float minor_axis = std::max(1.0F, std::min(rect.size.width, rect.size.height));
-        const float aspect_ratio = major_axis / minor_axis;
-
-        if (major_axis >= kMinLineMajorAxisPx && aspect_ratio >= kMinLineAspectRatio) {
-            keep_component[label] = 1;
-            ++kept_components;
-        }
+        keep_component[label] = 1;
+        ++kept_components;
     }
 
     std::vector<int2> kept_points;

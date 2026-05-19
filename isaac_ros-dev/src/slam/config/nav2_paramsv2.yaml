@@ -12,6 +12,12 @@ bt_navigator:
     wait_for_service_timeout: 1000
     default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
     default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
+
+    # PHASEB — PathSignificantlyChanged decorator tuning. Tweak live with:
+    #   ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15
+    path_significantly_changed.rms_threshold_m: 0.10   # First-N-pose RMS (m) above which child re-fires.
+    path_significantly_changed.compare_n_poses: 10     # Number of leading poses to RMS-compare.
+
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -61,6 +67,7 @@ bt_navigator:
       - nav2_drive_on_heading_cancel_bt_node
       - nav2_is_battery_charging_condition_bt_node
       - autonav_goal_bender_bt_node
+      - autonav_path_significantly_changed_bt_node   # PHASEB
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -86,7 +93,10 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.1
-      movement_time_allowance: 8.0
+      # PHASEA A.2: 8.0 → 15.0 — covers transient inflation traversals
+      # so the controller does not declare itself stuck mid-line-cross
+      # and bounce into FollowPathRecovery on a 7 s cycle.
+      movement_time_allowance: 15.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -111,11 +121,28 @@ controller_server:
       debug_trajectory_details: False
       min_vel_x: 0.0
       min_vel_y: 0.0
-      max_vel_x: 0.55
+      # Raised from 0.55 -> 1.5 m/s by operator request: the platform
+      # can sustain it and we want faster transit to far GPS waypoints.
+      # Operator confirms they'll stay near the robot during testing.
+      max_vel_x: 1.5
       max_vel_y: 0.0
+      # Restored to 0.65 after a 0.40 cap left the robot unable to
+      # finish rotating to face new goal poses — the controller would
+      # rotate in place indefinitely without ever transitioning to
+      # forward motion, which also starved gps_handler's bootstrap of
+      # the translational displacement it needs. Smoothing the
+      # per-resync turn step has to come from reducing the frequency
+      # of goal updates (gps_handler republish thresholds) rather
+      # than capping the controller's rotation rate.
       max_vel_theta: 0.65
       min_speed_xy: 0.0
-      max_speed_xy: 0.55
+      max_speed_xy: 1.5
+      # ──────────────────────────────────────────────────────────────
+      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.15 prevents
+      # DWB from sampling near-zero angular trajectories that, paired
+      # with a jittering goal, produce yaw chatter in place. Lowering
+      # it has reintroduced in-place wobble.
+      # ──────────────────────────────────────────────────────────────
       min_speed_theta: 0.15
       acc_lim_x: 2.5
       acc_lim_y: 0.0
@@ -233,7 +260,12 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
+        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
+        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
+        # without consuming the full 1.10 m inflation_radius, so tight
+        # IGVC gates still plan. Both local_costmap and global_costmap
+        # share the same value by intent (see global_costmap comment).
+        cost_scaling_factor: 3.0
         inflation_radius: 1.10
 
       always_send_full_costmap: True
@@ -309,7 +341,12 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 5.0
+        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
+        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
+        # without consuming the full 1.10 m inflation_radius, so tight
+        # IGVC gates still plan. Both local_costmap and global_costmap
+        # share the same value by intent (see global_costmap comment).
+        cost_scaling_factor: 3.0
         inflation_radius: 1.10
       always_send_full_costmap: True
 
@@ -403,8 +440,33 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [-0.26, 0.0, -1.0]
+    # ────────────────────────────────────────────────────────────────
+    # 0.26 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
+    # despite DWB allowing max_vel_x=1.5 upstream. Two distinct
+    # constraints meet at this value — touching either side has cost:
+    #
+    # CONTROLLER-CHATTER-SENSITIVE upper bound: raising max_velocity[0]
+    #   has reproducibly reintroduced longitudinal start-stop chatter
+    #   because the controller overshoots whenever the goal updates,
+    #   and this clamp is the only thing keeping the overshoot inside
+    #   a few cm. Raise only after diagnosing the chatter chain end-
+    #   to-end (goal updates → DWB sampling → smoother cap). max_accel
+    #   / max_decel below are paired with this clamp.
+    #
+    # OSCILLATION-SENSITIVE lower bound: lowering below ~0.20 m/s
+    #   starves gps_handler_node's bootstrap of the translation it
+    #   needs to observe EKF heading from GPS displacement. Without
+    #   translation the wheel-encoder yaw bias goes unobserved, ekf
+    #   yaw drifts, slam_toolbox has to scan-match-correct map→odom
+    #   against a moving target → map-catching-up snap → stall.
+    # ────────────────────────────────────────────────────────────────
+    # PHASE C.1 outdoor-validated at 0.50 m/s. Dropped back to 0.25 m/s
+    # for in-house lab tests after outdoor validation — lab tests run
+    # near people / equipment, the lower cap is purely a safety bound.
+    # Bump back to 0.50 (or onward to 0.80 per PHASEC.md C.2) before
+    # the next outdoor mission.
+    max_velocity: [0.25, 0.0, 1.0]
+    min_velocity: [-0.25, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     # /local_ekf/odom is the EKF-fused output. Only matters if feedback

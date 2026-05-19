@@ -33,6 +33,18 @@ def generate_launch_description():
             package='joy',
             executable='joy_node',
             name='joy',
+            parameters=[{
+                # Republish /joy at 100 Hz when the stick is held still
+                # instead of the joy package default 20 Hz. Combined with
+                # control_node consuming /joy directly (not via the 30 ms
+                # encoder timer), this drops manual stick → motor latency
+                # from 30-50 ms to <10 ms. Autopath unaffected — cmd_vel
+                # is on its own subscription.
+                'autorepeat_rate': 100.0,
+                # Tighter deadzone for more responsive stick feel; the
+                # Xbox controller's mechanical center is well inside 0.02.
+                'deadzone': 0.02,
+            }],
         )
 
     control = Node(

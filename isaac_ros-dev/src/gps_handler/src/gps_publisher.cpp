@@ -128,6 +128,24 @@ private:
       throw std::runtime_error("Empty NMEA coordinate field");
     }
 
+    // Strict hemisphere validation. NMEA spec defines exactly one
+    // character for direction: 'N'/'S' for latitude, 'E'/'W' for
+    // longitude. Anything else (whitespace, control chars, byte
+    // corruption from a bit-flipped serial frame) means we cannot
+    // trust the sign — reject the frame rather than silently treat
+    // it as a positive value. Two single-frame longitude sign-flips
+    // were observed during outdoor testing, traced to this lax
+    // check letting through frames where lon_dir was no longer "W".
+    if (is_latitude) {
+      if (direction != "N" && direction != "S") {
+        throw std::runtime_error("Invalid latitude hemisphere byte");
+      }
+    } else {
+      if (direction != "E" && direction != "W") {
+        throw std::runtime_error("Invalid longitude hemisphere byte");
+      }
+    }
+
     // Latitude format: ddmm.mmmmm
     // Longitude format: dddmm.mmmmm
     int degree_digits = is_latitude ? 2 : 3;
@@ -145,6 +163,24 @@ private:
     }
 
     return decimal;
+  }
+
+  // Hemisphere lock-in. The first published fix records which
+  // hemisphere bytes the receiver reported; subsequent frames
+  // whose bytes disagree are rejected even if individually
+  // valid. Catches the bit-flipped W→E case where the receiver
+  // is technically reporting a valid (but wrong) hemisphere.
+  // Run-time override: an operator who genuinely crosses a
+  // hemisphere can clear locked_ns_/locked_ew_ by SIGHUP / reset.
+  bool hemisphere_matches_locked(const std::string &ns, const std::string &ew) {
+    if (!locked_ns_.empty() && ns != locked_ns_) return false;
+    if (!locked_ew_.empty() && ew != locked_ew_) return false;
+    return true;
+  }
+
+  void lock_hemispheres_from(const std::string &ns, const std::string &ew) {
+    if (locked_ns_.empty()) locked_ns_ = ns;
+    if (locked_ew_.empty()) locked_ew_ = ew;
   }
 
   bool parse_gga_and_publish(const std::string &line, bool checksum_pass = true) {
@@ -183,6 +219,16 @@ private:
 
     if (lat_str.empty() || lat_dir.empty() || lon_str.empty() || lon_dir.empty() || altitude_str.empty()) {
       RCLCPP_WARN(this->get_logger(), "GGA sentence missing coordinate fields");
+      return false;
+    }
+
+    if (!hemisphere_matches_locked(lat_dir, lon_dir)) {
+      stats_hemisphere_rejected_++;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "GGA hemisphere mismatch (got %s/%s, locked %s/%s) — rejecting frame",
+        lat_dir.c_str(), lon_dir.c_str(),
+        locked_ns_.c_str(), locked_ew_.c_str());
       return false;
     }
 
@@ -262,6 +308,7 @@ private:
       }
 
       publisher_->publish(gps_msg);
+      lock_hemispheres_from(lat_dir, lon_dir);
 
       RCLCPP_DEBUG(
         this->get_logger(),
@@ -310,6 +357,16 @@ private:
       return false;
     }
 
+    if (!hemisphere_matches_locked(lat_dir, lon_dir)) {
+      stats_hemisphere_rejected_++;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "RMC hemisphere mismatch (got %s/%s, locked %s/%s) — rejecting frame",
+        lat_dir.c_str(), lon_dir.c_str(),
+        locked_ns_.c_str(), locked_ew_.c_str());
+      return false;
+    }
+
     try {
       double latitude = nmea_to_decimal_degrees(lat_str, lat_dir, true);
       double longitude = nmea_to_decimal_degrees(lon_str, lon_dir, false);
@@ -332,6 +389,7 @@ private:
       // wired into RMC covariance yet (RMC has no HDOP to scale).
       (void)checksum_pass;
       publisher_->publish(gps_msg);
+      lock_hemispheres_from(lat_dir, lon_dir);
 
       RCLCPP_DEBUG(this->get_logger(),
                    "Published GPS fix (RMC): lat=%.8f lon=%.8f", latitude, longitude);
@@ -437,10 +495,14 @@ private:
     RCLCPP_INFO(
       this->get_logger(),
       "gps stats (last 30s): reads=%zu fragments=%zu cs_ok=%zu "
-      "gga_pub=%zu rmc_pub=%zu loose_pub=%zu rejected=%zu",
+      "gga_pub=%zu rmc_pub=%zu loose_pub=%zu rejected=%zu hemi_rej=%zu "
+      "locked=%s/%s",
       stats_reads_, stats_fragments_, stats_checksum_ok_,
       stats_gga_published_, stats_rmc_published_, stats_loose_published_,
-      stats_rejected_);
+      stats_rejected_, stats_hemisphere_rejected_,
+      locked_ns_.empty() ? "?" : locked_ns_.c_str(),
+      locked_ew_.empty() ? "?" : locked_ew_.c_str());
+    stats_hemisphere_rejected_ = 0;
     stats_reads_ = 0;
     stats_fragments_ = 0;
     stats_checksum_ok_ = 0;
@@ -466,6 +528,16 @@ private:
   size_t stats_rmc_published_ = 0;
   size_t stats_loose_published_ = 0;
   size_t stats_rejected_ = 0;
+  size_t stats_hemisphere_rejected_ = 0;
+
+  // Hemisphere lock-in. Empty until the first successful publish,
+  // then frozen to whatever the receiver reported (e.g. "N" / "W"
+  // for the AutoNav site at Virginia Tech). Subsequent frames must
+  // match — closes the bit-flipped-byte path where a corrupted
+  // longitude direction (W → E) would silently produce a sign-flipped
+  // longitude that propagates into gps_handler heading estimation.
+  std::string locked_ns_;
+  std::string locked_ew_;
 };
 
 int main(int argc, char * argv[]) {

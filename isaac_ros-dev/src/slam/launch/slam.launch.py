@@ -64,15 +64,22 @@ def generate_launch_description():
         ]),
         description='Path to Nav2 parameters file')
 
-    # ── GPS fusion toggle ────────────────────────────────────────────
-    # When true (default), the Map EKF (ekf_global) and
-    # navsat_transform_node come up alongside slam_toolbox, fusing
-    # /gps_fix into /global_ekf/odom as an XY-only anchor. Set false
-    # at launch time if a GPS receiver is misbehaving and you want to
-    # fall back to a SLAM-only Map EKF without rebuilding.
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — enable_gps_fusion default is 'false'
+    # because ekf_global was observed publishing a frozen pose at
+    # 13 Hz during an outdoor mission, feeding the handler a phantom
+    # robot location and placing every GPS goal in the wrong map XY.
+    # The downstream symptom was longitudinal start-stop oscillation
+    # as the controller chased a shifting goal. DO NOT flip this to
+    # 'true' by default until ekf_global's frozen-pose failure has
+    # been root-caused (suspected: GPS-driven yaw correction loop
+    # with insufficient process noise). gps_handler_node does its own
+    # WGS84→local projection and reads /local_ekf/odom directly, so
+    # the GPS goals still work without ekf_global in the loop.
+    # ────────────────────────────────────────────────────────────────
     enable_gps_fusion = DeclareLaunchArgument(
         'enable_gps_fusion',
-        default_value='true',
+        default_value='false',
         description='Run ekf_global + navsat_transform_node so GPS '
                     'contributes XY-only corrections to /global_ekf/odom.')
 
@@ -82,13 +89,12 @@ def generate_launch_description():
     ekf_local_config  = os.path.join(pkg_share, 'config', 'ekf_local.yaml')
     ekf_global_config = os.path.join(pkg_share, 'config', 'ekf_global.yaml')
 
-    # Inflates /sick_scansegment_xd/imu's all-zero covariance so ekf_local can fuse yaw rate without over-trusting it.
-    imu_cov_inflator = Node(
-        package='imu_cov_inflator',
-        executable='imu_inflator_node',
-        name='imu_cov_inflator',
-        output='screen',
-    )
+    # imu_cov_inflator moved to pre_slam.launch.py. It's a sensor
+    # pre-processor (raw /sick_scansegment_xd/imu -> /imu_inflated with
+    # covariance set so consumers can weight it) — conceptually it lives
+    # alongside the lidar driver, not in the nav2 stack. Both consumers
+    # (ekf_local below; control_node's Phase D grade compensation) read
+    # /imu_inflated and stay unaware of where it's launched.
 
     # ── 0. Local EKF (odom -> base_link) ─────────────────────────────────
     # robot_localization can rotate IMU measurements into base_link using TF,
@@ -108,7 +114,16 @@ def generate_launch_description():
     )
 
     # ── 2. SLAM Toolbox ───────────────────────────────────────────────────
-    slam_toolbox = Node(
+    # Held behind a 5 s TimerAction. slam_toolbox does lazy initialization
+    # — it only starts publishing map->odom after the first scan it
+    # receives can be transformed into the odom frame. If the first
+    # /scan arrives before ekf_local has published any odom->base_link,
+    # slam silently buffers the scan and NEVER retries the lazy-init.
+    # The process stays alive but the map frame never appears, forcing
+    # an operator-side restart. 5 s gives ekf_local generous margin
+    # to seed its Kalman state from the first encoder + IMU samples
+    # and publish odom->base_link before slam touches its first scan.
+    slam_toolbox_node = Node(
         package='slam_toolbox',
         executable='async_slam_toolbox_node',
         name='slam_toolbox',
@@ -121,6 +136,7 @@ def generate_launch_description():
             }
         ]
     )
+    slam_toolbox = TimerAction(period=5.0, actions=[slam_toolbox_node])
 
     # ── 2.25 Map EKF (state estimator ONLY, no TF publish) ──────────────
     # slam_toolbox owns map->odom (transform_publish_period: 0.02 in
@@ -303,7 +319,7 @@ def generate_launch_description():
         nav2_params_arg,
         enable_gps_fusion,
         # nodes (in startup order)
-        imu_cov_inflator,
+        # imu_cov_inflator moved to pre_slam.launch.py
         ekf_local,
         slam_toolbox,
         ekf_global,

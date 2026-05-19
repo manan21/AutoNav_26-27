@@ -86,6 +86,12 @@ from .gps_ekf import (
 # ── Constants (plan_manifest §3 / survey §7). No magic numbers below ──
 
 # Cadence (§3.1)
+# Submit-best-candidate model: gps_handler's internal convergence
+# (gps_ekf + candidate smoother) runs on every GPS callback (~5-10 Hz
+# RTK rate), so by the time the 1 Hz publisher_tick reads the current
+# best candidate, the value is already the freshest converged estimate.
+# We submit at 1 Hz to keep nav2's BT load bounded; the per-sample
+# convergence is happening upstream regardless.
 NAV2_GOAL_HZ: float = 1.0
 FEEDBACK_HZ: float = 2.0
 
@@ -94,7 +100,7 @@ FEEDBACK_HZ: float = 2.0
 # terminates promptly once the robot is essentially on the candidate
 # goal — earlier behavior was to keep refining indefinitely once the
 # robot got within ~0.2 m, blocking the next mission leg.
-SUCCESS_RADIUS_M: float = 0.75
+SUCCESS_RADIUS_M: float = 0.5
 """Default arrival radius for GPS / local / map goals, m. Sits below
 the IGVC AutoNav competition threshold so a goal counted as ``SUCCESS``
 locally is also a real arrival from the judges' perspective, but is
@@ -123,32 +129,95 @@ within the trailing N entries (≈10 s @ 10 Hz GPS) keeps the time
 span — and therefore the drift per pair — bounded."""
 
 # Goal republish gating (§3.3)
-GOAL_REPUBLISH_THETA_DEG: float = 1.0
-"""Republish on θ shift > ~1° since the last publish, in addition to
-the 1 Hz timer."""
+# ────────────────────────────────────────────────────────────────────
+# NOTE: currently UNUSED. Defined as design intent but the value is
+# never referenced when deciding whether to republish a goal. The
+# republish gate today is GOAL_REPUBLISH_HEARTBEAT_S only. Either
+# wire this into _publish_goal (compare theta_shift to this constant
+# before triggering republish) or delete it. Kept here so the design
+# rationale isn't lost: at 1° the controller saturated max_vel_theta
+# on every θ-step (CONTROLLER-CHATTER pattern), so the planned gate
+# was 3°.
+# ────────────────────────────────────────────────────────────────────
+GOAL_REPUBLISH_THETA_DEG: float = 3.0
+"""Republish on θ shift > ~3° since the last publish, in addition to
+the 1 Hz timer. Raised from 1° based on May-2026 outdoor data: the
+controller saturated max_vel_theta on every 1° θ-step, producing a
+sharp turn per republish. With ~12° resync magnitudes the previous
+threshold made every resync trigger a republish; 3° lets small θ
+oscillations near the bias mean settle without commanding turns."""
 
-# Suppress goal-pose republishes when the candidate has barely moved.
-# NAV2's BT triggers a planning pass on every fresh /goal_pose, which
-# manifested in the field as the robot start-stop-start-stopping every
-# tick of the smoother. Hold the published goal until the candidate
-# has actually moved enough to matter, OR the heartbeat interval has
-# elapsed (so a stalled NAV2 does eventually pick up state).
-GOAL_REPUBLISH_MIN_DELTA_M: float = 0.30
-GOAL_REPUBLISH_HEARTBEAT_S: float = 5.0
+# ────────────────────────────────────────────────────────────────────
+# Post-PHASEA-A.3 / PHASEB: only the FIRST publish per leg goes to
+# /goal_pose (NavigateToPose action trigger). Every subsequent publish
+# flows through /goal_update, which the BT's GoalUpdater absorbs
+# without canceling FollowPath, and PHASEB's PathSignificantlyChanged
+# decorator suppresses planner cancel-restart on same-path replans.
+# The 5 s heartbeat that USED to be the chatter gate is therefore no
+# longer load-bearing. 0.2 s is set so the 1 Hz publisher_tick is
+# NOT gated by this throttle (it allows every tick to publish), which
+# means the submit cadence is purely NAV2_GOAL_HZ (1 Hz). Internal
+# convergence runs upstream on every GPS callback regardless.
+#
+# The historical CONTROLLER-CHATTER-SENSITIVE warning that 3 s was
+# the floor applied when in-mission publishes hit /goal_pose. After
+# A.3 routed them to /goal_update, the protective stack is now the
+# RateController's 1 Hz planner gate (PHASEA A.1) plus PHASEB's
+# decorator — both insulate the controller from goal-update frequency.
+#
+# NOTE: GOAL_REPUBLISH_MIN_DELTA_M is declared but NEVER READ in
+# this file (verified). The translational-delta gate the prose
+# describes is design intent that wasn't wired in. Either implement
+# it (compare distance to last_published_goal_map in _publish_goal)
+# or delete the constant. Documented here so the original tuning
+# rationale (1.5 m matches controller path-tolerance; 0.30 m was
+# the value that reproduced chatter) isn't lost.
+# ────────────────────────────────────────────────────────────────────
+GOAL_REPUBLISH_MIN_DELTA_M: float = 1.5
+GOAL_REPUBLISH_HEARTBEAT_S: float = 0.2
 
-# In-mission updates flow through /goal_update so the BT's
-# GoalUpdater decorator can absorb them without canceling FollowPath
-# (no stop/go). We still re-issue /goal_pose every this many seconds
-# as a heartbeat — if bt_navigator ever loses its action handle
-# (lifecycle blip, network drop) the next heartbeat re-creates it.
-GOAL_POSE_HEARTBEAT_S: float = 10.0
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — DO NOT lower without re-architecting
+# the in-mission update path. /goal_pose republishes go through the
+# NavigateToPose action and force bt_navigator to re-engage, which
+# looks identical to a fresh goal and triggers a full replan. 10 s
+# (the earlier value) produced periodic replanning the controller
+# couldn't fully absorb; 60 s lets /goal_update absorb normal
+# in-mission motion through the GoalUpdater decorator and saves
+# the heavyweight /goal_pose for true lifecycle loss.
+# ────────────────────────────────────────────────────────────────────
+GOAL_POSE_HEARTBEAT_S: float = 60.0
 
-# Continuous heading resync (§3.4)
-HEADING_RESYNC_THRESHOLD_DEG: float = 10.0
-HEADING_RESYNC_COOLDOWN_S: float = 3.0
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — heading resync cadence. Each resync
+# event corrects accumulated EKF yaw bias (which is map↔odom-adjacent
+# in that the bias originates upstream of slam_toolbox's correction
+# loop), but the symptom on the robot is a sharp controller turn per
+# resync. Firing too often (10°/3 s) reproduced the start-stop
+# pattern as a sequence of replans + turns the controller couldn't
+# fade between. 15°/5 s lets θ oscillate around the bias mean
+# without triggering, while still catching real drift (exceeds 15°
+# within 30 s). DO NOT lower threshold or shorten cooldown without
+# first verifying the encoder calibration / imu_cov_inflator chain
+# is still constraining yaw bias upstream.
+# ────────────────────────────────────────────────────────────────────
+HEADING_RESYNC_THRESHOLD_DEG: float = 15.0
+HEADING_RESYNC_COOLDOWN_S: float = 5.0
 HEADING_RESYNC_WINDOW: int = 100
 HEADING_RESYNC_MIN_BASELINE_M: float = 2.0
 HEADING_RESYNC_VAR_DEG: float = 5.0
+
+# Health monitor thresholds. Surface DEGRADED / FAIL on
+# /gps_waypoint/health so the operator catches regressions
+# (frozen pose, runaway heading drift) before they wreck a
+# mission. Anchored to outdoor-mission empirical numbers:
+# a known-good run produced theta drift well under 0.1°/s,
+# the broken run produced 0.3-2°/s.
+HEALTH_WINDOW_S: float = 10.0
+HEALTH_DEGRADED_THETA_DEG: float = 5.0   # over HEALTH_WINDOW_S
+HEALTH_FAIL_THETA_DEG: float = 15.0      # over HEALTH_WINDOW_S
+HEALTH_ODOM_STALE_S: float = 1.0
+HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M: float = 5.0
 
 # Periodic unconditional heading refit (sim parity). Every
 # PERIODIC_REFIT_PERIOD_S, refit θ from the full window if it
@@ -167,11 +236,24 @@ HEADING_FORCE_RESYNC_MIN_BASELINE_M: float = 3.0
 HEADING_FORCE_RESYNC_DIFF_DEG: float = 20.0
 HEADING_FORCE_RESYNC_VAR_DEG: float = 10.0
 
+# ────────────────────────────────────────────────────────────────────
+# CONTROLLER-CHATTER-SENSITIVE — candidate-goal smoother. UPSTREAM
+# defense against GPS jitter → goal-tick → replan-storm chatter.
+# DO NOT TUNE without watching /gps_waypoint/debug telemetry across
+# at least one full mission.
+# CANDIDATE_SMOOTH_ALPHA=0.15: ~6-tick (≈0.6 s @ 10 Hz) ease-in.
+# CANDIDATE_SNAP_M=10: anything below is EWMA-eased; anything above
+#   is a legitimate large correction that bypasses the smoother.
+#   Was 5 m and made every heading-resync bypass the EWMA, causing
+#   the goal to jump every tick.
+# CANDIDATE_ENV_FLOOR_M=1.0: noise floor of the 1/r envelope filter.
+#   Was 0.4 and dropped legitimate corrections during bootstrap.
+# ────────────────────────────────────────────────────────────────────
 # Candidate-goal smoother (§3.5)
 CANDIDATE_SMOOTH_ALPHA: float = 0.15
-CANDIDATE_SNAP_M: float = 5.0
+CANDIDATE_SNAP_M: float = 10.0
 CANDIDATE_ENV_GAIN_M: float = 0.5
-CANDIDATE_ENV_FLOOR_M: float = 0.4
+CANDIDATE_ENV_FLOOR_M: float = 1.0
 CANDIDATE_ENV_REJECT_K: float = 4.0
 CANDIDATE_ENV_MIN_R_M: float = 3.0
 
@@ -319,13 +401,13 @@ class _ActiveGoal:
     # Drives the heartbeat gate of the goal-republish throttle so a
     # stalled NAV2 still picks up state every GOAL_REPUBLISH_HEARTBEAT_S.
     last_published_t_s: Optional[float] = None
-    # Wall-time-ish timestamp of the last /goal_pose (NavigateToPose
-    # action) publish — distinct from last_published_t_s above, which
-    # covers /goal_update too. In-mission corrections go to
-    # /goal_update so the BT's GoalUpdater can absorb them without
-    # canceling FollowPath; we still kick a /goal_pose every
-    # GOAL_POSE_HEARTBEAT_S as a safety belt against bt_navigator
-    # losing its action handle.
+    # Wall-time-ish timestamp tracking the heartbeat gate — historically
+    # this was the last /goal_pose publish, but as of PHASEA A.3 only the
+    # first publish of a leg goes to /goal_pose. Subsequent in-mission
+    # corrections (including heartbeat-due ticks) flow through
+    # /goal_update so the BT's GoalUpdater absorbs them without canceling
+    # FollowPath. The timer is still stamped on every heartbeat-due tick
+    # so we never roll back into a /goal_pose republish mid-leg.
     last_goal_pose_t_s: float = 0.0
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
@@ -397,7 +479,25 @@ class GpsHandlerNode(Node):
 
         # ── EKF + bootstrap state ───────────────────────────────────
         self._ekf: GpsEkf = GpsEkf()
-        self._bootstrap_done: bool = False
+        # The original design had a "bootstrap_done" graduation milestone
+        # — pre-bootstrap fixes hard-reset θ on every sample, post-bootstrap
+        # the EKF ran predict/update normally. That two-state machine
+        # caused field deadlocks: NAV2 wouldn't translate the robot
+        # without a goal, the bootstrap couldn't fit without translation,
+        # robot sat stuck. The unified design (matching the simulator at
+        # Claude-Sandbox/GPS-Waypoint-Simulation) is to run the EKF
+        # continuously from tick 1 with high initial θ variance — the
+        # first closed-form fit's Kalman gain is ≈1.0 anyway because
+        # P[2,2] starts at π², so a single soft update behaves like the
+        # old hard reset. Later updates have small gain and the candidate
+        # converges to the true GPS goal as the robot moves.
+        #
+        # Setting True from init means: the forced-reset bootstrap branch
+        # in _gps_callback is unreachable (kept for documentation/safety);
+        # _periodic_heading_refit and _maybe_resync_heading always use
+        # the Kalman update_theta_measurement path; the 5 s /goal_pose
+        # rate limit is active from the first goal.
+        self._bootstrap_done: bool = True
         self._gps_history: Deque[HistoryEntry] = deque(maxlen=GPS_HISTORY_LEN)
 
         # Datum (lat/lon of the very first valid GPS fix).
@@ -529,6 +629,15 @@ class GpsHandlerNode(Node):
         self._marker_pub = self.create_publisher(
             Marker, "/gps_waypoint/candidate_marker", diag_qos
         )
+        # /gps_waypoint/health surfaces the kind of regressions that
+        # the May 2026 outdoor mission run exposed: stale /local_ekf/
+        # odom feeding a phantom robot pose into goal placement, and
+        # heading_offset drift indicating an upstream yaw bias. The
+        # GUI / operator can render this as a single status badge and
+        # see DEGRADED / FAIL before a real mission goes sideways.
+        self._health_pub = self.create_publisher(
+            String, "/gps_waypoint/health", diag_qos
+        )
 
         # ── Timers ──────────────────────────────────────────────────
         # /goal_pose republisher is gated on an active goal.
@@ -543,6 +652,17 @@ class GpsHandlerNode(Node):
             self._diag_tick,
             callback_group=self._estimator_cbg,
         )
+        # Health publisher at 1 Hz — emits one /gps_waypoint/health
+        # String per second so the GUI can render a status badge.
+        self._health_timer = self.create_timer(
+            1.0,
+            self._health_tick,
+            callback_group=self._estimator_cbg,
+        )
+        # Rolling theta history for drift-rate computation. Stores
+        # (wall_time_s, theta_rad) tuples; capped at HEALTH_WINDOW_S
+        # by the health tick so memory stays bounded.
+        self._theta_history: deque = deque()
 
         # ── Action server ───────────────────────────────────────────
         self._action_server = ActionServer(
@@ -826,10 +946,24 @@ class GpsHandlerNode(Node):
             return
         diff = wrap_pi(bs_theta - self._ekf.theta)
         if abs(diff) > math.radians(HEADING_RESYNC_THRESHOLD_DEG):
-            self._ekf.reset_theta(
-                bs_theta,
-                theta_var=math.radians(HEADING_RESYNC_VAR_DEG) ** 2,
-            )
+            # After bootstrap, use a confidence-weighted Kalman update
+            # rather than a hard snap-replace. As P[2,2] shrinks the
+            # gain falls, so a converged θ becomes increasingly
+            # resistant to single noisy fits and the candidate goal
+            # in map frame actually converges instead of swinging on
+            # every resync. The bootstrap path retains reset_theta
+            # because there is no accumulated confidence to weigh
+            # against during cold start.
+            if self._bootstrap_done:
+                self._ekf.update_theta_measurement(
+                    bs_theta,
+                    theta_meas_std=math.radians(HEADING_RESYNC_VAR_DEG),
+                )
+            else:
+                self._ekf.reset_theta(
+                    bs_theta,
+                    theta_var=math.radians(HEADING_RESYNC_VAR_DEG) ** 2,
+                )
             self._heading_resync_until_s = (
                 self._now_s() + HEADING_RESYNC_COOLDOWN_S
             )
@@ -860,10 +994,19 @@ class GpsHandlerNode(Node):
             diff = wrap_pi(bs_theta - self._ekf.theta)
             if abs(diff) <= math.radians(PERIODIC_REFIT_THRESHOLD_DEG):
                 return
-            self._ekf.reset_theta(
-                bs_theta,
-                theta_var=math.radians(PERIODIC_REFIT_VAR_DEG) ** 2,
-            )
+            # Same A/B as _maybe_resync_heading: Kalman update post-
+            # bootstrap so periodic refits respect accumulated
+            # confidence; bootstrap path keeps the hard reset.
+            if self._bootstrap_done:
+                self._ekf.update_theta_measurement(
+                    bs_theta,
+                    theta_meas_std=math.radians(PERIODIC_REFIT_VAR_DEG),
+                )
+            else:
+                self._ekf.reset_theta(
+                    bs_theta,
+                    theta_var=math.radians(PERIODIC_REFIT_VAR_DEG) ** 2,
+                )
             self._heading_resync_count += 1
             self.get_logger().warn(
                 f"periodic heading refit: θ_old={math.degrees(self._ekf.theta - diff):+.2f}°, "
@@ -917,8 +1060,21 @@ class GpsHandlerNode(Node):
         active = self._active
         if active is None or active.goal_world_xy is None:
             return None
-        if not self._bootstrap_done:
-            return None
+        # The bootstrap-done gate used to live here. It caused a
+        # deadlock in the field: NAV2 won't translate the robot
+        # without a goal, the handler's closed-form bootstrap can't
+        # fit without translational GPS-vs-odom displacement, so the
+        # robot sat idle waiting for a bootstrap that could never
+        # complete. The GPS waypoint simulation in
+        # Claude-Sandbox/GPS-Waypoint-Simulation does NOT have this
+        # gate — its agents emit a candidate from the very first
+        # tick using whatever the EKF's θ currently is (initially
+        # high-variance), drive toward it (wrong direction at
+        # first), and the resulting motion gives the EKF the
+        # displacement data it needs to refine θ. The candidate
+        # then converges to the true GPS goal as the agent moves.
+        # Mirror that behaviour: publish whatever candidate we can
+        # compute right now, even before bootstrap_done.
         if self._last_odom_xy is None:
             return None
         gx_w, gy_w = active.goal_world_xy
@@ -1287,20 +1443,31 @@ class GpsHandlerNode(Node):
             )
         qx, qy, qz, qw = yaw_to_quat(yaw_goal)
 
-        # Throttle goal_pose republishes when the candidate has barely
-        # moved. NAV2 BT triggers a planning pass on every fresh goal
-        # which manifested in the field as constant start/stop. Keep
-        # the heartbeat so a stalled NAV2 always recovers state.
+        # Hard publish rate limit — but ONLY after bootstrap_done.
+        # During bootstrap the handler cannot refine theta without
+        # translational GPS-vs-odom displacement. If the rate limit
+        # is in effect while bootstrap is incomplete the system can
+        # deadlock: controller demands heading alignment, won't drive
+        # forward without it, robot rotates in place, no translation,
+        # bootstrap can't progress, goal stays in wrong direction,
+        # controller keeps rotating. Observed in the field on
+        # 2026-05-17 — first leg of a 3-waypoint mission, robot
+        # spun for 90+ s with no progress.
+        #
+        # Letting the publisher run every tick (1 Hz) pre-bootstrap
+        # gives NAV2 fresh goal_pose updates as the (still-converging)
+        # heading_offset settles. The candidate jitter is enough for
+        # DWB's trajectory rollout to find a candidate with non-zero
+        # forward velocity, which translates the robot, which gives
+        # the handler the displacement it needs to bootstrap.
+        # Post-bootstrap, the rate limit kicks in and replan churn
+        # is suppressed as designed.
         now_pub_s = self._now_s()
         last_map = active.last_published_goal_map
         last_t = active.last_published_t_s
         if last_map is not None and last_t is not None:
-            moved = math.hypot(gx_map - last_map[0], gy_map - last_map[1])
             since_last = now_pub_s - last_t
-            if (
-                moved < GOAL_REPUBLISH_MIN_DELTA_M
-                and since_last < GOAL_REPUBLISH_HEARTBEAT_S
-            ):
+            if since_last < GOAL_REPUBLISH_HEARTBEAT_S:
                 # Skip the publish — but still update the marker below
                 # so RViz keeps showing the (held) candidate.
                 with self._lock:
@@ -1340,21 +1507,25 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
 
-        # Route: first publish of a leg AND periodic safety heartbeat
-        # go to /goal_pose (kicks NavigateToPose action / refreshes the
-        # action handle). All other in-mission corrections go to
-        # /goal_update so the BT's GoalUpdater absorbs them without
-        # canceling FollowPath — that's the fix for the stop/go.
+        # Route: ONLY the first publish of a leg goes to /goal_pose
+        # (kicks NavigateToPose action / sets the action handle). Every
+        # subsequent in-mission update — including the periodic safety
+        # heartbeat — flows through /goal_update so the BT's
+        # GoalUpdater absorbs it without canceling FollowPath. The
+        # heartbeat timer is still reset on heartbeat-due ticks so we
+        # never fall back to a /goal_pose cycle mid-leg (PHASEA A.3).
         first_pub = active.last_published_goal_map is None
         heartbeat_due = (
             now_pub_s - active.last_goal_pose_t_s
             > GOAL_POSE_HEARTBEAT_S
         )
-        if first_pub or heartbeat_due:
+        if first_pub:
             self._goal_pub.publish(msg)
             active.last_goal_pose_t_s = now_pub_s
         else:
             self._goal_update_pub.publish(msg)
+            if heartbeat_due:
+                active.last_goal_pose_t_s = now_pub_s
 
         # Marker for RViz — sphere at the smoothed candidate. The
         # 2 s lifetime auto-expires the marker if the publisher stops
@@ -1424,6 +1595,75 @@ class GpsHandlerNode(Node):
         d = String()
         d.data = json.dumps(payload, default=float)
         self._debug_pub.publish(d)
+
+    def _health_tick(self) -> None:
+        """Emit /gps_waypoint/health = OK | DEGRADED <reason> | FAIL <reason>.
+
+        Designed to fail loudly on the regression classes already
+        observed in the field:
+
+        - **FAIL ODOM_STALE**: /local_ekf/odom hasn't ticked in over
+          HEALTH_ODOM_STALE_S. This is the "frozen pose" mode where
+          ekf_global was 13 Hz of identical position values during
+          a moving mission. Without fresh pose, goals get placed in
+          phantom map XY.
+        - **FAIL BOOTSTRAP_STUCK**: the robot has moved more than
+          HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M of cumulative odom
+          distance but the handler hasn't bootstrapped — usually
+          means /gps_fix isn't reaching this node or GPS gating is
+          rejecting every sample.
+        - **DEGRADED THETA_DRIFT_<deg>°/<window>s**: heading_offset
+          has moved more than HEALTH_DEGRADED_THETA_DEG over the
+          last HEALTH_WINDOW_S. Indicates ekf_local yaw is drifting,
+          which makes goals migrate in map frame — the periodic
+          left-turn artifact from the May 2026 outdoor run.
+        - **FAIL THETA_DRIFT_…**: same metric exceeds the FAIL bound.
+
+        Falls through to OK when none of the gates trip.
+        """
+        with self._lock:
+            theta = self._ekf.theta
+            bootstrap_done = self._bootstrap_done
+            odom_stamp = self._last_odom_stamp_s
+            odom_distance = self._odom_distance_m
+            now_s = self._now_s()
+
+        # Update rolling theta history. Append-only here; pruning is
+        # cheap relative to the 1 Hz tick rate.
+        self._theta_history.append((now_s, theta))
+        cutoff = now_s - HEALTH_WINDOW_S
+        while self._theta_history and self._theta_history[0][0] < cutoff:
+            self._theta_history.popleft()
+
+        # Build status. First failing gate wins; OK is the fallthrough.
+        status: str = "OK"
+        reason: str = ""
+
+        odom_age = (now_s - odom_stamp) if odom_stamp is not None else None
+        if odom_age is None or odom_age > HEALTH_ODOM_STALE_S:
+            status = "FAIL"
+            reason = (
+                f"ODOM_STALE age="
+                f"{'never' if odom_age is None else f'{odom_age:.1f}s'}"
+            )
+        elif (not bootstrap_done) and odom_distance > HEALTH_FAIL_BOOTSTRAP_AFTER_MOTION_M:
+            status = "FAIL"
+            reason = f"BOOTSTRAP_STUCK odom_dist={odom_distance:.1f}m"
+        elif len(self._theta_history) >= 2:
+            t0, theta0 = self._theta_history[0]
+            t1, theta1 = self._theta_history[-1]
+            window = max(t1 - t0, 1e-3)
+            d_deg = abs(math.degrees(wrap_pi(theta1 - theta0)))
+            if d_deg > HEALTH_FAIL_THETA_DEG:
+                status = "FAIL"
+                reason = f"THETA_DRIFT {d_deg:.1f}deg/{window:.0f}s"
+            elif d_deg > HEALTH_DEGRADED_THETA_DEG:
+                status = "DEGRADED"
+                reason = f"THETA_DRIFT {d_deg:.1f}deg/{window:.0f}s"
+
+        msg = String()
+        msg.data = f"{status}{(' ' + reason) if reason else ''}"
+        self._health_pub.publish(msg)
 
     # ── Action server ──────────────────────────────────────────────
 

@@ -21,9 +21,20 @@ class WheelOdomPublisher : public rclcpp::Node
 {
   public:
     WheelOdomPublisher()
-    : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0), 
-    wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0), 
-    left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923)
+    : Node("wheelodom_publisher"), x_(0.0), y_(0.0), theta_(0.0), linear_velocity_(0.0), angular_velocity_(0.0),
+    wheel_base_(0.6858), wheel_radius_(0.12946), prev_left_encoder_count_(0), prev_right_encoder_count_(0),
+    left_encoder_count_(0), right_encoder_count_(0), ticks_per_revolution_(81923),
+    // ──────────────────────────────────────────────────────────────
+    // OSCILLATION-SENSITIVE — left_encoder_scale_ corrects the left
+    // encoder's ~1.6% oversample (commit 70e0dcb5). Without it, the
+    // wheel-derived yaw rate is biased and ekf_local's odom→base_link
+    // drifts in yaw; slam_toolbox then has to scan-match-correct
+    // map→odom against a moving target, producing the map-catching-
+    // up-with-robot snap and stall behavior. DO NOT remove or
+    // re-balance to 1.0 without re-running the encoder asymmetry
+    // self-diagnostic below and confirming the EMA ratio is ≈ 1.0.
+    // ──────────────────────────────────────────────────────────────
+    left_encoder_scale_(1.0 / 1.016335)
     {
       encoder_subscription_ = this->create_subscription<autonav_interfaces::msg::Encoders>("encoders", 
       10, std::bind(&WheelOdomPublisher::encoder_callback, this, std::placeholders::_1));
@@ -87,9 +98,43 @@ class WheelOdomPublisher : public rclcpp::Node
       prev_right_encoder_count_ = right_encoder_count_;
 
       // Convert encoder ticks to linear displacement (in meters)
-      double left_displacement = (2 * M_PI * wheel_radius_) * (left_delta_ticks / (double)ticks_per_revolution_);
+      double left_displacement = (2 * M_PI * wheel_radius_) * (left_delta_ticks / (double)ticks_per_revolution_) * left_encoder_scale_;
       double right_displacement = (2 * M_PI * wheel_radius_) * (right_delta_ticks / (double)ticks_per_revolution_);
-      
+
+      // ── Encoder asymmetry self-diagnostic ────────────────────────
+      // Detects the kind of regression that hid behind ekf_local's
+      // IMU over-trust on main and surfaced as ~0.3°/s heading drift
+      // on fix/lines once the IMU got honest covariance: one wheel's
+      // encoder oversampling the other. Logs a one-shot WARN with
+      // the implied corrective scale factor so the next operator
+      // can recalibrate ``left_encoder_scale_`` from real data
+      // rather than discovering the drift in the field.
+      //
+      // Only sampled while the robot is driving roughly straight
+      // (both wheels same sign of motion) so turning segments
+      // don't pollute the ratio. EMA smooths random per-tick jitter;
+      // a minimum sample count avoids firing on a few unlucky early
+      // samples.
+      if (left_displacement * right_displacement > 0.0) {
+        ema_abs_left_  = 0.99 * ema_abs_left_  + 0.01 * std::abs(left_displacement);
+        ema_abs_right_ = 0.99 * ema_abs_right_ + 0.01 * std::abs(right_displacement);
+        asymmetry_samples_++;
+      }
+      if (!asymmetry_warned_ &&
+          asymmetry_samples_ > 500 &&
+          ema_abs_right_ > 1e-6) {
+        double ratio = ema_abs_left_ / ema_abs_right_;
+        if (std::abs(ratio - 1.0) > 0.02) {
+          asymmetry_warned_ = true;
+          RCLCPP_WARN(
+            this->get_logger(),
+            "Wheel encoder asymmetry: left/right EMA ratio = %.4f "
+            "after %d straight-drive samples. Implied calibration: "
+            "left_encoder_scale_ = %.6f. The current scale is %.6f.",
+            ratio, asymmetry_samples_, 1.0 / ratio, left_encoder_scale_);
+        }
+      }
+
       // Compute robot's linear velocity and angular velocity
       double forward_displacement = (left_displacement + right_displacement) / 2.0;
       double angular_displacement = (right_displacement - left_displacement) / wheel_base_;
@@ -187,7 +232,18 @@ class WheelOdomPublisher : public rclcpp::Node
       transform.transform.rotation.z = q.z();
       transform.transform.rotation.w = q.w();
 
-      // Send the transform
+      // ──────────────────────────────────────────────────────────────
+      // OSCILLATION-SENSITIVE — DO NOT define PUBLISH_TRANSFORM. The
+      // odom → base_link transform is owned by ekf_local (publish_tf:
+      // true in ekf_local.yaml). If this guard is also active, two
+      // nodes race on the same TF link and the resulting jitter
+      // propagates through slam_toolbox's scan-match correction loop
+      // as map↔odom drift, ultimately producing the canonical
+      // map-catching-up-with-robot snap and stall behavior. The
+      // wheel-odometry Odometry message ON /odom (above) is still
+      // consumed by ekf_local; that's how wheel data reaches the
+      // EKF without a duplicate TF publisher.
+      // ──────────────────────────────────────────────────────────────
       #ifdef PUBLISH_TRANSFORM
       tf_broadcaster_->sendTransform(transform);
       #endif
@@ -200,6 +256,7 @@ class WheelOdomPublisher : public rclcpp::Node
     int prev_left_encoder_count_, prev_right_encoder_count_;  // Previous encoder counts for delta calculation
     int left_encoder_count_, right_encoder_count_; // Left Encoder and Right Encoder count reading from control topic
     const int ticks_per_revolution_;  // Number of encoder ticks per wheel revolution
+    const double left_encoder_scale_; // Correction factor for left encoder over-counting (~1.6%, see constructor comment).
     rclcpp::Time last_time_; //Time of the last callback to calculate dt
 
     serialib motorController;
@@ -207,6 +264,16 @@ class WheelOdomPublisher : public rclcpp::Node
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr publisher_;
     rclcpp::Subscription<autonav_interfaces::msg::Encoders>::SharedPtr encoder_subscription_;
+
+    // Encoder asymmetry self-diagnostic state (see encoder_callback).
+    // EMAs of |left_displacement| / |right_displacement| while
+    // driving straight; the ratio reveals systematic calibration
+    // drift. One-shot WARN at 2% asymmetry after >500 samples so
+    // a few unlucky early ticks can't fire it.
+    double ema_abs_left_ = 0.0;
+    double ema_abs_right_ = 0.0;
+    int asymmetry_samples_ = 0;
+    bool asymmetry_warned_ = false;
 };
 
 int main(int argc, char * argv[])

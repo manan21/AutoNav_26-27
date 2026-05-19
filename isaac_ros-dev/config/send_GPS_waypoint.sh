@@ -18,7 +18,10 @@ fi
 
 LAT=$1
 LON=$2
-RADIUS=${3:-0.75}
+# Default success radius dropped 0.75 -> 0.5 to land the robot
+# within ~1 m of each GPS goal in practice. Per-call override
+# still supported via the third arg.
+RADIUS=${3:-0.5}
 
 # Validate that lat/lon are decimal numbers (signed, optional fraction).
 if ! [[ $LAT =~ ^-?[0-9]+(\.[0-9]+)?$ && $LON =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
