@@ -66,12 +66,11 @@
     # adjacent pixel projections by 20-30 cm; 0.50 m forms one cluster.
     cluster_link_distance_m: 0.50
     temporal_voxel_size_m: 0.10
-    # Require 2 confirming hits inside the 750 ms window — at 5 Hz fresh
-    # detection that's ~4 frames available, enough margin to weed out
-    # single-frame depth-noise glitches that previously got confirmed and
-    # haunted the costmap for 10 s as "ghost" voxels in non-line image
-    # regions.
-    temporal_min_hits: 2
+    # First transformed hit confirms immediately so new lines reach the
+    # local costmap during turns instead of waiting for a second frame
+    # after yaw settles. Noise control now relies on the existing ROI,
+    # depth, ground, and geometry gates rather than temporal delay.
+    temporal_min_hits: 1
     temporal_confirm_window_ms: 750
     # Was 10 000 ms which kept ghosts around forever after one bad frame.
     # 1500 ms == ~7 frames at 5 Hz: covers brief out-of-FOV periods
@@ -90,7 +89,7 @@
     # error during motion of ~(velocity × tf_lag). At 1 m/s × 0.5 s that
     # is ~0.5 m forward drift on the projected line — acceptable for
     # competition speeds where lines are ~3-5 m away.
-    tf_use_latest: false
+    tf_use_latest: true
 
     # ── CERIAS line-pixel detector ───────────────────────────────────────
     # Stage 1: host-side binary mask. Pixels brighter than this are

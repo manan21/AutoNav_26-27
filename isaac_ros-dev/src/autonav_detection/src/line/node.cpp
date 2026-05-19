@@ -46,7 +46,7 @@ public:
 		this->declare_parameter("line_points_topic", "line_points");
 		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true);
-		this->declare_parameter("publish_interval_ms", 250);
+		this->declare_parameter("publish_interval_ms", 100);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("line_hold_timeout_ms", 800);
@@ -64,9 +64,9 @@ public:
 		this->declare_parameter("cluster_min_aspect_ratio", 3.0);
 		this->declare_parameter("cluster_link_distance_m", 0.18);
 		this->declare_parameter("temporal_voxel_size_m", 0.10);
-		this->declare_parameter("temporal_min_hits", 2);
+		this->declare_parameter("temporal_min_hits", 1);
 		this->declare_parameter("temporal_confirm_window_ms", 750);
-		this->declare_parameter("confirmed_hold_ms", 10000);
+		this->declare_parameter("confirmed_hold_ms", 1500);
 		this->declare_parameter("odom_topic", "/local_ekf/odom");
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
@@ -78,8 +78,9 @@ public:
 		// causes every per-frame lookup to throw. Tradeoff: introduces
 		// parallax error of ~(velocity × tf_lag) during motion — at 1 m/s
 		// and 0.5s lag, ~50 cm forward drift on the projected point.
-		// Safe for stationary or slow-moving testing.
-		this->declare_parameter("tf_use_latest", false);
+		// Preferred for live driving where missing turn-time obstacles is
+		// worse than a small projection lag during motion.
+		this->declare_parameter("tf_use_latest", true);
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
 		// in cuda.cu; now plumbed through line_detector.yaml).
@@ -257,7 +258,7 @@ private:
 	bool enable_timer_;
 	bool configured_ = false;
 	std::string target_frame_;
-	int64_t publish_interval_ms_ = 250;
+	int64_t publish_interval_ms_ = 100;
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
@@ -275,13 +276,13 @@ private:
 	double  cluster_min_aspect_ratio_ = 3.0;
 	double  cluster_link_distance_m_ = 0.18;
 	double  temporal_voxel_size_m_ = 0.10;
-	int     temporal_min_hits_ = 2;
+	int     temporal_min_hits_ = 1;
 	int64_t temporal_confirm_window_ms_ = 750;
-	int64_t confirmed_hold_ms_ = 10000;
+	int64_t confirmed_hold_ms_ = 1500;
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
-	bool    tf_use_latest_ = false;
+	bool    tf_use_latest_ = true;
 	double  brightness_threshold_ = 220.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;
@@ -923,10 +924,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 			item.second.pixel.x / count,
 			item.second.pixel.y / count);
 		auto voxel_it = temporal_voxels_.find(key);
-
-		if (yaw_gated && (voxel_it == temporal_voxels_.end() || !voxel_it->second.confirmed)) {
-			continue;
-		}
 
 		if (voxel_it == temporal_voxels_.end()) {
 			VoxelState state;
