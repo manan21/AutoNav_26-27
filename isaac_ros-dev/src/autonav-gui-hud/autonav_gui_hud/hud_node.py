@@ -6247,6 +6247,42 @@ class HudWindow(QMainWindow):
     # subscriptions watch, so the live canvases reanimate exactly as
     # they looked during the original test session.
     # -----------------------------------------------------------------
+    # Curated list of topics the GUI actually renders. Used as a
+    # --topics filter for `ros2 bag play` so the deserialization
+    # thread doesn't burn cycles on high-rate streams (/joy at 93 Hz,
+    # raw + inflated IMU at 56 + 42 Hz) that never produce a pixel.
+    # Without this filter the camera (3 Hz native) and lidar BEV
+    # (4 Hz native) get shoved off-rhythm by the high-rate streams
+    # monopolising the single deserialization thread, and the live
+    # canvases drop to ~9 FPS.
+    #
+    # The bag itself still captures everything (recording side is
+    # unaffected); only playback skips them. The EKF outputs
+    # (/local_ekf/odom, /global_ekf/odom) are in this list — they
+    # were already fused at record time, so we don't need to
+    # re-run ekf_local on replayed raw IMU.
+    _BAG_PLAYBACK_TOPICS = [
+        '/zed/zed_node/rgb/color/rect/image',
+        '/line_detection/debug/mask',
+        '/line_detection/line_pixels',
+        '/scan_fullframe',
+        '/scan_pca_filtered',
+        '/gps_fix',
+        '/odom',
+        '/local_ekf/odom',
+        '/global_ekf/odom',
+        '/pose',
+        '/global_costmap/costmap',
+        '/plan',
+        '/cmd_vel',
+        '/autonomous_mode',
+        '/electrical/voltage',
+        '/electrical/current',
+        '/electrical/power',
+        '/electrical/soc',
+        '/data/toggle_collect',
+    ]
+
     def _load_and_play_bag(self, bag_dir):
         """Replace any running playback / live source with this bag.
         Called by the "Load" buttons in the Playback Mode grid."""
@@ -6263,9 +6299,14 @@ class HudWindow(QMainWindow):
             pass
         if not self._live_active:
             self._start_live_mode()
+        cmd = [
+            'ros2', 'bag', 'play', bag_dir,
+            '--rate', '1.0',
+            '--topics', *self._BAG_PLAYBACK_TOPICS,
+        ]
         try:
             self._bag_play_proc = subprocess.Popen(
-                ['ros2', 'bag', 'play', bag_dir],
+                cmd,
                 preexec_fn=os.setsid,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -6277,7 +6318,10 @@ class HudWindow(QMainWindow):
             )
             self._bag_play_proc = None
             return
-        self._gui_log_msg(f"Playing bag: {bag_dir}")
+        self._gui_log_msg(
+            f"Playing bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} visual topics)"
+        )
         self._bag_play_poll_timer.start()
         # Pop back to the main page so the operator sees the live
         # canvases reanimate from the bag.
