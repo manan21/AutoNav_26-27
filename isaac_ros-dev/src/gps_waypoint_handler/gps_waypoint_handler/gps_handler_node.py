@@ -454,6 +454,31 @@ class GpsHandlerNode(Node):
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("odom_frame", "odom")
 
+        # improve/gps-waypoint-continuity — preemptive next-goal cache.
+        # When ``next_hint_enabled`` is true, the dispatcher can publish
+        # the upcoming GPS waypoint to ``/gps_waypoint/next_hint`` while
+        # the current waypoint is still being navigated. We run a
+        # shadow EWMA on that hint in the background; when the action
+        # server accepts the next goal, if it matches the cached hint
+        # within ``hint_match_tolerance_m``, the smoother starts warm
+        # instead of from scratch. When no hint is published, behaviour
+        # is byte-identical to before.
+        self.declare_parameter("next_hint_enabled", False)
+        self.declare_parameter("hint_match_tolerance_m", 0.5)
+        # improve/gps-waypoint-continuity — cold-start body-frame bias.
+        # When ``coldstart_bias_enabled`` is true AND the EKF's heading
+        # uncertainty is above ``coldstart_theta_std_threshold_deg``,
+        # the published candidate is placed at
+        # ``coldstart_seed_distance_m`` directly in front of base_link
+        # in body frame instead of using the (high-variance) ENU→odom
+        # projection. Encourages forward motion → faster bootstrap
+        # (GPS displacement is what tightens θ). Once heading
+        # uncertainty drops below the threshold the bias falls open
+        # and the smoother slides to the real projection.
+        self.declare_parameter("coldstart_bias_enabled", False)
+        self.declare_parameter("coldstart_theta_std_threshold_deg", 30.0)
+        self.declare_parameter("coldstart_seed_distance_m", 3.0)
+
         self._success_radius_default: float = float(
             self.get_parameter("success_radius_m").value
         )
@@ -471,6 +496,24 @@ class GpsHandlerNode(Node):
         )
         self._map_frame: str = str(self.get_parameter("map_frame").value)
         self._odom_frame: str = str(self.get_parameter("odom_frame").value)
+        # improve/gps-waypoint-continuity — capture the new flags at
+        # init. Live-tuning isn't expected during a competition run;
+        # if needed later add a parameter-change callback.
+        self._next_hint_enabled: bool = bool(
+            self.get_parameter("next_hint_enabled").value
+        )
+        self._hint_match_tolerance_m: float = float(
+            self.get_parameter("hint_match_tolerance_m").value
+        )
+        self._coldstart_bias_enabled: bool = bool(
+            self.get_parameter("coldstart_bias_enabled").value
+        )
+        self._coldstart_theta_std_threshold_rad: float = math.radians(
+            float(self.get_parameter("coldstart_theta_std_threshold_deg").value)
+        )
+        self._coldstart_seed_distance_m: float = float(
+            self.get_parameter("coldstart_seed_distance_m").value
+        )
 
         # ── Threading & callback groups ─────────────────────────────
         self._lock = threading.Lock()
@@ -528,6 +571,14 @@ class GpsHandlerNode(Node):
         # Candidate-goal smoother + envelope state.
         self._smoothed_candidate: Optional[Tuple[float, float]] = None
         self._envelope_suspended_until_s: float = 0.0
+        # improve/gps-waypoint-continuity — shadow smoother state for
+        # the next-goal hint. Lives in parallel with the active
+        # smoother and is consulted only when the action server
+        # accepts a new goal that matches the cached hint.
+        self._next_hint_lat_lon: Optional[Tuple[float, float]] = None
+        self._next_hint_world_xy: Optional[Tuple[float, float]] = None
+        self._next_hint_smoothed_candidate: Optional[Tuple[float, float]] = None
+        self._next_hint_stamp_s: float = 0.0
         # Hard cap as defense-in-depth. Time-window trim in
         # ``_update_moving_away`` keeps this near MOVING_AWAY_WINDOW_S
         # × tick rate (~30 Hz × 3 s ≈ 90 entries). The cap protects
@@ -600,6 +651,19 @@ class GpsHandlerNode(Node):
             "/local_ekf/odom",
             self._odom_callback,
             odom_qos,
+            callback_group=self._estimator_cbg,
+        )
+        # improve/gps-waypoint-continuity — opt-in hint topic for the
+        # next upcoming GPS waypoint. Mirrors the action goal's
+        # convention: PoseStamped with frame_id="wgs84", lat in
+        # pose.position.y, lon in pose.position.x. When unused
+        # (default) the shadow smoother stays idle and the active
+        # smoother path is untouched.
+        self.create_subscription(
+            PoseStamped,
+            "/gps_waypoint/next_hint",
+            self._next_hint_callback,
+            qos_profile_sensor_data,
             callback_group=self._estimator_cbg,
         )
 
@@ -847,8 +911,52 @@ class GpsHandlerNode(Node):
 
             # ── Self-correction layers ─────────────────────────────
             self._update_candidate_smoother()
+            self._update_next_hint_smoother()
             self._update_moving_away()
             self._update_local_world_divergence()
+
+    def _next_hint_callback(self, msg: PoseStamped) -> None:
+        """improve/gps-waypoint-continuity — optional hint that the
+        next GPS waypoint is coming up. Same encoding as the action
+        goal: frame_id="wgs84", lat in pose.position.y, lon in
+        pose.position.x.
+
+        On a hint that differs from the cached one by more than the
+        match tolerance, we replace the cache and reseed the shadow
+        EWMA. When the cached hint matches the next action accept,
+        ``_execute_callback`` warm-starts the active smoother with
+        the shadow's current value.
+
+        Disabled (silent no-op) when ``next_hint_enabled`` is false.
+        """
+        if not self._next_hint_enabled:
+            return
+        if msg.header.frame_id != "wgs84":
+            return
+        lat = float(msg.pose.position.y)
+        lon = float(msg.pose.position.x)
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            return
+        with self._lock:
+            if self._datum_lat is None:
+                # Need a datum to project the hint; defer until the
+                # first /gps_fix has set one.
+                return
+            gx, gy = latlon_to_local(
+                lat, lon, self._datum_lat, self._datum_lon
+            )
+            # Only reseed when the hint actually changed; otherwise
+            # repeated republishes of the same hint shouldn't wipe
+            # the shadow EWMA's accumulated convergence.
+            if self._next_hint_world_xy is not None:
+                dx = self._next_hint_world_xy[0] - gx
+                dy = self._next_hint_world_xy[1] - gy
+                if math.hypot(dx, dy) < self._hint_match_tolerance_m:
+                    return
+            self._next_hint_lat_lon = (lat, lon)
+            self._next_hint_world_xy = (gx, gy)
+            self._next_hint_smoothed_candidate = None
+            self._next_hint_stamp_s = self._now_s()
 
     def _gps_callback(self, msg: NavSatFix) -> None:
         """Convert the fix to local meters around the datum, append to
@@ -1038,6 +1146,66 @@ class GpsHandlerNode(Node):
 
     # ── Candidate smoother + envelope (§5.7-§5.8 / sim 1913-1967) ──
 
+    def _project_world_to_odom(
+        self, world_xy: Tuple[float, float]
+    ) -> Optional[Tuple[float, float]]:
+        """Shared world→odom projection used by both the active-goal
+        candidate path and the next-hint shadow smoother.
+
+        Returns None if odom hasn't arrived yet. Lock held.
+        """
+        if self._last_odom_xy is None:
+            return None
+        gx_w, gy_w = world_xy
+        ex, ey = self._ekf.pos_xy
+        theta = self._ekf.theta
+        c, s = math.cos(-theta), math.sin(-theta)
+        dx_w, dy_w = gx_w - ex, gy_w - ey
+        dx_o = c * dx_w - s * dy_w
+        dy_o = s * dx_w + c * dy_w
+        ox, oy = self._last_odom_xy
+        return (ox + dx_o, oy + dy_o)
+
+    def _maybe_coldstart_seed(
+        self, goal_world_xy: Tuple[float, float]
+    ) -> Optional[Tuple[float, float]]:
+        """improve/gps-waypoint-continuity — body-frame bias for the
+        very first GPS goal while ``θ`` is still high-variance.
+
+        Returns a candidate placed at
+        ``coldstart_seed_distance_m`` directly in front of base_link
+        in body frame, transformed into odom. Forward motion is what
+        feeds ``bootstrap_theta`` and shrinks ``P[2,2]`` — biasing the
+        first published goal forward causes the robot to drive
+        straight, which gives the EKF the displacement it needs to
+        learn heading. Once ``ekf.theta_std`` drops below the
+        threshold this returns None and the normal world→odom
+        projection takes over; the EWMA then slides the published
+        goal from the in-front seed to the true projection.
+
+        Returns None when the bias is disabled, when heading
+        uncertainty has fallen below the threshold, or when odom
+        isn't available yet. Lock held.
+        """
+        if not self._coldstart_bias_enabled:
+            return None
+        if self._ekf.theta_std_rad < self._coldstart_theta_std_threshold_rad:
+            return None
+        if self._last_odom_xy is None:
+            return None
+        ex, ey = self._ekf.pos_xy
+        gx_w, gy_w = goal_world_xy
+        world_dist = math.hypot(gx_w - ex, gy_w - ey)
+        # Cap the seed distance at the actual goal distance — no point
+        # placing the candidate beyond the real goal.
+        seed_dist = min(self._coldstart_seed_distance_m, max(world_dist, 0.1))
+        yaw = self._last_odom_yaw
+        ox, oy = self._last_odom_xy
+        return (
+            ox + seed_dist * math.cos(yaw),
+            oy + seed_dist * math.sin(yaw),
+        )
+
     def _compute_raw_candidate(self) -> Optional[Tuple[float, float]]:
         """Raw candidate goal in **odom frame**, computed from the live
         EKF ``θ_offset`` and current odom snapshot. As ``θ_offset``
@@ -1075,17 +1243,44 @@ class GpsHandlerNode(Node):
         # then converges to the true GPS goal as the agent moves.
         # Mirror that behaviour: publish whatever candidate we can
         # compute right now, even before bootstrap_done.
-        if self._last_odom_xy is None:
-            return None
-        gx_w, gy_w = active.goal_world_xy
-        ex, ey = self._ekf.pos_xy
-        theta = self._ekf.theta
-        c, s = math.cos(-theta), math.sin(-theta)
-        dx_w, dy_w = gx_w - ex, gy_w - ey
-        dx_o = c * dx_w - s * dy_w
-        dy_o = s * dx_w + c * dy_w
-        ox, oy = self._last_odom_xy
-        return (ox + dx_o, oy + dy_o)
+        # improve/gps-waypoint-continuity — when heading uncertainty
+        # is above the cold-start threshold, override the projection
+        # with a body-frame seed so the first goal pulls the robot
+        # forward instead of in a random direction.
+        seed = self._maybe_coldstart_seed(active.goal_world_xy)
+        if seed is not None:
+            return seed
+        return self._project_world_to_odom(active.goal_world_xy)
+
+    def _update_next_hint_smoother(self) -> None:
+        """improve/gps-waypoint-continuity — shadow EWMA for the cached
+        next-up GPS waypoint hint. No envelope filter (the envelope
+        depends on the active goal's robot-to-goal distance, which
+        doesn't apply to a future goal); just the same EWMA + 5 m
+        snap as the active smoother. When the action server accepts
+        the next goal and it matches the cached hint, this smoothed
+        value is promoted into ``self._smoothed_candidate``.
+
+        Lock held.
+        """
+        if not self._next_hint_enabled:
+            return
+        if self._next_hint_world_xy is None:
+            return
+        raw = self._project_world_to_odom(self._next_hint_world_xy)
+        if raw is None:
+            return
+        if self._next_hint_smoothed_candidate is None:
+            self._next_hint_smoothed_candidate = raw
+            return
+        sx, sy = self._next_hint_smoothed_candidate
+        dx = raw[0] - sx
+        dy = raw[1] - sy
+        if (dx * dx + dy * dy) > CANDIDATE_SNAP_M * CANDIDATE_SNAP_M:
+            self._next_hint_smoothed_candidate = raw
+        else:
+            a = CANDIDATE_SMOOTH_ALPHA
+            self._next_hint_smoothed_candidate = (sx + a * dx, sy + a * dy)
 
     def _update_candidate_smoother(self) -> None:
         """Lock held. EWMA + 5 m snap with a 1/r-envelope gate.
@@ -1847,7 +2042,31 @@ class GpsHandlerNode(Node):
         )
         with self._lock:
             self._active = active
-            self._smoothed_candidate = None
+            # improve/gps-waypoint-continuity — warm-start the smoother
+            # from the cached hint if it matches this new goal within
+            # tolerance. When it doesn't match (or no hint exists)
+            # behaviour is identical to before — fresh smoother state.
+            warm = None
+            if (
+                self._next_hint_enabled
+                and gt == NavigateToWaypoint.Goal.GOAL_TYPE_GPS
+                and self._next_hint_world_xy is not None
+                and self._next_hint_smoothed_candidate is not None
+            ):
+                dx = goal_world_xy[0] - self._next_hint_world_xy[0]
+                dy = goal_world_xy[1] - self._next_hint_world_xy[1]
+                if math.hypot(dx, dy) < self._hint_match_tolerance_m:
+                    warm = self._next_hint_smoothed_candidate
+                    self.get_logger().info(
+                        "next-goal hint matched; warm-starting smoother"
+                    )
+            self._smoothed_candidate = warm
+            # Clear the hint cache either way — it's been promoted (or
+            # didn't match this goal and we don't want it interfering
+            # with the next one's match check).
+            self._next_hint_lat_lon = None
+            self._next_hint_world_xy = None
+            self._next_hint_smoothed_candidate = None
             self._dist_history.clear()
             self._envelope_suspended_until_s = 0.0
             # New goal — re-enable the 1 Hz /goal_pose republisher
