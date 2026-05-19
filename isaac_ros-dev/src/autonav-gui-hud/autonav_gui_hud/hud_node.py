@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.request
 from collections import deque
+from pathlib import Path
 
 try:
     import rclpy
@@ -1250,6 +1251,29 @@ class HudWindow(QMainWindow):
         self.btn_playback.clicked.connect(self._on_playback_clicked)
         options_layout.addWidget(self.btn_playback)
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
+
+        # Play ROS Bag — wraps `ros2 bag play` as a subprocess and
+        # routes the replayed topics through the GUI's live-mode
+        # subscriptions. Distinct from the CSV/MP4 Playback Mode
+        # above: bag playback shows up on the *live* canvases (real
+        # camera/lidar/costmap widgets), not on the scrubber-driven
+        # playback page.
+        self._bag_play_proc = None
+        self._bag_play_btn_label_idle = "Play ROS Bag"
+        self._bag_play_btn_label_busy = "Stop Bag Play"
+        self.btn_play_bag = QPushButton(self._bag_play_btn_label_idle)
+        self.btn_play_bag.setStyleSheet(button_style)
+        self.btn_play_bag.setFocusPolicy(Qt.NoFocus)
+        self.btn_play_bag.clicked.connect(self._on_play_bag_clicked)
+        options_layout.addWidget(self.btn_play_bag)
+        self._nav_buttons.append(
+            (self.btn_play_bag, self._bag_play_btn_label_idle, button_style)
+        )
+        # Poll the subprocess at 2 Hz so a natural end-of-bag flips
+        # the button text back without the operator having to click.
+        self._bag_play_poll_timer = QTimer(self)
+        self._bag_play_poll_timer.setInterval(500)
+        self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
 
         options_layout.addStretch()
 
@@ -6167,6 +6191,98 @@ class HudWindow(QMainWindow):
         if self._live_active:
             self._stop_live_mode()
         self._show_playback_page()
+
+    # -----------------------------------------------------------------
+    # ROS bag playback — wraps `ros2 bag play` as a subprocess and
+    # routes the replayed topics through the GUI's live subscriptions.
+    # -----------------------------------------------------------------
+    def _on_play_bag_clicked(self):
+        # Toggle: if a bag is already playing, stop it. Otherwise
+        # prompt for a bag dir, switch to live mode (so the GUI is
+        # subscribed to the topics the bag will republish), and spawn
+        # `ros2 bag play` in its own process group so we can SIGINT
+        # cleanly later.
+        if self._bag_play_proc is not None and self._bag_play_proc.poll() is None:
+            self._stop_bag_play()
+            return
+        # Default to /autonav/logs (where t000 writes bags); fall back
+        # to home if that doesn't exist outside the container.
+        start_dir = '/autonav/logs'
+        if not Path(start_dir).exists():
+            start_dir = os.path.expanduser('~')
+        bag_dir = QFileDialog.getExistingDirectory(
+            self, 'Select ROS bag directory', start_dir
+        )
+        if not bag_dir:
+            return
+        if not (Path(bag_dir) / 'metadata.yaml').exists():
+            self._gui_log_msg(
+                f"Not a ROS bag directory (no metadata.yaml): {bag_dir}"
+            )
+            return
+        # The bag's topics replay onto the same names the GUI's live
+        # subscriptions watch. Live mode must be on or the topics
+        # won't be subscribed and the screens won't repopulate.
+        if not self._live_active:
+            self._start_live_mode()
+        try:
+            self._bag_play_proc = subprocess.Popen(
+                ['ros2', 'bag', 'play', bag_dir],
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag playback. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._bag_play_proc = None
+            return
+        self._gui_log_msg(f"Playing bag: {bag_dir}")
+        self._set_nav_btn_style(
+            self.btn_play_bag, self._toggle_on_style
+        )
+        self.btn_play_bag.setText(self._bag_play_btn_label_busy)
+        self._bag_play_poll_timer.start()
+
+    def _stop_bag_play(self):
+        """SIGINT the bag-playback subprocess and reset button state.
+        Idempotent."""
+        proc = self._bag_play_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+        self._bag_play_proc = None
+        self._bag_play_poll_timer.stop()
+        self.btn_play_bag.setText(self._bag_play_btn_label_idle)
+        self._set_nav_btn_style(
+            self.btn_play_bag, self._pb_button_style
+        )
+
+    def _bag_play_poll(self):
+        """Detect natural end-of-bag and reset button state."""
+        if self._bag_play_proc is None:
+            self._bag_play_poll_timer.stop()
+            return
+        if self._bag_play_proc.poll() is not None:
+            self._gui_log_msg("Bag playback finished")
+            self._bag_play_proc = None
+            self._bag_play_poll_timer.stop()
+            self.btn_play_bag.setText(self._bag_play_btn_label_idle)
+            self._set_nav_btn_style(
+                self.btn_play_bag, self._pb_button_style
+            )
 
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
