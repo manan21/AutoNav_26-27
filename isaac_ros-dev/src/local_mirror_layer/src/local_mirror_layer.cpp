@@ -1,7 +1,6 @@
 #include "local_mirror_layer/local_mirror_layer.hpp"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -133,23 +132,8 @@ void LocalMirrorLayer::mapCallback(
 void LocalMirrorLayer::clearCallback(
   std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
 {
-  {
-    std::lock_guard<std::mutex> lock(msg_mtx_);
-    pending_clear_ = true;
-  }
-  // DIAG: write to a file so we have a callback-fired signal that
-  // doesn't depend on rclcpp logging being routed correctly. If
-  // /tmp/clear_callback_fired exists after Y is pressed, the
-  // subscription callback IS being spun. If not, the subscription
-  // is registered but the executor isn't running its callbacks.
-  if (FILE * fp = std::fopen("/tmp/clear_callback_fired", "a")) {
-    std::fprintf(fp, "fired\n");
-    std::fclose(fp);
-  }
-  RCLCPP_INFO(
-    rclcpp::get_logger("nav2_costmap_2d"),
-    "LocalMirrorLayer clear requested — wiping accumulator inside the "
-    "current local-costmap footprint on next update cycle");
+  std::lock_guard<std::mutex> lock(msg_mtx_);
+  pending_clear_ = true;
 }
 
 void LocalMirrorLayer::updateBounds(
