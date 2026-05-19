@@ -27,7 +27,7 @@ control_node:
     # uphill boost. Bench-tested on a tilt block 2026-05-18: nose-down
     # gives negative accel.x (damping), nose-up gives positive (boost).
     imu_a_fwd_sign: 1.0
-    grade_comp_enabled: true                   # Phase D active by default — tilt-block bench-tested 2026-05-18
+    grade_comp_enabled: false                   # Phase D active by default — tilt-block bench-tested 2026-05-18
     # Bounded linear pitch-to-multiplier map. Runaway impossible by
     # construction: any pitch beyond ±grade_comp_max_deg clamps to the
     # ±max_pct bound. Defaults yield multiplier ∈ [0.90, 1.10] for ANY
