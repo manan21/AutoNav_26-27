@@ -9,6 +9,7 @@
 #include "nav2_costmap_2d/costmap_layer.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -56,22 +57,28 @@ public:
 
 private:
   void mapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+  void clearCallback(std_msgs::msg::Empty::ConstSharedPtr msg);
   // Map an OccupancyGrid cell value (-1 / 0 / 1-100) to a costmap_2d
   // internal cost (0 / 1-254 / 255). NO_INFORMATION and FREE inputs
   // never overwrite stored cells (accumulation invariant).
   static unsigned char interpretCost(int8_t occ_val);
 
   std::string source_topic_;
+  std::string clear_topic_;
   bool track_unknown_space_;
   // If true, also overwrite cells when the incoming cost is lower
   // than the stored cost. Default false → strictly accumulating.
   bool allow_decrease_;
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_;
-  // Buffered most-recent message. Mutex guards swap.
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_sub_;
+  // Buffered most-recent message. Mutex guards swap. Same mutex also
+  // protects pending_clear_, which is set by clearCallback and consumed
+  // (then re-zeroed) at the start of updateCosts.
   std::mutex msg_mtx_;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_msg_;
   bool has_new_msg_;
+  bool pending_clear_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

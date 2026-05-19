@@ -18,9 +18,11 @@ using nav2_costmap_2d::FREE_SPACE;
 
 LocalMirrorLayer::LocalMirrorLayer()
 : source_topic_("/local_costmap/costmap"),
+  clear_topic_("/local_mirror_layer/clear"),
   track_unknown_space_(true),
   allow_decrease_(false),
   has_new_msg_(false),
+  pending_clear_(false),
   touched_min_x_(0.0),
   touched_min_y_(0.0),
   touched_max_x_(0.0),
@@ -38,11 +40,13 @@ void LocalMirrorLayer::onInitialize()
 
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("source_topic", rclcpp::ParameterValue("/local_costmap/costmap"));
+  declareParameter("clear_topic", rclcpp::ParameterValue("/local_mirror_layer/clear"));
   declareParameter("track_unknown_space", rclcpp::ParameterValue(true));
   declareParameter("allow_decrease", rclcpp::ParameterValue(false));
 
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "source_topic", source_topic_);
+  node->get_parameter(name_ + "." + "clear_topic", clear_topic_);
   node->get_parameter(name_ + "." + "track_unknown_space", track_unknown_space_);
   node->get_parameter(name_ + "." + "allow_decrease", allow_decrease_);
 
@@ -53,6 +57,16 @@ void LocalMirrorLayer::onInitialize()
   sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
     source_topic_, qos,
     std::bind(&LocalMirrorLayer::mapCallback, this, std::placeholders::_1));
+
+  // Clear-request topic: pressing Y on the controller publishes an
+  // Empty message here. updateCosts() consumes the flag on its next
+  // cycle and zeroes this layer's accumulator within the current
+  // source-msg footprint, then re-stamps live obstacles in the same
+  // cycle. Cells outside the local's footprint are left alone (so
+  // the persistent global map further from the robot survives).
+  clear_sub_ = node->create_subscription<std_msgs::msg::Empty>(
+    clear_topic_, rclcpp::QoS(1).reliable(),
+    std::bind(&LocalMirrorLayer::clearCallback, this, std::placeholders::_1));
 
   // TF is needed when the source costmap publishes in a different
   // frame than the layered costmap (e.g. local in odom, global in
@@ -100,6 +114,19 @@ void LocalMirrorLayer::mapCallback(
   std::lock_guard<std::mutex> lock(msg_mtx_);
   latest_msg_ = msg;
   has_new_msg_ = true;
+}
+
+void LocalMirrorLayer::clearCallback(
+  std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
+{
+  {
+    std::lock_guard<std::mutex> lock(msg_mtx_);
+    pending_clear_ = true;
+  }
+  RCLCPP_INFO(
+    rclcpp::get_logger("nav2_costmap_2d"),
+    "LocalMirrorLayer clear requested — wiping accumulator inside the "
+    "current local-costmap footprint on next update cycle");
 }
 
 void LocalMirrorLayer::updateBounds(
@@ -163,18 +190,27 @@ void LocalMirrorLayer::updateCosts(
 
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg;
   bool have_new;
+  bool do_clear;
   {
     std::lock_guard<std::mutex> lock(msg_mtx_);
     msg = latest_msg_;
     have_new = has_new_msg_;
     has_new_msg_ = false;
+    do_clear = pending_clear_;
+    pending_clear_ = false;
   }
 
   // Stamp the latest source message into the layer's own costmap.
   // Cells already present in the layer (from previous publishes)
   // stay — they only get overwritten if the new cost is higher
   // (or, if allow_decrease_, by any non-NO_INFORMATION value).
-  if (msg && have_new) {
+  //
+  // If a clear was requested (do_clear), the source-msg footprint
+  // block below also zeroes existing cells inside that footprint
+  // BEFORE the stamping loop, so accumulated smears behind the
+  // robot disappear and the same cycle re-paints whatever the
+  // local actually sees right now.
+  if (msg && (have_new || do_clear)) {
     const unsigned int src_w = msg->info.width;
     const unsigned int src_h = msg->info.height;
     const double src_res = msg->info.resolution;
@@ -219,7 +255,29 @@ void LocalMirrorLayer::updateCosts(
       }
     }
 
-    if (msg) {
+    // Clear pass: if Y was pressed, zero the layer's accumulator over
+    // every cell that falls inside the current source-msg footprint.
+    // Runs BEFORE the stamping loop so the same updateCosts call
+    // re-paints whatever the local actually sees right now on top.
+    // Cells outside this footprint are untouched — persistent global
+    // map beyond the robot's current view survives.
+    if (msg && do_clear) {
+      for (unsigned int sy = 0; sy < src_h; ++sy) {
+        const double wy_src = src_oy + (sy + 0.5) * src_res;
+        for (unsigned int sx = 0; sx < src_w; ++sx) {
+          const double wx_src = src_ox + (sx + 0.5) * src_res;
+          const double wx = cos_t * wx_src - sin_t * wy_src + dx;
+          const double wy = sin_t * wx_src + cos_t * wy_src + dy;
+          unsigned int mx, my;
+          if (!worldToMap(wx, wy, mx, my)) {
+            continue;
+          }
+          costmap_[my * size_x_ + mx] = NO_INFORMATION;
+        }
+      }
+    }
+
+    if (msg && have_new) {
       // Layer's resolution is the host's resolution (set by matchSize).
       // If src_res differs we still proceed — each source cell maps to
       // whatever host cell its center falls into.

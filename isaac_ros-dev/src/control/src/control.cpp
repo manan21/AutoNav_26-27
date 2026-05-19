@@ -10,7 +10,7 @@
 #include "autonav_interfaces/srv/configure_control.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/bool.hpp"
-#include "nav2_msgs/srv/clear_entire_costmap.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -183,14 +183,16 @@ class ControlNode : public rclcpp::Node {
     bool currX = false;
     bool prevX = false;
 
-    // Y button rising-edge -> clear global costmap. Testing aid during
-    // mission iteration when accumulated obstacle cells block planning.
-    // Index 2 matches the existing controller.set_y(joy_msg->buttons[2])
-    // mapping below. If a wrong container mount swaps X and Y, swap this
-    // index with the X autonomous-toggle index in joystick_callback.
+    // Y button rising-edge -> clear accumulated marks in the global
+    // costmap's LocalMirrorLayer within the robot's current local-
+    // costmap footprint. Fire-and-forget publish on /local_mirror_layer
+    // /clear; the layer subscribes there, zeroes its accumulator inside
+    // the local footprint on its next update cycle, and the same cycle
+    // re-stamps live obstacles on top — so smears behind the robot
+    // disappear without losing persistent map further away.
     bool currY_clear = false;
     bool prevY_clear = false;
-    rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr clear_local_mirror_pub_;
 
     // PHASE D — gravity-vector grade compensation state.
     double latest_a_fwd_ = 0.0;             // EWMA-filtered body-X accel.
@@ -235,18 +237,16 @@ class ControlNode : public rclcpp::Node {
 
         prevX = currX;
 
-        // Y rising-edge -> request global costmap clear. Fires in both
-        // AUTO and MANUAL modes since the costmap state is shared.
-        // No service_is_ready() gate — rclcpp queues async_send_request
-        // regardless; we want the press to register even if the server
-        // is briefly busy clearing+rebuilding from a previous call.
+        // Y rising-edge -> publish on /local_mirror_layer/clear. Fires
+        // in both AUTO and MANUAL modes since the costmap state is
+        // shared. Pub-and-forget — the layer's subscription handles it
+        // on its own update cycle without blocking the joy callback.
         int curr_y_btn = (joy_msg->buttons.size() > 2) ? joy_msg->buttons[2] : 0;
         currY_clear = curr_y_btn != 0;
-        if (!prevY_clear && currY_clear && clear_global_costmap_client_) {
-            auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
-            clear_global_costmap_client_->async_send_request(req);
+        if (!prevY_clear && currY_clear && clear_local_mirror_pub_) {
+            clear_local_mirror_pub_->publish(std_msgs::msg::Empty());
             RCLCPP_INFO(this->get_logger(),
-                "Y pressed -> /global_costmap/clear_entirely_global_costmap");
+                "Y pressed -> /local_mirror_layer/clear");
         }
         prevY_clear = currY_clear;
 
@@ -760,11 +760,13 @@ class ControlNode : public rclcpp::Node {
         controllerSub = this->create_subscription<sensor_msgs::msg::Joy>(
             controller_topic, 10, std::bind(&ControlNode::joystick_callback, this, std::placeholders::_1));
 
-        // Client backing the Y-button shortcut that clears the global
-        // costmap during testing. Service is hosted by nav2_costmap_2d
-        // on the global_costmap node.
-        clear_global_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
-            "/global_costmap/clear_entirely_global_costmap");
+        // Publisher backing the Y-button costmap clear. Subscribed by
+        // LocalMirrorLayer on the global_costmap node, which zeroes
+        // accumulated cells inside the current local-costmap footprint
+        // on its next update cycle. QoS depth 1 reliable matches the
+        // layer's subscription.
+        clear_local_mirror_pub_ = this->create_publisher<std_msgs::msg::Empty>(
+            "/local_mirror_layer/clear", rclcpp::QoS(1).reliable());
 
         // PHASE D — IMU subscription for gravity-vector grade compensation.
         // imu_topic param defaults to /sick_scansegment_xd/imu_inflated
