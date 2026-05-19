@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 
@@ -598,6 +599,11 @@ void LineLayer::updateOrigin(double new_origin_x, double new_origin_y)
 void
 LineLayer::clearCallback(std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
 {
+  // DIAG sentinel — independent of rclcpp logging routing.
+  if (FILE * fp = std::fopen("/tmp/line_layer_clear_fired", "a")) {
+    std::fprintf(fp, "fired\n");
+    std::fclose(fp);
+  }
   double rx, ry;
   bool have;
   {
