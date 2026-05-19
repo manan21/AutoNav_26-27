@@ -1252,25 +1252,11 @@ class HudWindow(QMainWindow):
         options_layout.addWidget(self.btn_playback)
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
 
-        # Play ROS Bag — wraps `ros2 bag play` as a subprocess and
-        # routes the replayed topics through the GUI's live-mode
-        # subscriptions. Distinct from the CSV/MP4 Playback Mode
-        # above: bag playback shows up on the *live* canvases (real
-        # camera/lidar/costmap widgets), not on the scrubber-driven
-        # playback page.
+        # ROS bag playback state — populated by the Playback Mode
+        # page's row scanner, driven by `ros2 bag play` subprocesses.
+        # The poll timer detects natural end-of-bag and clears the
+        # row so the operator doesn't have to.
         self._bag_play_proc = None
-        self._bag_play_btn_label_idle = "Play ROS Bag"
-        self._bag_play_btn_label_busy = "Stop Bag Play"
-        self.btn_play_bag = QPushButton(self._bag_play_btn_label_idle)
-        self.btn_play_bag.setStyleSheet(button_style)
-        self.btn_play_bag.setFocusPolicy(Qt.NoFocus)
-        self.btn_play_bag.clicked.connect(self._on_play_bag_clicked)
-        options_layout.addWidget(self.btn_play_bag)
-        self._nav_buttons.append(
-            (self.btn_play_bag, self._bag_play_btn_label_idle, button_style)
-        )
-        # Poll the subprocess at 2 Hz so a natural end-of-bag flips
-        # the button text back without the operator having to click.
         self._bag_play_poll_timer = QTimer(self)
         self._bag_play_poll_timer.setInterval(500)
         self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
@@ -3157,48 +3143,111 @@ class HudWindow(QMainWindow):
         self._update_selection()
 
     def _scan_csv_files(self, button_style, csv_label_style):
-        """Scan _CSV_DIR for .csv files and populate the grid + nav list."""
+        """Populate the Playback grid with every replayable session
+        under _CSV_DIR. Two source kinds are supported, both shown in
+        the same list (newest sessions first) so legacy CSV/MP4 runs
+        and new ROS bag runs can coexist while we transition:
+
+          * ROS bag — a directory containing ``metadata.yaml``
+            (either the entry itself, or a nested ``<entry>/bag/``
+            which is the t000 layout). Loads via ``ros2 bag play``
+            into the live canvases.
+          * Legacy CSV — a ``.csv`` file at the top level OR the
+            first CSV inside a session subdirectory. Loads via the
+            scrubber-driven _load_and_play_csv path.
+
+        Each row is tagged in the label so the operator can tell
+        which path will run. Name kept (``_scan_csv_files``) for
+        compatibility with the page-show plumbing.
+        """
         # Clear existing grid and nav buttons (except the exit button at the end)
         exit_btn_entry = None
         if self._playback_nav_buttons:
-            # Preserve the exit button (last entry)
             last = self._playback_nav_buttons[-1]
             if last[1] == "Exit Playback":
                 exit_btn_entry = last
 
         self._playback_nav_buttons.clear()
 
-        # Remove all items from the grid
         while self._csv_grid.count():
             item = self._csv_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
-        csv_dir = self._CSV_DIR
-        csv_entries = []  # (display_name, csv_path)
-        if os.path.isdir(csv_dir):
-            # Flat CSVs in the top-level directory
-            csv_entries.extend(sorted(
-                (f, os.path.join(csv_dir, f))
-                for f in os.listdir(csv_dir) if f.lower().endswith('.csv')
-            ))
-            # Subdirectories containing CSVs — show one entry per folder
-            for entry in sorted(os.listdir(csv_dir)):
-                subdir = os.path.join(csv_dir, entry)
-                if os.path.isdir(subdir):
-                    # Find the first CSV in this folder
-                    csvs = sorted(f for f in os.listdir(subdir) if f.lower().endswith('.csv'))
-                    if csvs:
-                        csv_entries.append((f'Folder:  {entry}', os.path.join(subdir, csvs[0])))
+        logs_dir = self._CSV_DIR
+        # Each entry: (sort_key, display_name, kind, path)
+        #   kind == 'bag' → path is the bag directory
+        #   kind == 'csv' → path is the CSV file
+        entries = []
+        if os.path.isdir(logs_dir):
+            # Top-level .csv files (legacy flat layout)
+            for f in os.listdir(logs_dir):
+                if f.lower().endswith('.csv'):
+                    full = os.path.join(logs_dir, f)
+                    entries.append((
+                        os.path.getmtime(full),
+                        f'CSV  {f}',
+                        'csv',
+                        full,
+                    ))
+            # Session sub-directories — could be a bag, a CSV folder,
+            # or a hybrid t000 session (bag/ subdir + sidecar csv).
+            for entry in os.listdir(logs_dir):
+                sess_dir = os.path.join(logs_dir, entry)
+                if not os.path.isdir(sess_dir):
+                    continue
+                # ROS bag at the session level?
+                if os.path.isfile(os.path.join(sess_dir, 'metadata.yaml')):
+                    entries.append((
+                        os.path.getmtime(sess_dir),
+                        f'BAG  {entry}',
+                        'bag',
+                        sess_dir,
+                    ))
+                    continue
+                # t000 nested layout: <session>/bag/metadata.yaml.
+                # If we find one, register that as the playable
+                # source AND still look for legacy CSVs in the same
+                # session folder so the operator can pick either.
+                nested = os.path.join(sess_dir, 'bag')
+                if (os.path.isdir(nested)
+                        and os.path.isfile(os.path.join(nested, 'metadata.yaml'))):
+                    entries.append((
+                        os.path.getmtime(nested),
+                        f'BAG  {entry}',
+                        'bag',
+                        nested,
+                    ))
+                # Legacy: first CSV in the session folder.
+                csvs = sorted(
+                    f for f in os.listdir(sess_dir)
+                    if f.lower().endswith('.csv')
+                )
+                if csvs:
+                    full = os.path.join(sess_dir, csvs[0])
+                    entries.append((
+                        os.path.getmtime(full),
+                        f'CSV  {entry}',
+                        'csv',
+                        full,
+                    ))
 
-        for i, (display_name, full_path) in enumerate(csv_entries):
+        # Newest sessions first so the just-recorded run is easy to find.
+        entries.sort(key=lambda e: e[0], reverse=True)
+
+        for i, (_t, display_name, kind, full_path) in enumerate(entries):
             btn = QPushButton("Load")
             btn.setStyleSheet(button_style)
             btn.setFocusPolicy(Qt.NoFocus)
-            btn.clicked.connect(
-                lambda checked=False, p=full_path: self._load_and_play_csv(p)
-            )
+            if kind == 'bag':
+                btn.clicked.connect(
+                    lambda checked=False, p=full_path: self._load_and_play_bag(p)
+                )
+            else:
+                btn.clicked.connect(
+                    lambda checked=False, p=full_path: self._load_and_play_csv(p)
+                )
             self._csv_grid.addWidget(btn, i, 0)
             self._playback_nav_buttons.append((btn, "Load", button_style))
 
@@ -6193,36 +6242,25 @@ class HudWindow(QMainWindow):
         self._show_playback_page()
 
     # -----------------------------------------------------------------
-    # ROS bag playback — wraps `ros2 bag play` as a subprocess and
-    # routes the replayed topics through the GUI's live subscriptions.
+    # ROS bag playback — wraps `ros2 bag play` as a subprocess. The
+    # bag's messages replay onto the same topic names the GUI's live
+    # subscriptions watch, so the live canvases reanimate exactly as
+    # they looked during the original test session.
     # -----------------------------------------------------------------
-    def _on_play_bag_clicked(self):
-        # Toggle: if a bag is already playing, stop it. Otherwise
-        # prompt for a bag dir, switch to live mode (so the GUI is
-        # subscribed to the topics the bag will republish), and spawn
-        # `ros2 bag play` in its own process group so we can SIGINT
-        # cleanly later.
-        if self._bag_play_proc is not None and self._bag_play_proc.poll() is None:
-            self._stop_bag_play()
-            return
-        # Default to /autonav/logs (where t000 writes bags); fall back
-        # to home if that doesn't exist outside the container.
-        start_dir = '/autonav/logs'
-        if not Path(start_dir).exists():
-            start_dir = os.path.expanduser('~')
-        bag_dir = QFileDialog.getExistingDirectory(
-            self, 'Select ROS bag directory', start_dir
-        )
-        if not bag_dir:
-            return
-        if not (Path(bag_dir) / 'metadata.yaml').exists():
-            self._gui_log_msg(
-                f"Not a ROS bag directory (no metadata.yaml): {bag_dir}"
-            )
-            return
-        # The bag's topics replay onto the same names the GUI's live
-        # subscriptions watch. Live mode must be on or the topics
-        # won't be subscribed and the screens won't repopulate.
+    def _load_and_play_bag(self, bag_dir):
+        """Replace any running playback / live source with this bag.
+        Called by the "Load" buttons in the Playback Mode grid."""
+        # Make sure nothing else is fighting for the topics: stop a
+        # prior bag, stop any CSV-based playback timer (the historical
+        # PB state machine is still here, just dormant), and DO NOT
+        # stop live mode — live mode IS what makes the bag's replayed
+        # messages reach the GUI canvases. Start live mode if it
+        # isn't already on.
+        self._stop_bag_play()
+        try:
+            self._stop_playback()
+        except Exception:
+            pass
         if not self._live_active:
             self._start_live_mode()
         try:
@@ -6240,15 +6278,13 @@ class HudWindow(QMainWindow):
             self._bag_play_proc = None
             return
         self._gui_log_msg(f"Playing bag: {bag_dir}")
-        self._set_nav_btn_style(
-            self.btn_play_bag, self._toggle_on_style
-        )
-        self.btn_play_bag.setText(self._bag_play_btn_label_busy)
         self._bag_play_poll_timer.start()
+        # Pop back to the main page so the operator sees the live
+        # canvases reanimate from the bag.
+        self._show_main_page()
 
     def _stop_bag_play(self):
-        """SIGINT the bag-playback subprocess and reset button state.
-        Idempotent."""
+        """SIGINT the bag-playback subprocess. Idempotent."""
         proc = self._bag_play_proc
         if proc is not None and proc.poll() is None:
             try:
@@ -6265,13 +6301,9 @@ class HudWindow(QMainWindow):
                 proc.wait()
         self._bag_play_proc = None
         self._bag_play_poll_timer.stop()
-        self.btn_play_bag.setText(self._bag_play_btn_label_idle)
-        self._set_nav_btn_style(
-            self.btn_play_bag, self._pb_button_style
-        )
 
     def _bag_play_poll(self):
-        """Detect natural end-of-bag and reset button state."""
+        """Detect natural end-of-bag and clear state."""
         if self._bag_play_proc is None:
             self._bag_play_poll_timer.stop()
             return
@@ -6279,10 +6311,6 @@ class HudWindow(QMainWindow):
             self._gui_log_msg("Bag playback finished")
             self._bag_play_proc = None
             self._bag_play_poll_timer.stop()
-            self.btn_play_bag.setText(self._bag_play_btn_label_idle)
-            self._set_nav_btn_style(
-                self.btn_play_bag, self._pb_button_style
-            )
 
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
