@@ -1033,6 +1033,21 @@ class HudWindow(QMainWindow):
         self._screen_locked = False
         self._lock_password = "@cro123"
         self._lock_overlay = None
+        # Test-recording overlay (REC mode). Same window-fill /
+        # mouse-pass-through pattern as the lock overlay, but driven
+        # by /data/toggle_collect instead of a hotkey. The device dots
+        # also color-ramp black↔red at 2 Hz so the operator can see
+        # both peripherally (overlay) and dot-by-dot (which topics
+        # are actually in the bag).
+        self._rec_overlay = None
+        self._rec_active = False
+        self._rec_phase_t0 = None
+        # Snapshot of every status_dots stylesheet taken at the moment
+        # REC turns on, so we can restore the pre-REC look when it
+        # turns off (the participation-pulse code reasserts its own
+        # styling on the next tick either way; the snapshot handles
+        # the gap).
+        self._dot_styles_before_rec = None
         self._lock_password_input = None
         self._lock_password_visible = False
         self._lock_hint_label = None
@@ -2734,6 +2749,16 @@ class HudWindow(QMainWindow):
         self._duplicate_poll_timer.setInterval(10000)
         self._duplicate_poll_timer.timeout.connect(self._poll_watched_publishers)
         self._duplicate_poll_timer.start()
+
+        # REC indicator timer — reads HudNode.latest_recording_active
+        # each tick. When the bag recorder is active, ramps device
+        # dots black↔red at 2 Hz and shows the transparent overlay.
+        # Always-on (cheap when REC is off — early returns after one
+        # bool read + one comparison).
+        self._rec_timer = QTimer(self)
+        self._rec_timer.setInterval(50)  # 20 Hz tick = 10 frames per 2 Hz cycle
+        self._rec_timer.timeout.connect(self._rec_tick)
+        self._rec_timer.start()
 
         top_layout.addWidget(viz_frame, stretch=2)
 
@@ -4993,6 +5018,92 @@ class HudWindow(QMainWindow):
         self._lock_overlay = overlay
         return overlay
 
+    # -----------------------------------------------------------------
+    # REC mode — driven by /data/toggle_collect from base_automator
+    # -----------------------------------------------------------------
+    def _build_rec_overlay(self):
+        """Lazy-construct the transparent REC overlay (faint red wash
+        + thin solid red border) on first need. Same window-fill +
+        mouse-pass-through pattern as the lock overlay."""
+        central = self.centralWidget()
+        if central is None:
+            return None
+        overlay = QFrame(central)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.setStyleSheet(
+            "QFrame {"
+            "  background-color: rgba(255, 0, 0, 14);"
+            "  border: 4px solid rgba(255, 0, 0, 200);"
+            "}"
+        )
+        overlay.hide()
+        self._rec_overlay = overlay
+        return overlay
+
+    def _rec_tick(self):
+        """20 Hz tick. Reads HudNode.latest_recording_active and:
+          • On OFF→ON edge: snapshot existing dot styles, show the
+            overlay.
+          • While ON: ramp every status dot's background between
+            #000000 and #ff0000 on a 2 Hz cosine.
+          • On ON→OFF edge: restore the snapshotted styles, hide the
+            overlay. (The existing participation-pulse code will
+            reassert correct colors on its own next tick; the
+            snapshot just spares us a flash of stale red.)
+        """
+        node = getattr(self, '_ros_node', None)
+        active = bool(getattr(node, 'latest_recording_active', False))
+
+        if active and not self._rec_active:
+            # OFF → ON
+            try:
+                self._dot_styles_before_rec = {
+                    k: w.styleSheet() for k, w in self.status_dots.items()
+                }
+            except Exception:
+                self._dot_styles_before_rec = None
+            if self._rec_overlay is None:
+                self._build_rec_overlay()
+            if self._rec_overlay is not None:
+                self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
+                self._rec_overlay.show()
+                self._rec_overlay.raise_()
+            self._rec_phase_t0 = time.monotonic()
+
+        if not active and self._rec_active:
+            # ON → OFF
+            if self._dot_styles_before_rec is not None:
+                for k, style in self._dot_styles_before_rec.items():
+                    w = self.status_dots.get(k)
+                    if w is not None:
+                        try:
+                            w.setStyleSheet(style)
+                        except Exception:
+                            pass
+            self._dot_styles_before_rec = None
+            if self._rec_overlay is not None:
+                self._rec_overlay.hide()
+            self._rec_phase_t0 = None
+
+        self._rec_active = active
+        if not active:
+            return
+
+        # Cosine ramp: spends a beat at each extreme rather than just
+        # crossing through. 2 Hz cycle ⇒ period 500 ms.
+        t = time.monotonic() - (self._rec_phase_t0 or time.monotonic())
+        ramp = 0.5 * (1.0 - math.cos(2.0 * math.pi * 2.0 * t))
+        r = int(255 * ramp)
+        style = (
+            f"background-color: rgb({r}, 0, 0); "
+            "border-radius: 7px; border: none;"
+        )
+        for w in self.status_dots.values():
+            try:
+                w.setStyleSheet(style)
+            except Exception:
+                pass
+
     def _toggle_screen_lock(self):
         """Ctrl+Shift+L entry point (only called when unlocked)."""
         if self._screen_locked:
@@ -5084,10 +5195,13 @@ class HudWindow(QMainWindow):
         self._gui_log_msg("Screen unlocked")
 
     def resizeEvent(self, event):
-        """Keep the lock overlay sized to the window and the auto badge pinned."""
+        """Keep the lock + REC overlays sized to the window and the
+        auto badge pinned."""
         super().resizeEvent(event)
         if self._lock_overlay is not None:
             self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        if self._rec_overlay is not None:
+            self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
         self._position_auto_badge()
 
     def showEvent(self, event):
@@ -7416,6 +7530,11 @@ class HudWindow(QMainWindow):
         and drive the "Local EKF" / "Map EKF" status rows from the
         freshness of their fused-output topics.
 
+        REC mode owns the dots while a test recording is active —
+        early-return so the participation pulse doesn't flicker
+        against the black↔red ramp. Snapshot/restore in _rec_tick
+        repaints the right colors on REC-off.
+
         Devices NOT participating in any EKF fall through this
         method untouched — their styling is owned by the existing
         _live_set_dot_received / _live_dot_flash_tick path. This
@@ -7425,6 +7544,9 @@ class HudWindow(QMainWindow):
         what tells the operator "the EKF just elevated this
         device" or "the EKF just lost it."
         """
+        # REC ownership of dots — see method docstring.
+        if getattr(self, '_rec_active', False):
+            return
         node = self._ros_node
         if node is None:
             return
@@ -7755,6 +7877,18 @@ if _HAS_ROS:
                 self._cb_autonomous_mode, _RELIABLE_QOS,
             )
 
+            # Test recording state — the t000_automator publishes True
+            # on the A-button press that starts a test, False on the
+            # press that ends it. Drives the GUI's REC indicator:
+            # device-dot black↔red ramp + transparent red overlay over
+            # the central widget so the operator can see at a glance
+            # that a bag is being recorded.
+            self.latest_recording_active = False
+            self.create_subscription(
+                Bool, '/data/toggle_collect',
+                self._cb_recording_toggle, _RELIABLE_QOS,
+            )
+
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
             self._camera_in_ts.append(self.last_msg_t['image'])
@@ -7959,6 +8093,11 @@ if _HAS_ROS:
             # so the GUI badge always reflects the *actual* robot state
             # rather than what we last published.
             self.latest_autonomous_mode = bool(msg.data)
+
+        def _cb_recording_toggle(self, msg):
+            # base_automator.start_test/stop_test publish True/False
+            # here. HudWindow's REC-ramp timer reads this every tick.
+            self.latest_recording_active = bool(msg.data)
 
 
 def main(args=None):
