@@ -64,9 +64,22 @@ void LocalMirrorLayer::onInitialize()
   // source-msg footprint, then re-stamps live obstacles in the same
   // cycle. Cells outside the local's footprint are left alone (so
   // the persistent global map further from the robot survives).
+  //
+  // Explicitly bind this subscription to the Layer's callback_group_
+  // (passed in by Costmap2DROS during initialize()). That's the group
+  // the costmap's dedicated SingleThreadedExecutor actually spins.
+  // Without this, the subscription lands on the lifecycle node's
+  // default callback group; debugging on hardware showed that group's
+  // callbacks never fire even though `ros2 node info` lists the
+  // subscription. mapCallback above happens to work without this
+  // binding because nav2 happens to keep its default group serviced
+  // through other paths — but the Empty subscription does not.
+  rclcpp::SubscriptionOptions clear_sub_options;
+  clear_sub_options.callback_group = callback_group_;
   clear_sub_ = node->create_subscription<std_msgs::msg::Empty>(
     clear_topic_, rclcpp::QoS(1).reliable(),
-    std::bind(&LocalMirrorLayer::clearCallback, this, std::placeholders::_1));
+    std::bind(&LocalMirrorLayer::clearCallback, this, std::placeholders::_1),
+    clear_sub_options);
 
   // TF is needed when the source costmap publishes in a different
   // frame than the layered costmap (e.g. local in odom, global in
