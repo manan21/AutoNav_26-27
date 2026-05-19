@@ -287,18 +287,17 @@ global_costmap:
       origin_x: -3.0
       origin_y: -3.0
       track_unknown_space: true
-      # NO sensor data is fed directly into the global costmap.
-      # The two contributors are:
-      #   static_layer       → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer → /local_costmap/costmap → persistent memory of local obstacles/lines.
-      #   line_layer         → /line_points directly, non-clearing, so seen lane boundaries remain in global even after leaving camera view.
+      # No detector topic is consumed directly by the global costmap.
+      # The contributors are:
+      #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
+      #   local_mirror_layer      → /local_costmap/costmap → persistent memory of local obstacle/lidar evidence, but still allows local FREE cells to clear smears.
+      #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
       # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
-      # line_layer is intentionally placed AFTER inflation_layer so the
-      # global inflation (1.10 m, for lidar/PCA obstacles) doesn't
-      # re-inflate line cells. line_layer applies its own 0.90 m
-      # graded inflation directly in stampPoints — see
-      # buildInflationKernel in line_layer.cpp.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_layer"]
+      # line_memory_mirror_layer is intentionally placed AFTER
+      # inflation_layer so the already-inflated local line costs from
+      # /line_costmap are copied into global without being inflated a
+      # second time.
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -319,25 +318,21 @@ global_costmap:
         # 180° mark / 140° clear split in slam.launch.py — those 20° wedges
         # on each side keep edge marks alive in the local rolling grid until
         # the window moves on, and the mirror inherits that persistence.
-        # Long-term line memory comes from the global line_layer below
-        # (direct /line_points subscription), which max-merges on top of
-        # this layer in plugin order.
+        # This mirror is for the full local obstacle view. Dedicated
+        # long-term line memory comes from line_memory_mirror_layer
+        # below, sourced from the local line-only costmap.
         allow_decrease: true
         track_unknown_space: true
 
-      line_layer:
-        plugin: "line_layer::LineLayer"
+      line_memory_mirror_layer:
+        plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
-        line_topic: "/line_points"
-        transform_tolerance: 0.2
-        max_message_age_ms: 750
-        # Global line memory is indefinite: negative max means no memory cap.
-        observation_persistence_ms: 0
-        observation_persistence_resolution_m: 0.10
-        max_persisted_points: -1
-        clearing: False
-        rolling_window: False
-        publish_costmap: False
+        source_topic: /line_costmap
+        # Strict accumulator mode for line memory: line cells promoted
+        # from the local line-only costmap stay in global for the
+        # whole run and are not cleared by later FREE cells.
+        allow_decrease: false
+        track_unknown_space: true
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
