@@ -17,6 +17,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(autonav_interfaces REQUIRED)
@@ -47,6 +48,17 @@ add_executable(line_detector
 target_compile_features(line_detector PUBLIC cxx_std_17)
 set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Force -O3 + -DNDEBUG for the host-side host code regardless of the
+# workspace's CMAKE_BUILD_TYPE. Same reasoning as grade_detector below
+# (see its block): colcon's default build type is empty → GCC defaults
+# to -O0, which strangles the per-frame CUDA/OpenCV wrapper here
+# (cv_bridge copies, integral image setup, post-processing). The .cu
+# compilation pass uses CMake's CUDA flags so we scope this to CXX only.
+target_compile_options(line_detector PRIVATE
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+  $<$<COMPILE_LANGUAGE:CXX>:-DNDEBUG>
+)
+
 target_include_directories(line_detector
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -60,6 +72,8 @@ target_include_directories(line_detector
 ament_target_dependencies(line_detector
   rclcpp
   autonav_interfaces
+  nav_msgs
+  std_msgs
   cv_bridge
   tf2_ros
   tf2_eigen

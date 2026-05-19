@@ -92,11 +92,13 @@ fi
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}°"
 
-# Hold the publisher alive until a subscriber matches and the message
-# is flushed. `ros2 topic pub --once` drops the message on the floor if
-# NAV2's /goal_pose subscriber hasn't completed DDS discovery against
-# our ephemeral publisher yet — this is what was breaking send_goal.sh
-# while the GPS handler (long-lived publisher) kept working.
+# Publish to /goal_pose with a long-lived publisher. Both bt_navigator
+# (which translates the topic into a NavigateToPose action) and
+# map_padder (which extends the global-costmap corridor toward the goal)
+# subscribe here — if map_padder misses the message, the goal lands in a
+# LETHAL region and the planner can't path into it. We therefore wait
+# for BOTH expected subscribers, then hold the publisher alive long
+# enough for RELIABLE delivery to ACK before tearing down.
 python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
 import math, sys, time
 import rclpy
@@ -108,8 +110,11 @@ x = float(sys.argv[1])
 y = float(sys.argv[2])
 yaw_deg = float(sys.argv[3])
 
-WAIT_FOR_SUB_TIMEOUT_S = 5.0
-POST_PUBLISH_SPIN_S = 0.5
+# bt_navigator + map_padder. Raise if more /goal_pose subscribers are
+# added; partial delivery presents as silent path-planning failure.
+EXPECTED_SUB_COUNT = 2
+WAIT_FOR_SUB_TIMEOUT_S = 10.0
+POST_PUBLISH_SPIN_S = 3.0
 
 rclpy.init()
 node = Node('send_goal_pose_pub')
@@ -117,12 +122,14 @@ qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
 pub = node.create_publisher(PoseStamped, '/goal_pose', qos)
 
 deadline = time.monotonic() + WAIT_FOR_SUB_TIMEOUT_S
-while time.monotonic() < deadline and pub.get_subscription_count() < 1:
+while time.monotonic() < deadline and pub.get_subscription_count() < EXPECTED_SUB_COUNT:
     rclpy.spin_once(node, timeout_sec=0.1)
 
-if pub.get_subscription_count() < 1:
-    print(f'WARNING: no subscriber on /goal_pose after {WAIT_FOR_SUB_TIMEOUT_S}s '
-          f'(is bt_navigator running?) — publishing anyway',
+matched = pub.get_subscription_count()
+if matched < EXPECTED_SUB_COUNT:
+    print(f'WARNING: only {matched}/{EXPECTED_SUB_COUNT} subscribers on '
+          f'/goal_pose after {WAIT_FOR_SUB_TIMEOUT_S}s — publishing anyway '
+          f'(delivery may be partial; planner may not path)',
           file=sys.stderr)
 
 msg = PoseStamped()

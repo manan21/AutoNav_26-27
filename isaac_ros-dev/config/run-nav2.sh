@@ -10,7 +10,7 @@ ros2 launch nav2_bringup navigation_launch.py \
 launchpid=$!
 trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
 
-sleep 3
+sleep 0.5
 echo "[GUI_READY] NAV2"
 
 wait "$launchpid"

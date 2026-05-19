@@ -9,7 +9,7 @@ ros2 launch sick_scan_xd sick_multiscan.launch.py \
 launchpid=$!
 trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
 
-sleep 3
+sleep 0.5
 echo "[GUI_READY] Lidar"
 
 wait "$launchpid"

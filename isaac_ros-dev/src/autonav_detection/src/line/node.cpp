@@ -1,7 +1,12 @@
 #include "autonav_detection/detection.hpp"
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 #include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
+#include <std_msgs/msg/int32_multi_array.hpp>
+#include <std_msgs/msg/multi_array_dimension.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 
 #include <geometry_msgs/msg/vector3.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -17,8 +22,14 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <mutex>
 #include <cstring>
+#include <queue>
+#include <sstream>
+#include <unordered_map>
 
 class LineDetectorNode : public rclcpp::Node {
 
@@ -33,12 +44,42 @@ public:
 		this->declare_parameter("depth_camera_topic", "/zed/zed_node/depth/depth_registered");
 		this->declare_parameter("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info");
 		this->declare_parameter("line_points_topic", "line_points");
-		this->declare_parameter("target_frame", "map");
+		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true);
 		this->declare_parameter("publish_interval_ms", 250);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
-		this->declare_parameter("line_hold_timeout_ms", 0);
+		this->declare_parameter("line_hold_timeout_ms", 800);
+		this->declare_parameter("line_memory_max_points", 12000);
+		this->declare_parameter("roi_min_y_fraction", 0.35);
+		this->declare_parameter("max_depth_m", 6.0);
+		this->declare_parameter("base_min_x_m", -0.25);
+		this->declare_parameter("base_max_x_m", 5.0);
+		this->declare_parameter("base_max_abs_y_m", 3.0);
+		this->declare_parameter("ground_z_m", -0.11);
+		this->declare_parameter("ground_z_tolerance_m", 0.25);
+		this->declare_parameter("cluster_min_points", 15);
+		this->declare_parameter("cluster_min_length_m", 0.30);
+		this->declare_parameter("cluster_max_width_m", 0.25);
+		this->declare_parameter("cluster_min_aspect_ratio", 3.0);
+		this->declare_parameter("cluster_link_distance_m", 0.18);
+		this->declare_parameter("temporal_voxel_size_m", 0.10);
+		this->declare_parameter("temporal_min_hits", 2);
+		this->declare_parameter("temporal_confirm_window_ms", 750);
+		this->declare_parameter("confirmed_hold_ms", 10000);
+		this->declare_parameter("odom_topic", "/local_ekf/odom");
+		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
+		this->declare_parameter("debug_image_publish_enabled", true);
+		this->declare_parameter("debug_image_write_enabled", false);
+		// When true, project pixels using the LATEST available TF instead
+		// of the TF at the exact depth-image stamp. Avoids "extrapolation
+		// into the future" failures when the dynamic-TF receive lag
+		// (odom/base_link arriving 0.4-3s behind the depth capture stamp)
+		// causes every per-frame lookup to throw. Tradeoff: introduces
+		// parallax error of ~(velocity × tf_lag) during motion — at 1 m/s
+		// and 0.5s lag, ~50 cm forward drift on the projected point.
+		// Safe for stationary or slow-moving testing.
+		this->declare_parameter("tf_use_latest", false);
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
 		// in cuda.cu; now plumbed through line_detector.yaml).
@@ -51,12 +92,34 @@ public:
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
 		std::string camera_info_topic = this->get_parameter("camera_info_topic").as_string();
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
+		std::string odom_topic = this->get_parameter("odom_topic").as_string();
 		target_frame_ = this->get_parameter("target_frame").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
 		publish_interval_ms_ = std::max<int64_t>(50, this->get_parameter("publish_interval_ms").as_int());
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
+		line_memory_max_points_ = std::max<int64_t>(1, this->get_parameter("line_memory_max_points").as_int());
+		roi_min_y_fraction_ = std::clamp(this->get_parameter("roi_min_y_fraction").as_double(), 0.0, 1.0);
+		max_depth_m_ = std::max(0.1, this->get_parameter("max_depth_m").as_double());
+		base_min_x_m_ = this->get_parameter("base_min_x_m").as_double();
+		base_max_x_m_ = this->get_parameter("base_max_x_m").as_double();
+		base_max_abs_y_m_ = std::max(0.0, this->get_parameter("base_max_abs_y_m").as_double());
+		ground_z_m_ = this->get_parameter("ground_z_m").as_double();
+		ground_z_tolerance_m_ = std::max(0.0, this->get_parameter("ground_z_tolerance_m").as_double());
+		cluster_min_points_ = std::max<int>(1, this->get_parameter("cluster_min_points").as_int());
+		cluster_min_length_m_ = std::max(0.0, this->get_parameter("cluster_min_length_m").as_double());
+		cluster_max_width_m_ = std::max(0.01, this->get_parameter("cluster_max_width_m").as_double());
+		cluster_min_aspect_ratio_ = std::max(1.0, this->get_parameter("cluster_min_aspect_ratio").as_double());
+		cluster_link_distance_m_ = std::max(0.01, this->get_parameter("cluster_link_distance_m").as_double());
+		temporal_voxel_size_m_ = std::max(0.01, this->get_parameter("temporal_voxel_size_m").as_double());
+		temporal_min_hits_ = std::max<int>(1, this->get_parameter("temporal_min_hits").as_int());
+		temporal_confirm_window_ms_ = std::max<int64_t>(0, this->get_parameter("temporal_confirm_window_ms").as_int());
+		confirmed_hold_ms_ = std::max<int64_t>(0, this->get_parameter("confirmed_hold_ms").as_int());
+		yaw_rate_gate_rad_s_ = std::max<double>(0.0, this->get_parameter("yaw_rate_gate_rad_s").as_double());
+		debug_image_publish_enabled_ = this->get_parameter("debug_image_publish_enabled").as_bool();
+		debug_image_write_enabled_ = this->get_parameter("debug_image_write_enabled").as_bool();
+		tf_use_latest_ = this->get_parameter("tf_use_latest").as_bool();
 		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
 		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
 		sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
@@ -73,6 +136,22 @@ public:
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Line memory max points: %ld", line_memory_max_points_);
+		RCLCPP_INFO(this->get_logger(), "Odom topic: %s", odom_topic.c_str());
+		RCLCPP_INFO(this->get_logger(),
+			"Geometry gates: roi_y>=%.2f depth<=%.2fm base_x=[%.2f, %.2f] |base_y|<=%.2f ground=%.2f±%.2f",
+			roi_min_y_fraction_, max_depth_m_, base_min_x_m_, base_max_x_m_,
+			base_max_abs_y_m_, ground_z_m_, ground_z_tolerance_m_);
+		RCLCPP_INFO(this->get_logger(),
+			"Cluster gates: min_points=%d min_length=%.2fm max_width=%.2fm min_aspect=%.2f link=%.2fm",
+			cluster_min_points_, cluster_min_length_m_, cluster_max_width_m_,
+			cluster_min_aspect_ratio_, cluster_link_distance_m_);
+		RCLCPP_INFO(this->get_logger(),
+			"Temporal gates: voxel=%.2fm min_hits=%d confirm_window=%ld ms hold=%ld ms yaw_gate=%.2f rad/s",
+			temporal_voxel_size_m_, temporal_min_hits_, temporal_confirm_window_ms_,
+			confirmed_hold_ms_, yaw_rate_gate_rad_s_);
+		RCLCPP_INFO(this->get_logger(), "Debug image topics: %s", debug_image_publish_enabled_ ? "true" : "false");
+		RCLCPP_INFO(this->get_logger(), "Debug image writes: %s", debug_image_write_enabled_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(),
 			"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
 			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
@@ -97,6 +176,9 @@ public:
 		_camera_model_sub = this->create_subscription<sensor_msgs::msg::CameraInfo>(
 			camera_info_topic, 1, std::bind(&LineDetectorNode::cameraInfoCallback, this, std::placeholders::_1));
 
+		_odom_sub = this->create_subscription<nav_msgs::msg::Odometry>(
+			odom_topic, 10, std::bind(&LineDetectorNode::odomCallback, this, std::placeholders::_1));
+
 		// Publishers
 		_line_pub = this->create_publisher<autonav_interfaces::msg::LinePoints>(
 			line_points_topic, 1);
@@ -107,6 +189,26 @@ public:
 
 		_line_point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
 			"lines_pointcloud", 10);
+
+		// Publish as a stock std_msgs/Int32MultiArray so the native
+		// (host-side) HUD can subscribe with only /opt/ros/humble on
+		// its Python path — no custom interface dep needed.
+		// Wire format: data[0] = image_width, data[1] = image_height,
+		// data[2..] is an interleaved [x0, y0, x1, y1, ...] pixel
+		// list. The same width/height also appear as layout.dim for
+		// callers that prefer the typed accessor.
+		_line_pixels_pub = this->create_publisher<std_msgs::msg::Int32MultiArray>(
+			"/line_detection/line_pixels", 10);
+
+		_diagnostics_pub = this->create_publisher<std_msgs::msg::String>(
+			"/line_detection/diagnostics", 10);
+
+		_debug_raw_image_pub = this->create_publisher<sensor_msgs::msg::Image>(
+			"/line_detection/debug/raw", 10);
+		_debug_mask_image_pub = this->create_publisher<sensor_msgs::msg::Image>(
+			"/line_detection/debug/mask", 10);
+		_debug_overlay_image_pub = this->create_publisher<sensor_msgs::msg::Image>(
+			"/line_detection/debug/overlay", 10);
 			
 		// Create service for line detection
 		_line_service = this->create_service<autonav_interfaces::srv::AnvLines>(
@@ -125,16 +227,23 @@ private:
 	rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr _zed_subscriber;
 	rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr _zed_depth_subscriber;
 	rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr _camera_model_sub;
+	rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr _odom_sub;
 
 	rclcpp::Service<autonav_interfaces::srv::AnvLines>::SharedPtr _line_service;
 	rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _clear_lines_service;
 	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _line_point_cloud_pub; 
 	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_pub;
+	rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr _line_pixels_pub;
+	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _diagnostics_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_raw_image_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_mask_image_pub;
+	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_overlay_image_pub;
 	rclcpp::TimerBase::SharedPtr _line_timer;
 
 	std::mutex callback_lock;
 	std::mutex depth_callback_lock;
 	std::mutex camera_params_lock;
+	std::mutex odom_lock;
 	
 	sensor_msgs::msg::Image::SharedPtr latest_img;
 	sensor_msgs::msg::Image::SharedPtr latest_depth_img;
@@ -152,13 +261,86 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
+	int64_t line_memory_max_points_ = 20000;
+	double  roi_min_y_fraction_ = 0.35;
+	double  max_depth_m_ = 6.0;
+	double  base_min_x_m_ = -0.25;
+	double  base_max_x_m_ = 5.0;
+	double  base_max_abs_y_m_ = 3.0;
+	double  ground_z_m_ = -0.11;
+	double  ground_z_tolerance_m_ = 0.25;
+	int     cluster_min_points_ = 15;
+	double  cluster_min_length_m_ = 0.30;
+	double  cluster_max_width_m_ = 0.25;
+	double  cluster_min_aspect_ratio_ = 3.0;
+	double  cluster_link_distance_m_ = 0.18;
+	double  temporal_voxel_size_m_ = 0.10;
+	int     temporal_min_hits_ = 2;
+	int64_t temporal_confirm_window_ms_ = 750;
+	int64_t confirmed_hold_ms_ = 10000;
+	double  yaw_rate_gate_rad_s_ = 0.6;
+	bool    debug_image_publish_enabled_ = true;
+	bool    debug_image_write_enabled_ = false;
+	bool    tf_use_latest_ = false;
 	double  brightness_threshold_ = 220.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;
 	float   mew_threshold_ = 200.0f;
+	double  latest_yaw_rate_rad_s_ = 0.0;
+	bool    has_odom_ = false;
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
+
+	struct DetectionFrameStats {
+		int raw_pixels = 0;
+		int filtered_pixels = 0;
+		int kept_components = 0;
+		int roi_rejects = 0;
+		int depth_rejects = 0;
+		int geometry_rejects = 0;
+		int out_of_bounds = 0;
+		int transform_rejects = 0;
+		int cluster_rejects = 0;
+		int kept_clusters = 0;
+		int candidate_points = 0;
+		int confirmed_points = 0;
+		int yaw_gated_frames = 0;
+	};
+
+	struct CandidatePoint {
+		Eigen::Vector3d target;
+		Eigen::Vector3d base;
+		cv::Point pixel;
+	};
+
+	struct VoxelKey {
+		int x = 0;
+		int y = 0;
+
+		bool operator==(const VoxelKey & other) const {
+			return x == other.x && y == other.y;
+		}
+	};
+
+	struct VoxelKeyHash {
+		std::size_t operator()(const VoxelKey & key) const {
+			const auto ux = static_cast<uint64_t>(static_cast<uint32_t>(key.x));
+			const auto uy = static_cast<uint64_t>(static_cast<uint32_t>(key.y));
+			return std::hash<uint64_t>{}((ux << 32) ^ uy);
+		}
+	};
+
+	struct VoxelState {
+		Eigen::Vector3d point;
+		cv::Point2d pixel;
+		rclcpp::Time first_seen;
+		rclcpp::Time last_seen;
+		int hits = 0;
+		bool confirmed = false;
+	};
+
+	std::unordered_map<VoxelKey, VoxelState, VoxelKeyHash> temporal_voxels_;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -169,30 +351,52 @@ private:
 	
 	void line_callback();
 
-	std::vector<Eigen::Vector3d> map_transform(
+	std::vector<CandidatePoint> map_transform(
 		const sensor_msgs::msg::Image::SharedPtr depth_msg, 
 		int2* line_points, 
-		int line_points_len); 
+		int line_points_len,
+		DetectionFrameStats & stats);
 
 	bool imagesAreSynchronized(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
 
-	autonav_interfaces::msg::LinePoints makeLinePointsMessage(
-		const std::vector<Eigen::Vector3d> & points,
-		const builtin_interfaces::msg::Time & stamp) const;
-
 	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
-	void publishLivePointCloud(
-		const std::vector<Eigen::Vector3d> & points,
-		const builtin_interfaces::msg::Time & stamp);
+	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
 	void publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp);
-	void cacheAndPublishLinePoints(
+	void publishEmptyLineSet(const builtin_interfaces::msg::Time & stamp, const char * reason);
+	// Republish the currently-held confirmed voxels with a fresh stamp.
+	// Used on transient failure paths (missing image, RGB/depth desync,
+	// cv_bridge error, etc.) so the costmap keeps seeing the lines that
+	// were last successfully confirmed instead of flickering empty on
+	// every bad frame. Mirrors the lidar PCA pipeline's cached-cloud
+	// republish pattern — points stay live for `confirmed_hold_ms`.
+	void republishConfirmedCache(const builtin_interfaces::msg::Time & stamp);
+	std::vector<CandidatePoint> filterLineClusters(
+		const std::vector<CandidatePoint> & points,
+		DetectionFrameStats & stats) const;
+	std::vector<Eigen::Vector3d> updateTemporalConfidence(
+		const std::vector<CandidatePoint> & candidates,
+		const rclcpp::Time & stamp,
+		bool yaw_gated,
+		DetectionFrameStats & stats);
+	VoxelKey voxelKeyForPoint(const Eigen::Vector3d & point) const;
+	bool isYawGated();
+	void publishConfirmedOrEmpty(
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
-	void publishHeldOrEmpty(const char * reason);
+	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
+	std::vector<cv::Point> confirmedDebugPixels() const;
+	void publishDebugImages(
+		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+		const cv::Mat & gray_image,
+		const int2 * line_points,
+		int line_points_len,
+		const std::vector<CandidatePoint> & accepted_candidates,
+		const std::vector<cv::Point> & confirmed_pixels);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
+	void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
 };
 
 void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
@@ -214,6 +418,13 @@ void LineDetectorNode::cameraInfoCallback(const sensor_msgs::msg::CameraInfo::Sh
 				this->get_parameter("line_points_topic").as_string().c_str());
 		}
 	}
+}
+
+void LineDetectorNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+	std::lock_guard<std::mutex> lock(odom_lock);
+	latest_yaw_rate_rad_s_ = msg->twist.twist.angular.z;
+	has_odom_ = true;
 }
 
 sensor_msgs::msg::PointCloud2 createPointCloud(
@@ -275,41 +486,23 @@ bool LineDetectorNode::imagesAreSynchronized(
 	return true;
 }
 
-autonav_interfaces::msg::LinePoints LineDetectorNode::makeLinePointsMessage(
-	const std::vector<Eigen::Vector3d> & points,
-	const builtin_interfaces::msg::Time & stamp) const
-{
-	auto message = autonav_interfaces::msg::LinePoints();
-	message.header.frame_id = target_frame_;
-	message.header.stamp = stamp;
-	message.points.reserve(points.size());
-	for (const auto & point : points) {
-		geometry_msgs::msg::Vector3 vec_msg;
-		vec_msg.x = point.x();
-		vec_msg.y = point.y();
-		vec_msg.z = point.z();
-		message.points.emplace_back(vec_msg);
-	}
-	return message;
-}
-
 void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoints & message)
 {
 	_line_pub->publish(message);
 }
 
-void LineDetectorNode::publishLivePointCloud(
-	const std::vector<Eigen::Vector3d> & points,
-	const builtin_interfaces::msg::Time & stamp)
+void LineDetectorNode::publishPointCloudFromLineMessage(
+	const autonav_interfaces::msg::LinePoints & message)
 {
 	std::vector<std::array<float, 3>> point_cloud_points;
-	point_cloud_points.reserve(points.size());
-	for (const auto & point : points) {
+	point_cloud_points.reserve(message.points.size());
+	for (const auto & point : message.points) {
 		point_cloud_points.push_back(
-			{static_cast<float>(point.x()), static_cast<float>(point.y()), static_cast<float>(point.z())});
+			{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)});
 	}
 
-	sensor_msgs::msg::PointCloud2 pc = createPointCloud(point_cloud_points, target_frame_, stamp);
+	sensor_msgs::msg::PointCloud2 pc =
+		createPointCloud(point_cloud_points, message.header.frame_id, message.header.stamp);
 	_line_point_cloud_pub->publish(pc);
 }
 
@@ -319,62 +512,55 @@ void LineDetectorNode::publishEmptyPointCloud(const builtin_interfaces::msg::Tim
 	_line_point_cloud_pub->publish(pc);
 }
 
-void LineDetectorNode::cacheAndPublishLinePoints(
-	const std::vector<Eigen::Vector3d> & points,
-	const builtin_interfaces::msg::Time & stamp)
+void LineDetectorNode::publishEmptyLineSet(
+	const builtin_interfaces::msg::Time & stamp,
+	const char * reason)
 {
-	last_valid_message_ = makeLinePointsMessage(points, stamp);
-	last_valid_detection_time_ = this->now();
-	has_last_valid_message_ = !last_valid_message_.points.empty();
-	publishLinePoints(last_valid_message_);
-}
-
-void LineDetectorNode::publishHeldOrEmpty(const char * reason)
-{
-	publishEmptyPointCloud(this->now());
-
-	if (has_last_valid_message_ && !last_valid_message_.points.empty()) {
-		const rclcpp::Time now = this->now();
-
-		if (line_hold_timeout_ms_ > 0) {
-			const rclcpp::Duration hold_timeout =
-				rclcpp::Duration::from_nanoseconds(line_hold_timeout_ms_ * 1000000LL);
-			const rclcpp::Duration age = now - last_valid_detection_time_;
-			if (age > hold_timeout) {
-				auto empty_message = autonav_interfaces::msg::LinePoints();
-				empty_message.header.frame_id = target_frame_;
-				empty_message.header.stamp = now;
-				has_last_valid_message_ = false;
-				last_valid_message_ = autonav_interfaces::msg::LinePoints();
-				last_valid_detection_time_ = now;
-				RCLCPP_WARN_THROTTLE(
-					get_logger(), *get_clock(), 3000,
-					"Clearing held line obstacle set after %s because cached data is %.1f ms old",
-					reason, age.seconds() * 1000.0);
-				publishLinePoints(empty_message);
-				return;
-			}
-		}
-
-		auto held_message = last_valid_message_;
-		held_message.header.stamp = now;
-		RCLCPP_WARN_THROTTLE(
-			get_logger(), *get_clock(), 3000,
-			"Reusing remembered line obstacle set after %s",
-			reason);
-		publishLinePoints(held_message);
-		return;
-	}
-
-	RCLCPP_WARN_THROTTLE(
-		get_logger(), *get_clock(), 3000,
-		"Skipping line publish after %s because no valid line set is cached yet",
-		reason);
-
 	auto empty_message = autonav_interfaces::msg::LinePoints();
 	empty_message.header.frame_id = target_frame_;
+	// Same rationale as publishConfirmedOrEmpty — stamp with now() so
+	// the empty publish doesn't appear "stale" to downstream gates.
 	empty_message.header.stamp = this->now();
+	last_valid_message_ = empty_message;
+	has_last_valid_message_ = false;
+	publishEmptyPointCloud(stamp);
 	publishLinePoints(empty_message);
+	RCLCPP_WARN_THROTTLE(
+		get_logger(), *get_clock(), 3000,
+		"Publishing empty line set after %s", reason);
+}
+
+void LineDetectorNode::republishConfirmedCache(
+	const builtin_interfaces::msg::Time & stamp)
+{
+	// Walk the temporal voxel cache and emit whatever is still confirmed.
+	// Run the same hold-expiry sweep that updateTemporalConfidence does
+	// so this path doesn't grow stale voxels indefinitely.
+	const rclcpp::Time now_stamp(stamp);
+	const rclcpp::Duration hold =
+		rclcpp::Duration::from_nanoseconds(confirmed_hold_ms_ * 1000000LL);
+	for (auto it = temporal_voxels_.begin(); it != temporal_voxels_.end();) {
+		if ((now_stamp - it->second.last_seen) > hold) {
+			it = temporal_voxels_.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	std::vector<Eigen::Vector3d> confirmed;
+	confirmed.reserve(std::min(
+		temporal_voxels_.size(),
+		static_cast<size_t>(line_memory_max_points_)));
+	for (const auto & item : temporal_voxels_) {
+		if (!item.second.confirmed) {
+			continue;
+		}
+		confirmed.push_back(item.second.point);
+		if (confirmed.size() >= static_cast<size_t>(line_memory_max_points_)) {
+			break;
+		}
+	}
+	publishConfirmedOrEmpty(confirmed, stamp);
 }
 
 void LineDetectorNode::clearRememberedLines(
@@ -385,6 +571,7 @@ void LineDetectorNode::clearRememberedLines(
 
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
+	temporal_voxels_.clear();
 	last_valid_detection_time_ = this->now();
 
 	auto empty_message = autonav_interfaces::msg::LinePoints();
@@ -394,19 +581,20 @@ void LineDetectorNode::clearRememberedLines(
 	publishEmptyPointCloud(empty_message.header.stamp);
 
 	response->success = true;
-	response->message = "Cleared remembered line obstacle set";
-	RCLCPP_INFO(this->get_logger(), "Cleared remembered line obstacle set");
+	response->message = "Cleared confirmed line obstacle set";
+	RCLCPP_INFO(this->get_logger(), "Cleared confirmed line obstacle set");
 }
 
 /**
  * Converts a list of image indices to target frame coordinates.
  */
-std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
+std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	const sensor_msgs::msg::Image::SharedPtr depth_msg, 
 	int2* line_points, 
-	int line_points_len) 
+	int line_points_len,
+	DetectionFrameStats & stats)
 {
-	std::vector<Eigen::Vector3d> depth_line_points;
+	std::vector<CandidatePoint> depth_line_points;
 	
 	// Early validation
 	if (line_points_len <= 0) {
@@ -443,39 +631,77 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 	const size_t bytes_per_pixel = sizeof(float);
 	const uint8_t* depth_ptr_u8 = depth_msg->data.data();
 	std::string frame_id = depth_msg->header.frame_id;
-	std::vector<std::array<float, 3>> pc_vec;
-	pc_vec.reserve(std::min(line_points_len, 10000));
 
 	// Check if transform is available
 	bool transform_available = false;
-	geometry_msgs::msg::TransformStamped transform;
+	geometry_msgs::msg::TransformStamped target_transform;
+	geometry_msgs::msg::TransformStamped base_transform;
 	
 	try {
-		const rclcpp::Time depth_stamp(depth_msg->header.stamp);
-		transform = tf_buffer.lookupTransform(
-			target_frame_,
-			frame_id, 
-			depth_stamp,
-			rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL)
-		);
+		if (tf_use_latest_) {
+			// Time(0) tells TF2 to return the most recent available
+			// transform. Use this when dynamic-TF receive lag (odom
+			// arriving seconds behind the depth capture stamp) makes
+			// per-frame exact-stamp lookups fail.
+			const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		} else {
+			const rclcpp::Time depth_stamp(depth_msg->header.stamp);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		}
 		transform_available = true;
 	} catch (const tf2::TransformException& ex) {
 		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-			"TF not available at image stamp (%s <- %s): %s",
-			target_frame_.c_str(), frame_id.c_str(), ex.what());
+			"TF not available (%s/base_link <- %s, mode=%s): %s",
+			target_frame_.c_str(), frame_id.c_str(),
+			tf_use_latest_ ? "latest" : "stamped", ex.what());
 	}
 
 	int valid_count = 0;
-	int invalid_depth = 0;
-	int out_of_bounds = 0;
 	int tf_success = 0;
+	const int roi_min_y = static_cast<int>(
+		std::round(static_cast<double>(depth_msg->height) * roi_min_y_fraction_));
+
+	// Convert TF stamps to plain Eigen affine matrices ONCE, then do the
+	// per-pixel 3D transform as a single 4x4 multiply instead of
+	// tf2::doTransform's PointStamped/Quaternion roundtrip (~3-5 us each
+	// call -> ~40 ms/frame at 16k pixels). The transforms are constant
+	// across all pixels in this frame anyway.
+	Eigen::Affine3d T_target = Eigen::Affine3d::Identity();
+	Eigen::Affine3d T_base = Eigen::Affine3d::Identity();
+	if (transform_available) {
+		T_target = tf2::transformToEigen(target_transform);
+		T_base = tf2::transformToEigen(base_transform);
+	}
+
+	// Pre-decimate. With 16k+ raw line pixels and a 10 cm temporal voxel
+	// size, candidates within 10 cm collapse to one voxel anyway. Striding
+	// to keep ~4000 pixels preserves voxel coverage while cutting the
+	// per-pixel transform/branch cost by ~4x.
+	const int kTargetMaxPoints = 4000;
+	const int stride = std::max(1, line_points_len / kTargetMaxPoints);
 
 	// Process each line point
-	for (int i = 0; i < line_points_len; i++) {
+	for (int i = 0; i < line_points_len; i += stride) {
+		if (line_points[i].y < roi_min_y) {
+			stats.roi_rejects++;
+			continue;
+		}
+
 		// Bounds checking
 		if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
 			line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
-			out_of_bounds++;
+			stats.out_of_bounds++;
 			continue;
 		}
 
@@ -484,74 +710,432 @@ std::vector<Eigen::Vector3d> LineDetectorNode::map_transform(
 		if (offset + sizeof(float) > depth_msg->data.size()) {
 			continue;
 		}
-		
+
 		float depth_m;
 		std::memcpy(&depth_m, depth_ptr_u8 + offset, sizeof(float));
-		
-		// 0.1m to 20m range
-		if (depth_m < 0.1f || depth_m > 20.0f || std::isnan(depth_m) || std::isinf(depth_m)) {
-			invalid_depth++;
+
+		if (depth_m < 0.1f || depth_m > static_cast<float>(max_depth_m_) ||
+			std::isnan(depth_m) || std::isinf(depth_m)) {
+			stats.depth_rejects++;
 			continue;
 		}
-		
+
 		valid_count++;
 
-		// Manual 3D proj
+		// Manual 3D proj — camera optical frame
 		double x_normalized = (line_points[i].x - cx) / fx;
 		double y_normalized = (line_points[i].y - cy) / fy;
-		
+
 		double px = x_normalized * depth_m;
 		double py = y_normalized * depth_m;
 		double pz = depth_m;
-		
+
 		if (std::isnan(px) || std::isnan(py) || std::isnan(pz)) {
 			continue;
 		}
 
-		// Add to pointcloud
-		pc_vec.push_back({static_cast<float>(px), static_cast<float>(py), static_cast<float>(pz)});
-
-		// TF to target frame if available
 		if (transform_available) {
-			try {
-				geometry_msgs::msg::PointStamped camera_point;
-				camera_point.header = depth_msg->header;
-				camera_point.point.x = px;
-				camera_point.point.y = py;
-				camera_point.point.z = pz;
-				
-				geometry_msgs::msg::PointStamped target_point;
-				tf2::doTransform(camera_point, target_point, transform);
-				
-				if (!std::isnan(target_point.point.x) && !std::isnan(target_point.point.y)) {
-					depth_line_points.emplace_back(
-						target_point.point.x,
-						target_point.point.y,
-						0.0  // Project to ground plane
-					);
-					tf_success++;
-				}
-			} catch (const std::exception& ex) {
+			const Eigen::Vector3d p_cam(px, py, pz);
+			const Eigen::Vector3d p_target = T_target * p_cam;
+			const Eigen::Vector3d p_base = T_base * p_cam;
+
+			if (!std::isfinite(p_target.x()) || !std::isfinite(p_target.y()) ||
+				!std::isfinite(p_base.x()) || !std::isfinite(p_base.y()) ||
+				!std::isfinite(p_base.z())) {
+				stats.transform_rejects++;
+				continue;
 			}
+
+			const bool in_geometry =
+				p_base.x() >= base_min_x_m_ &&
+				p_base.x() <= base_max_x_m_ &&
+				std::abs(p_base.y()) <= base_max_abs_y_m_ &&
+				std::abs(p_base.z() - ground_z_m_) <= ground_z_tolerance_m_;
+			if (!in_geometry) {
+				stats.geometry_rejects++;
+				continue;
+			}
+
+			CandidatePoint candidate;
+			candidate.target = Eigen::Vector3d(p_target.x(), p_target.y(), 0.0);
+			candidate.base = p_base;
+			candidate.pixel = cv::Point(line_points[i].x, line_points[i].y);
+			depth_line_points.emplace_back(candidate);
+			tf_success++;
 		}
 	}
 
 	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-		"Processing: %d valid, %d invalid_depth, %d out_of_bounds -> %d transformed points",
-		valid_count, invalid_depth, out_of_bounds, tf_success);
-
-	// Publish live detections only; remembered obstacles are represented by /line_points.
-	try {
-		if (!depth_line_points.empty()) {
-			publishLivePointCloud(depth_line_points, depth_msg->header.stamp);
-		} else {
-			publishEmptyPointCloud(depth_msg->header.stamp);
-		}
-	} catch (const std::exception& e) {
-		RCLCPP_ERROR_ONCE(get_logger(), "Pointcloud publish failed: %s", e.what());
-	}
+		"Processing: %d valid depth, %d depth rejects, %d ROI rejects, %d geometry rejects, %d out-of-bounds -> %d candidate points",
+		valid_count, stats.depth_rejects, stats.roi_rejects, stats.geometry_rejects,
+		stats.out_of_bounds, tf_success);
 
 	return depth_line_points;
+}
+
+std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::filterLineClusters(
+	const std::vector<CandidatePoint> & points,
+	DetectionFrameStats & stats) const
+{
+	std::vector<CandidatePoint> kept;
+	if (points.empty()) {
+		return kept;
+	}
+
+	const double link_distance_sq = cluster_link_distance_m_ * cluster_link_distance_m_;
+	std::unordered_map<VoxelKey, std::vector<int>, VoxelKeyHash> bins;
+	bins.reserve(points.size());
+	auto cluster_key_for_base = [this](const Eigen::Vector3d & point) {
+		return VoxelKey{
+			static_cast<int>(std::floor(point.x() / cluster_link_distance_m_)),
+			static_cast<int>(std::floor(point.y() / cluster_link_distance_m_))};
+	};
+
+	for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+		bins[cluster_key_for_base(points[i].base)].push_back(i);
+	}
+
+	std::vector<uint8_t> visited(points.size(), 0);
+	for (int seed = 0; seed < static_cast<int>(points.size()); ++seed) {
+		if (visited[seed]) {
+			continue;
+		}
+
+		std::vector<int> cluster_indices;
+		std::queue<int> q;
+		visited[seed] = 1;
+		q.push(seed);
+
+		while (!q.empty()) {
+			const int current = q.front();
+			q.pop();
+			cluster_indices.push_back(current);
+
+			const VoxelKey center = cluster_key_for_base(points[current].base);
+			for (int dx = -1; dx <= 1; ++dx) {
+				for (int dy = -1; dy <= 1; ++dy) {
+					const VoxelKey neighbor_key{center.x + dx, center.y + dy};
+					auto bin_it = bins.find(neighbor_key);
+					if (bin_it == bins.end()) {
+						continue;
+					}
+					for (const int candidate_idx : bin_it->second) {
+						if (visited[candidate_idx]) {
+							continue;
+						}
+						const double dx_m = points[current].base.x() - points[candidate_idx].base.x();
+						const double dy_m = points[current].base.y() - points[candidate_idx].base.y();
+						if ((dx_m * dx_m + dy_m * dy_m) <= link_distance_sq) {
+							visited[candidate_idx] = 1;
+							q.push(candidate_idx);
+						}
+					}
+				}
+			}
+		}
+
+		if (static_cast<int>(cluster_indices.size()) < cluster_min_points_) {
+			stats.cluster_rejects += static_cast<int>(cluster_indices.size());
+			continue;
+		}
+
+		// SHAPE-AGNOSTIC cluster acceptance. Lines on the AutoNav course
+		// can be straight, T/L junctions, or curves; PCA / minAreaRect
+		// shape gates assumed a dominant linear direction and rejected
+		// curved lines. The image-space CC filter (detection.cpp) already
+		// ensures pixel continuity + thinness; the 3D step only needs to
+		// confirm enough connected points to be meaningful, then trust
+		// upstream classification. Compute bbox extent for the min-length
+		// sanity check only.
+		double x_min = std::numeric_limits<double>::infinity();
+		double x_max = -std::numeric_limits<double>::infinity();
+		double y_min = std::numeric_limits<double>::infinity();
+		double y_max = -std::numeric_limits<double>::infinity();
+		for (const int idx : cluster_indices) {
+			const double x = points[idx].base.x();
+			const double y = points[idx].base.y();
+			x_min = std::min(x_min, x);
+			x_max = std::max(x_max, x);
+			y_min = std::min(y_min, y);
+			y_max = std::max(y_max, y);
+		}
+		const double bbox_extent = std::max(x_max - x_min, y_max - y_min);
+		if (bbox_extent < cluster_min_length_m_) {
+			stats.cluster_rejects += static_cast<int>(cluster_indices.size());
+			continue;
+		}
+
+		stats.kept_clusters++;
+		for (const int idx : cluster_indices) {
+			kept.push_back(points[idx]);
+		}
+	}
+
+	stats.candidate_points = static_cast<int>(kept.size());
+	return kept;
+}
+
+LineDetectorNode::VoxelKey LineDetectorNode::voxelKeyForPoint(const Eigen::Vector3d & point) const
+{
+	const double voxel = std::max(0.01, temporal_voxel_size_m_);
+	return VoxelKey{
+		static_cast<int>(std::floor(point.x() / voxel)),
+		static_cast<int>(std::floor(point.y() / voxel))};
+}
+
+bool LineDetectorNode::isYawGated()
+{
+	std::lock_guard<std::mutex> lock(odom_lock);
+	return has_odom_ && std::abs(latest_yaw_rate_rad_s_) > yaw_rate_gate_rad_s_;
+}
+
+std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
+	const std::vector<CandidatePoint> & candidates,
+	const rclcpp::Time & stamp,
+	bool yaw_gated,
+	DetectionFrameStats & stats)
+{
+	struct FrameVoxelAggregate {
+		Eigen::Vector3d point = Eigen::Vector3d::Zero();
+		cv::Point2d pixel{0.0, 0.0};
+		int count = 0;
+	};
+
+	std::unordered_map<VoxelKey, FrameVoxelAggregate, VoxelKeyHash> frame_voxels;
+	frame_voxels.reserve(candidates.size());
+	for (const auto & candidate : candidates) {
+		const VoxelKey key = voxelKeyForPoint(candidate.target);
+		auto & aggregate = frame_voxels[key];
+		aggregate.point += candidate.target;
+		aggregate.pixel.x += candidate.pixel.x;
+		aggregate.pixel.y += candidate.pixel.y;
+		aggregate.count++;
+	}
+
+	const rclcpp::Duration confirm_window =
+		rclcpp::Duration::from_nanoseconds(temporal_confirm_window_ms_ * 1000000LL);
+
+	for (auto & item : frame_voxels) {
+		const VoxelKey & key = item.first;
+		const int count = std::max(1, item.second.count);
+		Eigen::Vector3d point = item.second.point / count;
+		cv::Point2d pixel(
+			item.second.pixel.x / count,
+			item.second.pixel.y / count);
+		auto voxel_it = temporal_voxels_.find(key);
+
+		if (yaw_gated && (voxel_it == temporal_voxels_.end() || !voxel_it->second.confirmed)) {
+			continue;
+		}
+
+		if (voxel_it == temporal_voxels_.end()) {
+			VoxelState state;
+			state.point = point;
+			state.pixel = pixel;
+			state.first_seen = stamp;
+			state.last_seen = stamp;
+			state.hits = 1;
+			state.confirmed = temporal_min_hits_ <= 1;
+			temporal_voxels_[key] = state;
+			continue;
+		}
+
+		VoxelState & state = voxel_it->second;
+		const bool within_window = (stamp - state.last_seen) <= confirm_window;
+		if (!state.confirmed && !within_window) {
+			state.first_seen = stamp;
+			state.hits = 1;
+		} else if (!state.confirmed) {
+			state.hits++;
+		}
+		state.last_seen = stamp;
+		state.point = 0.6 * state.point + 0.4 * point;
+		state.pixel.x = 0.6 * state.pixel.x + 0.4 * pixel.x;
+		state.pixel.y = 0.6 * state.pixel.y + 0.4 * pixel.y;
+		if (state.hits >= temporal_min_hits_) {
+			state.confirmed = true;
+		}
+	}
+
+	const rclcpp::Duration hold =
+		rclcpp::Duration::from_nanoseconds(confirmed_hold_ms_ * 1000000LL);
+	for (auto it = temporal_voxels_.begin(); it != temporal_voxels_.end();) {
+		if ((stamp - it->second.last_seen) > hold) {
+			it = temporal_voxels_.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	std::vector<Eigen::Vector3d> confirmed;
+	confirmed.reserve(std::min(
+		temporal_voxels_.size(),
+		static_cast<size_t>(line_memory_max_points_)));
+	for (const auto & item : temporal_voxels_) {
+		if (!item.second.confirmed) {
+			continue;
+		}
+		confirmed.push_back(item.second.point);
+		if (confirmed.size() >= static_cast<size_t>(line_memory_max_points_)) {
+			break;
+		}
+	}
+
+	stats.confirmed_points = static_cast<int>(confirmed.size());
+	if (yaw_gated) {
+		stats.yaw_gated_frames = 1;
+	}
+	return confirmed;
+}
+
+void LineDetectorNode::publishConfirmedOrEmpty(
+	const std::vector<Eigen::Vector3d> & points,
+	const builtin_interfaces::msg::Time & stamp)
+{
+	if (points.empty()) {
+		publishEmptyLineSet(stamp, "unconfirmed or expired line evidence");
+		return;
+	}
+
+	auto message = autonav_interfaces::msg::LinePoints();
+	message.header.frame_id = target_frame_;
+	// Stamp with now(), not the depth frame's timestamp. The points
+	// published here are the *current* temporally-confirmed obstacle
+	// set (held for `confirmed_hold_ms`); they should pass downstream
+	// freshness gates (e.g. line_layer's max_message_age_ms) on every
+	// republish, not be rejected because they trace back to a depth
+	// frame that's now seconds old.
+	message.header.stamp = this->now();
+	message.points.reserve(points.size());
+	for (const auto & point : points) {
+		geometry_msgs::msg::Vector3 vec_msg;
+		vec_msg.x = point.x();
+		vec_msg.y = point.y();
+		vec_msg.z = point.z();
+		message.points.emplace_back(vec_msg);
+	}
+
+	last_valid_message_ = message;
+	last_valid_detection_time_ = rclcpp::Time(stamp);
+	has_last_valid_message_ = true;
+	publishPointCloudFromLineMessage(message);
+	publishLinePoints(message);
+}
+
+void LineDetectorNode::publishDiagnostics(
+	const DetectionFrameStats & stats,
+	const char * reason)
+{
+	std_msgs::msg::String msg;
+	std::ostringstream out;
+	out << "{"
+		<< "\"reason\":\"" << reason << "\","
+		<< "\"raw_pixels\":" << stats.raw_pixels << ","
+		<< "\"filtered_pixels\":" << stats.filtered_pixels << ","
+		<< "\"kept_components\":" << stats.kept_components << ","
+		<< "\"roi_rejects\":" << stats.roi_rejects << ","
+		<< "\"depth_rejects\":" << stats.depth_rejects << ","
+		<< "\"geometry_rejects\":" << stats.geometry_rejects << ","
+		<< "\"out_of_bounds\":" << stats.out_of_bounds << ","
+		<< "\"transform_rejects\":" << stats.transform_rejects << ","
+		<< "\"cluster_rejects\":" << stats.cluster_rejects << ","
+		<< "\"kept_clusters\":" << stats.kept_clusters << ","
+		<< "\"candidate_points\":" << stats.candidate_points << ","
+		<< "\"confirmed_points\":" << stats.confirmed_points << ","
+		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames
+		<< "}";
+	msg.data = out.str();
+	_diagnostics_pub->publish(msg);
+}
+
+std::vector<cv::Point> LineDetectorNode::confirmedDebugPixels() const
+{
+	std::vector<cv::Point> pixels;
+	pixels.reserve(temporal_voxels_.size());
+	for (const auto & item : temporal_voxels_) {
+		if (!item.second.confirmed) {
+			continue;
+		}
+		pixels.emplace_back(
+			static_cast<int>(std::round(item.second.pixel.x)),
+			static_cast<int>(std::round(item.second.pixel.y)));
+	}
+	return pixels;
+}
+
+void LineDetectorNode::publishDebugImages(
+	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+	const cv::Mat & gray_image,
+	const int2 * line_points,
+	int line_points_len,
+	const std::vector<CandidatePoint> & accepted_candidates,
+	const std::vector<cv::Point> & confirmed_pixels)
+{
+	if (!debug_image_publish_enabled_ || !camera_msg || gray_image.empty()) {
+		return;
+	}
+
+	const bool has_subscribers =
+		_debug_raw_image_pub->get_subscription_count() > 0 ||
+		_debug_mask_image_pub->get_subscription_count() > 0 ||
+		_debug_overlay_image_pub->get_subscription_count() > 0;
+	if (!has_subscribers) {
+		return;
+	}
+
+	cv::Mat raw_bgr;
+	try {
+		if (camera_msg->encoding == "bgr8") {
+			raw_bgr = cv_bridge::toCvShare(camera_msg, sensor_msgs::image_encodings::BGR8)->image.clone();
+		} else if (camera_msg->encoding == "bgra8") {
+			cv::Mat bgra = cv_bridge::toCvShare(camera_msg, sensor_msgs::image_encodings::BGRA8)->image;
+			cv::cvtColor(bgra, raw_bgr, cv::COLOR_BGRA2BGR);
+		} else {
+			cv::cvtColor(gray_image, raw_bgr, cv::COLOR_GRAY2BGR);
+		}
+	} catch (const cv_bridge::Exception & ex) {
+		cv::cvtColor(gray_image, raw_bgr, cv::COLOR_GRAY2BGR);
+	}
+
+	const std_msgs::msg::Header header = camera_msg->header;
+	const bool need_mask = _debug_mask_image_pub->get_subscription_count() > 0;
+	const bool need_overlay = _debug_overlay_image_pub->get_subscription_count() > 0;
+
+	if (_debug_raw_image_pub->get_subscription_count() > 0) {
+		_debug_raw_image_pub->publish(
+			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, raw_bgr).toImageMsg());
+	}
+	if (need_mask) {
+		cv::Mat mask;
+		cv::threshold(gray_image, mask, brightness_threshold_, 255, cv::THRESH_BINARY);
+		_debug_mask_image_pub->publish(
+			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::MONO8, mask).toImageMsg());
+	}
+	if (need_overlay) {
+		cv::Mat overlay = raw_bgr.clone();
+		const int n = std::max(0, line_points_len);
+		for (int i = 0; i < n; ++i) {
+			const int x = line_points[i].x;
+			const int y = line_points[i].y;
+			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
+				cv::circle(overlay, cv::Point(x, y), 2, cv::Scalar(0, 0, 255), -1);
+			}
+		}
+		for (const auto & candidate : accepted_candidates) {
+			const int x = candidate.pixel.x;
+			const int y = candidate.pixel.y;
+			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
+				cv::circle(overlay, candidate.pixel, 3, cv::Scalar(0, 255, 255), -1);
+			}
+		}
+		for (const auto & pixel : confirmed_pixels) {
+			if (0 <= pixel.x && pixel.x < overlay.cols && 0 <= pixel.y && pixel.y < overlay.rows) {
+				cv::circle(overlay, pixel, 4, cv::Scalar(0, 255, 0), -1);
+			}
+		}
+		_debug_overlay_image_pub->publish(
+			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, overlay).toImageMsg());
+	}
 }
 
 void LineDetectorNode::line_service(
@@ -596,20 +1180,27 @@ void LineDetectorNode::line_service(
 	}
 
 	// Detect lines
+	lines::LinePixelDetectionStats pixel_stats;
 	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image,
 				brightness_threshold_, half_window_size_,
-				sigma_threshold_, mew_threshold_);
+				sigma_threshold_, mew_threshold_,
+				debug_image_write_enabled_, &pixel_stats);
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
 
-	std::vector<Eigen::Vector3d> transformed_points = map_transform(depth_camera_msg, line_points, *line_points_len);
+	DetectionFrameStats stats;
+	stats.raw_pixels = pixel_stats.raw_pixels;
+	stats.filtered_pixels = pixel_stats.filtered_pixels;
+	stats.kept_components = pixel_stats.kept_components;
+	std::vector<CandidatePoint> transformed_points =
+		map_transform(depth_camera_msg, line_points, *line_points_len, stats);
 
 	// Populate response
 	for (const auto & point: transformed_points) {
 		geometry_msgs::msg::Vector3 vec_msg;
-		vec_msg.x = point.x();
-		vec_msg.y = point.y();
-		vec_msg.z = point.z();
+		vec_msg.x = point.target.x();
+		vec_msg.y = point.target.y();
+		vec_msg.z = point.target.z();
 		response->points.emplace_back(vec_msg);
 	}
 
@@ -620,6 +1211,8 @@ void LineDetectorNode::line_service(
 
 void LineDetectorNode::line_callback()
 {
+	DetectionFrameStats stats;
+
 	// Check prerequisites
 	if (!configured_){
 		return;
@@ -639,11 +1232,17 @@ void LineDetectorNode::line_callback()
 	}();
 
 	if (!camera_msg || !depth_msg) {
-		publishHeldOrEmpty("missing camera/depth image");
+		// Republish cached confirmed voxels (held for confirmed_hold_ms)
+		// instead of blanking the costmap. Matches lidar's cached-cloud
+		// republish pattern so the local_costmap sees stable line
+		// obstacles across transient input gaps.
+		republishConfirmedCache(this->now());
+		publishDiagnostics(stats, "missing camera/depth image");
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
-		publishHeldOrEmpty("RGB/depth desynchronization");
+		republishConfirmedCache(depth_msg->header.stamp);
+		publishDiagnostics(stats, "RGB/depth desynchronization");
 		return;
 	}
 
@@ -660,66 +1259,120 @@ void LineDetectorNode::line_callback()
 		}
 	} catch (cv_bridge::Exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-		publishHeldOrEmpty("cv_bridge exception");
+		republishConfirmedCache(depth_msg->header.stamp);
+		publishDiagnostics(stats, "cv_bridge exception");
 		return;
 	}
-	
+
 	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
 		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
-		publishHeldOrEmpty("invalid grayscale image");
+		republishConfirmedCache(depth_msg->header.stamp);
+		publishDiagnostics(stats, "invalid grayscale image");
 		return;
 	}
 
 	// Detect lines
 	std::pair<int2*,int*> line_pair;
+	lines::LinePixelDetectionStats pixel_stats;
 	try {
 		line_pair = lines::detect_line_pixels(cv_ptr->image,
 				brightness_threshold_, half_window_size_,
-				sigma_threshold_, mew_threshold_);
+				sigma_threshold_, mew_threshold_,
+				debug_image_write_enabled_, &pixel_stats);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Line detection failed: %s", e.what());
-		publishHeldOrEmpty("line detection failure");
+		republishConfirmedCache(depth_msg->header.stamp);
+		publishDiagnostics(stats, "line detection failure");
 		return;
 	}
 	
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
+	stats.raw_pixels = pixel_stats.raw_pixels;
+	stats.filtered_pixels = pixel_stats.filtered_pixels;
+	stats.kept_components = pixel_stats.kept_components;
 
 	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 		"Detected %d line pixels", *line_points_len);
-	
+
+	// Skip the 16k-pixel Int32MultiArray serialization when nobody listens.
+	// /line_detection/line_pixels is a debug feed for the native HUD; the
+	// costmap doesn't consume it. Saves ~3-8 ms/frame.
+	if (_line_pixels_pub->get_subscription_count() > 0) {
+		std_msgs::msg::Int32MultiArray px_msg;
+		std_msgs::msg::MultiArrayDimension dim_w;
+		dim_w.label = "width";
+		dim_w.size = camera_msg->width;
+		dim_w.stride = 0;
+		std_msgs::msg::MultiArrayDimension dim_h;
+		dim_h.label = "height";
+		dim_h.size = camera_msg->height;
+		dim_h.stride = 0;
+		px_msg.layout.dim.push_back(dim_w);
+		px_msg.layout.dim.push_back(dim_h);
+		const int n = *line_points_len;
+		px_msg.data.reserve(2 + 2 * n);
+		px_msg.data.push_back(static_cast<int32_t>(camera_msg->width));
+		px_msg.data.push_back(static_cast<int32_t>(camera_msg->height));
+		for (int i = 0; i < n; ++i) {
+			px_msg.data.push_back(line_points[i].x);
+			px_msg.data.push_back(line_points[i].y);
+		}
+		_line_pixels_pub->publish(px_msg);
+	}
+
 	if (*line_points_len == 0) {
-		publishHeldOrEmpty("empty line detection");
+		const rclcpp::Time stamp(depth_msg->header.stamp);
+		const bool yaw_gated = isYawGated();
+		std::vector<Eigen::Vector3d> confirmed =
+			updateTemporalConfidence({}, stamp, yaw_gated, stats);
+		publishConfirmedOrEmpty(confirmed, depth_msg->header.stamp);
+		publishDebugImages(
+			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			{}, confirmedDebugPixels());
+		publishDiagnostics(stats, "empty line detection");
 		delete[] line_points;
 		delete line_points_len;
 		return;
 	}
 
 	// Transform to target frame
-	std::vector<Eigen::Vector3d> transformed_points;
+	std::vector<CandidatePoint> transformed_points;
 	try {
-		transformed_points = map_transform(depth_msg, line_points, *line_points_len);
+		transformed_points = map_transform(depth_msg, line_points, *line_points_len, stats);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
-		publishHeldOrEmpty("transform failure");
+		republishConfirmedCache(depth_msg->header.stamp);
+		publishDiagnostics(stats, "transform failure");
 		delete[] line_points;
 		delete line_points_len;
 		return;
 	}
 
-	if (transformed_points.empty()) {
-		publishHeldOrEmpty("no transformed points");
-		delete[] line_points;
-		delete line_points_len;
-		return;
-	}
+	// Bypass BFS clustering. With the shape filter stripped (curves and
+	// T/L junctions aren't linear), all transformed candidates flow
+	// straight into temporal voxelization. updateTemporalConfidence
+	// already voxelizes at temporal_voxel_size_m (10 cm) so duplicates
+	// collapse there. Eliminates the BFS pass over 16k+ points per
+	// frame — was the main inline cost in line_callback that pinned
+	// publish rate to ~0.8 Hz.
+	std::vector<CandidatePoint> & clustered_points = transformed_points;
+	stats.candidate_points = static_cast<int>(transformed_points.size());
+	stats.kept_clusters = transformed_points.empty() ? 0 : 1;
 
-	// Cache and publish the latest detection set so brief misses do not flicker the line costmap.
-	cacheAndPublishLinePoints(transformed_points, depth_msg->header.stamp);
-	if (!transformed_points.empty()) {
-		RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-			"Published %zu line points", transformed_points.size());
-	}
+	const rclcpp::Time stamp(depth_msg->header.stamp);
+	const bool yaw_gated = isYawGated();
+	std::vector<Eigen::Vector3d> confirmed_points =
+		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
+	publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
+	publishDebugImages(
+		camera_msg, cv_ptr->image, line_points, *line_points_len,
+		clustered_points, confirmedDebugPixels());
+	publishDiagnostics(stats, yaw_gated ? "yaw gated" : "updated");
+
+	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+		"Line stability: %zu transformed, %zu clustered, %zu confirmed",
+		transformed_points.size(), clustered_points.size(), confirmed_points.size());
 
 	// Free memory
 	delete[] line_points;

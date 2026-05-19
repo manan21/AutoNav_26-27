@@ -58,7 +58,12 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
 #include <optional>
+#include <unordered_map>
+#include <vector>
 
 namespace line_layer
 {
@@ -78,9 +83,24 @@ public:
     nav2_costmap_2d::Costmap2D & master_grid,
     int min_i, int min_j, int max_i, int max_j);
 
+  // matchSize() is fired by Nav2 whenever the master global costmap
+  // changes geometry (e.g., map_padder grows its bounding box). The
+  // base CostmapLayer implementation resizes this layer's costmap_
+  // buffer but leaves it zero-initialized -- which would briefly drop
+  // every persisted line observation until the next updateCosts cycle
+  // restamps from persisted_points_. The override below restamps
+  // immediately, using the world-frame coordinates stored in
+  // persisted_points_, so the global costmap stays translationally
+  // locked to /map across resize events with no flicker gap.
+  void matchSize() override;
+
   virtual void reset()
   {
     resetMaps();
+    if (clearing_) {
+      std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+      persisted_points_.clear();
+    }
     current_ = false;
     need_recalculation_ = true;
   }
@@ -95,10 +115,39 @@ private:
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
 
   // Indicates that the entire gradient should be recalculated next time.
-  bool need_recalculation_;
+  // Atomic because the subscription thread sets it true in linePointCallback
+  // while the costmap-update thread reads and resets it in updateBounds.
+  std::atomic<bool> need_recalculation_;
   bool rolling_window_;
   bool publish_costmap_;
+  // If true (default, used by local costmap), resetMaps() runs every cycle and the layer reflects only the current message. If false (used in the global costmap), resetMaps() is skipped so cells accumulate forever — required for global obstacle memory when map_padder maintains a stable-sized grid.
+  bool clearing_;
   double transform_tolerance_;
+  int64_t max_message_age_ms_;
+  int64_t observation_persistence_ms_;
+  double observation_persistence_resolution_m_;
+  int max_persisted_points_;
+  // Line-specific inflation, baked into stampPoints so this layer can
+  // produce a different inflation radius than the global obstacle
+  // inflation_layer. The plugin order in nav2_paramsv2.yaml puts
+  // line_layer AFTER inflation_layer so the inflation_layer's larger
+  // obstacle radius doesn't re-inflate line cells.
+  double inflation_radius_;
+  double cost_scaling_factor_;
+  // Cells within this distance of a line are pinned to
+  // INSCRIBED_INFLATED_OBSTACLE; the exponential decay starts from
+  // there. Matching nav2's InflationLayer formula — without this
+  // offset the raw exp(-k*r) falloff from the center makes the
+  // visible halo ~⅓ of the configured inflation_radius_.
+  double inscribed_radius_;
+  // Cached inflation kernel: (dy, dx, cost) triplets within the
+  // inflation radius. Rebuilt lazily when the master grid resolution
+  // changes (matchSize). Without a cache, each stampPoints call would
+  // recompute exp() for every cell × every line point.
+  struct InflationOffset { int dy; int dx; unsigned char cost; };
+  std::vector<InflationOffset> inflation_kernel_;
+  double inflation_kernel_resolution_;
+  void buildInflationKernel(double resolution);
   void updateOrigin(double new_origin_x, double new_origin_y);
   void publishCostmap();
 
@@ -118,9 +167,31 @@ private:
   // when the wrapper sucks so you write a chiller one
   LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>> buffer_;
 
+  struct PersistentPoint
+  {
+    geometry_msgs::msg::Vector3 point;
+    rclcpp::Time stamp;
+  };
+  std::unordered_map<std::uint64_t, PersistentPoint> persisted_points_;
+  // Guards persisted_points_ across the subscription thread (linePointCallback
+  // persists on receipt for "lines can never be lost" reliability) and the
+  // costmap-update thread (updateCosts stamps from persisted_points_, also
+  // retries persistence when callback TF was unavailable).
+  std::mutex persisted_points_mutex_;
+
   void linePointCallback(autonav_interfaces::msg::LinePoints::ConstSharedPtr message);
   std::optional<std::vector<geometry_msgs::msg::Vector3>> transformPointsToGlobalFrame(
     const autonav_interfaces::msg::LinePoints & message);
+  bool hasObservationPersistence() const;
+  std::uint64_t persistenceKey(double x, double y) const;
+  void rememberPersistentPoints(
+    const std::vector<geometry_msgs::msg::Vector3> & points,
+    const rclcpp::Time & stamp);
+  std::vector<geometry_msgs::msg::Vector3> activePersistentPoints(const rclcpp::Time & now);
+  void stampPoints(
+    nav2_costmap_2d::Costmap2D & master_grid,
+    int min_i, int min_j, int max_i, int max_j,
+    const std::vector<geometry_msgs::msg::Vector3> & points);
 };
 
 }  // namespace nav2_gradient_costmap_plugin

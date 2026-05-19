@@ -5,14 +5,95 @@
 namespace
 {
 
-constexpr int kMinLineComponentPixels = 40;
-constexpr int kMinLineComponentSpanPx = 12;
+constexpr int kMinLineComponentPixels = 20;
+constexpr float kMinLineMajorAxisPx = 12.0F;
+// Image-space CC aspect gate. Was 4.0 which rejected T- and L-junctions:
+// when both arms of a T are bright and connected, the bounding rect of
+// all the pixels is roughly square (aspect ~2), failing the gate and
+// dropping the entire line into 0-1 trivial "kept components" with very
+// few of the original 16k+ bright pixels surviving. 2.0 admits T/L
+// junctions while still rejecting blob speckles (which are aspect ~1).
+// Round bright objects (cones, dots) are intentionally NOT this
+// detector's job — those are handled by the lidar/grade obstacle path.
+constexpr float kMinLineAspectRatio = 2.0F;
+
+// Persistent CUDA device buffers reused across every detect_line_pixels
+// call. Previously each frame allocated and freed all seven buffers
+// (input image, mask, output, counter, integral inputs/outputs) — on
+// Jetson that's 2–5 ms/frame just in driver-serialized alloc/free
+// overhead. Re-allocation only happens when image dimensions change,
+// which in practice is "once on the first frame, never again". NOT
+// thread-safe; the detection node serializes calls on its ROS executor.
+//
+// Leak-at-exit is intentional: by the time main() returns the CUDA
+// context is torn down and cudaFree would just emit a warning.
+struct LineDeviceBuffers
+{
+    int     width      = 0;
+    int     height     = 0;
+    Npp8u   *u8_input    = nullptr;
+    Npp32f  *integral    = nullptr;
+    Npp64f  *integral_sq = nullptr;
+    float   *float_input = nullptr;
+    uint8_t *mask        = nullptr;
+    int2    *output      = nullptr;
+    int     *counter     = nullptr;
+
+    bool ensure(int new_w, int new_h);
+    void freeAll();
+};
+
+bool LineDeviceBuffers::ensure(int new_w, int new_h)
+{
+    if (new_w == width && new_h == height && u8_input != nullptr) {
+        return true;
+    }
+    freeAll();
+    const size_t total = static_cast<size_t>(new_w) * new_h;
+    const size_t int_cells =
+        static_cast<size_t>(new_h + 1) * static_cast<size_t>(new_w + 1);
+
+    if (cudaMalloc(reinterpret_cast<void**>(&u8_input),
+                   total) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&integral),
+                   int_cells * sizeof(Npp32f)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&integral_sq),
+                   int_cells * sizeof(Npp64f)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&float_input),
+                   total * sizeof(float)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&mask),
+                   total) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&output),
+                   total * sizeof(int2)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&counter),
+                   sizeof(int)) != cudaSuccess) { freeAll(); return false; }
+
+    width = new_w;
+    height = new_h;
+    return true;
+}
+
+void LineDeviceBuffers::freeAll()
+{
+    if (u8_input)    { cudaFree(u8_input);    u8_input    = nullptr; }
+    if (integral)    { cudaFree(integral);    integral    = nullptr; }
+    if (integral_sq) { cudaFree(integral_sq); integral_sq = nullptr; }
+    if (float_input) { cudaFree(float_input); float_input = nullptr; }
+    if (mask)        { cudaFree(mask);        mask        = nullptr; }
+    if (output)      { cudaFree(output);      output      = nullptr; }
+    if (counter)     { cudaFree(counter);     counter     = nullptr; }
+    width = 0;
+    height = 0;
+}
+
+LineDeviceBuffers g_line_bufs;
 
 std::pair<int2 *, int *> filter_line_components(
     const int2 *points,
     int count,
     int width,
-    int height)
+    int height,
+    int * kept_component_count)
 {
     int *filtered_count = new int(0);
     int2 *filtered_points = new int2[1];
@@ -21,7 +102,16 @@ std::pair<int2 *, int *> filter_line_components(
         return std::make_pair(filtered_points, filtered_count);
     }
 
-    cv::Mat component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    // Persist the component_mask between frames; only allocate on size
+    // change. cv::Mat::zeros allocates fresh memory every frame; setTo(0)
+    // reuses the buffer. At 540x960 this is ~500 KB saved + a memset.
+    static cv::Mat component_mask;
+    if (component_mask.rows != height || component_mask.cols != width ||
+        component_mask.type() != CV_8UC1) {
+        component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    } else {
+        component_mask.setTo(0);
+    }
     for (int i = 0; i < count; ++i) {
         const int x = points[i].x;
         const int y = points[i].y;
@@ -36,18 +126,23 @@ std::pair<int2 *, int *> filter_line_components(
     const int num_labels =
         cv::connectedComponentsWithStats(component_mask, labels, stats, centroids, 8, CV_32S);
 
+    // Area-only CC filter. Previously this looped (num_labels × W × H) to
+    // collect each component's pixels for a cv::minAreaRect aspect/major
+    // check — ~50 ms per frame on 540 × 960 with many small ground-
+    // speckle components. The aspect filter also rejected curved /
+    // T/L-shaped lines (the user explicitly noted this), so it served
+    // neither speed nor accuracy. Now: O(num_labels) iterations only,
+    // keep every component above kMinLineComponentPixels. Shape
+    // classification is the CUDA kernel's job upstream.
     std::vector<uint8_t> keep_component(num_labels, 0);
     int kept_components = 0;
     for (int label = 1; label < num_labels; ++label) {
         const int area = stats.at<int>(label, cv::CC_STAT_AREA);
-        const int component_width = stats.at<int>(label, cv::CC_STAT_WIDTH);
-        const int component_height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
-        const int max_span = std::max(component_width, component_height);
-
-        if (area >= kMinLineComponentPixels && max_span >= kMinLineComponentSpanPx) {
-            keep_component[label] = 1;
-            ++kept_components;
+        if (area < kMinLineComponentPixels) {
+            continue;
         }
+        keep_component[label] = 1;
+        ++kept_components;
     }
 
     std::vector<int2> kept_points;
@@ -75,6 +170,10 @@ std::pair<int2 *, int *> filter_line_components(
         "Filtered line pixels from %d to %d using %d kept connected components",
         count, *filtered_count, kept_components);
 
+    if (kept_component_count) {
+        *kept_component_count = kept_components;
+    }
+
     return std::make_pair(filtered_points, filtered_count);
 }
 
@@ -95,7 +194,12 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                                                   double brightness_threshold,
                                                   int    half_window,
                                                   float  sigma_threshold,
-                                                  float  mew_threshold) {
+                                                  float  mew_threshold,
+                                                  bool   debug_image_write_enabled,
+                                                  lines::LinePixelDetectionStats * stats) {
+    if (stats) {
+        *stats = lines::LinePixelDetectionStats();
+    }
 
     // convert to grayscale
     cv::Mat gray_img;
@@ -143,10 +247,27 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
 
-    // Get integral images
-    std::pair<Npp32f *, Npp64f *> integrals;
+    // Pre-allocate persistent CUDA buffers (one-time at startup; the
+    // ensure() call is a no-op on subsequent frames as long as the
+    // image dimensions are constant). All device pointers below come
+    // from the persistent set — we never cudaMalloc/cudaFree per
+    // frame anymore. Failure here means the GPU is in a bad state and
+    // we can't proceed.
+    if (!g_line_bufs.ensure(width, height)) {
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "Failed to allocate persistent CUDA buffers");
+        int *counter_return = new int;
+        *counter_return = 0;
+        int2 *output_return = new int2[1];
+        return std::make_pair(output_return, counter_return);
+    }
+
+    // Get integral images. __get_integral_image now writes into the
+    // persistent g_line_bufs.integral / integral_sq buffers (no
+    // allocation), so the returned pointers are non-owning views
+    // valid for the lifetime of g_line_bufs.
     try {
-        integrals = __get_integral_image(gray_img);
+        __get_integral_image(gray_img);
     } catch (const std::exception& e) {
         RCLCPP_ERROR(rclcpp::get_logger("lines"), "Integral image failed: %s", e.what());
         int *counter_return = new int;
@@ -155,156 +276,79 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         return std::make_pair(output_return, counter_return);
     }
 
-    Npp32f * integral;
-    Npp64f * integral_sq;
-    std::tie(integral, integral_sq) = integrals;
-    
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Integral images computed, allocating CUDA memory");
+    Npp32f * integral    = g_line_bufs.integral;
+    Npp64f * integral_sq = g_line_bufs.integral_sq;
 
-    // allocate memory for CERIAS
+    RCLCPP_INFO(rclcpp::get_logger("lines"), "Integral images computed, uploading float input + mask");
+
+    // Convert grayscale to float on host, then upload.
     cv::Mat gray_float;
     gray_img.convertTo(gray_float, CV_32F);
-
-    // Validate conversion
     if (gray_float.empty() || gray_float.data == nullptr) {
         RCLCPP_ERROR(rclcpp::get_logger("lines"), "Float conversion failed");
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    float * input_image_device;
-    size_t total = width * height;
-    
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Allocating device memory for %zu pixels", total);
-    
+    float   *input_image_device = g_line_bufs.float_input;
+    uint8_t *device_mask        = g_line_bufs.mask;
+    int2    *output             = g_line_bufs.output;
+    int     *counter            = g_line_bufs.counter;
+    const size_t total          = static_cast<size_t>(width) * height;
+
     cudaError_t err;
-    err = cudaMalloc((void**) &input_image_device, total * sizeof(float));
+
+    err = cudaMemcpy(input_image_device, gray_float.ptr<float>(),
+                     total * sizeof(float), cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMalloc failed for input image: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "cudaMemcpy failed for input image: %s",
                      cudaGetErrorString(err));
-        cudaFree(integral);
-        cudaFree(integral_sq);
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-    
-    err = cudaMemcpy(input_image_device, gray_float.ptr<float>(), total * sizeof(float), cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemcpy failed for input image: %s", 
-                     cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Input image copied to device");
-
-    // mask allocation
-    uint8_t *device_mask;
-    size_t mask_size = total * sizeof(uint8_t);
-    
-    err = cudaMalloc((void**)&device_mask, mask_size);
+    err = cudaMemcpy(device_mask, mask.ptr<uint8_t>(),
+                     total, cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMalloc failed for mask: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "cudaMemcpy failed for mask: %s",
                      cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(integral);
-        cudaFree(integral_sq);
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-    
-    err = cudaMemcpy(device_mask, mask.ptr<uint8_t>(), mask_size, cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemcpy failed for mask: %s", 
-                     cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Mask copied to device");
-
-    int2 * output;
-    err = cudaMalloc((void**) &output, total * sizeof(int2));
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMalloc failed for output: %s", 
-                     cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(integral);
-        cudaFree(integral_sq);
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-    
+    // Output buffer and counter must be zeroed every frame (they
+    // accumulate during the kernel).
     err = cudaMemset(output, 0, total * sizeof(int2));
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemset failed for output: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "cudaMemset failed for output: %s",
                      cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    int * counter;
-    err = cudaMalloc((void**) &counter, sizeof(int));
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMalloc failed for counter: %s", 
-                     cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(integral);
-        cudaFree(integral_sq);
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-    
     err = cudaMemset(counter, 0, sizeof(int));
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemset failed for counter: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "cudaMemset failed for counter: %s",
                      cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(counter);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "All device memory allocated, launching kernel");
+    RCLCPP_INFO(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernel");
 
     // Launch kernel
     cerias_kernel(
@@ -318,34 +362,20 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         mew_threshold
     );
 
-    // Check for kernel launch errors
     err = cudaGetLastError();
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel launch failed: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel launch failed: %s",
                      cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(counter);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
     }
 
-    // Wait for kernel to complete
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel execution failed: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel execution failed: %s",
                      cudaGetErrorString(err));
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(counter);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
@@ -354,19 +384,18 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Kernel executed successfully");
 
-    // Copy results back
+    // Copy results back. counter and output are device pointers into
+    // the persistent buffer set; only the host-side return arrays
+    // ('counter_return', 'output_return') are heap-allocated for the
+    // caller to own.
     int *counter_return = new int;
-    err = cudaMemcpy(counter_return, counter, sizeof(int), cudaMemcpyDeviceToHost);
+    err = cudaMemcpy(counter_return, counter, sizeof(int),
+                     cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemcpy failed for counter: %s", 
+        RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                     "cudaMemcpy failed for counter: %s",
                      cudaGetErrorString(err));
         delete counter_return;
-        cudaFree(input_image_device);
-        cudaFree(device_mask);
-        cudaFree(output);
-        cudaFree(counter);
-        cudaFree(integral);
-        cudaFree(integral_sq);
         counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
@@ -374,23 +403,22 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     }
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
+    if (stats) {
+        stats->raw_pixels = *counter_return;
+    }
 
-    // Allocate output array based on actual count
     int2 *output_return = new int2[std::max(1, *counter_return)];
-    
+
     if (*counter_return > 0) {
-        err = cudaMemcpy(output_return, output, *counter_return * sizeof(int2), cudaMemcpyDeviceToHost);
+        err = cudaMemcpy(output_return, output,
+                         *counter_return * sizeof(int2),
+                         cudaMemcpyDeviceToHost);
         if (err != cudaSuccess) {
-            RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemcpy failed for output: %s", 
+            RCLCPP_ERROR(rclcpp::get_logger("lines"),
+                         "cudaMemcpy failed for output: %s",
                          cudaGetErrorString(err));
             delete[] output_return;
             delete counter_return;
-            cudaFree(input_image_device);
-            cudaFree(device_mask);
-            cudaFree(output);
-            cudaFree(counter);
-            cudaFree(integral);
-            cudaFree(integral_sq);
             counter_return = new int;
             *counter_return = 0;
             output_return = new int2[1];
@@ -398,23 +426,22 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         }
     }
 
-    auto filtered_results = filter_line_components(output_return, *counter_return, width, height);
+    int kept_components = 0;
+    auto filtered_results = filter_line_components(
+        output_return, *counter_return, width, height, &kept_components);
     delete[] output_return;
     delete counter_return;
     output_return = filtered_results.first;
     counter_return = filtered_results.second;
+    if (stats) {
+        stats->filtered_pixels = *counter_return;
+        stats->kept_components = kept_components;
+    }
 
-    // =========================
-    // DEBUG: save 3 images once
-    // =========================
-    static bool saved_debug_images = false;
-    if (!saved_debug_images) {
-        saved_debug_images = true;
-
+    if (debug_image_write_enabled) {
         const std::string out_dir = "line_debug";
         std::filesystem::create_directories(out_dir);
 
-        // Raw input (BGR)
         cv::Mat raw_bgr;
         if (image.channels() == 3) {
             raw_bgr = image.clone();
@@ -424,10 +451,8 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
             cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
         }
 
-        // Mask
         cv::imwrite(out_dir + "/line_mask.png", mask);
 
-        // Line points overlay
         cv::Mat lines_overlay = raw_bgr.clone();
         const int n = *counter_return;
 
@@ -435,9 +460,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
             int x = output_return[i].x;
             int y = output_return[i].y;
             if (0 <= x && x < width && 0 <= y && y < height) {
-                // red dot
                 lines_overlay.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
-                // make it slightly more visible
                 if (x + 1 < width) lines_overlay.at<cv::Vec3b>(y, x + 1) = cv::Vec3b(0, 0, 255);
                 if (x - 1 >= 0)   lines_overlay.at<cv::Vec3b>(y, x - 1) = cv::Vec3b(0, 0, 255);
                 if (y + 1 < height) lines_overlay.at<cv::Vec3b>(y + 1, x) = cv::Vec3b(0, 0, 255);
@@ -450,21 +473,13 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
         RCLCPP_INFO(
             rclcpp::get_logger("lines"),
-            "Saved debug images to %s (line points=%d)",
-            out_dir.c_str(), n
-        );
+            "Updated debug images in %s (line points=%d)",
+            out_dir.c_str(), n);
     }
 
-
-    // Clean up device memory
-    cudaFree(input_image_device);
-    cudaFree(integral);
-    cudaFree(integral_sq);
-    cudaFree(device_mask);
-    cudaFree(output);
-    cudaFree(counter);
-
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Cleanup complete, returning results");
+    // Device buffers are persistent (see g_line_bufs) — no cleanup
+    // here. Host-side return arrays are owned by the caller.
+    RCLCPP_INFO(rclcpp::get_logger("lines"), "Done, returning results");
 
     return std::make_pair(output_return, counter_return);
 }
@@ -488,59 +503,40 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
         throw std::runtime_error("Invalid image dimensions for integral image");
     }
 
-    // allocate memory for Integral 
-    Npp8u *device_input_img;
-
-    size_t image_size = gray_img.rows * gray_img.cols * sizeof(Npp8u);
-    
-    cudaError_t err = cudaMalloc(&device_input_img, image_size);
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("cudaMalloc failed: ") + cudaGetErrorString(err));
-    }
-    
     // CAREFUL, WE ARE CASTING TO 8 BIT PIXELS HERE, MAKE SURE INPUT IS 8 BIT
     if (gray_img.type() != CV_8UC1) {
-        cudaFree(device_input_img);
         throw std::runtime_error("Input image must be CV_8UC1");
     }
-    
-    err = cudaMemcpy(device_input_img, gray_img.ptr<Npp8u>(), image_size, cudaMemcpyHostToDevice);
+
+    // Caller (detect_line_pixels) is responsible for calling
+    // g_line_bufs.ensure(width, height) before this function. The
+    // input/output device buffers below are taken from that persistent
+    // set — no cudaMalloc per frame.
+    Npp8u   *device_input_img = g_line_bufs.u8_input;
+    Npp32f  *result           = g_line_bufs.integral;
+    Npp64f  *result_sq        = g_line_bufs.integral_sq;
+    if (device_input_img == nullptr || result == nullptr || result_sq == nullptr) {
+        throw std::runtime_error(
+            "g_line_bufs not initialized; caller must ensure() before __get_integral_image()");
+    }
+
+    const size_t image_size = static_cast<size_t>(width) * height * sizeof(Npp8u);
+    cudaError_t err = cudaMemcpy(device_input_img, gray_img.ptr<Npp8u>(),
+                                 image_size, cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
-        cudaFree(device_input_img);
         throw std::runtime_error(std::string("cudaMemcpy failed: ") + cudaGetErrorString(err));
     }
 
-    Npp32f *result;
-    Npp64f *result_sq;
-    
-    size_t result_size = (height + 1) * (width + 1) * sizeof(Npp32f);
-    err = cudaMalloc(&result, result_size);
-    if (err != cudaSuccess) {
-        cudaFree(device_input_img);
-        throw std::runtime_error(std::string("cudaMalloc failed for result: ") + cudaGetErrorString(err));
-    }
-    
+    const size_t result_size = static_cast<size_t>(height + 1) * (width + 1) * sizeof(Npp32f);
     err = cudaMemset(result, 0, result_size);
     if (err != cudaSuccess) {
-        cudaFree(device_input_img);
-        cudaFree(result);
-        throw std::runtime_error(std::string("cudaMemset failed: ") + cudaGetErrorString(err));
+        throw std::runtime_error(std::string("cudaMemset failed (integral): ") + cudaGetErrorString(err));
     }
 
-    size_t result_sq_size = (height + 1) * (width + 1) * sizeof(Npp64f);
-    err = cudaMalloc(&result_sq, result_sq_size);
-    if (err != cudaSuccess) {
-        cudaFree(device_input_img);
-        cudaFree(result);
-        throw std::runtime_error(std::string("cudaMalloc failed for result_sq: ") + cudaGetErrorString(err));
-    }
-    
+    const size_t result_sq_size = static_cast<size_t>(height + 1) * (width + 1) * sizeof(Npp64f);
     err = cudaMemset(result_sq, 0, result_sq_size);
     if (err != cudaSuccess) {
-        cudaFree(device_input_img);
-        cudaFree(result);
-        cudaFree(result_sq);
-        throw std::runtime_error(std::string("cudaMemset failed: ") + cudaGetErrorString(err));
+        throw std::runtime_error(std::string("cudaMemset failed (integral_sq): ") + cudaGetErrorString(err));
     }
 
     // set nsrcstep, ndststep, and roi
@@ -551,29 +547,22 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Calling nppiSqrIntegral_8u32f64f_C1R");
 
-    // take npp integral
-    NppStatus status;
-    status = nppiSqrIntegral_8u32f64f_C1R(
-        device_input_img, // input pointer (device)
-        nsrcstep, // row length input
-        result,  // result pointer (device)
-        ndststep, // row length result 
-        result_sq, // square result pointer
-        nsqrstep, // square result row size
-        roi, // width and height
-        0, // 0 and dont question it
-        0 // see above
+    NppStatus status = nppiSqrIntegral_8u32f64f_C1R(
+        device_input_img,
+        nsrcstep,
+        result,
+        ndststep,
+        result_sq,
+        nsqrstep,
+        roi,
+        0,
+        0
     );
 
     if (status != NPP_SUCCESS) {
-        cudaFree(device_input_img);
-        cudaFree(result);
-        cudaFree(result_sq);
         std::string error_msg = "nppiSqrIntegral failed with code: " + std::to_string(status);
         throw std::runtime_error(error_msg);
     }
-    
-    cudaFree(device_input_img);
 
     RCLCPP_INFO(rclcpp::get_logger("lines"), "Integral image computed successfully");
 

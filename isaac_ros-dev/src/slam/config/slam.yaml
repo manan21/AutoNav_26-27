@@ -13,6 +13,39 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_link
+    # PCA-filtered 2-D laser scan (autonav_detection::grade_detector →
+    # pointcloud_to_laserscan in slam.launch.py). Using the filtered
+    # scan instead of raw /scan_fullframe means SLAM maps only what
+    # PCA classifies as obstacles (no ramp faces / drivable grades as
+    # walls) — those obstacles end up in /map → /map_padded → global
+    # costmap static_layer as persistent long-range obstacles, so the
+    # obstacle_layer can stay short-range (2.5 m) for dynamics only.
+    # SLAM consumes the raw layer-5 scan again.
+    #
+    # History: flipped to /scan_pca_filtered when /scan_fullframe was
+    # producing big map→odom snaps that scaled with distance. Root
+    # cause turned out to be ekf_local over-fusing wheel velocity and
+    # SICK IMU yaw rate (both reporting near-degenerate covariance) —
+    # the over-confident odom→base_link drift forced slam_toolbox to
+    # snap map→odom to compensate.
+    #
+    # That EKF fusion has now been calibrated (ekf_local: pose-only
+    # /odom, IMU disabled). With odom→base_link clean (sub-mm jitter
+    # at rest verified by tf2_echo), slam_toolbox no longer has to
+    # fight a drifting odom — so /scan_fullframe's dense returns
+    # become genuinely useful constraint instead of unstable points
+    # the matcher had to wrestle.
+    #
+    # /scan_pca_filtered also has a separate independent problem:
+    # in this environment only ~11% of beams come back finite (78/723),
+    # leaving the correlative scan-matcher starved of geometry — it
+    # silently accepts weak matches and the "map catches up with
+    # robot" symptom appears. /scan_fullframe doesn't have this
+    # density issue.
+    #
+    # Independent of scan topic: PCA thresholds are NOT to be relaxed.
+    # /scan_pca_filtered remains the right input for the Nav2 obstacle
+    # layer (via pca_pc2_to_scan) — that path is unchanged.
     scan_topic: /scan_fullframe
     use_map_saver: true
     mode: mapping
@@ -30,24 +63,65 @@ slam_toolbox:
     # (use if something else broadcasts this transform).
     transform_publish_period: 0.02
 
-    map_update_interval: 5.0
-    resolution: 0.05
+    map_update_interval: 1.0
+    # 0.10 m matches what map_padder and global_costmap consume, so /map
+    # is published at the target downstream resolution and map_padder's
+    # downsample step (factor = round(out_res / slam_res)) becomes 1:1.
+    # Local costmap stays at 0.05 m — it's fed by laser scans directly,
+    # not by /map, so DWB's narrow-gap precision is unaffected.
+    resolution: 0.10
     min_laser_range: 0.3
-    max_laser_range: 10.0
+    # Match the local costmap's 3 m radius so /map only fills in where the robot has actually been close enough to verify.
+    max_laser_range: 3.0
     minimum_time_interval: 0.3   # seconds between accepted scans (rate limiter)
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
     enable_interactive_mode: false  # off: saves CPU on Jetson
 
-    # General Parameters
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — map/odom drift control. DO NOT toggle
+    # use_scan_matching to false again. The previous static-map=odom
+    # workaround eliminated SLAM snap oscillations by removing ALL
+    # map yaw correction — which broke GPS waypoint nav (no path for
+    # yaw drift to be observed/fixed) and produced the "-r 10 0 →
+    # diagonal" symptom. With scan matching ON, corrections flow
+    # through /pose → ekf_global (a KF that smooths any step into a
+    # continuous ramp over 30-100 ms) and DWB never sees a discrete
+    # jump. The safety net is the THREE-PART invariant below — break
+    # any of them and the map↔odom oscillation returns:
+    #   • use_scan_matching: true  (this line)
+    #   • ekf_local pose-only — no wheel-velocity or IMU yaw-rate
+    #     fusion (see ekf_local.yaml).
+    #   • imu_cov_inflator running — gives the IMU realistic
+    #     covariance so ekf_local doesn't over-trust raw yaw rate.
+    # Worst-case correction bound: correlation_search_space_dimension
+    # (0.5 m) limits any single match to a ±0.25 m delta; the 5σ
+    # Mahalanobis gate on /pose in ekf_global rejects anything
+    # further. If you see "map catching up with robot" snap, the
+    # right answer is investigating which of the three invariants
+    # got broken, not turning off scan matching.
+    # ────────────────────────────────────────────────────────────────
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.3
+    # Only insert a keyframe after the robot has actually moved. 0.0 grew the pose graph at scan rate and slowed slam at distance.
+    minimum_travel_distance: 0.5
     minimum_travel_heading: 0.3
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.1
+    # ────────────────────────────────────────────────────────────────
+    # OSCILLATION-SENSITIVE — DO NOT lower below 0.3. This gate is
+    # what rejects low-confidence scan matches against an existing
+    # submap. With sparse/ambiguous outdoor scans the correlative
+    # matcher can return a "match" at low response score that
+    # doesn't correspond to real overlap; silently accepting those
+    # makes slam_toolbox conclude "robot didn't move much" when it
+    # did, then snap map→odom forward — the canonical "map catching
+    # up with the robot" symptom that drove the longitudinal
+    # stall/oscillation. At 0.3, low-confidence scans are dropped
+    # entirely rather than fused incorrectly.
+    # ────────────────────────────────────────────────────────────────
+    link_match_minimum_response_fine: 0.3
     link_scan_maximum_distance: 1.5
     loop_search_maximum_distance: 3.0
     do_loop_closing: true
