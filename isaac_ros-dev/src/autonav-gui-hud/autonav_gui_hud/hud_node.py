@@ -468,6 +468,23 @@ def _bresenham_line(img, x0, y0, x1, y1, color):
             y0 += sy
 
 
+class _JoyNavBus(QObject):
+    """Cross-thread bridge for Xbox-controller GUI navigation.
+
+    HudNode's /joy callback runs on the rclpy executor thread and
+    cannot poke Qt widgets directly. It pushes navigation events
+    here via ``push(direction)``; the ``nav`` pyqtSignal auto-
+    marshals to the main thread (queued connection by default for
+    cross-thread emits) where HudWindow synthesises the matching
+    QKeyEvent so the existing keyboard-navigation paths fire
+    unchanged.
+    """
+    nav = pyqtSignal(str)  # 'up' | 'down' | 'left' | 'right' | 'select'
+
+    def push(self, direction: str) -> None:
+        self.nav.emit(direction)
+
+
 class _LidarFrameWorker(QObject):
     """Off-thread lidar BEV rasterizer.
 
@@ -719,7 +736,7 @@ class _LidarFrameWorker(QObject):
 
 
 from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -894,6 +911,15 @@ class HudWindow(QMainWindow):
         self._camera_worker.frame_ready.connect(self._on_camera_frame_ready)
         if self._ros_node is not None:
             self._ros_node.camera_worker = self._camera_worker
+        # Xbox controller D-pad → arrow keys, A button → Enter (when
+        # not in auto mode and not in test recording). HudNode's joy
+        # callback pushes into this bus; the queued-connection signal
+        # marshals onto the main thread where we synthesise a
+        # QKeyEvent.
+        self._joy_nav_bus = _JoyNavBus(parent=self)
+        self._joy_nav_bus.nav.connect(self._on_joy_nav)
+        if self._ros_node is not None:
+            self._ros_node.joy_nav_bus = self._joy_nav_bus
         # Rolling window of recent frame-arrival timestamps for the FPS
         # counter overlaid on the camera panel. deque is bounded so the
         # average tracks the last ~10 frames (~1.3 s window at 7.5 Hz).
@@ -5657,6 +5683,29 @@ class HudWindow(QMainWindow):
         widget, _, _ = self._cur_btn()
         return widget in self._sensor_cells or widget is self._power_cell
 
+    def _on_joy_nav(self, direction):
+        """Slot fired by HudNode._cb_joy_nav → _JoyNavBus.nav.
+        Synthesises a QKeyEvent and dispatches via the normal
+        keyPressEvent path so the existing arrow-key navigation
+        (selection grid, scrub mode, speed-select mode) works
+        identically for the Xbox D-pad."""
+        key_map = {
+            'up':     Qt.Key_Up,
+            'down':   Qt.Key_Down,
+            'left':   Qt.Key_Left,
+            'right':  Qt.Key_Right,
+            'select': Qt.Key_Return,
+        }
+        qkey = key_map.get(direction)
+        if qkey is None:
+            return
+        try:
+            ev = QKeyEvent(QEvent.KeyPress, qkey, Qt.NoModifier)
+            self.keyPressEvent(ev)
+        except Exception:
+            # Don't let a synthesised key event crash the GUI.
+            pass
+
     def keyPressEvent(self, event):
         key = event.key()
 
@@ -8072,6 +8121,23 @@ if _HAS_ROS:
                 self._cb_recording_toggle, _RELIABLE_QOS,
             )
 
+            # Xbox D-pad → GUI arrow keys. HudWindow assigns
+            # ``joy_nav_bus`` after constructing the bus; until then
+            # the callback no-ops. The D-pad lives on axes[6] (left=+1,
+            # right=-1) and axes[7] (up=+1, down=-1) — verified in the
+            # field with a controller dump. We hold previous axis
+            # values to fire on rising-edge crossings only, so holding
+            # the D-pad doesn't auto-repeat (matches single-key
+            # arrow-press semantics).
+            self.joy_nav_bus = None
+            self._joy_prev_dpad_x = 0.0
+            self._joy_prev_dpad_y = 0.0
+            self._joy_prev_select_btn = 0
+            self.create_subscription(
+                Joy, '/joy',
+                self._cb_joy_nav, _SENSOR_QOS,
+            )
+
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
             self._camera_in_ts.append(self.last_msg_t['image'])
@@ -8281,6 +8347,56 @@ if _HAS_ROS:
             # base_automator.start_test/stop_test publish True/False
             # here. HudWindow's REC-ramp timer reads this every tick.
             self.latest_recording_active = bool(msg.data)
+
+        def _cb_joy_nav(self, msg):
+            """Xbox D-pad → arrow-key signals on the nav bus.
+
+            D-pad layout (verified in field with /joy dumps):
+              axes[6]: left=+1.0, right=-1.0, neutral=0.0
+              axes[7]: up=+1.0, down=-1.0, neutral=0.0
+
+            Pure edge detection: emit only on the 0→±1 transition so
+            holding the D-pad doesn't auto-repeat. A configurable
+            "select" button (TBD) will get the same treatment, gated
+            on NOT in auto mode AND NOT in test recording so it
+            doesn't fight the t000 record toggle or surprise the
+            autonomy stack.
+            """
+            bus = self.joy_nav_bus
+            if bus is None:
+                return
+            axes = msg.axes
+            if len(axes) > 7:
+                dx = float(axes[6])
+                dy = float(axes[7])
+                # 0.5 threshold filters analog jitter; the D-pad is
+                # effectively digital so values are basically -1/0/+1.
+                if dy > 0.5 and self._joy_prev_dpad_y <= 0.5:
+                    bus.push('up')
+                elif dy < -0.5 and self._joy_prev_dpad_y >= -0.5:
+                    bus.push('down')
+                if dx > 0.5 and self._joy_prev_dpad_x <= 0.5:
+                    bus.push('left')
+                elif dx < -0.5 and self._joy_prev_dpad_x >= -0.5:
+                    bus.push('right')
+                self._joy_prev_dpad_x = dx
+                self._joy_prev_dpad_y = dy
+            # Select button. Index 15 — verified in the field with a
+            # /joy dump (17-button array, button[15]=1 on press).
+            # Picked specifically to avoid A (button[0]) which t000
+            # already uses for "start/stop recording". Gated on NOT
+            # in auto mode AND NOT in test recording so we never
+            # synthesise an Enter that could trigger something
+            # during autonomy or a live test capture.
+            SELECT_BTN_INDEX = 15
+            if len(msg.buttons) > SELECT_BTN_INDEX:
+                b = int(msg.buttons[SELECT_BTN_INDEX])
+                if (b == 1
+                        and self._joy_prev_select_btn == 0
+                        and not self.latest_autonomous_mode
+                        and not self.latest_recording_active):
+                    bus.push('select')
+                self._joy_prev_select_btn = b
 
 
 def main(args=None):
