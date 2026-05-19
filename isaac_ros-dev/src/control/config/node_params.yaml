@@ -40,7 +40,7 @@ control_node:
     # 2.0 (cap = 3.0x multiplier) targets the asphalt-to-mowed-grass
     # band; raise to 3.0 (cap = 4.0x) if the robot still slows on
     # the actual ramp with payload.
-    grade_comp_max_uphill_pct: 2.0             # max boost = 3.00x at +10 deg or steeper
+    grade_comp_max_uphill_pct: 1.0             # max boost = 3.00x at +10 deg or steeper
     # Downhill: gravity assists, so heavy damping isn't usually
     # needed. 0.30 (floor = 0.70x) gives meaningful brake authority
     # without freewheeling. Raise toward 0.65 (floor = 0.35x) if the
@@ -57,21 +57,4 @@ control_node:
     # the boost kicks in.
     grade_comp_ramp_max_velocity_mps: 0.30     # caps cmd_vel.linear.x on inclines (autonomous only)
     grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
-    # EWMA alpha on a_fwd AFTER robot-accel subtraction. 0.05 ≈ 1 s
-    # decay at 50 Hz IMU. With subtraction enabled the EWMA mostly
-    # filters sensor noise, so a long time constant is safe and gives
-    # defense in depth against any residual unsubtracted chassis
-    # acceleration. Ramp-entry response slows by ~700 ms vs the old
-    # 0.2 — well inside the multi-second ramp transit.
-    grade_comp_alpha: 0.05
-    # PHASE D — subtract robot's own forward acceleration (encoder-
-    # derived) from the IMU a_fwd reading before pitch reconstruction.
-    # Without this, the boost→accel→more-boost positive feedback loop
-    # produced bench oscillation 2026-05-18. Set false to disable for
-    # A/B testing the multiplier in pure gravity-projection mode.
-    grade_comp_robot_accel_subtract: true
-    # EWMA alpha on the encoder-derived robot acceleration estimate.
-    # Higher = more responsive subtraction (less lag, more noise).
-    # Lower = smoother (more lag, less noise). 0.2 ≈ 5-sample decay at
-    # the 33 Hz encoder-tick rate, matched to the original IMU alpha.
-    grade_comp_robot_accel_alpha: 0.2
+    grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay
