@@ -237,6 +237,53 @@ class ControlNode : public rclcpp::Node {
             controller.set_right_stick_x(joy_msg->axes[2]);
             controller.set_right_stick_y(joy_msg->axes[3]);
 
+            // Drive the motors directly off the /joy callback. Previously
+            // manual commands fired only from the 30 ms encoder timer
+            // which serialized motor writes behind two blocking RoboteQ
+            // encoder reads (up to 20 ms each tick), giving the stick
+            // 30-50 ms of perceived lag. Autonomy path is untouched —
+            // cmd_vel still feeds publish_encoder_data() via
+            // path_planning_callback below.
+            apply_manual_command();
+        }
+    }
+
+    // Manual-mode motor dispatch. Single-threaded executor guarantees
+    // this never races with publish_encoder_data() or path_planning_callback,
+    // so no locking on motor serial is needed.
+    void apply_manual_command() {
+        if (autonomousMode) return;
+
+        Xbox::CommandData command = controller.calculateCommand();
+
+        if (command.cmd == Xbox::MOVE) {
+            // PHASE D — grade compensation in manual mode so the
+            // multiplier can be calibrated on a tilt block before
+            // relying on it in autonomous.
+            const double forward_cmd_manual = 0.5 * (
+                command.left_motor_speed + command.right_motor_speed);
+            const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
+            motors.move(
+                command.right_motor_speed * motors.getSpeed() * mult_manual,
+                command.left_motor_speed * motors.getSpeed() * mult_manual);
+        } else if (command.cmd == Xbox::SPEED_DOWN) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
+            if (elapsed >= 200) {
+                motors.setSpeed(motors.getSpeed() - 1);
+                last_speed_change_time_ = now;
+                RCLCPP_INFO(this->get_logger(), "speed down. new speed: %d", motors.getSpeed());
+            }
+        } else if (command.cmd == Xbox::SPEED_UP) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
+            if (elapsed >= 200) {
+                motors.setSpeed(motors.getSpeed() + 1);
+                last_speed_change_time_ = now;
+                RCLCPP_INFO(this->get_logger(), "speed up! new speed: %d", motors.getSpeed());
+            }
+        } else if (command.cmd == Xbox::STOP) {
+            motors.shutdown();
         }
     }
 
@@ -374,46 +421,14 @@ class ControlNode : public rclcpp::Node {
 
 
         if(!autonomousMode){
-            // Joy watchdog: 0.5 s without /joy → zero motors.
+            // Joy watchdog ONLY. Manual motor commands now flow from
+            // joystick_callback at /joy arrival rate (~100 Hz with the
+            // tuned joy_node), so this timer's job in manual mode is
+            // just to zero the motors if /joy goes silent — the
+            // joystick_callback won't fire to do it itself.
             if ((this->now() - last_joy_msg_time_).seconds() > 0.5) {
                 motors.move(0, 0);
-            } else {
-            Xbox::CommandData command = controller.calculateCommand();
-
-            if(command.cmd == Xbox::MOVE){
-                // PHASE D — also apply grade compensation in manual mode
-                // so the multiplier can be calibrated on a tilt block
-                // before relying on it in autonomous. Same forward-only
-                // gate as the autonomous path.
-                const double forward_cmd_manual = 0.5 * (
-                    command.left_motor_speed + command.right_motor_speed);
-                const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
-                motors.move(
-                    command.right_motor_speed * motors.getSpeed() * mult_manual,
-                    command.left_motor_speed * motors.getSpeed() * mult_manual);
             }
-            else if(command.cmd == Xbox::SPEED_DOWN){
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
-                if (elapsed >= 200) {
-                    motors.setSpeed(motors.getSpeed() - 1);
-                    last_speed_change_time_ = now;
-                    RCLCPP_INFO(this->get_logger(), "speed down. new speed: %d", motors.getSpeed());
-                }
-            }
-            else if(command.cmd == Xbox::SPEED_UP){
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
-                if (elapsed >= 200) {
-                    motors.setSpeed(motors.getSpeed() + 1);
-                    last_speed_change_time_ = now;
-                    RCLCPP_INFO(this->get_logger(), "speed up! new speed: %d", motors.getSpeed());
-                }
-            }
-            else if(command.cmd == Xbox::STOP){
-                motors.shutdown();
-            }
-            }  // end joy-watchdog else
         }
         else {
            // PHASE D — apply gravity-vector grade compensation. Forward
