@@ -21,11 +21,29 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-# Default topic list for the ros2 bag recorder. Keep in sync with the
-# GUI's set of subscriptions in
-# isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py — the
-# whole point of the bag is to capture exactly what the GUI shows so
-# we can replay it offline through the same screens.
+# Default topic list for the ros2 bag recorder. ONLY topics that
+# directly drive a GUI visual go in here — high-rate non-visual
+# streams (raw IMU, joy, cmd_vel) were saturating the recorder's
+# write cache and getting dropped, leaving the rest of the bag with
+# multi-second gaps. Trimmed list keeps median publish rate well
+# under the storage budget.
+#
+# Keep in sync with the playback filter `_BAG_PLAYBACK_TOPICS` in
+# isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py —
+# the two lists should match exactly so the bag captures only what
+# we'll replay.
+#
+# Dropped relative to the previous superset (do NOT add back without
+# also bumping the cache size further):
+#   /sick_scansegment_xd/imu          — ~250 Hz raw IMU, only the
+#                                       EKF consumes it; we already
+#                                       record /local_ekf/odom which
+#                                       is the fused result.
+#   /sick_scansegment_xd/imu_inflated — same story, no visual.
+#   /joy                              — 100 Hz of stick state, no
+#                                       canvas reads it.
+#   /cmd_vel                          — operator velocity command,
+#                                       not displayed.
 DEFAULT_BAG_TOPICS = [
     '/zed/zed_node/rgb/color/rect/image',
     '/line_detection/debug/mask',
@@ -36,13 +54,9 @@ DEFAULT_BAG_TOPICS = [
     '/odom',
     '/local_ekf/odom',
     '/global_ekf/odom',
-    '/sick_scansegment_xd/imu',
-    '/sick_scansegment_xd/imu_inflated',
     '/pose',
     '/global_costmap/costmap',
     '/plan',
-    '/cmd_vel',
-    '/joy',
     '/autonomous_mode',
     '/electrical/voltage',
     '/electrical/current',
@@ -50,6 +64,13 @@ DEFAULT_BAG_TOPICS = [
     '/electrical/soc',
     '/data/toggle_collect',
 ]
+
+# Bag-record in-memory cache. Default in rosbag2 is ~100 MB, which
+# overflowed under the Jetson's writer thread when the full stack
+# was live + bagging — the recorder dropped 50 % of high-rate
+# samples and left 3-second gaps in camera/lidar. 1 GB gives the
+# writer plenty of headroom to absorb storage spikes.
+BAG_MAX_CACHE_BYTES = 1_000_000_000
 
 class BaseAutomator(Node):
     def __init__(self, node_name: str, test_id: str, test_name: str):
@@ -243,7 +264,12 @@ class BaseAutomator(Node):
         if bag_dir.exists():
             stamp = datetime.now().strftime('%H%M%S')
             bag_dir = self.log_dir / f'bag_{stamp}'
-        cmd = ['ros2', 'bag', 'record', '-o', str(bag_dir), *self._bag_topics]
+        cmd = [
+            'ros2', 'bag', 'record',
+            '-o', str(bag_dir),
+            '--max-cache-size', str(BAG_MAX_CACHE_BYTES),
+            *self._bag_topics,
+        ]
         self.get_logger().info(
             f'starting ros2 bag record → {bag_dir} '
             f'({len(self._bag_topics)} topics)'

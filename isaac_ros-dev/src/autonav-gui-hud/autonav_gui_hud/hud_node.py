@@ -6247,20 +6247,16 @@ class HudWindow(QMainWindow):
     # subscriptions watch, so the live canvases reanimate exactly as
     # they looked during the original test session.
     # -----------------------------------------------------------------
-    # Curated list of topics the GUI actually renders. Used as a
-    # --topics filter for `ros2 bag play` so the deserialization
-    # thread doesn't burn cycles on high-rate streams (/joy at 93 Hz,
-    # raw + inflated IMU at 56 + 42 Hz) that never produce a pixel.
-    # Without this filter the camera (3 Hz native) and lidar BEV
-    # (4 Hz native) get shoved off-rhythm by the high-rate streams
-    # monopolising the single deserialization thread, and the live
-    # canvases drop to ~9 FPS.
+    # Visual-only topic subset, used as the --topics filter for
+    # `ros2 bag play`. Mirrors base_automator.DEFAULT_BAG_TOPICS in
+    # the testing package — recording and playback should always
+    # match. If a topic is dropped from one list, drop it from the
+    # other.
     #
-    # The bag itself still captures everything (recording side is
-    # unaffected); only playback skips them. The EKF outputs
-    # (/local_ekf/odom, /global_ekf/odom) are in this list — they
-    # were already fused at record time, so we don't need to
-    # re-run ekf_local on replayed raw IMU.
+    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel. None
+    # of them produce a pixel; together they were ~83 % of the
+    # earlier bag's message volume and were the reason camera/lidar
+    # paint got shoved off-rhythm.
     _BAG_PLAYBACK_TOPICS = [
         '/zed/zed_node/rgb/color/rect/image',
         '/line_detection/debug/mask',
@@ -6274,7 +6270,6 @@ class HudWindow(QMainWindow):
         '/pose',
         '/global_costmap/costmap',
         '/plan',
-        '/cmd_vel',
         '/autonomous_mode',
         '/electrical/voltage',
         '/electrical/current',
