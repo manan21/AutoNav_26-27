@@ -49,7 +49,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 
@@ -607,25 +606,24 @@ LineLayer::clearCallback(std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
     ry = latest_robot_y_;
     have = have_robot_pose_;
   }
-  // DIAG: brute-force erase ALL persisted_points_ regardless of radius.
-  // Reverts to radius-based filter once we confirm whether this layer
-  // is the actual source of visible smears.
-  std::size_t size_before = 0;
+  if (!have) {
+    return;
+  }
+  const double r2 = clear_radius_ * clear_radius_;
   std::size_t erased = 0;
   {
     std::lock_guard<std::mutex> lock(persisted_points_mutex_);
-    size_before = persisted_points_.size();
-    erased = size_before;
-    persisted_points_.clear();
+    for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
+      const double dx = it->second.point.x - rx;
+      const double dy = it->second.point.y - ry;
+      if (dx * dx + dy * dy <= r2) {
+        it = persisted_points_.erase(it);
+        ++erased;
+      } else {
+        ++it;
+      }
+    }
   }
-  if (FILE * fp = std::fopen("/tmp/line_layer_clear_fired", "a")) {
-    std::fprintf(
-      fp, "fired have=%d rx=%.3f ry=%.3f size_before=%zu erased=%zu\n",
-      have ? 1 : 0, rx, ry, size_before, erased);
-    std::fclose(fp);
-  }
-  // Force a restamp on next update so the cleared area visibly drops
-  // from master immediately, instead of waiting for a fresh line msg.
   need_recalculation_ = true;
   RCLCPP_INFO(
     rclcpp::get_logger("nav2_costmap_2d"),

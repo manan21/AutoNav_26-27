@@ -27,7 +27,11 @@ LocalMirrorLayer::LocalMirrorLayer()
   touched_min_y_(0.0),
   touched_max_x_(0.0),
   touched_max_y_(0.0),
-  any_touched_(false)
+  any_touched_(false),
+  clear_radius_(6.0),
+  latest_robot_x_(0.0),
+  latest_robot_y_(0.0),
+  have_robot_pose_(false)
 {
 }
 
@@ -41,12 +45,15 @@ void LocalMirrorLayer::onInitialize()
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("source_topic", rclcpp::ParameterValue("/local_costmap/costmap"));
   declareParameter("clear_topic", rclcpp::ParameterValue("/local_mirror_layer/clear"));
+  declareParameter("clear_radius", rclcpp::ParameterValue(6.0));
   declareParameter("track_unknown_space", rclcpp::ParameterValue(true));
   declareParameter("allow_decrease", rclcpp::ParameterValue(false));
 
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "source_topic", source_topic_);
   node->get_parameter(name_ + "." + "clear_topic", clear_topic_);
+  node->get_parameter(name_ + "." + "clear_radius", clear_radius_);
+  clear_radius_ = std::max(0.0, clear_radius_);
   node->get_parameter(name_ + "." + "track_unknown_space", track_unknown_space_);
   node->get_parameter(name_ + "." + "allow_decrease", allow_decrease_);
 
@@ -137,9 +144,18 @@ void LocalMirrorLayer::clearCallback(
 }
 
 void LocalMirrorLayer::updateBounds(
-  double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/,
+  double robot_x, double robot_y, double /*robot_yaw*/,
   double * min_x, double * min_y, double * max_x, double * max_y)
 {
+  // Snapshot robot pose for clearCallback — same pattern as LineLayer.
+  // updateBounds is the only place layered_costmap hands us the robot
+  // pose in the target frame.
+  {
+    std::lock_guard<std::mutex> lock(msg_mtx_);
+    latest_robot_x_ = robot_x;
+    latest_robot_y_ = robot_y;
+    have_robot_pose_ = true;
+  }
   if (!enabled_) {
     return;
   }
@@ -198,6 +214,8 @@ void LocalMirrorLayer::updateCosts(
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg;
   bool have_new;
   bool do_clear;
+  double robot_x = 0.0, robot_y = 0.0;
+  bool have_pose = false;
   {
     std::lock_guard<std::mutex> lock(msg_mtx_);
     msg = latest_msg_;
@@ -205,19 +223,51 @@ void LocalMirrorLayer::updateCosts(
     has_new_msg_ = false;
     do_clear = pending_clear_;
     pending_clear_ = false;
+    robot_x = latest_robot_x_;
+    robot_y = latest_robot_y_;
+    have_pose = have_robot_pose_;
+  }
+
+  // Clear pass: if Y was pressed and we know where the robot is, zero
+  // every accumulator cell within clear_radius_ of the robot in the
+  // target frame. This wipes smears that have rolled out of the local
+  // costmap's current 5m window but are still within easy reach of the
+  // robot. Cells beyond clear_radius_ survive — persistent map farther
+  // away isn't touched. After the wipe, the stamping loop below
+  // re-paints whatever the local currently sees on top in the same
+  // updateCosts cycle.
+  if (do_clear && have_pose && costmap_ && resolution_ > 0.0) {
+    const double r2 = clear_radius_ * clear_radius_;
+    const int cells_radius = static_cast<int>(
+      std::ceil(clear_radius_ / resolution_));
+    unsigned int cx, cy;
+    if (worldToMap(robot_x, robot_y, cx, cy)) {
+      const int ix0 = std::max(0, static_cast<int>(cx) - cells_radius);
+      const int iy0 = std::max(0, static_cast<int>(cy) - cells_radius);
+      const int ix1 = std::min(static_cast<int>(size_x_) - 1,
+        static_cast<int>(cx) + cells_radius);
+      const int iy1 = std::min(static_cast<int>(size_y_) - 1,
+        static_cast<int>(cy) + cells_radius);
+      for (int j = iy0; j <= iy1; ++j) {
+        for (int i = ix0; i <= ix1; ++i) {
+          double wx, wy;
+          mapToWorld(static_cast<unsigned int>(i),
+                     static_cast<unsigned int>(j), wx, wy);
+          const double dxc = wx - robot_x;
+          const double dyc = wy - robot_y;
+          if (dxc * dxc + dyc * dyc <= r2) {
+            costmap_[j * size_x_ + i] = NO_INFORMATION;
+          }
+        }
+      }
+    }
   }
 
   // Stamp the latest source message into the layer's own costmap.
   // Cells already present in the layer (from previous publishes)
   // stay — they only get overwritten if the new cost is higher
   // (or, if allow_decrease_, by any non-NO_INFORMATION value).
-  //
-  // If a clear was requested (do_clear), the source-msg footprint
-  // block below also zeroes existing cells inside that footprint
-  // BEFORE the stamping loop, so accumulated smears behind the
-  // robot disappear and the same cycle re-paints whatever the
-  // local actually sees right now.
-  if (msg && (have_new || do_clear)) {
+  if (msg && have_new) {
     const unsigned int src_w = msg->info.width;
     const unsigned int src_h = msg->info.height;
     const double src_res = msg->info.resolution;
@@ -262,29 +312,7 @@ void LocalMirrorLayer::updateCosts(
       }
     }
 
-    // Clear pass: if Y was pressed, zero the layer's accumulator over
-    // every cell that falls inside the current source-msg footprint.
-    // Runs BEFORE the stamping loop so the same updateCosts call
-    // re-paints whatever the local actually sees right now on top.
-    // Cells outside this footprint are untouched — persistent global
-    // map beyond the robot's current view survives.
-    if (msg && do_clear) {
-      for (unsigned int sy = 0; sy < src_h; ++sy) {
-        const double wy_src = src_oy + (sy + 0.5) * src_res;
-        for (unsigned int sx = 0; sx < src_w; ++sx) {
-          const double wx_src = src_ox + (sx + 0.5) * src_res;
-          const double wx = cos_t * wx_src - sin_t * wy_src + dx;
-          const double wy = sin_t * wx_src + cos_t * wy_src + dy;
-          unsigned int mx, my;
-          if (!worldToMap(wx, wy, mx, my)) {
-            continue;
-          }
-          costmap_[my * size_x_ + mx] = NO_INFORMATION;
-        }
-      }
-    }
-
-    if (msg && have_new) {
+    if (msg) {
       // Layer's resolution is the host's resolution (set by matchSize).
       // If src_res differs we still proceed — each source cell maps to
       // whatever host cell its center falls into.

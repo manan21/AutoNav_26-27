@@ -91,6 +91,17 @@ private:
   double touched_max_x_;
   double touched_max_y_;
   bool any_touched_;
+
+  // Radius around the robot to zero out in costmap_ on Y press. Larger
+  // than the source-msg footprint so smears accumulated outside the
+  // local's current 5m window also disappear. Set via the clear_radius
+  // parameter; default 6.0 m.
+  double clear_radius_;
+  // Robot pose captured in updateBounds (target frame) so clearCallback
+  // can pick which cells to wipe without doing its own TF lookup.
+  double latest_robot_x_;
+  double latest_robot_y_;
+  bool have_robot_pose_;
 };
 
 }  // namespace local_mirror_layer
