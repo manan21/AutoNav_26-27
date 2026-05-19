@@ -17,7 +17,7 @@ try:
     import rclpy
     from rclpy.node import Node
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
-    from nav_msgs.msg import Odometry
+    from nav_msgs.msg import Odometry, OccupancyGrid
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32, Int32MultiArray, Bool
     try:
@@ -957,6 +957,12 @@ class HudWindow(QMainWindow):
         self._ema_eta_hours = None       # smoothed time-remaining estimate
         self._latest_soc_pct = None      # latest SOC from electrical publisher (0-100)
         self._odom_tri_patch = None
+        # Local costmap overlay (Tier 3 of the odom display). Created
+        # lazily by _redraw_plots() the first time a fresh costmap is
+        # ready; updated in-place after that via set_data/set_extent.
+        # zorder=2 puts it under the trail (3) and triangle (5) so the
+        # robot stays visible.
+        self._odom_costmap_img = None
         self._plots_dirty = False
 
         # EKF participation pulse state. Each device dot whose raw
@@ -6149,6 +6155,9 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
         # Reset dot tracking
         self._active_dots = set()
         # Clear video imshow handles
@@ -6369,6 +6378,9 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch is not None:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
         self._odom_dist_label.set_text('')
         self._odom_live_txt.set_visible(False)
         self._odom_ax.set_xlim(-5, 5)
@@ -6626,9 +6638,43 @@ class HudWindow(QMainWindow):
             else:
                 self._odom_scatter.set_data(xs, ys)
 
-            # Adjust window to fit all current points with padding
+            # --- Local costmap overlay (Tier 3). Only paint when the
+            # live tick has flagged it fresh; hide otherwise. The
+            # extent is in odom frame metres, same axes as the trail
+            # and triangle, so it lines up naturally.
+            costmap_alive = bool(getattr(self, '_costmap_alive', False))
+            node_obj = getattr(self, '_ros_node', None)
+            costmap_data = (
+                getattr(node_obj, 'latest_costmap', None)
+                if (costmap_alive and node_obj is not None) else None
+            )
+            cm_extent = None
+            if costmap_data is not None:
+                rgba, cm_extent = costmap_data
+                if self._odom_costmap_img is None:
+                    self._odom_costmap_img = self._odom_ax.imshow(
+                        rgba, extent=cm_extent, origin='lower',
+                        interpolation='nearest', zorder=2,
+                    )
+                else:
+                    self._odom_costmap_img.set_data(rgba)
+                    self._odom_costmap_img.set_extent(cm_extent)
+                    self._odom_costmap_img.set_visible(True)
+            elif self._odom_costmap_img is not None:
+                self._odom_costmap_img.set_visible(False)
+
+            # Adjust window to fit all current points with padding.
+            # When the costmap overlay is live, also include its
+            # extent so the operator sees the full ring of cost cells
+            # around the red triangle instead of a clipped corner.
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
+            if cm_extent is not None:
+                cm_x0, cm_x1, cm_y0, cm_y1 = cm_extent
+                min_x = min(min_x, cm_x0)
+                max_x = max(max_x, cm_x1)
+                min_y = min(min_y, cm_y0)
+                max_y = max(max_y, cm_y1)
             dx = max_x - min_x
             dy = max_y - min_y
             span = max(dx, dy) * 1.3
@@ -6840,6 +6886,9 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch is not None:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
         self._odom_dist_label.set_text('')
         self._odom_canvas.draw_idle()
         self._pwr_v_live_txt.set_visible(True)
@@ -7286,13 +7335,23 @@ class HudWindow(QMainWindow):
                 self._gps_cov_ellipse.set_visible(False)
             any_scalar_changed = True
 
-        # --- Odom: graduate raw /odom → /local_ekf/odom when the
-        # Local EKF is publishing. Same buffer either way; the title
-        # flip is what tells the operator which stream is on screen.
+        # --- Odom: graduate raw /odom → /local_ekf/odom → +costmap.
+        # Same buffer either way; the title flip is what tells the
+        # operator which stream is on screen. The costmap tier also
+        # turns on the local_costmap overlay in _redraw_plots.
         ekf_odom_t = node.last_msg_t.get('ekf_local_odom', 0.0)
         ekf_odom_alive = (
             ekf_odom_t > 0.0
             and (now - ekf_odom_t) < self._ekf_msg_age_max_s
+        )
+        costmap_t = node.last_msg_t.get('costmap_local', 0.0)
+        # nav2 publishes the costmap at ~5 Hz, so allow a 2 s window
+        # before declaring stale — survives a single missed update
+        # without the overlay strobing on/off.
+        self._costmap_alive = (
+            costmap_t > 0.0
+            and (now - costmap_t) < 2.0
+            and node.latest_costmap is not None
         )
         if ekf_odom_alive and node.latest_ekf_odom is not None:
             odom = node.latest_ekf_odom
@@ -7300,7 +7359,10 @@ class HudWindow(QMainWindow):
             # Drop any raw /odom we picked up in the same tick — we
             # don't want to interleave the two streams in the trail.
             node.latest_odom = None
-            self._set_enc_title("Encoders (Odom EKF)")
+            if self._costmap_alive:
+                self._set_enc_title("Encoders (Odom EKF Costmap)")
+            else:
+                self._set_enc_title("Encoders (Odom EKF)")
         else:
             odom = node.latest_odom
             if odom is not None:
@@ -7621,6 +7683,14 @@ if _HAS_ROS:
             self.latest_pca_t = 0.0
             self.latest_odom = None        # (x, y, qz) — raw /odom
             self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
+            # Local costmap as a pre-rendered (rgba, extent) pair. The
+            # ROS callback does the OccupancyGrid → RGBA conversion so
+            # the GUI thread only has to do set_data/set_extent on an
+            # existing AxesImage — keeps the costmap off the GUI's hot
+            # path. None until the first /local_costmap/costmap arrives.
+            #   rgba:   uint8 (H, W, 4) — alpha-baked colormap
+            #   extent: (x_min, x_max, y_min, y_max) in odom frame metres
+            self.latest_costmap = None
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
@@ -7644,6 +7714,7 @@ if _HAS_ROS:
                 'pose':            0.0,   # /pose (slam_toolbox → Map EKF)
                 'ekf_local_odom':  0.0,   # /local_ekf/odom (Local EKF out)
                 'ekf_global_odom': 0.0,   # /global_ekf/odom (Map EKF out)
+                'costmap_local':   0.0,   # /local_costmap/costmap (nav2)
             }
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
@@ -7738,6 +7809,28 @@ if _HAS_ROS:
             self.create_subscription(
                 Int32MultiArray, '/line_detection/line_pixels',
                 self._cb_line_pixels, _SENSOR_QOS,
+            )
+
+            # nav2's local_costmap. Publisher QoS is RELIABLE +
+            # TRANSIENT_LOCAL + depth 1 (nav2_costmap_2d's standard
+            # latched publisher), so subscribe with the matching
+            # profile or rclpy will warn "incompatible QoS, no messages
+            # will be received". The TRANSIENT_LOCAL on our side means
+            # we get the most recent costmap immediately on subscribe
+            # rather than waiting for the next 5 Hz tick.
+            #
+            # All nav2 configs in this repo set
+            # `always_send_full_costmap: true`, so the full grid lands
+            # on every publish — no need to fold in /costmap_updates.
+            _COSTMAP_QOS = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                OccupancyGrid, '/local_costmap/costmap',
+                self._cb_local_costmap, _COSTMAP_QOS,
             )
 
             # Auto-mode wiring. The control node toggles its internal
@@ -7870,6 +7963,60 @@ if _HAS_ROS:
             # Drives the "Map EKF" status dot and is the second-half
             # gate for the SLAM dot's pulse.
             self.last_msg_t['ekf_global_odom'] = time.monotonic()
+
+        def _cb_local_costmap(self, msg):
+            # /local_costmap/costmap — nav2 local costmap (typically
+            # 100×100 at 0.05 m/cell = 5 m square around base_link).
+            # Convert OccupancyGrid → (RGBA, extent) here on the ROS
+            # thread so the GUI's _redraw_plots only does a single
+            # set_data/set_extent on a persistent AxesImage. The
+            # conversion is ~1 ms of vectorised numpy on a 100×100
+            # grid; at the 5 Hz costmap rate this is dwarfed by
+            # everything else the ROS thread does.
+            self.last_msg_t['costmap_local'] = time.monotonic()
+            try:
+                h = int(msg.info.height)
+                w = int(msg.info.width)
+                if h <= 0 or w <= 0:
+                    return
+                res = float(msg.info.resolution)
+                ox = float(msg.info.origin.position.x)
+                oy = float(msg.info.origin.position.y)
+
+                # np.frombuffer reads array.array's buffer-protocol view
+                # directly — no copy. msg.data only needs to outlive this
+                # callback (it does; we only persist the freshly-allocated
+                # rgba below, not any view onto msg).
+                raw = np.frombuffer(msg.data, dtype=np.int8)
+                if raw.size != h * w:
+                    return
+                grid = raw.reshape((h, w))
+
+                # OccupancyGrid encoding:
+                #   -1   = unknown   → fully transparent
+                #    0   = free      → faint dark grey
+                #   1-100 = cost     → linear ramp toward near-white solid
+                #
+                # Grayscale keeps the red triangle as the only red on the
+                # canvas. We emit uint8 RGBA so matplotlib's imshow does
+                # zero norm/cmap work — the conversion is fully done here.
+                clipped = np.clip(grid, 0, 100).astype(np.uint16)
+                gray = (40 + clipped * 200 // 100).astype(np.uint8)
+                alpha = (60 + clipped * 160 // 100).astype(np.uint8)
+                unknown = grid < 0
+                gray[unknown] = 0
+                alpha[unknown] = 0
+
+                rgba = np.empty((h, w, 4), dtype=np.uint8)
+                rgba[..., :3] = gray[..., None]  # broadcast into R, G, B
+                rgba[..., 3] = alpha
+
+                extent = (ox, ox + w * res, oy, oy + h * res)
+                self.latest_costmap = (rgba, extent)
+            except Exception:
+                # Don't let a malformed costmap take down the GUI;
+                # leaving the previous image in place is fine.
+                pass
 
         def _cb_voltage(self, msg):
             self.latest_voltage = msg.data
