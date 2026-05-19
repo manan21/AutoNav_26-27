@@ -254,37 +254,72 @@ class ControlNode : public rclcpp::Node {
     void apply_manual_command() {
         if (autonomousMode) return;
 
+        // Bumper hold ramps the speed setpoint at ~2.5 Hz (was 5 Hz at
+        // 200 ms cooldown — the faster cadence with autorepeat=100 Hz
+        // made the wheel-speed steps audibly track each click and the
+        // motor whined a tune. 400 ms is still responsive but no longer
+        // "musical".)
+        constexpr long kBumperCooldownMs = 400;
+        // Manual-mode speed is unitless gear (motors.move multiplies by
+        // stepSize=10 internally). 0 = stopped at any stick, 75 ≈ 7.5x
+        // the level-cruise baseline (which is 10). Hard upper bound
+        // prevents the bumper from being held into runaway throttle;
+        // hard lower bound prevents accidentally going negative (which
+        // motors.move() would interpret as reverse direction, decoupled
+        // from stick sign).
+        constexpr int kSpeedMin = 0;
+        constexpr int kSpeedMax = 75;
+
         Xbox::CommandData command = controller.calculateCommand();
 
-        if (command.cmd == Xbox::MOVE) {
-            // PHASE D — grade compensation in manual mode so the
-            // multiplier can be calibrated on a tilt block before
-            // relying on it in autonomous.
-            const double forward_cmd_manual = 0.5 * (
-                command.left_motor_speed + command.right_motor_speed);
-            const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
-            motors.move(
-                command.right_motor_speed * motors.getSpeed() * mult_manual,
-                command.left_motor_speed * motors.getSpeed() * mult_manual);
-        } else if (command.cmd == Xbox::SPEED_DOWN) {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
-            if (elapsed >= 200) {
-                motors.setSpeed(motors.getSpeed() - 1);
-                last_speed_change_time_ = now;
-                RCLCPP_INFO(this->get_logger(), "speed down. new speed: %d", motors.getSpeed());
-            }
-        } else if (command.cmd == Xbox::SPEED_UP) {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_speed_change_time_).count();
-            if (elapsed >= 200) {
-                motors.setSpeed(motors.getSpeed() + 1);
-                last_speed_change_time_ = now;
-                RCLCPP_INFO(this->get_logger(), "speed up! new speed: %d", motors.getSpeed());
-            }
-        } else if (command.cmd == Xbox::STOP) {
+        // STOP preempts. motors.shutdown() closes the motor serial,
+        // so no wheel update follows.
+        if (command.cmd == Xbox::STOP) {
             motors.shutdown();
+            return;
         }
+
+        // Bumpers ramp the speed setpoint as a side effect. Stick
+        // values in `command` are still driven into the wheels below,
+        // so a bumper-held stick-deflected case both bumps speed AND
+        // updates wheel velocity in real time on the very next
+        // motors.move() call (next /joy tick, ~10 ms away).
+        if (command.cmd == Xbox::SPEED_UP || command.cmd == Xbox::SPEED_DOWN) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_speed_change_time_).count();
+            if (elapsed >= kBumperCooldownMs) {
+                const int delta = (command.cmd == Xbox::SPEED_UP) ? +1 : -1;
+                const int new_speed = std::clamp(
+                    motors.getSpeed() + delta, kSpeedMin, kSpeedMax);
+                if (new_speed != motors.getSpeed()) {
+                    motors.setSpeed(new_speed);
+                    last_speed_change_time_ = now;
+                    RCLCPP_INFO(this->get_logger(),
+                        "speed %s new speed: %d",
+                        delta > 0 ? "up!" : "down.", new_speed);
+                }
+                // At the bound: no-op, don't reset cooldown, don't log
+                // — keeps the held-at-max bumper silent.
+            }
+        }
+
+        // Always drive the wheels from the stick portion of `command`.
+        //   Xbox::NONE  -> left/right_motor_speed are 0  -> motors.move(0,0)
+        //                  zeros wheels and resets the RoboteQ
+        //                  command-watchdog so we don't get the ~1 s
+        //                  coast-then-zero behavior on stick release.
+        //   Xbox::MOVE  -> stick values scaled by current speed gear.
+        //   SPEED_UP/DOWN -> calculateCommand still populates motor_speeds
+        //                    from sticks when bumpers are held, so wheels
+        //                    track the just-updated speed gear in real time.
+        // PHASE D grade compensation applies in both manual and auto.
+        const double forward_cmd_manual = 0.5 * (
+            command.left_motor_speed + command.right_motor_speed);
+        const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
+        motors.move(
+            command.right_motor_speed * motors.getSpeed() * mult_manual,
+            command.left_motor_speed * motors.getSpeed() * mult_manual);
     }
 
     void estop_callback(const std_msgs::msg::String::SharedPtr msg){
