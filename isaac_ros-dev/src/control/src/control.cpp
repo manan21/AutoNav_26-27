@@ -254,12 +254,12 @@ class ControlNode : public rclcpp::Node {
     void apply_manual_command() {
         if (autonomousMode) return;
 
-        // Bumper hold ramps the speed setpoint at ~2.5 Hz (was 5 Hz at
-        // 200 ms cooldown — the faster cadence with autorepeat=100 Hz
-        // made the wheel-speed steps audibly track each click and the
-        // motor whined a tune. 400 ms is still responsive but no longer
-        // "musical".)
-        constexpr long kBumperCooldownMs = 400;
+        // Bumper hold ramps the speed setpoint at 5 Hz (75 steps × 200 ms
+        // = 15 s from 0 to max). With autorepeat=100 Hz this cadence is
+        // audibly musical on the bench, but operator feedback (2026-05-18)
+        // is that the responsive ramp is worth the noise — the 30 s ramp
+        // at 400 ms cooldown felt sluggish in actual driving.
+        constexpr long kBumperCooldownMs = 200;
         // Manual-mode speed is unitless gear (motors.move multiplies by
         // stepSize=10 internally). 0 = stopped at any stick, 75 ≈ 7.5x
         // the level-cruise baseline (which is 10). Hard upper bound
