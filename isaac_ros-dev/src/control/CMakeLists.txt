@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(autonav_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(nav2_msgs REQUIRED)
 
 add_executable(control src/control.cpp
   src/control.cpp 
@@ -18,9 +19,10 @@ add_executable(control src/control.cpp
   src/serialib.cpp
   src/autonomous.cpp
 )
-ament_target_dependencies(control 
-  rclcpp 
-  sensor_msgs 
+ament_target_dependencies(control
+  rclcpp
+  sensor_msgs
+  nav2_msgs
   autonav_interfaces
 )
 

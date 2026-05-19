@@ -10,3 +10,51 @@ control_node:
     controller_topic: "joy"
     encoder_topic: "encoders"
     path_planning_topic: "cmd_vel"
+
+    # \/ ------------------PHASE D grade compensation (gravity-vector approach)
+    # Reads the IMU's body-frame X accelerometer (= gravity projection
+    # along the longitudinal axis at quasi-static velocity) and scales
+    # the motor command on inclines so the 20 lb payload doesn't stall
+    # going up and the robot doesn't run away going down. Applied in
+    # BOTH manual and autonomous modes when forward_command > 0, so
+    # the gain can be calibrated on a tilt block before relying on it
+    # in autonomous. Live-tunable via `ros2 param set /control_node ...`.
+    imu_topic: "/sick_scansegment_xd/imu_inflated"
+    # +1.0 is the correct convention for this stack — imu_cov_inflator
+    # rotates the SICK's raw IMU into base_link before publishing, so
+    # accel.x reads positive when the body's nose is up (gravity
+    # projects forward in body frame), which is what Phase D wants for
+    # uphill boost. Bench-tested on a tilt block 2026-05-18: nose-down
+    # gives negative accel.x (damping), nose-up gives positive (boost).
+    imu_a_fwd_sign: 1.0
+    grade_comp_enabled: false                   # Phase D active by default — tilt-block bench-tested 2026-05-18
+    # Bounded linear pitch-to-multiplier map. Runaway impossible by
+    # construction: any pitch beyond ±grade_comp_max_deg clamps to the
+    # ±max_pct bound. Defaults yield multiplier ∈ [0.90, 1.10] for ANY
+    # IMU input.
+    grade_comp_max_deg: 10.0                   # angle at which we hit max effect
+    # Sized for the realistic IGVC physics: 90 lb robot, 15 % grade
+    # produces ~13.4 lbf of gravity opposing forward motion. To
+    # MAINTAIN cruise velocity uphill the motors need ~2.5x-4x the
+    # level-ground throttle (lower bound for grass, higher for paved).
+    # 2.0 (cap = 3.0x multiplier) targets the asphalt-to-mowed-grass
+    # band; raise to 3.0 (cap = 4.0x) if the robot still slows on
+    # the actual ramp with payload.
+    grade_comp_max_uphill_pct: 1.0             # max boost = 3.00x at +10 deg or steeper
+    # Downhill: gravity assists, so heavy damping isn't usually
+    # needed. 0.30 (floor = 0.70x) gives meaningful brake authority
+    # without freewheeling. Raise toward 0.65 (floor = 0.35x) if the
+    # robot still accelerates past the smoother cap on descent.
+    grade_comp_max_downhill_pct: 0.30          # max damping = 0.70x at -10 deg or steeper
+    grade_comp_deadband_deg: 0.5               # small — just filters level-ground IMU jitter
+    # Ramp-speed safety cap (autonomous only). When |pitch| > deadband,
+    # the BASE linear velocity is clamped to this value BEFORE the
+    # multiplier boost. std::clamp only caps the upper bound — slower
+    # commands pass unchanged, so the planner can throttle DOWN on a
+    # ramp normally. The boost still fires on the reduced base so the
+    # gravity load is overcome. Sized to a conservative ramp cruise
+    # speed; raise if outdoor testing shows the robot stalls before
+    # the boost kicks in.
+    grade_comp_ramp_max_velocity_mps: 0.30     # caps cmd_vel.linear.x on inclines (autonomous only)
+    grade_comp_imu_timeout_sec: 0.5            # multiplier -> 1.0 if IMU goes silent
+    grade_comp_alpha: 0.2                      # EWMA smoothing on a_fwd; 0.2 ~= 5-sample decay

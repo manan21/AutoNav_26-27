@@ -1,0 +1,23 @@
+# stored_waypoints.txt — mission chain consumed by run_mission.sh
+#
+# Each non-blank, non-comment line is one leg of a sequenced mission.
+# Legs fire top-to-bottom; the first leg that aborts stops the chain.
+#
+# Format:  <KIND> <a>, <b>
+# Kinds:
+#   ER  Euclidean Relative — (dx, dy) in meters, relative to the
+#       robot's pose at the moment the leg starts. Dispatched to
+#       send_goal.sh -r dx dy
+#   EA  Euclidean Absolute — (x, y) in meters, in the robot's
+#       initial map frame. Dispatched to send_goal.sh x y
+#   GA  GPS Absolute — (latitude, longitude) in decimal degrees;
+#       use negative values for S latitude / W longitude.
+#       Dispatched to send_GPS_waypoint.sh lat lon
+#
+# Lines beginning with '#' and blank lines are ignored.
+# Numbers may be space- or comma-separated.
+# ER 5.0, 0.0
+
+GA 37.23027, -80.42504
+GA 37.23013, -80.42524
+GA 37.22999, -80.42507

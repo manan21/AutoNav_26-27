@@ -1,0 +1,75 @@
+#
+# Unified action — handles both GPS goals (lat/lon) and local goals
+# (x, y in map or odom frame) via the goal_type enum + a single
+# PoseStamped target field. Idiomatic ROS 2: no NaN sentinels, the
+# discriminator is explicit, and `header.frame_id` carries the
+# coordinate system the same way every other NAV2 action does.
+# Mission scripts and BTs chain heterogeneous waypoint lists through
+# this single action.
+
+# ─── Goal ───
+
+# Discriminator
+uint8 GOAL_TYPE_GPS    = 0
+uint8 GOAL_TYPE_LOCAL  = 1
+uint8 goal_type
+
+# Single target. Interpretation depends on goal_type:
+#   GOAL_TYPE_GPS   — header.frame_id = "wgs84"
+#                     pose.position.x  = longitude (°)
+#                     pose.position.y  = latitude  (°)
+#                     pose.position.z  = altitude  (m, optional, ignored if 0)
+#                     pose.orientation = desired final yaw (or identity = auto)
+#   GOAL_TYPE_LOCAL — header.frame_id = "map" or "odom"
+#                     pose.position    = target XY
+#                     pose.orientation = desired final yaw (or identity = auto)
+geometry_msgs/PoseStamped target
+
+float64 success_radius_m         # default 1.0; ≥ 50 % footprint inside
+
+---
+
+# ─── Result ───
+
+# Terminal status — controlled vocabulary, machine-readable. Use
+# `failure_reason` for free-form addenda (NAV2-passed-through errors,
+# specific TF frame names, etc.) but `terminal_status` is the
+# single-source-of-truth for what happened.
+uint8 STATUS_SUCCESS            = 0
+uint8 STATUS_CANCELED           = 1
+uint8 STATUS_PREEMPTED          = 2   # superseded by a newer goal
+uint8 STATUS_ABORTED            = 3   # generic abort
+uint8 STATUS_TIMEOUT            = 4
+uint8 STATUS_GPS_LOST           = 5   # /gps_fix stale > N seconds
+uint8 STATUS_TF_STALE           = 6   # map→odom missing
+uint8 STATUS_EKF_NOT_CONVERGED  = 7   # action arrived before bootstrap
+uint8 STATUS_NAV2_REJECTED      = 8   # NAV2 itself rejected the goal
+uint8 STATUS_INVALID_GOAL       = 9   # malformed goal_type / frame_id
+uint8 STATUS_GOAL_OUTSIDE_COSTMAP = 10
+uint8 terminal_status
+
+bool    succeeded                # convenience: terminal_status == STATUS_SUCCESS
+float64 final_distance_m
+float64 final_heading_err_deg
+float64 final_latitude           # robot's lat at terminal moment (computed)
+float64 final_longitude
+float64 peak_theta_offset_std_deg  # worst-case heading uncertainty during run
+float64 distance_traveled_m
+uint32  ekf_updates
+uint32  gps_outlier_rejects
+uint32  heading_resyncs_fired
+float64 elapsed_s
+string  failure_reason           # free-form, optional addendum
+
+---
+
+# ─── Feedback (streamed at 2 Hz — faster than goal_pose's 1 Hz so
+# the operator's terminal feels live; goal_pose stays at 1 Hz to
+# spare NAV2's planner) ───
+
+float64 distance_to_goal_m
+float64 ekf_theta_deg
+float64 ekf_theta_std_deg
+geometry_msgs/PoseStamped current_goal_in_map
+bool    gps_connected
+bool    refinement_locked

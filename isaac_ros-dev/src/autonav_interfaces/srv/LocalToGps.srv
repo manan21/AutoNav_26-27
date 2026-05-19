@@ -1,0 +1,9 @@
+# Convert (x, y) in odom frame → (latitude, longitude) using the current
+# θ_offset estimate maintained by gps_handler_node.
+float64 x
+float64 y
+---
+float64 latitude
+float64 longitude
+bool    estimate_valid
+float64 theta_offset_std_deg

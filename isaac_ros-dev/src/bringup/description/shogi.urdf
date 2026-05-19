@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="Shogi">
+  <link name="base_link">
+    <visual>
+      <origin xyz="-1.712700 -0.778935 -0.344190" rpy="0 0 1.570796" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/base_link.STL" />
+      </geometry>
+      <material name="base_material">
+        <color rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+  </link>
+
+  <link name="base_footprint" />
+  <joint name="base_joint" type="fixed">
+    <origin xyz="0 0 -0.113030" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="base_footprint" />
+  </joint>
+
+  <link name="Caster_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/Caster_link.STL" />
+      </geometry>
+      <material name="caster_material">
+        <color rgba="0.866666666666667 0.909803921568627 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="Caster" type="fixed">
+    <origin xyz="0.577000 -0.000795 -0.040880" rpy="0 -0.000004 0.000007" />
+    <parent link="base_link" />
+    <child link="Caster_link" />
+  </joint>
+
+  <link name="lidar_footprint">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/Lidar_Link.STL" />
+      </geometry>
+      <material name="lidar_material">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="Lidar" type="fixed">
+    <origin xyz="0.659800 0.000105 0.205680" rpy="-3.141593 -0.000004 0" />
+    <parent link="base_link" />
+    <child link="lidar_footprint" />
+  </joint>
+
+  <link name="zed_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/Camera_Link.STL" />
+      </geometry>
+      <material name="camera_material">
+        <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="Camera" type="fixed">
+    <origin xyz="0.657600 0.009075 0.307230" rpy="0 0.349070 0" />
+    <parent link="base_link" />
+    <child link="zed_camera_link" />
+  </joint>
+
+  <link name="gps_footprint">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/GPS_Link.STL" />
+      </geometry>
+      <material name="gps_material">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="GPS" type="fixed">
+    <origin xyz="-0.212200 -0.000105 0.661610" rpy="0 0.000004 0" />
+    <parent link="base_link" />
+    <child link="gps_footprint" />
+  </joint>
+
+  <link name="right_wheel_link">
+    <visual>
+      <origin xyz="0.044545 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/Right_Wheel_Link.STL" />
+      </geometry>
+      <material name="right_wheel_material">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="Right_Wheel" type="continuous">
+    <origin xyz="0 -0.361630 0" rpy="2.749800 0 -1.570804" />
+    <parent link="base_link" />
+    <child link="right_wheel_link" />
+    <axis xyz="1 0 0" />
+  </joint>
+
+  <link name="left_wheel_link">
+    <visual>
+      <origin xyz="-0.767804 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://bringup/description/meshes/Left_Wheel_Link.STL" />
+      </geometry>
+      <material name="left_wheel_material">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="Left_Wheel" type="continuous">
+    <origin xyz="0 0.361630 0" rpy="1.739800 0 1.570796" />
+    <parent link="base_link" />
+    <child link="left_wheel_link" />
+    <axis xyz="1 0 0" />
+  </joint>
+</robot>

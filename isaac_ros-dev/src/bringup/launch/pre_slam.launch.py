@@ -61,11 +61,13 @@ def generate_launch_description():
             core_pkg ,
     )
 
-    joy = Node(
-        package='joy',
-        executable='joy_node',
-        name='joy',
-    )
+    # joy_node is provided by control_dev.launch.py (the file the
+    # ``control`` IncludeLaunchDescription below pulls in). Launching
+    # it here too produced two /joy nodes under the same name, which
+    # was the "WARNING: there are nodes in the graph that share an
+    # exact name" the operator was seeing alongside the duplicate
+    # Nav2 nodes. control_dev fires 1 s after this launch starts via
+    # control_event below — joy is up before any consumer needs it.
 
     control = IncludeLaunchDescription(
         control_pkg
@@ -77,13 +79,31 @@ def generate_launch_description():
         name='wheel_odom'
     )
 
+    # imu_cov_inflator is a sensor pre-processor that takes the SICK
+    # multiScan's raw /sick_scansegment_xd/imu (which ships with
+    # all-zero covariance) and republishes it as /imu_inflated with
+    # sane covariance values so downstream EKF and grade-compensation
+    # consumers can weight it correctly. Lives here in pre_slam (not
+    # in slam.launch.py as it used to) so:
+    #   - Phase D grade compensation in control_node works for
+    #     bench-test in manual mode without firing the full slam stack.
+    #   - The HUD's IMU display gets data immediately on bring-up.
+    #   - Architecturally it belongs alongside the lidar driver — it's
+    #     a sensor-pipeline node, not a nav2 node.
+    imu_cov_inflator = Node(
+        package='imu_cov_inflator',
+        executable='imu_inflator_node',
+        name='imu_cov_inflator',
+        output='screen',
+    )
+
     control_event = TimerAction(
             period=1.0,
             actions=[
                 LogInfo(msg='Control node booting up...'),
                 control
             ]
-        
+
     )
     odom_event = TimerAction(
             period=5.0,
@@ -91,16 +111,16 @@ def generate_launch_description():
                 LogInfo(msg='Odom node booting up...'),
                 odom
             ]
-        
+
     )
 
 
     return LaunchDescription([
-        joy,
         core,
+        imu_cov_inflator,
         control_event,
         odom_event
-       
+
     ])
 
     

@@ -81,7 +81,7 @@ def generate_launch_description():
     )
 
     line_detection = Node(
-        package="line_detection",
+        package="autonav_detection",
         executable="line_detector",
         name="line_detection_node",
         output="screen",
@@ -96,8 +96,47 @@ def generate_launch_description():
             "publish_interval_ms": 250,
             "max_rgb_depth_delta_ms": 120,
             "tf_lookup_timeout_ms": 100,
-            "line_hold_timeout_ms": 750,
+            "line_hold_timeout_ms": 800,
+            "line_memory_max_points": 12000,
+            "odom_topic": "/local_ekf/odom",
+            "roi_min_y_fraction": 0.35,
+            "max_depth_m": 6.0,
+            "base_min_x_m": -0.25,
+            "base_max_x_m": 5.0,
+            "base_max_abs_y_m": 3.0,
+            "ground_z_m": -0.11,
+            "ground_z_tolerance_m": 0.25,
+            "cluster_min_points": 15,
+            "cluster_min_length_m": 0.30,
+            "cluster_max_width_m": 0.25,
+            "cluster_min_aspect_ratio": 3.0,
+            "cluster_link_distance_m": 0.18,
+            "temporal_voxel_size_m": 0.10,
+            "temporal_min_hits": 2,
+            "temporal_confirm_window_ms": 750,
+            "confirmed_hold_ms": 10000,
+            "yaw_rate_gate_rad_s": 0.6,
+            "debug_image_publish_enabled": True,
+            "debug_image_write_enabled": False,
         }],
+    )
+
+    # nav2_paramsv2.yaml's obstacle_layer subscribes to
+    # /scan_pca_filtered_points (NOT /scan_fullframe), so demo day must
+    # also start grade_detector or Nav2 will see no obstacle source.
+    grade_detection = Node(
+        package="autonav_detection",
+        executable="grade_detector",
+        name="grade_detector",
+        output="screen",
+        parameters=[
+            PathJoinSubstitution([
+                FindPackageShare("autonav_detection"),
+                "config",
+                "grade_detector.yaml",
+            ]),
+            {"use_sim_time": LaunchConfiguration("use_sim_time")},
+        ],
     )
 
     nav2 = IncludeLaunchDescription(
@@ -122,5 +161,6 @@ def generate_launch_description():
         sensors,
         slam,
         line_detection,
+        grade_detection,
         nav2,
     ])

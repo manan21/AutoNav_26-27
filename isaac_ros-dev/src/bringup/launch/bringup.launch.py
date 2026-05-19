@@ -34,7 +34,7 @@ def generate_launch_description():
     sensors_pkg = PathJoinSubstitution([pkg_share, 'launch', 'sensors.launch.py'])
     control_pkg = PathJoinSubstitution([control_share, 'launch', 'control_dev.launch.py'])
     
-    bowser = IncludeLaunchDescription( PythonLaunchDescriptionSource (bringup_pkg) )
+    core = IncludeLaunchDescription( PythonLaunchDescriptionSource (bringup_pkg) )
     slam = IncludeLaunchDescription( PythonLaunchDescriptionSource (slam_pkg) )
     sensors = IncludeLaunchDescription( PythonLaunchDescriptionSource (sensors_pkg) )
     control = IncludeLaunchDescription( PythonLaunchDescriptionSource (control_pkg) )
@@ -42,7 +42,7 @@ def generate_launch_description():
     
     
     return LaunchDescription([
-        bowser,
+        core,
         sensors,
         slam,
         control
