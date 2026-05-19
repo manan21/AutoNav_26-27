@@ -44,19 +44,14 @@ def generate_launch_description():
                 # Tighter deadzone for more responsive stick feel; the
                 # Xbox controller's mechanical center is well inside 0.02.
                 'deadzone': 0.02,
-                # Bind by NAME, not enumeration order. The default
-                # `device_id: 0` picks SDL2's first-found joystick,
-                # which on this robot swaps between /dev/input/js0
-                # and /dev/input/js1 depending on whether the Xbox
-                # controller pairs over Bluetooth before or after
-                # the container starts. That order-dependent bind
-                # also flips which HID-descriptor mode the kernel
-                # exposes (xpad vs hid-microsoft), which is what
-                # makes the X/Y button indices swap. Pinning by
-                # device_name forces SDL2 to find the controller
-                # regardless of jsX number — substring match against
-                # the kernel-reported name "Xbox Wireless Controller".
-                'device_name': 'Xbox Wireless Controller',
+                # device_name pin reverted: SDL2 reports the controller
+                # with a string that doesn't substring-match the kernel
+                # "Xbox Wireless Controller" name, so joy_node logged
+                # "Could not get joystick with name ..." and never
+                # connected. Falling back to device_id=0 (default —
+                # first SDL2-enumerated joystick) until we capture the
+                # actual SDL2-reported name on the Jetson; revisit the
+                # X/Y-swap problem then.
             }],
         )
 
