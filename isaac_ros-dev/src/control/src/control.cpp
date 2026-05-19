@@ -190,6 +190,14 @@ class ControlNode : public rclcpp::Node {
     // the local footprint on its next update cycle, and the same cycle
     // re-stamps live obstacles on top — so smears behind the robot
     // disappear without losing persistent map further away.
+    //
+    // Index 4 is empirically what the physical Y button fires on this
+    // controller/Bluetooth-mount combination (17-element SDL2-style
+    // /joy array). It does NOT match the xpad layout where Y=2 and
+    // does NOT match the swap-to-3 fallback. If the mount layout
+    // changes again, sniff /joy --field buttons while holding Y and
+    // update kY_button_index_.
+    static constexpr int kY_button_index_ = 4;
     bool currY_clear = false;
     bool prevY_clear = false;
     rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr clear_local_mirror_pub_;
@@ -241,7 +249,8 @@ class ControlNode : public rclcpp::Node {
         // in both AUTO and MANUAL modes since the costmap state is
         // shared. Pub-and-forget — the layer's subscription handles it
         // on its own update cycle without blocking the joy callback.
-        int curr_y_btn = (joy_msg->buttons.size() > 2) ? joy_msg->buttons[2] : 0;
+        int curr_y_btn = (static_cast<int>(joy_msg->buttons.size()) > kY_button_index_)
+            ? joy_msg->buttons[kY_button_index_] : 0;
         currY_clear = curr_y_btn != 0;
         if (!prevY_clear && currY_clear && clear_local_mirror_pub_) {
             clear_local_mirror_pub_->publish(std_msgs::msg::Empty());
