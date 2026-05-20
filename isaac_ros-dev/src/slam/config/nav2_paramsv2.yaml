@@ -169,10 +169,21 @@ controller_server:
       # the body off-center.
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign"]
       BaseObstacle.scale: 0.08
-      PathAlign.scale: 96.0
-      PathAlign.forward_point_distance: 0.225
-      GoalAlign.scale: 32.0
-      GoalAlign.forward_point_distance: 0.225
+      PathAlign.scale: 64.0
+      # forward_point_distance: 0.29 m — the geometric midpoint along
+      # the robot X-axis between the rear drive wheels (at X=0 in
+      # shogi.urdf) and the front caster (at X=+0.577). DWB samples a
+      # virtual point this far ahead of each trajectory's endpoint in
+      # the heading direction and scores alignment against /plan there.
+      # Sitting near the diff-drive pivot axis (rear-wheel axle line)
+      # plus a small lookahead matches the kinematic center of rotation
+      # for this rear-drive + front-caster layout, which keeps body
+      # off-tracking minimal during turns.
+      PathAlign.forward_point_distance: 0.29
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.29
+      PathDist.scale: 96.0
+      GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
