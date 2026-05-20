@@ -274,7 +274,7 @@ local_costmap:
         # IGVC gates still plan. Both local_costmap and global_costmap
         # share the same value by intent (see global_costmap comment).
         cost_scaling_factor: 3.0
-        inflation_radius: 1.20
+        inflation_radius: 1.30
 
       always_send_full_costmap: True
 
@@ -351,7 +351,7 @@ global_costmap:
         # IGVC gates still plan. Both local_costmap and global_costmap
         # share the same value by intent (see global_costmap comment).
         cost_scaling_factor: 3.0
-        inflation_radius: 1.10
+        inflation_radius: 1.30
       always_send_full_costmap: True
 
 map_server:
