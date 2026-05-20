@@ -14,7 +14,7 @@ def generate_launch_description():
 
     publish_rate = DeclareLaunchArgument(
         'publish_rate',
-        default_value='10.0',
+        default_value='30.0',
         description='Rate at which to publish electrical data (Hz)'
     )
 

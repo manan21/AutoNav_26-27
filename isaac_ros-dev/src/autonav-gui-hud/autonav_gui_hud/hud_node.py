@@ -12,12 +12,13 @@ import threading
 import time
 import urllib.request
 from collections import deque
+from pathlib import Path
 
 try:
     import rclpy
     from rclpy.node import Node
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
-    from nav_msgs.msg import Odometry
+    from nav_msgs.msg import Odometry, OccupancyGrid, Path
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32, Int32MultiArray, Bool
     try:
@@ -467,6 +468,23 @@ def _bresenham_line(img, x0, y0, x1, y1, color):
             y0 += sy
 
 
+class _JoyNavBus(QObject):
+    """Cross-thread bridge for Xbox-controller GUI navigation.
+
+    HudNode's /joy callback runs on the rclpy executor thread and
+    cannot poke Qt widgets directly. It pushes navigation events
+    here via ``push(direction)``; the ``nav`` pyqtSignal auto-
+    marshals to the main thread (queued connection by default for
+    cross-thread emits) where HudWindow synthesises the matching
+    QKeyEvent so the existing keyboard-navigation paths fire
+    unchanged.
+    """
+    nav = pyqtSignal(str)  # 'up' | 'down' | 'left' | 'right' | 'select'
+
+    def push(self, direction: str) -> None:
+        self.nav.emit(direction)
+
+
 class _LidarFrameWorker(QObject):
     """Off-thread lidar BEV rasterizer.
 
@@ -718,7 +736,7 @@ class _LidarFrameWorker(QObject):
 
 
 from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -893,6 +911,15 @@ class HudWindow(QMainWindow):
         self._camera_worker.frame_ready.connect(self._on_camera_frame_ready)
         if self._ros_node is not None:
             self._ros_node.camera_worker = self._camera_worker
+        # Xbox controller D-pad → arrow keys, A button → Enter (when
+        # not in auto mode and not in test recording). HudNode's joy
+        # callback pushes into this bus; the queued-connection signal
+        # marshals onto the main thread where we synthesise a
+        # QKeyEvent.
+        self._joy_nav_bus = _JoyNavBus(parent=self)
+        self._joy_nav_bus.nav.connect(self._on_joy_nav)
+        if self._ros_node is not None:
+            self._ros_node.joy_nav_bus = self._joy_nav_bus
         # Rolling window of recent frame-arrival timestamps for the FPS
         # counter overlaid on the camera panel. deque is bounded so the
         # average tracks the last ~10 frames (~1.3 s window at 7.5 Hz).
@@ -957,6 +984,18 @@ class HudWindow(QMainWindow):
         self._ema_eta_hours = None       # smoothed time-remaining estimate
         self._latest_soc_pct = None      # latest SOC from electrical publisher (0-100)
         self._odom_tri_patch = None
+        # Global costmap snippet overlay (Tier 3 of the odom display).
+        # Created lazily by _redraw_plots() the first time a fresh
+        # cropped snippet is ready; updated in-place after that via
+        # set_data/set_extent. zorder=2 puts it under the NAV2 plan
+        # (4) the trail (3 — wait, see comment below) and triangle (5)
+        # so the robot stays visible.
+        self._odom_costmap_img = None
+        # NAV2 global plan as a green Line2D on the odom canvas.
+        # zorder=4 — above the costmap (2) and trail (3), below the
+        # red triangle (5) so the operator can see the planner's
+        # intent without it eclipsing the robot.
+        self._odom_plan_line = None
         self._plots_dirty = False
 
         # EKF participation pulse state. Each device dot whose raw
@@ -1033,6 +1072,21 @@ class HudWindow(QMainWindow):
         self._screen_locked = False
         self._lock_password = "@cro123"
         self._lock_overlay = None
+        # Test-recording overlay (REC mode). Same window-fill /
+        # mouse-pass-through pattern as the lock overlay, but driven
+        # by /data/toggle_collect instead of a hotkey. The device dots
+        # also color-ramp black↔red at 2 Hz so the operator can see
+        # both peripherally (overlay) and dot-by-dot (which topics
+        # are actually in the bag).
+        self._rec_overlay = None
+        self._rec_active = False
+        self._rec_phase_t0 = None
+        # Snapshot of every status_dots stylesheet taken at the moment
+        # REC turns on, so we can restore the pre-REC look when it
+        # turns off (the participation-pulse code reasserts its own
+        # styling on the next tick either way; the snapshot handles
+        # the gap).
+        self._dot_styles_before_rec = None
         self._lock_password_input = None
         self._lock_password_visible = False
         self._lock_hint_label = None
@@ -1235,6 +1289,15 @@ class HudWindow(QMainWindow):
         self.btn_playback.clicked.connect(self._on_playback_clicked)
         options_layout.addWidget(self.btn_playback)
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
+
+        # ROS bag playback state — populated by the Playback Mode
+        # page's row scanner, driven by `ros2 bag play` subprocesses.
+        # The poll timer detects natural end-of-bag and clears the
+        # row so the operator doesn't have to.
+        self._bag_play_proc = None
+        self._bag_play_poll_timer = QTimer(self)
+        self._bag_play_poll_timer.setInterval(500)
+        self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
 
         options_layout.addStretch()
 
@@ -2735,6 +2798,16 @@ class HudWindow(QMainWindow):
         self._duplicate_poll_timer.timeout.connect(self._poll_watched_publishers)
         self._duplicate_poll_timer.start()
 
+        # REC indicator timer — reads HudNode.latest_recording_active
+        # each tick. When the bag recorder is active, ramps device
+        # dots black↔red at 2 Hz and shows the transparent overlay.
+        # Always-on (cheap when REC is off — early returns after one
+        # bool read + one comparison).
+        self._rec_timer = QTimer(self)
+        self._rec_timer.setInterval(50)  # 20 Hz tick = 10 frames per 2 Hz cycle
+        self._rec_timer.timeout.connect(self._rec_tick)
+        self._rec_timer.start()
+
         top_layout.addWidget(viz_frame, stretch=2)
 
         # -- Keyboard navigation --
@@ -3108,48 +3181,111 @@ class HudWindow(QMainWindow):
         self._update_selection()
 
     def _scan_csv_files(self, button_style, csv_label_style):
-        """Scan _CSV_DIR for .csv files and populate the grid + nav list."""
+        """Populate the Playback grid with every replayable session
+        under _CSV_DIR. Two source kinds are supported, both shown in
+        the same list (newest sessions first) so legacy CSV/MP4 runs
+        and new ROS bag runs can coexist while we transition:
+
+          * ROS bag — a directory containing ``metadata.yaml``
+            (either the entry itself, or a nested ``<entry>/bag/``
+            which is the t000 layout). Loads via ``ros2 bag play``
+            into the live canvases.
+          * Legacy CSV — a ``.csv`` file at the top level OR the
+            first CSV inside a session subdirectory. Loads via the
+            scrubber-driven _load_and_play_csv path.
+
+        Each row is tagged in the label so the operator can tell
+        which path will run. Name kept (``_scan_csv_files``) for
+        compatibility with the page-show plumbing.
+        """
         # Clear existing grid and nav buttons (except the exit button at the end)
         exit_btn_entry = None
         if self._playback_nav_buttons:
-            # Preserve the exit button (last entry)
             last = self._playback_nav_buttons[-1]
             if last[1] == "Exit Playback":
                 exit_btn_entry = last
 
         self._playback_nav_buttons.clear()
 
-        # Remove all items from the grid
         while self._csv_grid.count():
             item = self._csv_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
-        csv_dir = self._CSV_DIR
-        csv_entries = []  # (display_name, csv_path)
-        if os.path.isdir(csv_dir):
-            # Flat CSVs in the top-level directory
-            csv_entries.extend(sorted(
-                (f, os.path.join(csv_dir, f))
-                for f in os.listdir(csv_dir) if f.lower().endswith('.csv')
-            ))
-            # Subdirectories containing CSVs — show one entry per folder
-            for entry in sorted(os.listdir(csv_dir)):
-                subdir = os.path.join(csv_dir, entry)
-                if os.path.isdir(subdir):
-                    # Find the first CSV in this folder
-                    csvs = sorted(f for f in os.listdir(subdir) if f.lower().endswith('.csv'))
-                    if csvs:
-                        csv_entries.append((f'Folder:  {entry}', os.path.join(subdir, csvs[0])))
+        logs_dir = self._CSV_DIR
+        # Each entry: (sort_key, display_name, kind, path)
+        #   kind == 'bag' → path is the bag directory
+        #   kind == 'csv' → path is the CSV file
+        entries = []
+        if os.path.isdir(logs_dir):
+            # Top-level .csv files (legacy flat layout)
+            for f in os.listdir(logs_dir):
+                if f.lower().endswith('.csv'):
+                    full = os.path.join(logs_dir, f)
+                    entries.append((
+                        os.path.getmtime(full),
+                        f'CSV  {f}',
+                        'csv',
+                        full,
+                    ))
+            # Session sub-directories — could be a bag, a CSV folder,
+            # or a hybrid t000 session (bag/ subdir + sidecar csv).
+            for entry in os.listdir(logs_dir):
+                sess_dir = os.path.join(logs_dir, entry)
+                if not os.path.isdir(sess_dir):
+                    continue
+                # ROS bag at the session level?
+                if os.path.isfile(os.path.join(sess_dir, 'metadata.yaml')):
+                    entries.append((
+                        os.path.getmtime(sess_dir),
+                        f'BAG  {entry}',
+                        'bag',
+                        sess_dir,
+                    ))
+                    continue
+                # t000 nested layout: <session>/bag/metadata.yaml.
+                # If we find one, register that as the playable
+                # source AND still look for legacy CSVs in the same
+                # session folder so the operator can pick either.
+                nested = os.path.join(sess_dir, 'bag')
+                if (os.path.isdir(nested)
+                        and os.path.isfile(os.path.join(nested, 'metadata.yaml'))):
+                    entries.append((
+                        os.path.getmtime(nested),
+                        f'BAG  {entry}',
+                        'bag',
+                        nested,
+                    ))
+                # Legacy: first CSV in the session folder.
+                csvs = sorted(
+                    f for f in os.listdir(sess_dir)
+                    if f.lower().endswith('.csv')
+                )
+                if csvs:
+                    full = os.path.join(sess_dir, csvs[0])
+                    entries.append((
+                        os.path.getmtime(full),
+                        f'CSV  {entry}',
+                        'csv',
+                        full,
+                    ))
 
-        for i, (display_name, full_path) in enumerate(csv_entries):
+        # Newest sessions first so the just-recorded run is easy to find.
+        entries.sort(key=lambda e: e[0], reverse=True)
+
+        for i, (_t, display_name, kind, full_path) in enumerate(entries):
             btn = QPushButton("Load")
             btn.setStyleSheet(button_style)
             btn.setFocusPolicy(Qt.NoFocus)
-            btn.clicked.connect(
-                lambda checked=False, p=full_path: self._load_and_play_csv(p)
-            )
+            if kind == 'bag':
+                btn.clicked.connect(
+                    lambda checked=False, p=full_path: self._load_and_play_bag(p)
+                )
+            else:
+                btn.clicked.connect(
+                    lambda checked=False, p=full_path: self._load_and_play_csv(p)
+                )
             self._csv_grid.addWidget(btn, i, 0)
             self._playback_nav_buttons.append((btn, "Load", button_style))
 
@@ -4993,6 +5129,92 @@ class HudWindow(QMainWindow):
         self._lock_overlay = overlay
         return overlay
 
+    # -----------------------------------------------------------------
+    # REC mode — driven by /data/toggle_collect from base_automator
+    # -----------------------------------------------------------------
+    def _build_rec_overlay(self):
+        """Lazy-construct the transparent REC overlay (faint red wash
+        + thin solid red border) on first need. Same window-fill +
+        mouse-pass-through pattern as the lock overlay."""
+        central = self.centralWidget()
+        if central is None:
+            return None
+        overlay = QFrame(central)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.setStyleSheet(
+            "QFrame {"
+            "  background-color: rgba(255, 0, 0, 14);"
+            "  border: 4px solid rgba(255, 0, 0, 200);"
+            "}"
+        )
+        overlay.hide()
+        self._rec_overlay = overlay
+        return overlay
+
+    def _rec_tick(self):
+        """20 Hz tick. Reads HudNode.latest_recording_active and:
+          • On OFF→ON edge: snapshot existing dot styles, show the
+            overlay.
+          • While ON: ramp every status dot's background between
+            #000000 and #ff0000 on a 2 Hz cosine.
+          • On ON→OFF edge: restore the snapshotted styles, hide the
+            overlay. (The existing participation-pulse code will
+            reassert correct colors on its own next tick; the
+            snapshot just spares us a flash of stale red.)
+        """
+        node = getattr(self, '_ros_node', None)
+        active = bool(getattr(node, 'latest_recording_active', False))
+
+        if active and not self._rec_active:
+            # OFF → ON
+            try:
+                self._dot_styles_before_rec = {
+                    k: w.styleSheet() for k, w in self.status_dots.items()
+                }
+            except Exception:
+                self._dot_styles_before_rec = None
+            if self._rec_overlay is None:
+                self._build_rec_overlay()
+            if self._rec_overlay is not None:
+                self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
+                self._rec_overlay.show()
+                self._rec_overlay.raise_()
+            self._rec_phase_t0 = time.monotonic()
+
+        if not active and self._rec_active:
+            # ON → OFF
+            if self._dot_styles_before_rec is not None:
+                for k, style in self._dot_styles_before_rec.items():
+                    w = self.status_dots.get(k)
+                    if w is not None:
+                        try:
+                            w.setStyleSheet(style)
+                        except Exception:
+                            pass
+            self._dot_styles_before_rec = None
+            if self._rec_overlay is not None:
+                self._rec_overlay.hide()
+            self._rec_phase_t0 = None
+
+        self._rec_active = active
+        if not active:
+            return
+
+        # Cosine ramp: spends a beat at each extreme rather than just
+        # crossing through. 2 Hz cycle ⇒ period 500 ms.
+        t = time.monotonic() - (self._rec_phase_t0 or time.monotonic())
+        ramp = 0.5 * (1.0 - math.cos(2.0 * math.pi * 2.0 * t))
+        r = int(255 * ramp)
+        style = (
+            f"background-color: rgb({r}, 0, 0); "
+            "border-radius: 7px; border: none;"
+        )
+        for w in self.status_dots.values():
+            try:
+                w.setStyleSheet(style)
+            except Exception:
+                pass
+
     def _toggle_screen_lock(self):
         """Ctrl+Shift+L entry point (only called when unlocked)."""
         if self._screen_locked:
@@ -5084,10 +5306,13 @@ class HudWindow(QMainWindow):
         self._gui_log_msg("Screen unlocked")
 
     def resizeEvent(self, event):
-        """Keep the lock overlay sized to the window and the auto badge pinned."""
+        """Keep the lock + REC overlays sized to the window and the
+        auto badge pinned."""
         super().resizeEvent(event)
         if self._lock_overlay is not None:
             self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
+        if self._rec_overlay is not None:
+            self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
         self._position_auto_badge()
 
     def showEvent(self, event):
@@ -5469,6 +5694,29 @@ class HudWindow(QMainWindow):
         """Return True if a sensor cell or power cell is currently selected."""
         widget, _, _ = self._cur_btn()
         return widget in self._sensor_cells or widget is self._power_cell
+
+    def _on_joy_nav(self, direction):
+        """Slot fired by HudNode._cb_joy_nav → _JoyNavBus.nav.
+        Synthesises a QKeyEvent and dispatches via the normal
+        keyPressEvent path so the existing arrow-key navigation
+        (selection grid, scrub mode, speed-select mode) works
+        identically for the Xbox D-pad."""
+        key_map = {
+            'up':     Qt.Key_Up,
+            'down':   Qt.Key_Down,
+            'left':   Qt.Key_Left,
+            'right':  Qt.Key_Right,
+            'select': Qt.Key_Return,
+        }
+        qkey = key_map.get(direction)
+        if qkey is None:
+            return
+        try:
+            ev = QKeyEvent(QEvent.KeyPress, qkey, Qt.NoModifier)
+            self.keyPressEvent(ev)
+        except Exception:
+            # Don't let a synthesised key event crash the GUI.
+            pass
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -6054,6 +6302,116 @@ class HudWindow(QMainWindow):
             self._stop_live_mode()
         self._show_playback_page()
 
+    # -----------------------------------------------------------------
+    # ROS bag playback — wraps `ros2 bag play` as a subprocess. The
+    # bag's messages replay onto the same topic names the GUI's live
+    # subscriptions watch, so the live canvases reanimate exactly as
+    # they looked during the original test session.
+    # -----------------------------------------------------------------
+    # Visual-only topic subset, used as the --topics filter for
+    # `ros2 bag play`. Mirrors base_automator.DEFAULT_BAG_TOPICS in
+    # the testing package — recording and playback should always
+    # match. If a topic is dropped from one list, drop it from the
+    # other.
+    #
+    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel. None
+    # of them produce a pixel; together they were ~83 % of the
+    # earlier bag's message volume and were the reason camera/lidar
+    # paint got shoved off-rhythm.
+    _BAG_PLAYBACK_TOPICS = [
+        '/zed/zed_node/rgb/color/rect/image',
+        '/line_detection/debug/mask',
+        '/line_detection/line_pixels',
+        '/scan_fullframe',
+        '/scan_pca_filtered',
+        '/gps_fix',
+        '/odom',
+        '/local_ekf/odom',
+        '/global_ekf/odom',
+        '/pose',
+        '/global_costmap/costmap',
+        '/plan',
+        '/autonomous_mode',
+        '/electrical/voltage',
+        '/electrical/current',
+        '/electrical/power',
+        '/electrical/soc',
+        '/data/toggle_collect',
+    ]
+
+    def _load_and_play_bag(self, bag_dir):
+        """Replace any running playback / live source with this bag.
+        Called by the "Load" buttons in the Playback Mode grid."""
+        # Make sure nothing else is fighting for the topics: stop a
+        # prior bag, stop any CSV-based playback timer (the historical
+        # PB state machine is still here, just dormant), and DO NOT
+        # stop live mode — live mode IS what makes the bag's replayed
+        # messages reach the GUI canvases. Start live mode if it
+        # isn't already on.
+        self._stop_bag_play()
+        try:
+            self._stop_playback()
+        except Exception:
+            pass
+        if not self._live_active:
+            self._start_live_mode()
+        cmd = [
+            'ros2', 'bag', 'play', bag_dir,
+            '--rate', '1.0',
+            '--topics', *self._BAG_PLAYBACK_TOPICS,
+        ]
+        try:
+            self._bag_play_proc = subprocess.Popen(
+                cmd,
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag playback. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._bag_play_proc = None
+            return
+        self._gui_log_msg(
+            f"Playing bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} visual topics)"
+        )
+        self._bag_play_poll_timer.start()
+        # Pop back to the main page so the operator sees the live
+        # canvases reanimate from the bag.
+        self._show_main_page()
+
+    def _stop_bag_play(self):
+        """SIGINT the bag-playback subprocess. Idempotent."""
+        proc = self._bag_play_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+        self._bag_play_proc = None
+        self._bag_play_poll_timer.stop()
+
+    def _bag_play_poll(self):
+        """Detect natural end-of-bag and clear state."""
+        if self._bag_play_proc is None:
+            self._bag_play_poll_timer.stop()
+            return
+        if self._bag_play_proc.poll() is not None:
+            self._gui_log_msg("Bag playback finished")
+            self._bag_play_proc = None
+            self._bag_play_poll_timer.stop()
+
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
         rows = []
@@ -6149,6 +6507,12 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
+        if self._odom_plan_line is not None:
+            self._odom_plan_line.remove()
+            self._odom_plan_line = None
         # Reset dot tracking
         self._active_dots = set()
         # Clear video imshow handles
@@ -6369,6 +6733,12 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch is not None:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
+        if self._odom_plan_line is not None:
+            self._odom_plan_line.remove()
+            self._odom_plan_line = None
         self._odom_dist_label.set_text('')
         self._odom_live_txt.set_visible(False)
         self._odom_ax.set_xlim(-5, 5)
@@ -6626,9 +6996,64 @@ class HudWindow(QMainWindow):
             else:
                 self._odom_scatter.set_data(xs, ys)
 
-            # Adjust window to fit all current points with padding
+            # --- Global costmap snippet (Tier 3 — robot-centered crop
+            # of the global costmap so persistent line_layer +
+            # map_padder corridor data are visible). Extent is in map
+            # frame; treated as ≈ odom on this canvas (map↔odom drift
+            # < 1 m in a healthy mission).
+            costmap_alive = bool(getattr(self, '_costmap_alive', False))
+            node_obj = getattr(self, '_ros_node', None)
+            costmap_data = (
+                getattr(node_obj, 'latest_costmap', None)
+                if (costmap_alive and node_obj is not None) else None
+            )
+            cm_extent = None
+            if costmap_data is not None:
+                rgba, cm_extent = costmap_data
+                if self._odom_costmap_img is None:
+                    self._odom_costmap_img = self._odom_ax.imshow(
+                        rgba, extent=cm_extent, origin='lower',
+                        interpolation='nearest', zorder=2,
+                    )
+                else:
+                    self._odom_costmap_img.set_data(rgba)
+                    self._odom_costmap_img.set_extent(cm_extent)
+                    self._odom_costmap_img.set_visible(True)
+            elif self._odom_costmap_img is not None:
+                self._odom_costmap_img.set_visible(False)
+
+            # --- NAV2 global plan as a green Line2D. Same frame
+            # treatment as the costmap (map ≈ odom).
+            plan_alive = bool(getattr(self, '_plan_alive', False))
+            plan_data = (
+                getattr(node_obj, 'latest_plan_xy', None)
+                if (plan_alive and node_obj is not None) else None
+            )
+            if plan_data is not None:
+                plan_xs, plan_ys = plan_data
+                if self._odom_plan_line is None:
+                    self._odom_plan_line, = self._odom_ax.plot(
+                        plan_xs, plan_ys, '-',
+                        color='#33ff66', linewidth=1.5, zorder=4,
+                    )
+                else:
+                    self._odom_plan_line.set_data(plan_xs, plan_ys)
+                    self._odom_plan_line.set_visible(True)
+            elif self._odom_plan_line is not None:
+                self._odom_plan_line.set_visible(False)
+
+            # Adjust window to fit all current points with padding.
+            # When the costmap overlay is live, also include its
+            # extent so the operator sees the full ring of cost cells
+            # around the red triangle instead of a clipped corner.
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
+            if cm_extent is not None:
+                cm_x0, cm_x1, cm_y0, cm_y1 = cm_extent
+                min_x = min(min_x, cm_x0)
+                max_x = max(max_x, cm_x1)
+                min_y = min(min_y, cm_y0)
+                max_y = max(max_y, cm_y1)
             dx = max_x - min_x
             dy = max_y - min_y
             span = max(dx, dy) * 1.3
@@ -6840,6 +7265,12 @@ class HudWindow(QMainWindow):
         if self._odom_tri_patch is not None:
             self._odom_tri_patch.remove()
             self._odom_tri_patch = None
+        if self._odom_costmap_img is not None:
+            self._odom_costmap_img.remove()
+            self._odom_costmap_img = None
+        if self._odom_plan_line is not None:
+            self._odom_plan_line.remove()
+            self._odom_plan_line = None
         self._odom_dist_label.set_text('')
         self._odom_canvas.draw_idle()
         self._pwr_v_live_txt.set_visible(True)
@@ -7286,13 +7717,31 @@ class HudWindow(QMainWindow):
                 self._gps_cov_ellipse.set_visible(False)
             any_scalar_changed = True
 
-        # --- Odom: graduate raw /odom → /local_ekf/odom when the
-        # Local EKF is publishing. Same buffer either way; the title
-        # flip is what tells the operator which stream is on screen.
+        # --- Odom: graduate raw /odom → /local_ekf/odom → +costmap.
+        # Same buffer either way; the title flip is what tells the
+        # operator which stream is on screen. The costmap tier also
+        # turns on the global-costmap snippet overlay in _redraw_plots.
         ekf_odom_t = node.last_msg_t.get('ekf_local_odom', 0.0)
         ekf_odom_alive = (
             ekf_odom_t > 0.0
             and (now - ekf_odom_t) < self._ekf_msg_age_max_s
+        )
+        costmap_t = node.last_msg_t.get('costmap_global', 0.0)
+        # nav2 publishes the global costmap at ~2 Hz, so allow a 2 s
+        # window before declaring stale — survives a single missed
+        # update without the overlay strobing on/off.
+        self._costmap_alive = (
+            costmap_t > 0.0
+            and (now - costmap_t) < 2.0
+            and node.latest_costmap is not None
+        )
+        # Plan freshness — nav2 republishes /plan whenever the global
+        # planner runs (~1 Hz). 2 s tolerance same as the costmap.
+        plan_t = node.last_msg_t.get('plan', 0.0)
+        self._plan_alive = (
+            plan_t > 0.0
+            and (now - plan_t) < 2.0
+            and node.latest_plan_xy is not None
         )
         if ekf_odom_alive and node.latest_ekf_odom is not None:
             odom = node.latest_ekf_odom
@@ -7300,7 +7749,10 @@ class HudWindow(QMainWindow):
             # Drop any raw /odom we picked up in the same tick — we
             # don't want to interleave the two streams in the trail.
             node.latest_odom = None
-            self._set_enc_title("Encoders (Odom EKF)")
+            if self._costmap_alive:
+                self._set_enc_title("Encoders (Odom EKF Costmap)")
+            else:
+                self._set_enc_title("Encoders (Odom EKF)")
         else:
             odom = node.latest_odom
             if odom is not None:
@@ -7416,6 +7868,11 @@ class HudWindow(QMainWindow):
         and drive the "Local EKF" / "Map EKF" status rows from the
         freshness of their fused-output topics.
 
+        REC mode owns the dots while a test recording is active —
+        early-return so the participation pulse doesn't flicker
+        against the black↔red ramp. Snapshot/restore in _rec_tick
+        repaints the right colors on REC-off.
+
         Devices NOT participating in any EKF fall through this
         method untouched — their styling is owned by the existing
         _live_set_dot_received / _live_dot_flash_tick path. This
@@ -7425,6 +7882,9 @@ class HudWindow(QMainWindow):
         what tells the operator "the EKF just elevated this
         device" or "the EKF just lost it."
         """
+        # REC ownership of dots — see method docstring.
+        if getattr(self, '_rec_active', False):
+            return
         node = self._ros_node
         if node is None:
             return
@@ -7621,6 +8081,29 @@ if _HAS_ROS:
             self.latest_pca_t = 0.0
             self.latest_odom = None        # (x, y, qz) — raw /odom
             self.latest_ekf_odom = None    # (x, y, qz) — /local_ekf/odom (filtered)
+            # Persistent (never drained) copy of the EKF-fused robot XY
+            # in odom frame. The live tick drains ``latest_ekf_odom``
+            # to None each iteration, so the global-costmap callback
+            # needs its own latched copy to know where to crop.
+            self.latest_ekf_pose_xy = None  # (x, y) in odom frame
+            # Global costmap as a pre-rendered (rgba, extent) pair. The
+            # ROS callback crops a robot-centered snippet of the global
+            # costmap (so the persistent lines + map_padder corridor
+            # are visible, but only the patch near the robot) and
+            # converts to grayscale RGBA. The GUI thread only does
+            # set_data/set_extent on an existing AxesImage.
+            #   rgba:   uint8 (H, W, 4) — grayscale, alpha baked in
+            #   extent: (x_min, x_max, y_min, y_max) in map frame metres
+            #           — treated as ≈ odom on the GUI's odom canvas;
+            #           map↔odom drift is normally < 1 m in a healthy
+            #           mission so the snippet reads under the red
+            #           triangle.
+            self.latest_costmap = None
+            # NAV2 global plan as a pair of equal-length 1D numpy
+            # arrays (xs, ys) in map frame. Drawn as a green Line2D
+            # over the odom canvas. None until first /plan arrives;
+            # cleared when /plan goes stale.
+            self.latest_plan_xy = None  # Optional[Tuple[np.ndarray, np.ndarray]]
             self.latest_voltage = None     # float
             self.latest_current = None     # float
             self.latest_power = None       # float
@@ -7644,6 +8127,8 @@ if _HAS_ROS:
                 'pose':            0.0,   # /pose (slam_toolbox → Map EKF)
                 'ekf_local_odom':  0.0,   # /local_ekf/odom (Local EKF out)
                 'ekf_global_odom': 0.0,   # /global_ekf/odom (Map EKF out)
+                'costmap_global':  0.0,   # /global_costmap/costmap (nav2)
+                'plan':            0.0,   # /plan (nav2 global planner)
             }
 
             self._cv_bridge = CvBridge() if _HAS_CV_BRIDGE else None
@@ -7740,6 +8225,42 @@ if _HAS_ROS:
                 self._cb_line_pixels, _SENSOR_QOS,
             )
 
+            # nav2's global_costmap. Publisher QoS is RELIABLE +
+            # TRANSIENT_LOCAL + depth 1 (nav2_costmap_2d's standard
+            # latched publisher), so subscribe with the matching
+            # profile or rclpy will warn "incompatible QoS, no messages
+            # will be received". The TRANSIENT_LOCAL on our side means
+            # we get the most recent costmap immediately on subscribe
+            # rather than waiting for the next 2 Hz tick.
+            #
+            # Global (not local) because the line_layer + map_padder
+            # corridor only persist there — the local costmap is a
+            # rolling 5 m window that wipes line memory the moment the
+            # robot drives past. We crop a robot-centered snippet of
+            # the global costmap in the callback so the GUI overlay
+            # stays visually local while the data comes from the
+            # persistent global side.
+            #
+            # All nav2 configs in this repo set
+            # `always_send_full_costmap: true`, so the full grid lands
+            # on every publish — no need to fold in /costmap_updates.
+            _COSTMAP_QOS = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                OccupancyGrid, '/global_costmap/costmap',
+                self._cb_global_costmap, _COSTMAP_QOS,
+            )
+            # NAV2 global plan (green line on the odom canvas). Same
+            # RELIABLE QoS as the planner publishes with.
+            self.create_subscription(
+                Path, '/plan',
+                self._cb_plan, _RELIABLE_QOS,
+            )
+
             # Auto-mode wiring. The control node toggles its internal
             # autonomousMode on a rising edge of /joy buttons[3] (X
             # button on the Xbox controller) and publishes the result
@@ -7753,6 +8274,35 @@ if _HAS_ROS:
             self.create_subscription(
                 Bool, '/autonomous_mode',
                 self._cb_autonomous_mode, _RELIABLE_QOS,
+            )
+
+            # Test recording state — the t000_automator publishes True
+            # on the A-button press that starts a test, False on the
+            # press that ends it. Drives the GUI's REC indicator:
+            # device-dot black↔red ramp + transparent red overlay over
+            # the central widget so the operator can see at a glance
+            # that a bag is being recorded.
+            self.latest_recording_active = False
+            self.create_subscription(
+                Bool, '/data/toggle_collect',
+                self._cb_recording_toggle, _RELIABLE_QOS,
+            )
+
+            # Xbox D-pad → GUI arrow keys. HudWindow assigns
+            # ``joy_nav_bus`` after constructing the bus; until then
+            # the callback no-ops. The D-pad lives on axes[6] (left=+1,
+            # right=-1) and axes[7] (up=+1, down=-1) — verified in the
+            # field with a controller dump. We hold previous axis
+            # values to fire on rising-edge crossings only, so holding
+            # the D-pad doesn't auto-repeat (matches single-key
+            # arrow-press semantics).
+            self.joy_nav_bus = None
+            self._joy_prev_dpad_x = 0.0
+            self._joy_prev_dpad_y = 0.0
+            self._joy_prev_select_btn = 0
+            self.create_subscription(
+                Joy, '/joy',
+                self._cb_joy_nav, _SENSOR_QOS,
             )
 
         def _cb_image(self, msg):
@@ -7858,6 +8408,9 @@ if _HAS_ROS:
             p = msg.pose.pose.position
             qz = msg.pose.pose.orientation.z
             self.latest_ekf_odom = (p.x, p.y, qz)
+            # Persistent (never drained) copy for the global-costmap
+            # crop centering. Atomic tuple swap under the GIL.
+            self.latest_ekf_pose_xy = (p.x, p.y)
 
         def _cb_pose(self, msg):
             # slam_toolbox's localized pose. Drives the SLAM dot's
@@ -7870,6 +8423,123 @@ if _HAS_ROS:
             # Drives the "Map EKF" status dot and is the second-half
             # gate for the SLAM dot's pulse.
             self.last_msg_t['ekf_global_odom'] = time.monotonic()
+
+        def _cb_global_costmap(self, msg):
+            # /global_costmap/costmap — nav2 global costmap (whatever
+            # the map_padder corridor currently covers; can be 10s of
+            # metres on a side, 0.10 m/cell). We crop a ±3 m window
+            # around the EKF-fused robot pose so the GUI overlay reads
+            # local-sized but inherits the global costmap's persistent
+            # line_layer + map_padder corridor. Without the crop, a
+            # mission-scale 100×100 costmap rasterises to a tiny patch
+            # under the red triangle; with the crop it fills the
+            # auto-pan window the same way the local costmap did.
+            #
+            # Conversion is ~0.5 ms of vectorised numpy on a 60×60
+            # crop. At the global costmap's 2 Hz publish rate the ROS
+            # thread cost is well under 2 ms/sec.
+            self.last_msg_t['costmap_global'] = time.monotonic()
+            try:
+                h = int(msg.info.height)
+                w = int(msg.info.width)
+                if h <= 0 or w <= 0:
+                    return
+                res = float(msg.info.resolution)
+                if res <= 0.0:
+                    return
+                ox = float(msg.info.origin.position.x)
+                oy = float(msg.info.origin.position.y)
+
+                # Crop centre — robot's EKF-fused odom-frame XY,
+                # treated as map ≈ odom for visualisation. If the EKF
+                # hasn't published yet just skip; next callback will
+                # try again.
+                robot_xy = self.latest_ekf_pose_xy
+                if robot_xy is None:
+                    return
+                rx, ry = robot_xy
+
+                # ±3 m half-width — matches the local costmap's
+                # default extent so the operator gets the same
+                # visual scale they're used to.
+                crop_half = 3.0
+                col_min = max(0, int((rx - crop_half - ox) / res))
+                col_max = min(w, int(math.ceil((rx + crop_half - ox) / res)))
+                row_min = max(0, int((ry - crop_half - oy) / res))
+                row_max = min(h, int(math.ceil((ry + crop_half - oy) / res)))
+                if col_max <= col_min or row_max <= row_min:
+                    # Robot's outside the global costmap entirely —
+                    # nothing useful to draw this tick.
+                    return
+
+                # np.frombuffer reads array.array's buffer-protocol view
+                # directly — no copy. msg.data only needs to outlive this
+                # callback (it does; we only persist the freshly-allocated
+                # rgba below, not any view onto msg).
+                raw = np.frombuffer(msg.data, dtype=np.int8)
+                if raw.size != h * w:
+                    return
+                grid = raw.reshape((h, w))
+                # Slice is a view, not a copy — bytes are still owned by
+                # the msg buffer, so the np.clip etc. below need to run
+                # before the callback returns (which they do).
+                cropped = grid[row_min:row_max, col_min:col_max]
+                ch, cw = cropped.shape
+
+                # OccupancyGrid encoding:
+                #   -1   = unknown   → fully transparent
+                #    0   = free      → faint dark grey
+                #   1-100 = cost     → linear ramp toward near-white solid
+                #
+                # Grayscale keeps the red triangle as the only red on the
+                # canvas. We emit uint8 RGBA so matplotlib's imshow does
+                # zero norm/cmap work — the conversion is fully done here.
+                clipped = np.clip(cropped, 0, 100).astype(np.uint16)
+                gray = (40 + clipped * 200 // 100).astype(np.uint8)
+                alpha = (60 + clipped * 160 // 100).astype(np.uint8)
+                unknown = cropped < 0
+                gray[unknown] = 0
+                alpha[unknown] = 0
+
+                rgba = np.empty((ch, cw, 4), dtype=np.uint8)
+                rgba[..., :3] = gray[..., None]  # broadcast into R, G, B
+                rgba[..., 3] = alpha
+
+                extent = (
+                    ox + col_min * res,
+                    ox + col_max * res,
+                    oy + row_min * res,
+                    oy + row_max * res,
+                )
+                self.latest_costmap = (rgba, extent)
+            except Exception:
+                # Don't let a malformed costmap take down the GUI;
+                # leaving the previous image in place is fine.
+                pass
+
+        def _cb_plan(self, msg):
+            # /plan — nav2's global planner output. Drawn as a green
+            # Line2D on the odom canvas (map frame, treated as ≈ odom
+            # for visualisation). Empty/zero-length plans clear the
+            # line; the freshness gate in the live tick hides it when
+            # /plan goes silent.
+            self.last_msg_t['plan'] = time.monotonic()
+            try:
+                poses = msg.poses
+                n = len(poses)
+                if n == 0:
+                    self.latest_plan_xy = None
+                    return
+                xs = np.empty(n, dtype=np.float32)
+                ys = np.empty(n, dtype=np.float32)
+                for i, ps in enumerate(poses):
+                    xs[i] = ps.pose.position.x
+                    ys[i] = ps.pose.position.y
+                self.latest_plan_xy = (xs, ys)
+            except Exception:
+                # Same defensive policy as the costmap callback —
+                # never let a malformed path kill the GUI.
+                pass
 
         def _cb_voltage(self, msg):
             self.latest_voltage = msg.data
@@ -7959,6 +8629,61 @@ if _HAS_ROS:
             # so the GUI badge always reflects the *actual* robot state
             # rather than what we last published.
             self.latest_autonomous_mode = bool(msg.data)
+
+        def _cb_recording_toggle(self, msg):
+            # base_automator.start_test/stop_test publish True/False
+            # here. HudWindow's REC-ramp timer reads this every tick.
+            self.latest_recording_active = bool(msg.data)
+
+        def _cb_joy_nav(self, msg):
+            """Xbox D-pad → arrow-key signals on the nav bus.
+
+            D-pad layout (verified in field with /joy dumps):
+              axes[6]: left=+1.0, right=-1.0, neutral=0.0
+              axes[7]: up=+1.0, down=-1.0, neutral=0.0
+
+            Pure edge detection: emit only on the 0→±1 transition so
+            holding the D-pad doesn't auto-repeat. A configurable
+            "select" button (TBD) will get the same treatment, gated
+            on NOT in auto mode AND NOT in test recording so it
+            doesn't fight the t000 record toggle or surprise the
+            autonomy stack.
+            """
+            bus = self.joy_nav_bus
+            if bus is None:
+                return
+            axes = msg.axes
+            if len(axes) > 7:
+                dx = float(axes[6])
+                dy = float(axes[7])
+                # 0.5 threshold filters analog jitter; the D-pad is
+                # effectively digital so values are basically -1/0/+1.
+                if dy > 0.5 and self._joy_prev_dpad_y <= 0.5:
+                    bus.push('up')
+                elif dy < -0.5 and self._joy_prev_dpad_y >= -0.5:
+                    bus.push('down')
+                if dx > 0.5 and self._joy_prev_dpad_x <= 0.5:
+                    bus.push('left')
+                elif dx < -0.5 and self._joy_prev_dpad_x >= -0.5:
+                    bus.push('right')
+                self._joy_prev_dpad_x = dx
+                self._joy_prev_dpad_y = dy
+            # Select button. Index 15 — verified in the field with a
+            # /joy dump (17-button array, button[15]=1 on press).
+            # Picked specifically to avoid A (button[0]) which t000
+            # already uses for "start/stop recording". Gated on NOT
+            # in auto mode AND NOT in test recording so we never
+            # synthesise an Enter that could trigger something
+            # during autonomy or a live test capture.
+            SELECT_BTN_INDEX = 15
+            if len(msg.buttons) > SELECT_BTN_INDEX:
+                b = int(msg.buttons[SELECT_BTN_INDEX])
+                if (b == 1
+                        and self._joy_prev_select_btn == 0
+                        and not self.latest_autonomous_mode
+                        and not self.latest_recording_active):
+                    bus.push('select')
+                self._joy_prev_select_btn = b
 
 
 def main(args=None):

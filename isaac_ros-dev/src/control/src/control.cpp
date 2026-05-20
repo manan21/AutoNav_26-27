@@ -10,7 +10,7 @@
 #include "autonav_interfaces/srv/configure_control.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/bool.hpp"
-#include "nav2_msgs/srv/clear_entire_costmap.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -174,6 +174,15 @@ class ControlNode : public rclcpp::Node {
 
     // Debounce for bumper speed changes (500ms between changes)
     std::chrono::steady_clock::time_point last_speed_change_time_{};
+    // Motor-write rate gate. The /joy callback fires at 100 Hz with
+    // joy_node autorepeat, and unthrottled motor writes were sharing
+    // the same RoboteQ serial line with the 30 Hz encoder reads —
+    // the high write rate corrupted encoder responses (we saw
+    // /encoders publishing concatenated/truncated garbage that the
+    // wheel_odom MAX_ENCODER_DELTA filter then rejected, leaving
+    // /odom stuck). Cap motor writes at 33 Hz so the encoder reader
+    // gets clean intervals on the bus.
+    std::chrono::steady_clock::time_point last_motor_send_time_{};
 
     // /joy watchdog: timestamp of last received /joy. Initialized to
     // epoch so the watchdog also fires before the first /joy arrives.
@@ -182,14 +191,24 @@ class ControlNode : public rclcpp::Node {
     bool currX = false;
     bool prevX = false;
 
-    // Y button rising-edge -> clear global costmap. Testing aid during
-    // mission iteration when accumulated obstacle cells block planning.
-    // Index 2 matches the existing controller.set_y(joy_msg->buttons[2])
-    // mapping below. If a wrong container mount swaps X and Y, swap this
-    // index with the X autonomous-toggle index in joystick_callback.
+    // Y button rising-edge -> clear accumulated marks in the global
+    // costmap's LocalMirrorLayer within the robot's current local-
+    // costmap footprint. Fire-and-forget publish on /local_mirror_layer
+    // /clear; the layer subscribes there, zeroes its accumulator inside
+    // the local footprint on its next update cycle, and the same cycle
+    // re-stamps live obstacles on top — so smears behind the robot
+    // disappear without losing persistent map further away.
+    //
+    // Index 4 is empirically what the physical Y button fires on this
+    // controller/Bluetooth-mount combination (17-element SDL2-style
+    // /joy array). It does NOT match the xpad layout where Y=2 and
+    // does NOT match the swap-to-3 fallback. If the mount layout
+    // changes again, sniff /joy --field buttons while holding Y and
+    // update kY_button_index_.
+    static constexpr int kY_button_index_ = 4;
     bool currY_clear = false;
     bool prevY_clear = false;
-    rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr clear_local_mirror_pub_;
 
     // PHASE D — gravity-vector grade compensation state.
     double latest_a_fwd_ = 0.0;             // EWMA-filtered body-X accel.
@@ -234,18 +253,17 @@ class ControlNode : public rclcpp::Node {
 
         prevX = currX;
 
-        // Y rising-edge -> request global costmap clear. Fires in both
-        // AUTO and MANUAL modes since the costmap state is shared.
-        // No service_is_ready() gate — rclcpp queues async_send_request
-        // regardless; we want the press to register even if the server
-        // is briefly busy clearing+rebuilding from a previous call.
-        int curr_y_btn = (joy_msg->buttons.size() > 2) ? joy_msg->buttons[2] : 0;
+        // Y rising-edge -> publish on /local_mirror_layer/clear. Fires
+        // in both AUTO and MANUAL modes since the costmap state is
+        // shared. Pub-and-forget — the layer's subscription handles it
+        // on its own update cycle without blocking the joy callback.
+        int curr_y_btn = (static_cast<int>(joy_msg->buttons.size()) > kY_button_index_)
+            ? joy_msg->buttons[kY_button_index_] : 0;
         currY_clear = curr_y_btn != 0;
-        if (!prevY_clear && currY_clear && clear_global_costmap_client_) {
-            auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
-            clear_global_costmap_client_->async_send_request(req);
+        if (!prevY_clear && currY_clear && clear_local_mirror_pub_) {
+            clear_local_mirror_pub_->publish(std_msgs::msg::Empty());
             RCLCPP_INFO(this->get_logger(),
-                "Y pressed -> /global_costmap/clear_entirely_global_costmap");
+                "Y pressed -> /local_mirror_layer/clear");
         }
         prevY_clear = currY_clear;
 
@@ -352,6 +370,21 @@ class ControlNode : public rclcpp::Node {
         //                    from sticks when bumpers are held, so wheels
         //                    track the just-updated speed gear in real time.
         // PHASE D grade compensation applies in both manual and auto.
+        //
+        // Hard 33 Hz cap on motor writes regardless of /joy rate. The
+        // 100 Hz autorepeat path was saturating the RoboteQ serial
+        // line and corrupting concurrent encoder reads; rate gate
+        // restores clean read windows. Stick → motor latency goes
+        // back to up to 30 ms (matching the pre-fix/lines behaviour)
+        // but the encoder pipeline is what actually works.
+        constexpr long kMotorSendIntervalMs = 30;
+        const auto now_steady = std::chrono::steady_clock::now();
+        const auto since_last_send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_steady - last_motor_send_time_).count();
+        if (since_last_send_ms < kMotorSendIntervalMs) {
+            return;
+        }
+        last_motor_send_time_ = now_steady;
         const double forward_cmd_manual = 0.5 * (
             command.left_motor_speed + command.right_motor_speed);
         const double mult_manual = grade_speed_multiplier(forward_cmd_manual);
@@ -779,11 +812,13 @@ class ControlNode : public rclcpp::Node {
         controllerSub = this->create_subscription<sensor_msgs::msg::Joy>(
             controller_topic, 10, std::bind(&ControlNode::joystick_callback, this, std::placeholders::_1));
 
-        // Client backing the Y-button shortcut that clears the global
-        // costmap during testing. Service is hosted by nav2_costmap_2d
-        // on the global_costmap node.
-        clear_global_costmap_client_ = this->create_client<nav2_msgs::srv::ClearEntireCostmap>(
-            "/global_costmap/clear_entirely_global_costmap");
+        // Publisher backing the Y-button costmap clear. Subscribed by
+        // LocalMirrorLayer on the global_costmap node, which zeroes
+        // accumulated cells inside the current local-costmap footprint
+        // on its next update cycle. QoS depth 1 reliable matches the
+        // layer's subscription.
+        clear_local_mirror_pub_ = this->create_publisher<std_msgs::msg::Empty>(
+            "/local_mirror_layer/clear", rclcpp::QoS(1).reliable());
 
         // PHASE D — IMU subscription for gravity-vector grade compensation.
         // imu_topic param defaults to /sick_scansegment_xd/imu_inflated
