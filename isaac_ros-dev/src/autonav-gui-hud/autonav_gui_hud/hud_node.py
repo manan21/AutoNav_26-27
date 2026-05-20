@@ -5348,6 +5348,19 @@ class HudWindow(QMainWindow):
         self._baseline_gui_cpu_pct = self._last_gui_cpu_pct
         self._baseline_sys_gpu_pct = self._last_sys_gpu_pct
 
+        # Pause the camera + lidar worker threads via their slot_ready
+        # backpressure. With the event cleared and the slots gated to
+        # not re-set it, the workers drain submissions in their loop
+        # without doing downscale/render work. This is the biggest
+        # remaining CPU sink after the timer pause.
+        for w in (getattr(self, '_camera_worker', None),
+                  getattr(self, '_lidar_worker', None)):
+            if w is not None and hasattr(w, '_slot_ready'):
+                try:
+                    w._slot_ready.clear()
+                except Exception:
+                    pass
+
         if self._performance_overlay is None:
             self._build_performance_overlay()
         if self._performance_overlay is not None:
@@ -5382,6 +5395,18 @@ class HudWindow(QMainWindow):
         # snapshot the next time we enter Perf mode.
         if self._performance_overlay is not None:
             self._performance_overlay.hide()
+
+        # Wake the camera + lidar workers — calling slot_ready() sets
+        # the event so the next submission processes normally. Without
+        # this, both workers would stay drained forever.
+        for w in (getattr(self, '_camera_worker', None),
+                  getattr(self, '_lidar_worker', None)):
+            if w is not None and hasattr(w, 'slot_ready'):
+                try:
+                    w.slot_ready()
+                except Exception:
+                    pass
+
         for t in self._perf_resume_timers:
             try:
                 t.start()
@@ -7744,6 +7769,13 @@ class HudWindow(QMainWindow):
         Changing source rebuilds the AxesImage; set_data alone won't
         change the colormap and would render the mask in 'viridis'.
         """
+        # In Performance Mode we deliberately DON'T re-arm the worker —
+        # leaving _slot_ready cleared keeps the worker's backpressure
+        # check tripping `continue`, so it drains submissions without
+        # downscaling or emitting. Returning here also short-circuits
+        # the matplotlib paint below.
+        if self._performance_mode:
+            return
         # Re-arm the worker first thing so it can downscale the next
         # frame in parallel with our paint here. This is what bounds
         # the Qt event queue to 1 paint deep regardless of source rate.
@@ -7866,6 +7898,11 @@ class HudWindow(QMainWindow):
         HxWx3 RGB arrays of the same size, so set_data without recreate
         is the steady-state path; recreate only fires if size changed.
         """
+        # Same backpressure pause as the camera slot — leave the
+        # worker's _slot_ready cleared in Performance Mode so it
+        # drains submissions without rendering BEVs.
+        if self._performance_mode:
+            return
         self._lidar_worker.slot_ready()
         if not self._live_active:
             return
