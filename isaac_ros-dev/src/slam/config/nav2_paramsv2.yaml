@@ -165,7 +165,6 @@ controller_server:
       # so DWB cannot cut through recently seen local line costs during turns.
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.08
-      PathAlign.scale: 64.0
       # forward_point_distance: 0.29 m — the geometric midpoint along
       # the robot X-axis between the rear drive wheels (at X=0 in
       # shogi.urdf) and the front caster (at X=+0.577). DWB samples a
@@ -175,11 +174,12 @@ controller_server:
       # plus a small lookahead matches the kinematic center of rotation
       # for this rear-drive + front-caster layout, which keeps body
       # off-tracking minimal during turns.
-      PathAlign.forward_point_distance: 0.29
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.29
-      PathDist.scale: 96.0
-      GoalDist.scale: 24.0
+      PathAlign.scale: 96.0
+      PathAlign.forward_point_distance: 0.225
+      GoalAlign.scale: 32.0
+      GoalAlign.forward_point_distance: 0.225
+      PathDist.scale: 16.0
+      GoalDist.scale: 8.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
