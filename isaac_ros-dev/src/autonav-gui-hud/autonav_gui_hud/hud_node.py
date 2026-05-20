@@ -750,8 +750,13 @@ class _LidarFrameWorker(QObject):
         return img
 
 
-from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
+from PyQt5.QtCore import (
+    QEasingCurve, QEvent, QParallelAnimationGroup, QPoint,
+    QPropertyAnimation, Qt, QTimer,
+)
+from PyQt5.QtGui import (
+    QColor, QFont, QKeyEvent, QPainter, QPalette, QPen, QPolygon,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -810,6 +815,262 @@ def _style_ax(ax, title=None):
     ax.yaxis.label.set_color('#888')
     if title:
         ax.set_title(title, fontsize=8, color='#ccc')
+
+
+class _ModeOverlay(QWidget):
+    """Unified PERF + REC overlay.
+
+    One widget that's wider than the parent (≈ 2× window width + the 60°
+    diagonal width). It paints a blue trapezoid on the left, a red
+    trapezoid on the right, with the diagonal between them. Horizontal
+    translation chooses what's visible:
+
+        PERF — widget at x = 0; blue trapezoid covers the window.
+        REC  — widget at x = -(W + diag); red trapezoid covers the window.
+        BOTH — widget at x = -(W + diag) / 2; diagonal centred, both
+               trapezoids' visible slabs sit either side.
+
+    Two child labels (PERF + REC) shimmy between solo-centred and
+    split-trapezoid-centred positions as the state changes. A third
+    label (CPU/GPU stats) tracks the PERF label.
+
+    All transitions are QParallelAnimationGroups with InOutCubic easing
+    on the widget pos and on each label pos, so the whole composition
+    moves as one piece.
+    """
+
+    OFF = 'off'
+    PERF = 'perf'
+    REC = 'rec'
+    BOTH = 'both'
+
+    _BLUE_FILL = QColor(40, 90, 200, 110)
+    _BLUE_BORDER = QColor(20, 50, 140, 220)
+    _RED_FILL = QColor(255, 0, 0, 14)
+    _RED_BORDER = QColor(255, 0, 0, 200)
+    _BORDER_PX = 8
+    _ANIM_MS = 300
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        title_font = QFont()
+        title_font.setPointSize(96)
+        title_font.setBold(True)
+
+        self.perf_label = QLabel('PERF', self)
+        self.perf_label.setFont(title_font)
+        self.perf_label.setStyleSheet(
+            'color: #ffffff; background: transparent; border: none;'
+        )
+        self.perf_label.setAlignment(Qt.AlignCenter)
+        self.perf_label.adjustSize()
+
+        self.rec_label = QLabel('REC', self)
+        self.rec_label.setFont(title_font)
+        self.rec_label.setStyleSheet(
+            'color: rgba(255, 80, 80, 230);'
+            ' background: transparent; border: none;'
+        )
+        self.rec_label.setAlignment(Qt.AlignCenter)
+        self.rec_label.adjustSize()
+
+        stats_font = QFont()
+        stats_font.setPointSize(20)
+        stats_font.setFamily('Consolas')
+        self.perf_stats_label = QLabel(
+            'CPU   Before: --     Now: --\n'
+            'GPU   Before: --     Now: --',
+            self,
+        )
+        self.perf_stats_label.setFont(stats_font)
+        self.perf_stats_label.setStyleSheet(
+            'color: #cfe4ff; background: transparent; border: none;'
+        )
+        self.perf_stats_label.setAlignment(Qt.AlignCenter)
+        self.perf_stats_label.adjustSize()
+
+        # Screen dims — set by configure_for_screen, also recomputed on
+        # window resize. Until then, harmless placeholder values.
+        self._sw = 1
+        self._sh = 1
+        self._diag = 1
+        self._anim = None
+        self._state = self.OFF
+        self.hide()
+
+    # ── Geometry helpers ─────────────────────────────────────────────
+
+    def configure_for_screen(self, sw, sh):
+        """Set / refresh the parent (window) dimensions and recompute the
+        widget's total width + diagonal width. Snaps to the current state
+        without animation so resize jumps are atomic."""
+        import math as _math
+        sw = max(1, int(sw))
+        sh = max(1, int(sh))
+        self._sw = sw
+        self._sh = sh
+        # 60° diagonal — width = h * cot(60°).
+        self._diag = max(1, int(sh / _math.tan(_math.radians(60.0))))
+        widget_w = 2 * sw + self._diag
+        self.setFixedSize(widget_w, sh)
+        self._apply_state(self._state, animate=False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        W, H, D = self._sw, self._sh, self._diag
+
+        blue_poly = QPolygon([
+            QPoint(0, 0), QPoint(W + D, 0),
+            QPoint(W, H), QPoint(0, H),
+        ])
+        red_poly = QPolygon([
+            QPoint(W + D, 0), QPoint(2 * W + D, 0),
+            QPoint(2 * W + D, H), QPoint(W, H),
+        ])
+
+        # Fills first.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._BLUE_FILL)
+        painter.drawPolygon(blue_poly)
+        painter.setBrush(self._RED_FILL)
+        painter.drawPolygon(red_poly)
+
+        # Then thick polygon outlines. Both colors stamp their own
+        # border along the shared diagonal — in BOTH mode that reads as
+        # an emphatic split-stripe; in solo modes the diagonal sits at
+        # one screen edge and acts as that side's border.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(self._BLUE_BORDER, self._BORDER_PX))
+        painter.drawPolygon(blue_poly)
+        painter.setPen(QPen(self._RED_BORDER, self._BORDER_PX))
+        painter.drawPolygon(red_poly)
+
+    # ── State machine ───────────────────────────────────────────────
+
+    def _widget_pos_for(self, state):
+        if state == self.PERF:
+            return QPoint(0, 0)
+        if state == self.REC:
+            return QPoint(-(self._sw + self._diag), 0)
+        if state == self.BOTH:
+            return QPoint(-(self._sw + self._diag) // 2, 0)
+        # OFF — pinned past the window; exact value irrelevant since
+        # we hide right after the animation finishes.
+        return self.pos()
+
+    def _centre_label(self, label, cx, cy):
+        return QPoint(cx - label.width() // 2, cy - label.height() // 2)
+
+    def _label_positions_for(self, state):
+        """Return (perf, stats, rec) widget-local top-left QPoints for
+        the three labels at the given state."""
+        W, H, D = self._sw, self._sh, self._diag
+        offset_both = (W + D) // 2
+
+        if state == self.PERF:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.REC:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.BOTH:
+            perf_cx = W // 4 + offset_both
+            rec_cx = 3 * W // 4 + offset_both
+        else:
+            return (self.perf_label.pos(), self.perf_stats_label.pos(),
+                    self.rec_label.pos())
+
+        cy = H // 2
+        stats_cy = cy + self.perf_label.height() // 2 + 12 \
+            + self.perf_stats_label.height() // 2
+        return (
+            self._centre_label(self.perf_label, perf_cx, cy),
+            self._centre_label(self.perf_stats_label, perf_cx, stats_cy),
+            self._centre_label(self.rec_label, rec_cx, cy),
+        )
+
+    def state(self):
+        return self._state
+
+    def set_state(self, new_state, animate=True):
+        if new_state == self._state:
+            return
+        prev = self._state
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+
+        if new_state == self.OFF:
+            if prev == self.PERF:
+                off_pos = QPoint(self._sw, 0)
+            elif prev == self.REC:
+                off_pos = QPoint(-(2 * self._sw + self._diag), 0)
+            else:
+                off_pos = self.pos()
+
+            def _on_done():
+                self.hide()
+
+            self._animate_widget_pos(off_pos, animate, _on_done)
+            self._state = new_state
+            return
+
+        if prev == self.OFF:
+            # Coming from OFF — snap to target without sliding from
+            # nowhere; the visible slide-in happens only when going
+            # between active states.
+            self._apply_state(new_state, animate=False)
+            self.show()
+            self.raise_()
+            self._state = new_state
+            return
+
+        self._apply_state(new_state, animate=animate)
+        self._state = new_state
+
+    def _apply_state(self, state, animate=True):
+        target_widget = self._widget_pos_for(state)
+        perf_pos, stats_pos, rec_pos = self._label_positions_for(state)
+        if not animate:
+            self.move(target_widget)
+            self.perf_label.move(perf_pos)
+            self.perf_stats_label.move(stats_pos)
+            self.rec_label.move(rec_pos)
+            return
+        group = QParallelAnimationGroup(self)
+        for widget, target in [
+            (self, target_widget),
+            (self.perf_label, perf_pos),
+            (self.perf_stats_label, stats_pos),
+            (self.rec_label, rec_pos),
+        ]:
+            a = QPropertyAnimation(widget, b'pos')
+            a.setDuration(self._ANIM_MS)
+            a.setStartValue(widget.pos())
+            a.setEndValue(target)
+            a.setEasingCurve(QEasingCurve.InOutCubic)
+            group.addAnimation(a)
+        self._anim = group
+        group.start()
+
+    def _animate_widget_pos(self, target, animate, on_finished=None):
+        if not animate:
+            self.move(target)
+            if on_finished is not None:
+                on_finished()
+            return
+        a = QPropertyAnimation(self, b'pos', self)
+        a.setDuration(self._ANIM_MS)
+        a.setStartValue(self.pos())
+        a.setEndValue(target)
+        a.setEasingCurve(QEasingCurve.InOutCubic)
+        if on_finished is not None:
+            a.finished.connect(on_finished)
+        self._anim = a
+        a.start()
 
 
 class HudWindow(QMainWindow):
@@ -1117,7 +1378,13 @@ class HudWindow(QMainWindow):
         # started while in performance mode is left alone.
         self._performance_mode = False
         self._perf_resume_timers = []
-        self._performance_overlay = None
+        # Unified mode overlay — single wide widget that carries both
+        # PERF (blue) and REC (red) veils with a 60° diagonal split.
+        # Translated horizontally to expose PERF / REC / BOTH. Built
+        # lazily on first use; _perf_stats_label is aliased to the
+        # overlay's stats QLabel so the existing CPU/GPU update path
+        # keeps working with no other changes.
+        self._mode_overlay = None
         self._perf_stats_label = None
         # 5 s sampler runs CONTINUOUSLY (not just in Perf mode) so the
         # overlay can show a Before/Now comparison — Before being the
@@ -5209,56 +5476,40 @@ class HudWindow(QMainWindow):
     # -----------------------------------------------------------------
     # Performance mode — opt-in low-CPU veil
     # -----------------------------------------------------------------
-    def _build_performance_overlay(self):
-        """Lazy-construct the translucent blue veil with a centred
-        "PERFORMANCE" label + live CPU/GPU stats. Same window-fill +
-        mouse-pass-through pattern as the lock and REC overlays — the
-        OPTIONS column's Performance button stays clickable so the
-        operator can toggle out of the mode.
-        """
+    def _build_mode_overlay(self):
+        """Lazy-construct the unified PERF + REC overlay. One wide widget
+        carries both veils with a 60° diagonal split between them; it
+        translates horizontally to expose whichever combination of modes
+        is active. See `_ModeOverlay` for the geometry."""
         central = self.centralWidget()
         if central is None:
             return None
-        overlay = QFrame(central)
-        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-        overlay.setStyleSheet(
-            "QFrame { background-color: rgba(40, 90, 200, 110); }"
-        )
-        v = QVBoxLayout(overlay)
-        v.setAlignment(Qt.AlignCenter)
-
-        label = QLabel("PERFORMANCE")
-        font = QFont()
-        font.setPointSize(96)
-        font.setBold(True)
-        label.setFont(font)
-        label.setStyleSheet(
-            "color: #ffffff; background: transparent; border: none;"
-        )
-        label.setAlignment(Qt.AlignCenter)
-        v.addWidget(label)
-
-        # Live CPU/GPU stats — Before vs Now. Before is snapshotted from
-        # the last sample taken right before entering Perf mode; Now is
-        # whatever the most recent 5 s tick produced.
-        stats = QLabel(
-            "CPU   Before: --     Now: --\n"
-            "GPU   Before: --     Now: --"
-        )
-        stats_font = QFont()
-        stats_font.setPointSize(20)
-        stats_font.setFamily('Consolas')
-        stats.setFont(stats_font)
-        stats.setStyleSheet(
-            "color: #cfe4ff; background: transparent; border: none;"
-        )
-        stats.setAlignment(Qt.AlignCenter)
-        v.addWidget(stats)
-        self._perf_stats_label = stats
-
-        overlay.hide()
-        self._performance_overlay = overlay
+        overlay = _ModeOverlay(central)
+        overlay.configure_for_screen(central.width(), central.height())
+        self._mode_overlay = overlay
+        # Alias the stats label so the existing CPU/GPU update path
+        # (_sample_perf_stats → _refresh_perf_overlay_text) keeps
+        # working with no other changes.
+        self._perf_stats_label = overlay.perf_stats_label
         return overlay
+
+    def _update_mode_overlay_state(self):
+        """Compute the target overlay state from the perf + rec flags
+        and animate the unified overlay to it."""
+        if self._mode_overlay is None:
+            if self._build_mode_overlay() is None:
+                return
+        perf_on = self._performance_mode
+        rec_on = bool(self._rec_active)
+        if perf_on and rec_on:
+            target = _ModeOverlay.BOTH
+        elif perf_on:
+            target = _ModeOverlay.PERF
+        elif rec_on:
+            target = _ModeOverlay.REC
+        else:
+            target = _ModeOverlay.OFF
+        self._mode_overlay.set_state(target)
 
     def _sample_perf_stats(self):
         """Take a fresh CPU/GPU sample and (when the veil is up) refresh
@@ -5361,22 +5612,12 @@ class HudWindow(QMainWindow):
                 except Exception:
                     pass
 
-        if self._performance_overlay is None:
-            self._build_performance_overlay()
-        if self._performance_overlay is not None:
-            self._performance_overlay.setGeometry(
-                0, 0, self.width(), self.height()
-            )
-            self._performance_overlay.show()
-            self._performance_overlay.raise_()
-
-        # Paint Before/-- immediately; Now fills in at the next sample.
+        # Slide the unified overlay to its new state (PERF or BOTH
+        # depending on whether REC is also active). Paint the stats
+        # immediately so the operator sees Before / -- before the
+        # 5 s tick lands.
+        self._update_mode_overlay_state()
         self._refresh_perf_overlay_text()
-
-        # Keep the REC veil above the perf veil if a recording is also
-        # active — the operator should still see "REC" through the blue.
-        if self._rec_overlay is not None and self._rec_overlay.isVisible():
-            self._rec_overlay.raise_()
 
         self.btn_performance.setText("Exit Performance")
         self.btn_performance.setStyleSheet(self._perf_on_style)
@@ -5393,8 +5634,9 @@ class HudWindow(QMainWindow):
         self._performance_mode = False
         # Leave the sampler running — it's the source of the Before
         # snapshot the next time we enter Perf mode.
-        if self._performance_overlay is not None:
-            self._performance_overlay.hide()
+        # Slide overlay back: REC stays full-screen if REC is still
+        # on, otherwise slides off entirely.
+        self._update_mode_overlay_state()
 
         # Wake the camera + lidar workers — calling slot_ready() sets
         # the event so the next submission processes normally. Without
@@ -5427,35 +5669,17 @@ class HudWindow(QMainWindow):
     # -----------------------------------------------------------------
     # REC mode — driven by /data/toggle_collect from base_automator
     # -----------------------------------------------------------------
-    def _build_rec_overlay(self):
-        """Lazy-construct the transparent REC overlay (faint red wash
-        + thin solid red border) on first need. Same window-fill +
-        mouse-pass-through pattern as the lock overlay."""
-        central = self.centralWidget()
-        if central is None:
-            return None
-        overlay = QFrame(central)
-        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-        overlay.setStyleSheet(
-            "QFrame {"
-            "  background-color: rgba(255, 0, 0, 14);"
-            "  border: 4px solid rgba(255, 0, 0, 200);"
-            "}"
-        )
-        overlay.hide()
-        self._rec_overlay = overlay
-        return overlay
-
     def _rec_tick(self):
         """20 Hz tick. Reads HudNode.latest_recording_active and:
-          • On OFF→ON edge: snapshot existing dot styles, show the
-            overlay.
+          • On OFF→ON edge: snapshot existing dot styles, slide the
+            unified overlay to its REC or BOTH state.
           • While ON: ramp every status dot's background between
             #000000 and #ff0000 on a 2 Hz cosine.
-          • On ON→OFF edge: restore the snapshotted styles, hide the
-            overlay. (The existing participation-pulse code will
-            reassert correct colors on its own next tick; the
-            snapshot just spares us a flash of stale red.)
+          • On ON→OFF edge: restore the snapshotted styles, slide the
+            unified overlay back (PERF if Perf mode still on, else OFF).
+        The dot ramping is independent of the overlay — same code path
+        as before; only the overlay manipulation flows through
+        `_update_mode_overlay_state` now.
         """
         node = getattr(self, '_ros_node', None)
         active = bool(getattr(node, 'latest_recording_active', False))
@@ -5468,15 +5692,11 @@ class HudWindow(QMainWindow):
                 }
             except Exception:
                 self._dot_styles_before_rec = None
-            if self._rec_overlay is None:
-                self._build_rec_overlay()
-            if self._rec_overlay is not None:
-                self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
-                self._rec_overlay.show()
-                self._rec_overlay.raise_()
             self._rec_phase_t0 = time.monotonic()
+            self._rec_active = True
+            self._update_mode_overlay_state()
 
-        if not active and self._rec_active:
+        elif not active and self._rec_active:
             # ON → OFF
             if self._dot_styles_before_rec is not None:
                 for k, style in self._dot_styles_before_rec.items():
@@ -5487,9 +5707,9 @@ class HudWindow(QMainWindow):
                         except Exception:
                             pass
             self._dot_styles_before_rec = None
-            if self._rec_overlay is not None:
-                self._rec_overlay.hide()
             self._rec_phase_t0 = None
+            self._rec_active = False
+            self._update_mode_overlay_state()
 
         self._rec_active = active
         if not active:
@@ -5613,12 +5833,14 @@ class HudWindow(QMainWindow):
         lock = getattr(self, '_lock_overlay', None)
         if lock is not None:
             lock.setGeometry(0, 0, self.width(), self.height())
-        rec = getattr(self, '_rec_overlay', None)
-        if rec is not None:
-            rec.setGeometry(0, 0, self.width(), self.height())
-        perf = getattr(self, '_performance_overlay', None)
-        if perf is not None:
-            perf.setGeometry(0, 0, self.width(), self.height())
+        # Unified mode overlay handles its own geometry; just hand it
+        # the new central-widget dimensions and it'll resize + snap to
+        # its current state.
+        mode = getattr(self, '_mode_overlay', None)
+        if mode is not None:
+            central = self.centralWidget()
+            if central is not None:
+                mode.configure_for_screen(central.width(), central.height())
         if hasattr(self, '_position_auto_badge'):
             self._position_auto_badge()
 
