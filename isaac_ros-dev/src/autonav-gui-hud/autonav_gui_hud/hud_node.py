@@ -49,6 +49,21 @@ try:
 except ImportError:
     _HAS_CV2 = False
 
+# psutil + NVML are only consulted while the Performance mode veil is up,
+# so missing imports just blank out the matching stat rather than blocking
+# the rest of the GUI.
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
+try:
+    import pynvml
+    _HAS_NVML = True
+except ImportError:
+    _HAS_NVML = False
+
 import numpy as np
 from PIL import Image as PILImage
 
@@ -1092,6 +1107,49 @@ class HudWindow(QMainWindow):
         self._lock_hint_label = None
         self._lock_status_label = None
 
+        # Performance Mode — opt-in low-CPU veil. When on, every QTimer
+        # the window owns is paused (live tick, playback, EKF pulse,
+        # process polling, etc.) so the GUI hovers at near-zero CPU
+        # behind a translucent blue panel with a giant centred
+        # "PERFORMANCE" label and a Before/Now CPU/GPU comparison.
+        # _perf_resume_timers stores the timers we stopped so toggle-off
+        # resumes exactly those that were running on entry — anything
+        # started while in performance mode is left alone.
+        self._performance_mode = False
+        self._perf_resume_timers = []
+        self._performance_overlay = None
+        self._perf_stats_label = None
+        # 5 s sampler runs CONTINUOUSLY (not just in Perf mode) so the
+        # overlay can show a Before/Now comparison — Before being the
+        # most recent sample taken before the operator entered Perf
+        # mode, Now being the latest sample taken while paused. The
+        # sampler is also the one timer skipped by the pause loop.
+        self._perf_stats_timer = QTimer(self)
+        self._perf_stats_timer.setInterval(5000)
+        self._perf_stats_timer.timeout.connect(self._sample_perf_stats)
+        self._perf_proc = None
+        self._perf_cpu_count = 1
+        if _HAS_PSUTIL:
+            try:
+                self._perf_proc = psutil.Process()
+                # Prime per-process cpu_percent so the first reading
+                # reflects real work, not the all-time-since-start
+                # fallback.
+                self._perf_proc.cpu_percent(interval=None)
+                self._perf_cpu_count = max(1, psutil.cpu_count(logical=True))
+            except Exception:
+                self._perf_proc = None
+        self._perf_nvml_handle = None  # populated lazily on first sample
+        # Latest samples — refreshed every 5 s by _sample_perf_stats.
+        self._last_gui_cpu_pct = None
+        self._last_sys_gpu_pct = None
+        # Baseline — snapshotted at the moment Perf mode is entered.
+        self._baseline_gui_cpu_pct = None
+        self._baseline_sys_gpu_pct = None
+        # Start the sampler. QTimer is queued to fire from the event
+        # loop, so this is safe even though __init__ hasn't returned.
+        self._perf_stats_timer.start()
+
         # Container connection state
         self._container_connected = False
         self._container_name = 'koopa-kingdom'
@@ -1298,6 +1356,25 @@ class HudWindow(QMainWindow):
         self._bag_play_poll_timer = QTimer(self)
         self._bag_play_poll_timer.setInterval(500)
         self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
+
+        # Performance Mode — last entry in the action stack. Toggles a
+        # near-zero-CPU veil that pauses every QTimer the window owns.
+        # The button + veil are container-independent (no ROS needed),
+        # so it sits alongside Playback Mode.
+        self._perf_off_style = button_style
+        self._perf_on_style = (
+            button_style.replace("#2a2a2a", "#1a3a6a")
+                        .replace("#3a3a3a", "#2a4a7a")
+                        .replace("#1a1a1a", "#0a2a4a")
+        )
+        self.btn_performance = QPushButton("Performance Mode")
+        self.btn_performance.setStyleSheet(self._perf_off_style)
+        self.btn_performance.setFocusPolicy(Qt.NoFocus)
+        self.btn_performance.clicked.connect(self._on_performance_clicked)
+        options_layout.addWidget(self.btn_performance)
+        self._nav_buttons.append(
+            (self.btn_performance, "Performance Mode", self._perf_off_style)
+        )
 
         options_layout.addStretch()
 
@@ -5130,6 +5207,199 @@ class HudWindow(QMainWindow):
         return overlay
 
     # -----------------------------------------------------------------
+    # Performance mode — opt-in low-CPU veil
+    # -----------------------------------------------------------------
+    def _build_performance_overlay(self):
+        """Lazy-construct the translucent blue veil with a centred
+        "PERFORMANCE" label + live CPU/GPU stats. Same window-fill +
+        mouse-pass-through pattern as the lock and REC overlays — the
+        OPTIONS column's Performance button stays clickable so the
+        operator can toggle out of the mode.
+        """
+        central = self.centralWidget()
+        if central is None:
+            return None
+        overlay = QFrame(central)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        overlay.setStyleSheet(
+            "QFrame { background-color: rgba(40, 90, 200, 110); }"
+        )
+        v = QVBoxLayout(overlay)
+        v.setAlignment(Qt.AlignCenter)
+
+        label = QLabel("PERFORMANCE")
+        font = QFont()
+        font.setPointSize(96)
+        font.setBold(True)
+        label.setFont(font)
+        label.setStyleSheet(
+            "color: #ffffff; background: transparent; border: none;"
+        )
+        label.setAlignment(Qt.AlignCenter)
+        v.addWidget(label)
+
+        # Live CPU/GPU stats — Before vs Now. Before is snapshotted from
+        # the last sample taken right before entering Perf mode; Now is
+        # whatever the most recent 5 s tick produced.
+        stats = QLabel(
+            "CPU   Before: --     Now: --\n"
+            "GPU   Before: --     Now: --"
+        )
+        stats_font = QFont()
+        stats_font.setPointSize(20)
+        stats_font.setFamily('Consolas')
+        stats.setFont(stats_font)
+        stats.setStyleSheet(
+            "color: #cfe4ff; background: transparent; border: none;"
+        )
+        stats.setAlignment(Qt.AlignCenter)
+        v.addWidget(stats)
+        self._perf_stats_label = stats
+
+        overlay.hide()
+        self._performance_overlay = overlay
+        return overlay
+
+    def _sample_perf_stats(self):
+        """Take a fresh CPU/GPU sample and (when the veil is up) refresh
+        the overlay. Runs every 5 s for the lifetime of the window so
+        we always have a fresh Before snapshot the moment Perf mode is
+        entered.
+
+        GUI CPU is per-process, normalised by total logical-core count
+        so a single saturated core reads as 100/N% (matches Task
+        Manager's column). GPU is whole-device — per-process GPU isn't
+        reliably queryable across drivers, and on the Jetson the GUI
+        is the dominant graphics client so this is a fair proxy for
+        what the HUD is costing the GPU.
+        """
+        if self._perf_proc is not None:
+            try:
+                raw = self._perf_proc.cpu_percent(interval=None)
+                self._last_gui_cpu_pct = raw / self._perf_cpu_count
+            except Exception:
+                pass
+        if _HAS_NVML:
+            try:
+                if self._perf_nvml_handle is None:
+                    pynvml.nvmlInit()
+                    self._perf_nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(
+                    self._perf_nvml_handle
+                )
+                self._last_sys_gpu_pct = float(util.gpu)
+            except Exception:
+                pass
+        if self._performance_mode:
+            self._refresh_perf_overlay_text()
+
+    def _refresh_perf_overlay_text(self):
+        """Write the Before/Now values into the overlay label."""
+        if self._perf_stats_label is None:
+            return
+
+        def fmt(v):
+            return '--' if v is None else f'{v:.1f}%'
+
+        self._perf_stats_label.setText(
+            f'CPU   Before: {fmt(self._baseline_gui_cpu_pct)}     '
+            f'Now: {fmt(self._last_gui_cpu_pct)}\n'
+            f'GPU   Before: {fmt(self._baseline_sys_gpu_pct)}     '
+            f'Now: {fmt(self._last_sys_gpu_pct)}'
+        )
+
+    def _on_performance_clicked(self):
+        """Toggle Performance Mode."""
+        if self._performance_mode:
+            self._exit_performance_mode()
+        else:
+            self._enter_performance_mode()
+
+    def _enter_performance_mode(self):
+        """Pause every QTimer the window owns + raise the PERFORMANCE veil.
+
+        Iterating __dict__ catches new timers added in the future
+        automatically; isActive() filters down to the ones that were
+        genuinely running so toggle-off doesn't kick idle timers awake.
+        The perf-stats sampler is skipped here — it's the one timer
+        that stays alive while the veil is up so the CPU/GPU readout
+        keeps refreshing.
+        """
+        if self._performance_mode:
+            return
+        # Force a fresh sample BEFORE flipping the mode flag so the
+        # Before baseline isn't None for users who hit Perf within
+        # the first 5 s (before the periodic sampler has ticked). The
+        # sample's refresh-overlay branch is gated on _performance_mode,
+        # so calling it here with the flag still False is safe.
+        self._sample_perf_stats()
+
+        self._performance_mode = True
+        self._perf_resume_timers = []
+        for val in self.__dict__.values():
+            if (isinstance(val, QTimer) and val.isActive()
+                    and val is not self._perf_stats_timer):
+                val.stop()
+                self._perf_resume_timers.append(val)
+
+        # Snapshot the last-seen samples as the Before baseline before
+        # the GUI throttles down. The sampler keeps running so Now
+        # will refresh at the next 5 s tick.
+        self._baseline_gui_cpu_pct = self._last_gui_cpu_pct
+        self._baseline_sys_gpu_pct = self._last_sys_gpu_pct
+
+        if self._performance_overlay is None:
+            self._build_performance_overlay()
+        if self._performance_overlay is not None:
+            self._performance_overlay.setGeometry(
+                0, 0, self.width(), self.height()
+            )
+            self._performance_overlay.show()
+            self._performance_overlay.raise_()
+
+        # Paint Before/-- immediately; Now fills in at the next sample.
+        self._refresh_perf_overlay_text()
+
+        # Keep the REC veil above the perf veil if a recording is also
+        # active — the operator should still see "REC" through the blue.
+        if self._rec_overlay is not None and self._rec_overlay.isVisible():
+            self._rec_overlay.raise_()
+
+        self.btn_performance.setText("Exit Performance")
+        self.btn_performance.setStyleSheet(self._perf_on_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_performance:
+                self._nav_buttons[i] = (
+                    b, "Exit Performance", self._perf_on_style,
+                )
+                break
+
+    def _exit_performance_mode(self):
+        if not self._performance_mode:
+            return
+        self._performance_mode = False
+        # Leave the sampler running — it's the source of the Before
+        # snapshot the next time we enter Perf mode.
+        if self._performance_overlay is not None:
+            self._performance_overlay.hide()
+        for t in self._perf_resume_timers:
+            try:
+                t.start()
+            except RuntimeError:
+                # Timer may have been deleted while we were paused.
+                pass
+        self._perf_resume_timers = []
+
+        self.btn_performance.setText("Performance Mode")
+        self.btn_performance.setStyleSheet(self._perf_off_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_performance:
+                self._nav_buttons[i] = (
+                    b, "Performance Mode", self._perf_off_style,
+                )
+                break
+
+    # -----------------------------------------------------------------
     # REC mode — driven by /data/toggle_collect from base_automator
     # -----------------------------------------------------------------
     def _build_rec_overlay(self):
@@ -5307,13 +5577,25 @@ class HudWindow(QMainWindow):
 
     def resizeEvent(self, event):
         """Keep the lock + REC overlays sized to the window and the
-        auto badge pinned."""
+        auto badge pinned.
+
+        Qt fires resizeEvent during __init__ before the overlay widgets
+        and the auto badge exist, so getattr-guard every attribute we
+        touch — otherwise the first resize during construction raises
+        AttributeError and kills the process.
+        """
         super().resizeEvent(event)
-        if self._lock_overlay is not None:
-            self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
-        if self._rec_overlay is not None:
-            self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._position_auto_badge()
+        lock = getattr(self, '_lock_overlay', None)
+        if lock is not None:
+            lock.setGeometry(0, 0, self.width(), self.height())
+        rec = getattr(self, '_rec_overlay', None)
+        if rec is not None:
+            rec.setGeometry(0, 0, self.width(), self.height())
+        perf = getattr(self, '_performance_overlay', None)
+        if perf is not None:
+            perf.setGeometry(0, 0, self.width(), self.height())
+        if hasattr(self, '_position_auto_badge'):
+            self._position_auto_badge()
 
     def showEvent(self, event):
         """Re-pin the auto badge on first show and on any hide/show cycle.
