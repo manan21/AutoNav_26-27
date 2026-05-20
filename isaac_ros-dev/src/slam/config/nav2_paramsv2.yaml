@@ -248,7 +248,7 @@ local_costmap:
       line_layer:
         plugin: "line_layer::LineLayer"
         enabled: True
-        line_topic: "/line_points"
+        line_topic: "/line_costmap_points"
         transform_tolerance: 0.2
         max_message_age_ms: 750
         observation_persistence_ms: 10000

@@ -44,6 +44,7 @@ public:
 		this->declare_parameter("depth_camera_topic", "/zed/zed_node/depth/depth_registered");
 		this->declare_parameter("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info");
 		this->declare_parameter("line_points_topic", "line_points");
+		this->declare_parameter("line_costmap_points_topic", "/line_costmap_points");
 		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true);
 		this->declare_parameter("publish_interval_ms", 100);
@@ -93,6 +94,8 @@ public:
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
 		std::string camera_info_topic = this->get_parameter("camera_info_topic").as_string();
 		std::string line_points_topic = this->get_parameter("line_points_topic").as_string();
+		std::string line_costmap_points_topic =
+			this->get_parameter("line_costmap_points_topic").as_string();
 		std::string odom_topic = this->get_parameter("odom_topic").as_string();
 		target_frame_ = this->get_parameter("target_frame").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
@@ -131,6 +134,7 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Depth topic: %s", depth_camera_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Camera info: %s", camera_info_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Output topic: %s", line_points_topic.c_str());
+		RCLCPP_INFO(this->get_logger(), "Costmap output topic: %s", line_costmap_points_topic.c_str());
 		RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
 		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Publish interval: %ld ms", publish_interval_ms_);
@@ -183,6 +187,8 @@ public:
 		// Publishers
 		_line_pub = this->create_publisher<autonav_interfaces::msg::LinePoints>(
 			line_points_topic, 1);
+		_line_costmap_pub = this->create_publisher<autonav_interfaces::msg::LinePoints>(
+			line_costmap_points_topic, 1);
 			
 		_line_timer = this->create_wall_timer(
 			std::chrono::milliseconds(publish_interval_ms_),
@@ -234,6 +240,7 @@ private:
 	rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _clear_lines_service;
 	rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _line_point_cloud_pub; 
 	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_pub;
+	rclcpp::Publisher<autonav_interfaces::msg::LinePoints>::SharedPtr _line_costmap_pub;
 	rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr _line_pixels_pub;
 	rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _diagnostics_pub;
 	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_raw_image_pub;
@@ -293,6 +300,9 @@ private:
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
 	std::vector<cv::Point> last_valid_debug_pixels_;
+	autonav_interfaces::msg::LinePoints last_valid_costmap_message_;
+	rclcpp::Time last_valid_costmap_detection_time_{0, 0, RCL_ROS_TIME};
+	bool has_last_valid_costmap_message_ = false;
 
 	struct DetectionFrameStats {
 		int raw_pixels = 0;
@@ -307,6 +317,8 @@ private:
 		int kept_clusters = 0;
 		int candidate_points = 0;
 		int confirmed_points = 0;
+		int plane_candidate_points = 0;
+		int plane_projection_rejects = 0;
 		int yaw_gated_frames = 0;
 	};
 
@@ -364,18 +376,28 @@ private:
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
 
 	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
+	void publishCostmapLinePoints(const autonav_interfaces::msg::LinePoints & message);
 	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
 	void publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp);
 	void publishEmptyLineSet(const builtin_interfaces::msg::Time & stamp, const char * reason);
+	void publishEmptyCostmapLineSet(const builtin_interfaces::msg::Time & stamp, const char * reason);
 	// Republish the last successfully published candidate set with a
 	// fresh stamp while it is still within `line_hold_timeout_ms`.
 	void republishConfirmedCache(const builtin_interfaces::msg::Time & stamp);
+	void republishCostmapGroundPlaneCache(const builtin_interfaces::msg::Time & stamp);
 	void publishCandidatePoints(
 		const std::vector<CandidatePoint> & candidates,
+		const builtin_interfaces::msg::Time & stamp);
+	void publishCostmapGroundPlanePoints(
+		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
 	std::vector<CandidatePoint> filterLineClusters(
 		const std::vector<CandidatePoint> & points,
 		DetectionFrameStats & stats) const;
+	std::vector<Eigen::Vector3d> projectCandidatesToGroundPlane(
+		const sensor_msgs::msg::Image::SharedPtr & depth_msg,
+		const std::vector<CandidatePoint> & candidates,
+		DetectionFrameStats & stats);
 	std::vector<Eigen::Vector3d> updateTemporalConfidence(
 		const std::vector<CandidatePoint> & candidates,
 		const rclcpp::Time & stamp,
@@ -492,6 +514,11 @@ void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoin
 	_line_pub->publish(message);
 }
 
+void LineDetectorNode::publishCostmapLinePoints(const autonav_interfaces::msg::LinePoints & message)
+{
+	_line_costmap_pub->publish(message);
+}
+
 void LineDetectorNode::publishPointCloudFromLineMessage(
 	const autonav_interfaces::msg::LinePoints & message)
 {
@@ -532,6 +559,22 @@ void LineDetectorNode::publishEmptyLineSet(
 		"Publishing empty line set after %s", reason);
 }
 
+void LineDetectorNode::publishEmptyCostmapLineSet(
+	const builtin_interfaces::msg::Time & stamp,
+	const char * reason)
+{
+	(void)stamp;
+	auto empty_message = autonav_interfaces::msg::LinePoints();
+	empty_message.header.frame_id = target_frame_;
+	empty_message.header.stamp = this->now();
+	last_valid_costmap_message_ = empty_message;
+	has_last_valid_costmap_message_ = false;
+	publishCostmapLinePoints(empty_message);
+	RCLCPP_WARN_THROTTLE(
+		get_logger(), *get_clock(), 3000,
+		"Publishing empty costmap line set after %s", reason);
+}
+
 void LineDetectorNode::republishConfirmedCache(
 	const builtin_interfaces::msg::Time & stamp)
 {
@@ -553,6 +596,28 @@ void LineDetectorNode::republishConfirmedCache(
 	message.header.stamp = this->now();
 	publishPointCloudFromLineMessage(message);
 	publishLinePoints(message);
+}
+
+void LineDetectorNode::republishCostmapGroundPlaneCache(
+	const builtin_interfaces::msg::Time & stamp)
+{
+	const rclcpp::Time now_stamp(stamp, this->get_clock()->get_clock_type());
+	const rclcpp::Duration hold =
+		rclcpp::Duration::from_nanoseconds(line_hold_timeout_ms_ * 1000000LL);
+	if (!has_last_valid_costmap_message_) {
+		publishEmptyCostmapLineSet(stamp, "missing cached ground-plane line set");
+		return;
+	}
+	if (line_hold_timeout_ms_ >= 0 &&
+		(now_stamp - last_valid_costmap_detection_time_) > hold)
+	{
+		publishEmptyCostmapLineSet(stamp, "expired cached ground-plane line set");
+		return;
+	}
+
+	auto message = last_valid_costmap_message_;
+	message.header.stamp = this->now();
+	publishCostmapLinePoints(message);
 }
 
 void LineDetectorNode::publishCandidatePoints(
@@ -583,6 +648,29 @@ void LineDetectorNode::publishCandidatePoints(
 	publishLinePoints(message);
 }
 
+void LineDetectorNode::publishCostmapGroundPlanePoints(
+	const std::vector<Eigen::Vector3d> & points,
+	const builtin_interfaces::msg::Time & stamp)
+{
+	auto message = autonav_interfaces::msg::LinePoints();
+	message.header.frame_id = target_frame_;
+	message.header.stamp = this->now();
+	message.points.reserve(points.size());
+	for (const auto & point : points) {
+		geometry_msgs::msg::Vector3 vec_msg;
+		vec_msg.x = point.x();
+		vec_msg.y = point.y();
+		vec_msg.z = point.z();
+		message.points.emplace_back(vec_msg);
+	}
+
+	last_valid_costmap_message_ = message;
+	last_valid_costmap_detection_time_ =
+		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
+	has_last_valid_costmap_message_ = true;
+	publishCostmapLinePoints(message);
+}
+
 void LineDetectorNode::clearRememberedLines(
 	const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
 	std::shared_ptr<std_srvs::srv::Trigger::Response> response)
@@ -592,13 +680,17 @@ void LineDetectorNode::clearRememberedLines(
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
 	last_valid_debug_pixels_.clear();
+	has_last_valid_costmap_message_ = false;
+	last_valid_costmap_message_ = autonav_interfaces::msg::LinePoints();
 	temporal_voxels_.clear();
 	last_valid_detection_time_ = this->now();
+	last_valid_costmap_detection_time_ = this->now();
 
 	auto empty_message = autonav_interfaces::msg::LinePoints();
 	empty_message.header.frame_id = target_frame_;
 	empty_message.header.stamp = this->now();
 	publishLinePoints(empty_message);
+	publishCostmapLinePoints(empty_message);
 	publishEmptyPointCloud(empty_message.header.stamp);
 
 	response->success = true;
@@ -792,6 +884,112 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		stats.out_of_bounds, tf_success);
 
 	return depth_line_points;
+}
+
+std::vector<Eigen::Vector3d> LineDetectorNode::projectCandidatesToGroundPlane(
+	const sensor_msgs::msg::Image::SharedPtr & depth_msg,
+	const std::vector<CandidatePoint> & candidates,
+	DetectionFrameStats & stats)
+{
+	std::vector<Eigen::Vector3d> projected_points;
+	if (!depth_msg || candidates.empty()) {
+		return projected_points;
+	}
+
+	double fx, fy, cx, cy;
+	{
+		std::lock_guard<std::mutex> lock(camera_params_lock);
+		if (!configured_) {
+			RCLCPP_ERROR(get_logger(), "Camera not configured!");
+			return projected_points;
+		}
+		fx = fx_;
+		fy = fy_;
+		cx = cx_;
+		cy = cy_;
+	}
+
+	const std::string & frame_id = depth_msg->header.frame_id;
+	geometry_msgs::msg::TransformStamped target_transform;
+	geometry_msgs::msg::TransformStamped base_transform;
+	try {
+		if (tf_use_latest_) {
+			const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, latest,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		} else {
+			const rclcpp::Time depth_stamp(depth_msg->header.stamp);
+			target_transform = tf_buffer.lookupTransform(
+				target_frame_, frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+			base_transform = tf_buffer.lookupTransform(
+				"base_link", frame_id, depth_stamp,
+				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
+		}
+	} catch (const tf2::TransformException & ex) {
+		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+			"Ground-plane TF not available (%s/base_link <- %s, mode=%s): %s",
+			target_frame_.c_str(), frame_id.c_str(),
+			tf_use_latest_ ? "latest" : "stamped", ex.what());
+		stats.plane_projection_rejects += static_cast<int>(candidates.size());
+		return projected_points;
+	}
+
+	const Eigen::Affine3d T_target = tf2::transformToEigen(target_transform);
+	const Eigen::Affine3d T_base = tf2::transformToEigen(base_transform);
+	const Eigen::Affine3d T_target_from_base = T_target * T_base.inverse();
+	const Eigen::Vector3d camera_origin_in_base = T_base.translation();
+	const Eigen::Matrix3d camera_to_base_rotation = T_base.linear();
+	constexpr double kParallelEpsilon = 1e-6;
+
+	projected_points.reserve(candidates.size());
+	for (const auto & candidate : candidates) {
+		const Eigen::Vector3d ray_cam(
+			(static_cast<double>(candidate.pixel.x) - cx) / fx,
+			(static_cast<double>(candidate.pixel.y) - cy) / fy,
+			1.0);
+		const Eigen::Vector3d ray_base = camera_to_base_rotation * ray_cam;
+
+		if (!std::isfinite(ray_base.x()) || !std::isfinite(ray_base.y()) ||
+			!std::isfinite(ray_base.z()) ||
+			std::abs(ray_base.z()) < kParallelEpsilon)
+		{
+			stats.plane_projection_rejects++;
+			continue;
+		}
+
+		const double scale = (ground_z_m_ - camera_origin_in_base.z()) / ray_base.z();
+		if (!std::isfinite(scale) || scale <= 0.0) {
+			stats.plane_projection_rejects++;
+			continue;
+		}
+
+		const Eigen::Vector3d point_base = camera_origin_in_base + scale * ray_base;
+		const bool in_geometry =
+			point_base.x() >= base_min_x_m_ &&
+			point_base.x() <= base_max_x_m_ &&
+			std::abs(point_base.y()) <= base_max_abs_y_m_ &&
+			std::abs(point_base.z() - ground_z_m_) <= ground_z_tolerance_m_;
+		if (!in_geometry) {
+			stats.plane_projection_rejects++;
+			continue;
+		}
+
+		const Eigen::Vector3d point_target = T_target_from_base * point_base;
+		if (!std::isfinite(point_target.x()) || !std::isfinite(point_target.y())) {
+			stats.plane_projection_rejects++;
+			continue;
+		}
+
+		projected_points.emplace_back(point_target.x(), point_target.y(), 0.0);
+	}
+
+	stats.plane_candidate_points = static_cast<int>(projected_points.size());
+	return projected_points;
 }
 
 std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::filterLineClusters(
@@ -1047,6 +1245,7 @@ void LineDetectorNode::publishDiagnostics(
 	std::ostringstream out;
 	out << "{"
 		<< "\"reason\":\"" << reason << "\","
+		<< "\"projection_mode\":\"depth_for_line_points_ground_plane_for_local_costmap\","
 		<< "\"raw_pixels\":" << stats.raw_pixels << ","
 		<< "\"filtered_pixels\":" << stats.filtered_pixels << ","
 		<< "\"kept_components\":" << stats.kept_components << ","
@@ -1059,6 +1258,8 @@ void LineDetectorNode::publishDiagnostics(
 		<< "\"kept_clusters\":" << stats.kept_clusters << ","
 		<< "\"candidate_points\":" << stats.candidate_points << ","
 		<< "\"confirmed_points\":" << stats.confirmed_points << ","
+		<< "\"plane_candidate_points\":" << stats.plane_candidate_points << ","
+		<< "\"plane_projection_rejects\":" << stats.plane_projection_rejects << ","
 		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames
 		<< "}";
 	msg.data = out.str();
@@ -1244,11 +1445,13 @@ void LineDetectorNode::line_callback()
 		// republish pattern so the local_costmap sees stable line
 		// obstacles across transient input gaps.
 		republishConfirmedCache(this->now());
+		republishCostmapGroundPlaneCache(this->now());
 		publishDiagnostics(stats, "missing camera/depth image");
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDiagnostics(stats, "RGB/depth desynchronization");
 		return;
 	}
@@ -1267,6 +1470,7 @@ void LineDetectorNode::line_callback()
 	} catch (cv_bridge::Exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDiagnostics(stats, "cv_bridge exception");
 		return;
 	}
@@ -1274,6 +1478,7 @@ void LineDetectorNode::line_callback()
 	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
 		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDiagnostics(stats, "invalid grayscale image");
 		return;
 	}
@@ -1289,6 +1494,7 @@ void LineDetectorNode::line_callback()
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Line detection failed: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDiagnostics(stats, "line detection failure");
 		return;
 	}
@@ -1333,6 +1539,7 @@ void LineDetectorNode::line_callback()
 		const bool yaw_gated = isYawGated();
 		updateTemporalConfidence({}, stamp, yaw_gated, stats);
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDebugImages(
 			camera_msg, cv_ptr->image, line_points, *line_points_len,
 			{}, publishedDebugPixels());
@@ -1349,6 +1556,7 @@ void LineDetectorNode::line_callback()
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 		publishDiagnostics(stats, "transform failure");
 		delete[] line_points;
 		delete line_points_len;
@@ -1372,8 +1580,16 @@ void LineDetectorNode::line_callback()
 		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
 	if (clustered_points.empty()) {
 		republishConfirmedCache(depth_msg->header.stamp);
+		republishCostmapGroundPlaneCache(depth_msg->header.stamp);
 	} else {
 		publishCandidatePoints(clustered_points, depth_msg->header.stamp);
+		const std::vector<Eigen::Vector3d> costmap_points =
+			projectCandidatesToGroundPlane(depth_msg, clustered_points, stats);
+		if (costmap_points.empty()) {
+			republishCostmapGroundPlaneCache(depth_msg->header.stamp);
+		} else {
+			publishCostmapGroundPlanePoints(costmap_points, depth_msg->header.stamp);
+		}
 	}
 	publishDebugImages(
 		camera_msg, cv_ptr->image, line_points, *line_points_len,
