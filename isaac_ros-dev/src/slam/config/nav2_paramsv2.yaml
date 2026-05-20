@@ -108,14 +108,14 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # DWB Local Planner — aggressive path-lock tuning.
-    # PathDist and PathAlign weights pushed 2-3x over Nav2 defaults so the
-    # cost penalty for ANY deviation off /plan dominates trajectory
-    # selection. ObstacleFootprint boosted to make even brushing inflated
-    # cost regions expensive. PathAlign.forward_point_distance is non-zero
-    # so alignment is scored from a point ~32 cm ahead of base_link — this
-    # is what stops corner-cutting (with FPD=0 the alignment is from
-    # base_link itself which lets shortcuts score acceptably).
+    # DWB Local Planner — line-avoidance path tracking.
+    # /plan is generated for robot_base_frame=base_link, so PathDist is
+    # the primary path-lock critic: it scores base_link distance from the
+    # global plan and keeps the robot from cutting inside the planned
+    # trajectory. PathAlign/GoalAlign remain enabled with a short 10 cm
+    # forward sample as heading aids only. ObstacleFootprint is active so
+    # candidate trajectories whose full footprint brushes line/obstacle
+    # cost are penalized/rejected instead of only checking base_link.
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: False
@@ -161,27 +161,22 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      # Body-center path tracking. PathAlign/GoalAlign sample at
-      # base_link + FPD*heading; FPD=0.225 m = midpoint of the robot's
-      # X-extent (-0.32..+0.77 in shogi.urdf), so the geometric body
-      # center is what gets locked onto the path/goal. PathDist/GoalDist
-      # dropped — they sample at base_link (rear axle) and would force
-      # the body off-center.
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign"]
+      # PathDist/GoalDist intentionally stay in the active critic list:
+      # DWB's PathAlign critic scores a virtual point in front of the
+      # robot, while PathDist scores base_link itself. With the Shogi
+      # footprint extending from x=-0.32..+0.77 around base_link, relying
+      # only on the forward virtual point can make the body cut inside
+      # turns even though the sampled point looks aligned to /plan.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 1.0
       BaseObstacle.scale: 0.08
       PathAlign.scale: 64.0
-      # forward_point_distance: 0.29 m — the geometric midpoint along
-      # the robot X-axis between the rear drive wheels (at X=0 in
-      # shogi.urdf) and the front caster (at X=+0.577). DWB samples a
-      # virtual point this far ahead of each trajectory's endpoint in
-      # the heading direction and scores alignment against /plan there.
-      # Sitting near the diff-drive pivot axis (rear-wheel axle line)
-      # plus a small lookahead matches the kinematic center of rotation
-      # for this rear-drive + front-caster layout, which keeps body
-      # off-tracking minimal during turns.
-      PathAlign.forward_point_distance: 0.29
+      # Keep forward_point_distance short. A long forward sample makes
+      # DWB align the robot's nose/lookahead point to /plan; PathDist
+      # now handles the actual base_link path lock.
+      PathAlign.forward_point_distance: 0.10
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.29
+      GoalAlign.forward_point_distance: 0.10
       PathDist.scale: 96.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
