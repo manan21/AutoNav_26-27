@@ -17,13 +17,11 @@ namespace local_mirror_layer
 {
 
 // Mirrors a source OccupancyGrid (typically /local_costmap/costmap)
-// into the host costmap. Cells are max-merged into the layer's own
-// grid and accumulated forever — the source's clearing (FREE_SPACE
-// cells) does NOT clear the layer, so obstacles that have rolled out
-// of the source's window stay marked in the host. matchSize is
-// overridden to preserve cells when the host costmap resizes (this is
-// what makes the "global accumulates while map_padder dynamically
-// resizes" pattern work).
+// into the host costmap. Cells are accumulated in the layer's own grid;
+// lower incoming costs may clear stored marks only when allow_decrease
+// is true and the cell passes the configured robot-relative clearing
+// gate. matchSize is overridden to preserve cells when the host costmap
+// resizes.
 class LocalMirrorLayer : public nav2_costmap_2d::CostmapLayer
 {
 public:
@@ -59,16 +57,25 @@ private:
   void mapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void clearCallback(std_msgs::msg::Empty::ConstSharedPtr msg);
   // Map an OccupancyGrid cell value (-1 / 0 / 1-100) to a costmap_2d
-  // internal cost (0 / 1-254 / 255). NO_INFORMATION and FREE inputs
-  // never overwrite stored cells (accumulation invariant).
+  // internal cost (0 / 1-254 / 255).
   static unsigned char interpretCost(int8_t occ_val);
+  bool decreaseAllowedAt(
+    double wx, double wy,
+    double robot_x, double robot_y, double robot_yaw,
+    bool have_pose) const;
 
   std::string source_topic_;
   std::string clear_topic_;
   bool track_unknown_space_;
   // If true, also overwrite cells when the incoming cost is lower
-  // than the stored cost. Default false → strictly accumulating.
+  // than the stored cost. The decrease_only_in_front_ gate can restrict
+  // those decreases to the current sensor-clearing sector.
   bool allow_decrease_;
+  bool decrease_only_in_front_;
+  double decrease_angle_min_rad_;
+  double decrease_angle_max_rad_;
+  double decrease_range_min_m_;
+  double decrease_range_max_m_;
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_sub_;
@@ -101,6 +108,7 @@ private:
   // can pick which cells to wipe without doing its own TF lookup.
   double latest_robot_x_;
   double latest_robot_y_;
+  double latest_robot_yaw_;
   bool have_robot_pose_;
 };
 
