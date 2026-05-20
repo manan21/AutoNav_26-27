@@ -92,7 +92,12 @@ LineLayer::LineLayer()
   inflation_radius_(0.90),
   cost_scaling_factor_(5.0),
   inscribed_radius_(0.30),
-  inflation_kernel_resolution_(0.0)
+  inflation_kernel_resolution_(0.0),
+  clear_topic_("/local_mirror_layer/clear"),
+  clear_radius_(3.0),
+  latest_robot_x_(0.0),
+  latest_robot_y_(0.0),
+  have_robot_pose_(false)
 {
 }
 
@@ -116,6 +121,8 @@ LineLayer::onInitialize()
   declareParameter("inflation_radius", rclcpp::ParameterValue(0.90));
   declareParameter("cost_scaling_factor", rclcpp::ParameterValue(5.0));
   declareParameter("inscribed_radius", rclcpp::ParameterValue(0.30));
+  declareParameter("clear_topic", rclcpp::ParameterValue("/local_mirror_layer/clear"));
+  declareParameter("clear_radius", rclcpp::ParameterValue(3.0));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
@@ -131,6 +138,9 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "inflation_radius", inflation_radius_);
   node->get_parameter(name_ + "." + "cost_scaling_factor", cost_scaling_factor_);
   node->get_parameter(name_ + "." + "inscribed_radius", inscribed_radius_);
+  node->get_parameter(name_ + "." + "clear_topic", clear_topic_);
+  node->get_parameter(name_ + "." + "clear_radius", clear_radius_);
+  clear_radius_ = std::max(0.0, clear_radius_);
   inflation_radius_ = std::max(0.0, inflation_radius_);
   cost_scaling_factor_ = std::max(0.01, cost_scaling_factor_);
   inscribed_radius_ = std::max(0.0, inscribed_radius_);
@@ -145,9 +155,20 @@ LineLayer::onInitialize()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
 
-  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1, 
+  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1,
     std::bind(&LineLayer::linePointCallback, this, std::placeholders::_1));
-  
+
+  // Clear-request subscription. Bind to callback_group_ — the costmap's
+  // dedicated executor only spins callbacks on this group; subscriptions
+  // created without it land on the lifecycle node's default group and
+  // never fire (debugged the hard way on LocalMirrorLayer).
+  rclcpp::SubscriptionOptions clear_sub_options;
+  clear_sub_options.callback_group = callback_group_;
+  clear_sub_ = node->create_subscription<std_msgs::msg::Empty>(
+    clear_topic_, rclcpp::QoS(1).reliable(),
+    std::bind(&LineLayer::clearCallback, this, std::placeholders::_1),
+    clear_sub_options);
+
   if (publish_costmap_) {
     costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>("/line_costmap", 1);
   }
@@ -575,10 +596,55 @@ void LineLayer::updateOrigin(double new_origin_x, double new_origin_y)
 // Inside this method window bounds are re-calculated if need_recalculation_ is true
 // and updated independently on its value.
 void
+LineLayer::clearCallback(std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
+{
+  double rx, ry;
+  bool have;
+  {
+    std::lock_guard<std::mutex> lock(robot_pose_mutex_);
+    rx = latest_robot_x_;
+    ry = latest_robot_y_;
+    have = have_robot_pose_;
+  }
+  if (!have) {
+    return;
+  }
+  const double r2 = clear_radius_ * clear_radius_;
+  std::size_t erased = 0;
+  {
+    std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+    for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
+      const double dx = it->second.point.x - rx;
+      const double dy = it->second.point.y - ry;
+      if (dx * dx + dy * dy <= r2) {
+        it = persisted_points_.erase(it);
+        ++erased;
+      } else {
+        ++it;
+      }
+    }
+  }
+  need_recalculation_ = true;
+  RCLCPP_INFO(
+    rclcpp::get_logger("nav2_costmap_2d"),
+    "LineLayer clear: erased %zu persisted points within %.2f m of "
+    "(%.2f, %.2f)",
+    erased, clear_radius_, rx, ry);
+}
+
+void
 LineLayer::updateBounds(
   double robot_x, double robot_y, double /*robot_yaw*/, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
+  // Snapshot robot pose for clearCallback (runs on the subscription
+  // thread and has no other way to know where the robot is).
+  {
+    std::lock_guard<std::mutex> lock(robot_pose_mutex_);
+    latest_robot_x_ = robot_x;
+    latest_robot_y_ = robot_y;
+    have_robot_pose_ = true;
+  }
   if (!rolling_window_) {
     last_min_x_ = origin_x_;
     last_min_y_ = origin_y_;

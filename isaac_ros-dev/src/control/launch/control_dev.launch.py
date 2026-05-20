@@ -44,6 +44,14 @@ def generate_launch_description():
                 # Tighter deadzone for more responsive stick feel; the
                 # Xbox controller's mechanical center is well inside 0.02.
                 'deadzone': 0.02,
+                # device_name pin reverted: SDL2 reports the controller
+                # with a string that doesn't substring-match the kernel
+                # "Xbox Wireless Controller" name, so joy_node logged
+                # "Could not get joystick with name ..." and never
+                # connected. Falling back to device_id=0 (default —
+                # first SDL2-enumerated joystick) until we capture the
+                # actual SDL2-reported name on the Jetson; revisit the
+                # X/Y-swap problem then.
             }],
         )
 
