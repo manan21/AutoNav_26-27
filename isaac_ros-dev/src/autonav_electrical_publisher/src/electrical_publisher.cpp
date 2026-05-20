@@ -41,7 +41,7 @@ private:
 
     // Timer for fixed-rate I2C polling loop
     rclcpp::TimerBase::SharedPtr i2c_timer_;
-    double loop_rate_hz_ = 10.0;  // Default 10 Hz, adjust as needed (1400 Hz should be the limit)
+    double loop_rate_hz_ = 30.0;  // Default 30 Hz, adjust as needed (1400 Hz should be the limit)
 
     // ================================================================
     // I2C polling callback - runs at fixed rate (loop_rate_hz_)
