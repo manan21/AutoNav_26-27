@@ -290,7 +290,7 @@ global_costmap:
       # No detector topic is consumed directly by the global costmap.
       # The contributors are:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer      → /local_costmap/costmap → persistent memory of local obstacle/lidar evidence, but still allows local FREE cells to clear smears.
+      #   local_mirror_layer      → /local_costmap/costmap → persistent obstacle memory. FREE cells may clear stored obstacles only inside the current forward lidar-clearing sector.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
       # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
       # line_memory_mirror_layer is intentionally placed AFTER
@@ -312,16 +312,17 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
-        # Trust local's raytrace clearing: FREE cells from the local propagate
-        # to the global so lidar-cleared cells stop smearing as permanent
-        # walls. Edge-of-FOV persistence is already provided upstream by the
-        # 180° mark / 140° clear split in slam.launch.py — those 20° wedges
-        # on each side keep edge marks alive in the local rolling grid until
-        # the window moves on, and the mirror inherits that persistence.
-        # This mirror is for the full local obstacle view. Dedicated
-        # long-term line memory comes from line_memory_mirror_layer
-        # below, sourced from the local line-only costmap.
+        # Accumulate obstacle marks globally, but accept FREE/lower-cost
+        # clears only where the robot is currently looking. The local
+        # rolling costmap publishes FREE cells across its whole 6x6 m
+        # window; without this gate, those unobserved rear/side cells erase
+        # global memory just because they are inside the rolling window.
         allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -1.2217
+        decrease_angle_max_rad: 1.2217
+        decrease_range_min_m: 0.0
+        decrease_range_max_m: 25.0
         track_unknown_space: true
 
       line_memory_mirror_layer:
