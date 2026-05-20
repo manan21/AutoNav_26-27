@@ -44,14 +44,39 @@ from pathlib import Path
 #                                       canvas reads it.
 #   /cmd_vel                          — operator velocity command,
 #                                       not displayed.
+#   /odom                             — raw wheel odom. Live GUI's
+#                                       Encoders panel prefers
+#                                       /local_ekf/odom whenever it's
+#                                       fresh (hud_node._live_tick
+#                                       drops latest_odom in the same
+#                                       tick), and the standalone bake
+#                                       (bag_reader.extract_bag) drops
+#                                       raw /odom rows in favour of
+#                                       /local_ekf/odom whenever the
+#                                       bag carries any EKF samples.
+#                                       Since we already record
+#                                       /local_ekf/odom, /odom is dead
+#                                       weight on both consumers.
+#
+# Added relative to the previous list:
+#   /line_detection/debug/overlay — CUDA-painted overlay image from
+#                                   the line detector. The live GUI
+#                                   has a new "CAMERA CUDA OVERLAY"
+#                                   panel that subscribes to it, and
+#                                   the publisher in
+#                                   autonav_detection/src/line/node.cpp
+#                                   is gated on subscriber count — so
+#                                   recording it is what gets the
+#                                   detector to start emitting it
+#                                   during a test run.
 DEFAULT_BAG_TOPICS = [
     '/zed/zed_node/rgb/color/rect/image',
     '/line_detection/debug/mask',
+    '/line_detection/debug/overlay',
     '/line_detection/line_pixels',
     '/scan_fullframe',
     '/scan_pca_filtered',
     '/gps_fix',
-    '/odom',
     '/local_ekf/odom',
     '/global_ekf/odom',
     '/pose',
