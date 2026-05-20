@@ -574,7 +574,7 @@ void LineDetectorNode::republishConfirmedCacheFor(
 	}
 
 	auto message = last_valid_message_;
-	message.header.stamp = this->now();
+	message.header.stamp = stamp;
 	publishPointCloudFromLineMessage(message);
 	publishLinePoints(message);
 }
@@ -585,7 +585,7 @@ void LineDetectorNode::publishCandidatePoints(
 {
 	auto message = autonav_interfaces::msg::LinePoints();
 	message.header.frame_id = target_frame_;
-	message.header.stamp = this->now();
+	message.header.stamp = stamp;
 	message.points.reserve(candidates.size());
 
 	last_valid_debug_pixels_.clear();
