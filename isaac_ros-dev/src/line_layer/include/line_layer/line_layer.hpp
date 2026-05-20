@@ -52,6 +52,7 @@
 #include "autonav_interfaces/srv/anv_lines.hpp"
 #include "autonav_interfaces/msg/line_points.hpp"
 #include "geometry_msgs/msg/vector3.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "nav2_costmap_2d/observation_buffer.hpp"
 #include "line_layer/line_buffer.hpp"
 #include "tf2_ros/buffer.h"
@@ -159,6 +160,25 @@ private:
   rclcpp::Subscription<autonav_interfaces::msg::LinePoints>::SharedPtr line_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   std::string line_topic_;
+
+  // Debug clear: Y on the controller publishes std_msgs/Empty here.
+  // On receipt this layer drops persisted_points_ within clear_radius_
+  // of the robot's latest position so accumulated lines near the
+  // robot disappear (useful when bad detections smear the global).
+  // Points further away stay, so we don't have to re-walk the whole
+  // course every time the operator wipes nearby smears.
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_sub_;
+  std::string clear_topic_;
+  double clear_radius_;
+  void clearCallback(std_msgs::msg::Empty::ConstSharedPtr msg);
+  // Robot pose snapshot from the most recent updateBounds(), used by
+  // clearCallback to decide which persisted points fall within
+  // clear_radius_. Mutex guards both fields since clearCallback runs
+  // on the subscription thread.
+  std::mutex robot_pose_mutex_;
+  double latest_robot_x_;
+  double latest_robot_y_;
+  bool have_robot_pose_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   // turns out you can type anything you want in a comment

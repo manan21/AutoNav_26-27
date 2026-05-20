@@ -17,6 +17,7 @@
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>tf2_ros</depend>
 
   <export>

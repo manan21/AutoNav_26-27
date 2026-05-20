@@ -41,6 +41,23 @@ class T000Automator(BaseAutomator):
         self._lidar_rec_online = False
         self.A_BUTTON_INDEX = 0
         self.last_joy_buttons = None
+        # One-shot READY banner: prints exactly once when every
+        # required upstream source has produced a message, so the
+        # operator knows pressing A right now will get a complete
+        # bag instead of a half-bootstrapped one.
+        self._ready_banner_printed = False
+        # Initial "warming up" banner so the operator sees the
+        # automator went past __init__ and is now actively waiting
+        # for topics. Prints once at startup.
+        self.get_logger().info(
+            '\n'
+            '######################################\n'
+            '#  T000 DAQ — WARMING UP             #\n'
+            '#  Waiting for sensors to come up... #\n'
+            '#  (READY banner will print when     #\n'
+            '#   every required topic has fired)  #\n'
+            '######################################'
+        )
 
         # Publishers
         self.joy_pub = self.create_publisher(Joy, 'joy', 10)
@@ -75,6 +92,18 @@ class T000Automator(BaseAutomator):
             return 'COMPLETE'
         return 'IDLE (Press A)'
 
+    def _all_required_online(self):
+        """Required for a useful bag: an operator input source (joy),
+        odometry, and at least the camera + lidar visual streams.
+        GPS and IMU are optional — not every test has them and a bag
+        is still valuable without them."""
+        return (
+            self.joy_online
+            and self.odom_online
+            and self._cam_rec_online
+            and self._lidar_rec_online
+        )
+
     def print_status(self):
         self.get_logger().info(
             '\n'
@@ -94,6 +123,22 @@ class T000Automator(BaseAutomator):
                 self._daq_state()
             )
         )
+        # One-shot READY banner. Only fires after every required topic
+        # has produced at least one message, so the operator doesn't
+        # press A while half the stack is still bootstrapping and end
+        # up with a partial bag.
+        if not self._ready_banner_printed and self._all_required_online():
+            self._ready_banner_printed = True
+            self.get_logger().info(
+                '\n'
+                '############################################\n'
+                '#                                          #\n'
+                '#   T000 READY — PRESS A TO RECORD         #\n'
+                '#                                          #\n'
+                '#   All required topics have come online.  #\n'
+                '#                                          #\n'
+                '############################################'
+            )
 
     # ===== Callbacks ===== #
     def odom_callback(self, msg: Odometry):
@@ -164,20 +209,34 @@ def main(args=None):
     except KeyboardInterrupt:
         print('\n[INFO] Keyboard interrupt detected (Ctrl+C)')
         if automator is not None:
-            print('[INFO] Saving collected data before shutdown...')
+            # Stop the bag recorder FIRST — without this, SIGINT to
+            # the automator orphans the bag (it's in its own process
+            # group via os.setsid, so it doesn't catch our SIGINT
+            # propagation).
             try:
-                automator.save_data()
-                print(f'[INFO] Data saved to: {automator.log_file}')
+                automator._stop_bag_record()
             except Exception as e:
-                print(f'[ERROR] Failed to save data: {e}')
+                print(f'[WARN] Failed to stop bag recorder: {e}')
+            if automator.enable_legacy_capture:
+                print('[INFO] Saving collected data before shutdown...')
+                try:
+                    automator.save_data()
+                    print(f'[INFO] Data saved to: {automator.log_file}')
+                except Exception as e:
+                    print(f'[ERROR] Failed to save data: {e}')
     except Exception as e:
         print(f'[ERROR] Unexpected error: {e}')
         if automator is not None:
             try:
-                automator.save_data()
-                print(f'[INFO] Data saved to: {automator.log_file}')
-            except:
+                automator._stop_bag_record()
+            except Exception:
                 pass
+            if automator.enable_legacy_capture:
+                try:
+                    automator.save_data()
+                    print(f'[INFO] Data saved to: {automator.log_file}')
+                except:
+                    pass
     finally:
         if automator is not None:
             try:
