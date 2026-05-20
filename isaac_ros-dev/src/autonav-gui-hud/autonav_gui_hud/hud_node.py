@@ -6314,18 +6314,22 @@ class HudWindow(QMainWindow):
     # match. If a topic is dropped from one list, drop it from the
     # other.
     #
-    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel. None
-    # of them produce a pixel; together they were ~83 % of the
-    # earlier bag's message volume and were the reason camera/lidar
-    # paint got shoved off-rhythm.
+    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel, /odom.
+    # The IMU/joy/cmd_vel streams produce no pixel; together they were
+    # ~83 % of the earlier bag's message volume and were the reason
+    # camera/lidar paint got shoved off-rhythm. Raw /odom is dropped
+    # because the live tick prefers /local_ekf/odom for the Encoders
+    # panel whenever it's fresh, and the standalone bake also drops
+    # raw /odom rows in favour of EKF — so replaying it adds no
+    # extra signal on either consumer.
     _BAG_PLAYBACK_TOPICS = [
         '/zed/zed_node/rgb/color/rect/image',
         '/line_detection/debug/mask',
+        '/line_detection/debug/overlay',
         '/line_detection/line_pixels',
         '/scan_fullframe',
         '/scan_pca_filtered',
         '/gps_fix',
-        '/odom',
         '/local_ekf/odom',
         '/global_ekf/odom',
         '/pose',
@@ -7485,7 +7489,9 @@ class HudWindow(QMainWindow):
             self._cam_im.set_data(arr)
         self._live_set_dot_received('Camera')
 
-        if source == 'mask':
+        if source == 'overlay':
+            title = 'Camera CUDA OVERLAY'
+        elif source == 'mask':
             title = 'Camera MASK'
         elif line_fresh:
             title = 'Camera CUDA'
@@ -7521,8 +7527,12 @@ class HudWindow(QMainWindow):
         in_fps = 0.0
         node = self._ros_node
         if node is not None:
-            in_ts = (node._mask_in_ts if source == 'mask'
-                     else node._camera_in_ts)
+            if source == 'overlay':
+                in_ts = node._overlay_in_ts
+            elif source == 'mask':
+                in_ts = node._mask_in_ts
+            else:
+                in_ts = node._camera_in_ts
             if len(in_ts) >= 2:
                 in_span = in_ts[-1] - in_ts[0]
                 if in_span > 0:
@@ -8059,6 +8069,12 @@ if _HAS_ROS:
             # the raw camera (mask is silent) or defer to the mask path
             # (detector is active).
             self.latest_mask_image_t = 0.0
+            # Receipt time of the most recent /line_detection/debug/overlay
+            # message — the raw camera frame with red/yellow/green dots
+            # already drawn by the detector (see line/node.cpp ~L1114-1138).
+            # _cb_image / _cb_mask_image both defer to this when fresh so
+            # the overlay variant wins the precedence at the camera panel.
+            self.latest_overlay_image_t = 0.0
             # Per-source IN-rate timestamp deques. Each ROS callback
             # appends the wall-clock time of arrival; the GUI reads these
             # to render the "IN" half of the camera FPS overlay so the
@@ -8067,6 +8083,7 @@ if _HAS_ROS:
             # line-detector debug mask under publish_interval_ms: 250).
             self._camera_in_ts = deque(maxlen=20)
             self._mask_in_ts = deque(maxlen=20)
+            self._overlay_in_ts = deque(maxlen=20)
 
             # Lidar worker, set by HudWindow once the worker is built.
             # _cb_scan (heightband) and _cb_pca_scan (PCA) submit
@@ -8147,6 +8164,20 @@ if _HAS_ROS:
                 Image,
                 '/line_detection/debug/mask',
                 self._cb_mask_image, 10,
+            )
+            # Debug OVERLAY from the line detector — the raw camera frame
+            # with red dots at every detected line pixel and yellow/green
+            # dots for accepted/confirmed candidates (see line/node.cpp
+            # ~L1114-1138). Same subscriber-count gating as the mask, so
+            # subscribing here is what makes the detector publish it.
+            # When this stream is fresh (1 s window) _cb_image AND
+            # _cb_mask_image both defer to this variant — the dots are
+            # already baked into the frame so the post-paint line_pixels
+            # scatter is also skipped in _on_camera_frame_ready.
+            self.create_subscription(
+                Image,
+                '/line_detection/debug/overlay',
+                self._cb_overlay_image, 10,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
@@ -8322,12 +8353,21 @@ if _HAS_ROS:
                 worker = getattr(self, 'camera_worker', None)
                 if worker is None:
                     return
-                # Prefer the line detector's debug MASK when it's
-                # actively publishing — single-channel and matches what
-                # the detector "sees" as line. _cb_mask_image drives the
-                # display on that path; the raw camera is the fallback
-                # only when the detector is silent (mask gone stale).
-                if (time.monotonic() - self.latest_mask_image_t) < 1.0:
+                # Prefer the line detector's debug OVERLAY when fresh —
+                # it's the raw frame with the detector's red/yellow/green
+                # dots already drawn, so it's the most informative camera
+                # variant. _cb_overlay_image drives the display on that
+                # path; we silently drop the raw frame here so the worker
+                # isn't fighting two source streams for the same panel.
+                now_t = time.monotonic()
+                if (now_t - self.latest_overlay_image_t) < 1.0:
+                    return
+                # Otherwise prefer the line detector's debug MASK when
+                # it's actively publishing — single-channel and matches
+                # what the detector "sees" as line. _cb_mask_image drives
+                # the display on that path; the raw camera is the
+                # fallback only when both overlay and mask are silent.
+                if (now_t - self.latest_mask_image_t) < 1.0:
                     return
                 worker.submit(img, None, False, source='raw')
             except Exception:
@@ -8336,16 +8376,50 @@ if _HAS_ROS:
         def _cb_mask_image(self, msg):
             """/line_detection/debug/mask — MONO8 binary mask from the
             detector's brightness threshold. Hand straight to the camera
-            worker; the slot will imshow it with cmap='gray'.
+            worker; the slot will imshow it with cmap='gray'. Deferred to
+            the overlay variant when /line_detection/debug/overlay is
+            fresh — overlay sits above mask in the panel precedence.
             """
             self.latest_mask_image_t = time.monotonic()
             self._mask_in_ts.append(self.latest_mask_image_t)
             try:
+                # If the overlay variant is publishing, let it drive the
+                # panel — same fight-for-the-source guard as in _cb_image.
+                if (self.latest_mask_image_t
+                        - self.latest_overlay_image_t) < 1.0:
+                    return
                 img = np.frombuffer(msg.data, dtype=np.uint8)
                 img = img.reshape((msg.height, msg.width))
                 worker = getattr(self, 'camera_worker', None)
                 if worker is not None:
                     worker.submit(img, None, True, source='mask')
+            except Exception:
+                pass
+
+        def _cb_overlay_image(self, msg):
+            """/line_detection/debug/overlay — BGR8 raw camera frame with
+            the detector's red/yellow/green dots already drawn (see
+            line/node.cpp ~L1114-1138). Decode like _cb_image (BGR→RGB)
+            and hand to the camera worker with source='overlay' so the
+            slot suppresses the post-paint line_pixels scatter (the dots
+            are already baked in) and uses the 'Camera CUDA OVERLAY'
+            title.
+            """
+            self.latest_overlay_image_t = time.monotonic()
+            self._overlay_in_ts.append(self.latest_overlay_image_t)
+            try:
+                channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
+                img = np.frombuffer(msg.data, dtype=np.uint8)
+                img = img.reshape((msg.height, msg.width, channels))
+                if msg.encoding == 'bgra8':
+                    img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                elif msg.encoding in ('bgr8', 'bgr16'):
+                    img = img[:, :, ::-1]  # BGR to RGB
+                elif msg.encoding == 'rgba8':
+                    img = img[:, :, :3]  # RGBA to RGB
+                worker = getattr(self, 'camera_worker', None)
+                if worker is not None:
+                    worker.submit(img, None, False, source='overlay')
             except Exception:
                 pass
 
