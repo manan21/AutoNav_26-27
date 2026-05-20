@@ -292,6 +292,7 @@ private:
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
+	std::vector<cv::Point> last_valid_debug_pixels_;
 
 	struct DetectionFrameStats {
 		int raw_pixels = 0;
@@ -366,13 +367,12 @@ private:
 	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
 	void publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp);
 	void publishEmptyLineSet(const builtin_interfaces::msg::Time & stamp, const char * reason);
-	// Republish the currently-held confirmed voxels with a fresh stamp.
-	// Used on transient failure paths (missing image, RGB/depth desync,
-	// cv_bridge error, etc.) so the costmap keeps seeing the lines that
-	// were last successfully confirmed instead of flickering empty on
-	// every bad frame. Mirrors the lidar PCA pipeline's cached-cloud
-	// republish pattern — points stay live for `confirmed_hold_ms`.
+	// Republish the last successfully published candidate set with a
+	// fresh stamp while it is still within `line_hold_timeout_ms`.
 	void republishConfirmedCache(const builtin_interfaces::msg::Time & stamp);
+	void publishCandidatePoints(
+		const std::vector<CandidatePoint> & candidates,
+		const builtin_interfaces::msg::Time & stamp);
 	std::vector<CandidatePoint> filterLineClusters(
 		const std::vector<CandidatePoint> & points,
 		DetectionFrameStats & stats) const;
@@ -387,14 +387,14 @@ private:
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
 	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
-	std::vector<cv::Point> confirmedDebugPixels() const;
+	std::vector<cv::Point> publishedDebugPixels() const;
 	void publishDebugImages(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
 		const int2 * line_points,
 		int line_points_len,
 		const std::vector<CandidatePoint> & accepted_candidates,
-		const std::vector<cv::Point> & confirmed_pixels);
+		const std::vector<cv::Point> & published_pixels);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 	void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -524,6 +524,7 @@ void LineDetectorNode::publishEmptyLineSet(
 	empty_message.header.stamp = this->now();
 	last_valid_message_ = empty_message;
 	has_last_valid_message_ = false;
+	last_valid_debug_pixels_.clear();
 	publishEmptyPointCloud(stamp);
 	publishLinePoints(empty_message);
 	RCLCPP_WARN_THROTTLE(
@@ -534,34 +535,52 @@ void LineDetectorNode::publishEmptyLineSet(
 void LineDetectorNode::republishConfirmedCache(
 	const builtin_interfaces::msg::Time & stamp)
 {
-	// Walk the temporal voxel cache and emit whatever is still confirmed.
-	// Run the same hold-expiry sweep that updateTemporalConfidence does
-	// so this path doesn't grow stale voxels indefinitely.
-	const rclcpp::Time now_stamp(stamp);
+	const rclcpp::Time now_stamp(stamp, this->get_clock()->get_clock_type());
 	const rclcpp::Duration hold =
-		rclcpp::Duration::from_nanoseconds(confirmed_hold_ms_ * 1000000LL);
-	for (auto it = temporal_voxels_.begin(); it != temporal_voxels_.end();) {
-		if ((now_stamp - it->second.last_seen) > hold) {
-			it = temporal_voxels_.erase(it);
-		} else {
-			++it;
-		}
+		rclcpp::Duration::from_nanoseconds(line_hold_timeout_ms_ * 1000000LL);
+	if (!has_last_valid_message_) {
+		publishEmptyLineSet(stamp, "missing cached candidate line set");
+		return;
+	}
+	if (line_hold_timeout_ms_ >= 0 &&
+		(now_stamp - last_valid_detection_time_) > hold)
+	{
+		publishEmptyLineSet(stamp, "expired cached candidate line set");
+		return;
 	}
 
-	std::vector<Eigen::Vector3d> confirmed;
-	confirmed.reserve(std::min(
-		temporal_voxels_.size(),
-		static_cast<size_t>(line_memory_max_points_)));
-	for (const auto & item : temporal_voxels_) {
-		if (!item.second.confirmed) {
-			continue;
-		}
-		confirmed.push_back(item.second.point);
-		if (confirmed.size() >= static_cast<size_t>(line_memory_max_points_)) {
-			break;
-		}
+	auto message = last_valid_message_;
+	message.header.stamp = this->now();
+	publishPointCloudFromLineMessage(message);
+	publishLinePoints(message);
+}
+
+void LineDetectorNode::publishCandidatePoints(
+	const std::vector<CandidatePoint> & candidates,
+	const builtin_interfaces::msg::Time & stamp)
+{
+	auto message = autonav_interfaces::msg::LinePoints();
+	message.header.frame_id = target_frame_;
+	message.header.stamp = this->now();
+	message.points.reserve(candidates.size());
+
+	last_valid_debug_pixels_.clear();
+	last_valid_debug_pixels_.reserve(candidates.size());
+	for (const auto & candidate : candidates) {
+		geometry_msgs::msg::Vector3 vec_msg;
+		vec_msg.x = candidate.target.x();
+		vec_msg.y = candidate.target.y();
+		vec_msg.z = candidate.target.z();
+		message.points.emplace_back(vec_msg);
+		last_valid_debug_pixels_.push_back(candidate.pixel);
 	}
-	publishConfirmedOrEmpty(confirmed, stamp);
+
+	last_valid_message_ = message;
+	last_valid_detection_time_ =
+		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
+	has_last_valid_message_ = true;
+	publishPointCloudFromLineMessage(message);
+	publishLinePoints(message);
 }
 
 void LineDetectorNode::clearRememberedLines(
@@ -572,6 +591,7 @@ void LineDetectorNode::clearRememberedLines(
 
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
+	last_valid_debug_pixels_.clear();
 	temporal_voxels_.clear();
 	last_valid_detection_time_ = this->now();
 
@@ -1045,19 +1065,9 @@ void LineDetectorNode::publishDiagnostics(
 	_diagnostics_pub->publish(msg);
 }
 
-std::vector<cv::Point> LineDetectorNode::confirmedDebugPixels() const
+std::vector<cv::Point> LineDetectorNode::publishedDebugPixels() const
 {
-	std::vector<cv::Point> pixels;
-	pixels.reserve(temporal_voxels_.size());
-	for (const auto & item : temporal_voxels_) {
-		if (!item.second.confirmed) {
-			continue;
-		}
-		pixels.emplace_back(
-			static_cast<int>(std::round(item.second.pixel.x)),
-			static_cast<int>(std::round(item.second.pixel.y)));
-	}
-	return pixels;
+	return last_valid_debug_pixels_;
 }
 
 void LineDetectorNode::publishDebugImages(
@@ -1066,7 +1076,7 @@ void LineDetectorNode::publishDebugImages(
 	const int2 * line_points,
 	int line_points_len,
 	const std::vector<CandidatePoint> & accepted_candidates,
-	const std::vector<cv::Point> & confirmed_pixels)
+	const std::vector<cv::Point> & published_pixels)
 {
 	if (!debug_image_publish_enabled_ || !camera_msg || gray_image.empty()) {
 		return;
@@ -1125,7 +1135,7 @@ void LineDetectorNode::publishDebugImages(
 				cv::circle(overlay, candidate.pixel, 3, cv::Scalar(0, 255, 255), -1);
 			}
 		}
-		for (const auto & pixel : confirmed_pixels) {
+		for (const auto & pixel : published_pixels) {
 			if (0 <= pixel.x && pixel.x < overlay.cols && 0 <= pixel.y && pixel.y < overlay.rows) {
 				cv::circle(overlay, pixel, 4, cv::Scalar(0, 255, 0), -1);
 			}
@@ -1321,12 +1331,11 @@ void LineDetectorNode::line_callback()
 	if (*line_points_len == 0) {
 		const rclcpp::Time stamp(depth_msg->header.stamp);
 		const bool yaw_gated = isYawGated();
-		std::vector<Eigen::Vector3d> confirmed =
-			updateTemporalConfidence({}, stamp, yaw_gated, stats);
-		publishConfirmedOrEmpty(confirmed, depth_msg->header.stamp);
+		updateTemporalConfidence({}, stamp, yaw_gated, stats);
+		republishConfirmedCache(depth_msg->header.stamp);
 		publishDebugImages(
 			camera_msg, cv_ptr->image, line_points, *line_points_len,
-			{}, confirmedDebugPixels());
+			{}, publishedDebugPixels());
 		publishDiagnostics(stats, "empty line detection");
 		delete[] line_points;
 		delete line_points_len;
@@ -1361,10 +1370,14 @@ void LineDetectorNode::line_callback()
 	const bool yaw_gated = isYawGated();
 	std::vector<Eigen::Vector3d> confirmed_points =
 		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
-	publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
+	if (clustered_points.empty()) {
+		republishConfirmedCache(depth_msg->header.stamp);
+	} else {
+		publishCandidatePoints(clustered_points, depth_msg->header.stamp);
+	}
 	publishDebugImages(
 		camera_msg, cv_ptr->image, line_points, *line_points_len,
-		clustered_points, confirmedDebugPixels());
+		clustered_points, publishedDebugPixels());
 	publishDiagnostics(stats, yaw_gated ? "yaw gated" : "updated");
 
 	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
