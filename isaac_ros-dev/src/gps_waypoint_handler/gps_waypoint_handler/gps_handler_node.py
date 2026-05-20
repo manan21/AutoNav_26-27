@@ -465,19 +465,21 @@ class GpsHandlerNode(Node):
         # is byte-identical to before.
         self.declare_parameter("next_hint_enabled", False)
         self.declare_parameter("hint_match_tolerance_m", 0.5)
-        # improve/gps-waypoint-continuity — cold-start body-frame bias.
-        # When ``coldstart_bias_enabled`` is true AND the EKF's heading
-        # uncertainty is above ``coldstart_theta_std_threshold_deg``,
-        # the published candidate is placed at
-        # ``coldstart_seed_distance_m`` directly in front of base_link
-        # in body frame instead of using the (high-variance) ENU→odom
-        # projection. Encourages forward motion → faster bootstrap
-        # (GPS displacement is what tightens θ). Once heading
-        # uncertainty drops below the threshold the bias falls open
-        # and the smoother slides to the real projection.
+        # improve/gps-waypoint-continuity — cold-start θ seed.
+        # When ``coldstart_bias_enabled`` is true, on the very first
+        # GPS goal accepted by this node we snap the EKF's θ_offset
+        # to whatever value makes the world→odom projection of the
+        # goal land directly in front of base_link. The candidate goal
+        # then comes out of the normal projection path already pointing
+        # the robot forward — no goal override, no nav2-thinks-it's-
+        # reached-the-goal stop bug. The seed is set with high
+        # variance (``coldstart_theta_seed_variance_deg``) so the
+        # EKF's normal ``bootstrap_theta`` update overwrites it the
+        # moment GPS-vs-odom displacement provides enough baseline,
+        # and the candidate slides smoothly from "in-front-of-robot"
+        # to the true GPS direction.
         self.declare_parameter("coldstart_bias_enabled", False)
-        self.declare_parameter("coldstart_theta_std_threshold_deg", 30.0)
-        self.declare_parameter("coldstart_seed_distance_m", 3.0)
+        self.declare_parameter("coldstart_theta_seed_variance_deg", 45.0)
 
         self._success_radius_default: float = float(
             self.get_parameter("success_radius_m").value
@@ -508,12 +510,20 @@ class GpsHandlerNode(Node):
         self._coldstart_bias_enabled: bool = bool(
             self.get_parameter("coldstart_bias_enabled").value
         )
-        self._coldstart_theta_std_threshold_rad: float = math.radians(
-            float(self.get_parameter("coldstart_theta_std_threshold_deg").value)
+        self._coldstart_theta_seed_var_rad2: float = (
+            math.radians(
+                float(
+                    self.get_parameter(
+                        "coldstart_theta_seed_variance_deg"
+                    ).value
+                )
+            )
+            ** 2
         )
-        self._coldstart_seed_distance_m: float = float(
-            self.get_parameter("coldstart_seed_distance_m").value
-        )
+        # One-shot guard: True once we've snapped θ_offset for this
+        # node's lifetime. Subsequent GPS goals use the EKF's
+        # already-bootstrapped θ; we don't re-seed mid-mission.
+        self._coldstart_theta_seeded: bool = False
 
         # ── Threading & callback groups ─────────────────────────────
         self._lock = threading.Lock()
@@ -1166,44 +1176,55 @@ class GpsHandlerNode(Node):
         ox, oy = self._last_odom_xy
         return (ox + dx_o, oy + dy_o)
 
-    def _maybe_coldstart_seed(
+    def _seed_coldstart_theta_if_needed(
         self, goal_world_xy: Tuple[float, float]
-    ) -> Optional[Tuple[float, float]]:
-        """improve/gps-waypoint-continuity — body-frame bias for the
-        very first GPS goal while ``θ`` is still high-variance.
+    ) -> None:
+        """improve/gps-waypoint-continuity — one-shot θ_offset snap.
 
-        Returns a candidate placed at
-        ``coldstart_seed_distance_m`` directly in front of base_link
-        in body frame, transformed into odom. Forward motion is what
-        feeds ``bootstrap_theta`` and shrinks ``P[2,2]`` — biasing the
-        first published goal forward causes the robot to drive
-        straight, which gives the EKF the displacement it needs to
-        learn heading. Once ``ekf.theta_std`` drops below the
-        threshold this returns None and the normal world→odom
-        projection takes over; the EWMA then slides the published
-        goal from the in-front seed to the true projection.
+        On the very first GPS goal accepted while ``coldstart_bias_
+        enabled`` is true, compute the θ_offset that would make
+        ``_project_world_to_odom(goal_world_xy)`` land directly in
+        front of ``base_link`` and snap the EKF to it with high
+        variance. The candidate then comes out of the normal
+        projection path already pointing forward, so the robot drives
+        toward the GPS waypoint — at the GPS distance, not a 3 m seed
+        — and accumulates the displacement the EKF needs to refit θ
+        from real data. The high seed variance ensures
+        ``bootstrap_theta``'s closed-form fit (which fires once
+        baseline > BOOTSTRAP_MIN_BASELINE_M) overwrites this seed the
+        moment it has the data.
 
-        Returns None when the bias is disabled, when heading
-        uncertainty has fallen below the threshold, or when odom
-        isn't available yet. Lock held.
+        Identity used: if we want the rotated world vector
+        ``(gx-ex, gy-ey)`` to align with the body forward direction
+        ``(cos(yaw_o), sin(yaw_o))``, then ``atan2(gy-ey, gx-ex) - θ
+        = yaw_o``, hence ``θ = atan2(gy-ey, gx-ex) - yaw_o``.
+
+        Lock held.
         """
         if not self._coldstart_bias_enabled:
-            return None
-        if self._ekf.theta_std_rad < self._coldstart_theta_std_threshold_rad:
-            return None
+            return
+        if self._coldstart_theta_seeded:
+            return
         if self._last_odom_xy is None:
-            return None
+            return
         ex, ey = self._ekf.pos_xy
         gx_w, gy_w = goal_world_xy
-        world_dist = math.hypot(gx_w - ex, gy_w - ey)
-        # Cap the seed distance at the actual goal distance — no point
-        # placing the candidate beyond the real goal.
-        seed_dist = min(self._coldstart_seed_distance_m, max(world_dist, 0.1))
-        yaw = self._last_odom_yaw
-        ox, oy = self._last_odom_xy
-        return (
-            ox + seed_dist * math.cos(yaw),
-            oy + seed_dist * math.sin(yaw),
+        if math.hypot(gx_w - ex, gy_w - ey) < 0.05:
+            # Goal is essentially at the robot — no meaningful
+            # direction to seed. Try again on the next goal.
+            return
+        goal_world_angle = math.atan2(gy_w - ey, gx_w - ex)
+        seed_theta = wrap_pi(goal_world_angle - self._last_odom_yaw)
+        self._ekf.reset_theta(
+            seed_theta, theta_var=self._coldstart_theta_seed_var_rad2
+        )
+        self._coldstart_theta_seeded = True
+        self.get_logger().info(
+            f"cold-start θ_offset seeded to {math.degrees(seed_theta):+.2f}° "
+            f"(world goal-bearing {math.degrees(goal_world_angle):+.2f}°, "
+            f"odom yaw {math.degrees(self._last_odom_yaw):+.2f}°); "
+            f"candidate will project in front of base_link until "
+            f"bootstrap_theta refits from displacement"
         )
 
     def _compute_raw_candidate(self) -> Optional[Tuple[float, float]]:
@@ -1243,13 +1264,6 @@ class GpsHandlerNode(Node):
         # then converges to the true GPS goal as the agent moves.
         # Mirror that behaviour: publish whatever candidate we can
         # compute right now, even before bootstrap_done.
-        # improve/gps-waypoint-continuity — when heading uncertainty
-        # is above the cold-start threshold, override the projection
-        # with a body-frame seed so the first goal pulls the robot
-        # forward instead of in a random direction.
-        seed = self._maybe_coldstart_seed(active.goal_world_xy)
-        if seed is not None:
-            return seed
         return self._project_world_to_odom(active.goal_world_xy)
 
     def _update_next_hint_smoother(self) -> None:
@@ -2042,6 +2056,17 @@ class GpsHandlerNode(Node):
         )
         with self._lock:
             self._active = active
+            # improve/gps-waypoint-continuity — one-shot θ_offset seed.
+            # For the first GPS goal of the node's lifetime, snap the
+            # EKF's θ so the normal world→odom projection produces a
+            # candidate directly in front of base_link. The robot then
+            # drives toward the real GPS waypoint (at the real GPS
+            # distance) instead of toward a half-random projection,
+            # and the resulting forward motion gives bootstrap_theta
+            # the displacement it needs to refit θ properly. No-op on
+            # LOCAL goals and on the 2nd+ GPS goal of this node's run.
+            if gt == NavigateToWaypoint.Goal.GOAL_TYPE_GPS:
+                self._seed_coldstart_theta_if_needed(goal_world_xy)
             # improve/gps-waypoint-continuity — warm-start the smoother
             # from the cached hint if it matches this new goal within
             # tolerance. When it doesn't match (or no hint exists)
