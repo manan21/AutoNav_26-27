@@ -250,11 +250,11 @@ local_costmap:
         enabled: True
         line_topic: "/line_points"
         transform_tolerance: 0.2
-        max_message_age_ms: 750
+        max_message_age_ms: 1500
         # With view-gated clearing, this is the time a stale line must be
         # in the camera clearing cone before it is forgotten. Lines outside
         # the current view stay remembered and continue feeding /line_costmap.
-        observation_persistence_ms: 1500
+        observation_persistence_ms: 5000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
         line_clear_angle_min_rad: -0.55
