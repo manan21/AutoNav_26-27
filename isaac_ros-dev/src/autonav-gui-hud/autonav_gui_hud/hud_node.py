@@ -4609,6 +4609,14 @@ class HudWindow(QMainWindow):
             buf.append(f"[ERROR] Failed to launch: {e}\n")
             self._gui_log_msg(f"Test {tid} failed to launch: {e}")
 
+        # Point the terminal pane at this test's buffer so the operator
+        # sees the automator's WARMING UP / READY banners and knows when
+        # the physical Xbox A press will produce a useful bag. Every
+        # other launcher (mission, build, install) does the same thing.
+        self._selected_process = test_label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+
         self._update_selection()
 
     def _stop_test(self, tid):
