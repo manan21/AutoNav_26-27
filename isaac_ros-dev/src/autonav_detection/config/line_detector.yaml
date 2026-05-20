@@ -26,7 +26,6 @@
     depth_camera_topic: "/zed/zed_node/depth/depth_registered"
     camera_info_topic: "/zed/zed_node/rgb/color/rect/camera_info"
     line_points_topic: "/line_points"
-    line_costmap_points_topic: "/line_costmap_points"
     target_frame: "odom"
     enable_timer: true
     publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
