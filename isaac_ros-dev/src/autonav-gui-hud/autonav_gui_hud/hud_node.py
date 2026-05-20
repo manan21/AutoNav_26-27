@@ -6262,6 +6262,11 @@ class HudWindow(QMainWindow):
             self._toggle_auto_mode()
             return
 
+        # 'P' toggles Performance Mode — same mod/focus rules as 'A'.
+        if key == Qt.Key_P and not event.modifiers():
+            self._on_performance_clicked()
+            return
+
         # --- Scrub mode: arrows move the slider, Enter exits ---
         if self._scrub_mode:
             slider = self.pb_slider
