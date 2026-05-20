@@ -31,7 +31,9 @@
     publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
+    tf_wait_for_stamp_ms: 100         # Bounded wait for TF at the depth-image stamp. Keeps camera→costmap latency under ~250 ms while avoiding latest-TF motion smear.
     line_hold_timeout_ms: 800
+    motion_cache_hold_ms: 250         # Short bridge during yaw/TF misses; prevents flicker without preserving turn-time smears.
     line_memory_max_points: 12000     # cap confirmed output points
     odom_topic: "/local_ekf/odom"
 
@@ -80,16 +82,11 @@
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
     debug_image_write_enabled: false
-    # Use the LATEST available TF instead of the TF at the exact depth
-    # stamp. The dynamic-TF receive lag in this stack (odom/base_link
-    # arriving 0.4-3 s behind the depth capture stamp) causes every
-    # per-stamp lookup to throw "extrapolation into the future" and zero
-    # points reach the costmap. With tf_use_latest=true the lookup
-    # succeeds and the rest of the pipeline runs; cost is a parallax
-    # error during motion of ~(velocity × tf_lag). At 1 m/s × 0.5 s that
-    # is ~0.5 m forward drift on the projected line — acceptable for
-    # competition speeds where lines are ~3-5 m away.
-    tf_use_latest: true
+    # Default to stamped TF at the depth-image timestamp. Latest-TF
+    # projection is kept as an emergency field fallback only; it can smear
+    # lines into arcs during turns because the image/depth frame was
+    # captured at an older robot pose.
+    tf_use_latest: false
 
     # ── CERIAS line-pixel detector ───────────────────────────────────────
     # Stage 1: host-side binary mask. Pixels brighter than this are

@@ -251,7 +251,7 @@ local_costmap:
         line_topic: "/line_points"
         transform_tolerance: 0.2
         max_message_age_ms: 750
-        observation_persistence_ms: 10000
+        observation_persistence_ms: 750
         observation_persistence_resolution_m: 0.10
         max_persisted_points: 12000
         clearing: True
