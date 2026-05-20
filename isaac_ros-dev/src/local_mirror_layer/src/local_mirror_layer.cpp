@@ -1,6 +1,7 @@
 #include "local_mirror_layer/local_mirror_layer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -21,6 +22,11 @@ LocalMirrorLayer::LocalMirrorLayer()
   clear_topic_("/local_mirror_layer/clear"),
   track_unknown_space_(true),
   allow_decrease_(false),
+  decrease_only_in_front_(false),
+  decrease_angle_min_rad_(-1.2217),
+  decrease_angle_max_rad_(1.2217),
+  decrease_range_min_m_(0.0),
+  decrease_range_max_m_(25.0),
   has_new_msg_(false),
   pending_clear_(false),
   touched_min_x_(0.0),
@@ -31,6 +37,7 @@ LocalMirrorLayer::LocalMirrorLayer()
   clear_radius_(6.0),
   latest_robot_x_(0.0),
   latest_robot_y_(0.0),
+  latest_robot_yaw_(0.0),
   have_robot_pose_(false)
 {
 }
@@ -48,6 +55,11 @@ void LocalMirrorLayer::onInitialize()
   declareParameter("clear_radius", rclcpp::ParameterValue(6.0));
   declareParameter("track_unknown_space", rclcpp::ParameterValue(true));
   declareParameter("allow_decrease", rclcpp::ParameterValue(false));
+  declareParameter("decrease_only_in_front", rclcpp::ParameterValue(false));
+  declareParameter("decrease_angle_min_rad", rclcpp::ParameterValue(-1.2217));
+  declareParameter("decrease_angle_max_rad", rclcpp::ParameterValue(1.2217));
+  declareParameter("decrease_range_min_m", rclcpp::ParameterValue(0.0));
+  declareParameter("decrease_range_max_m", rclcpp::ParameterValue(25.0));
 
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "source_topic", source_topic_);
@@ -56,6 +68,13 @@ void LocalMirrorLayer::onInitialize()
   clear_radius_ = std::max(0.0, clear_radius_);
   node->get_parameter(name_ + "." + "track_unknown_space", track_unknown_space_);
   node->get_parameter(name_ + "." + "allow_decrease", allow_decrease_);
+  node->get_parameter(name_ + "." + "decrease_only_in_front", decrease_only_in_front_);
+  node->get_parameter(name_ + "." + "decrease_angle_min_rad", decrease_angle_min_rad_);
+  node->get_parameter(name_ + "." + "decrease_angle_max_rad", decrease_angle_max_rad_);
+  node->get_parameter(name_ + "." + "decrease_range_min_m", decrease_range_min_m_);
+  node->get_parameter(name_ + "." + "decrease_range_max_m", decrease_range_max_m_);
+  decrease_range_min_m_ = std::max(0.0, decrease_range_min_m_);
+  decrease_range_max_m_ = std::max(decrease_range_min_m_, decrease_range_max_m_);
 
   // Volatile QoS — the local costmap publishes continuously, no need
   // for transient-local replay of stale messages.
@@ -105,9 +124,11 @@ void LocalMirrorLayer::onInitialize()
 
   RCLCPP_INFO(
     rclcpp::get_logger("nav2_costmap_2d"),
-    "LocalMirrorLayer subscribed to %s (host frame=%s)",
+    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s)",
     source_topic_.c_str(),
-    layered_costmap_->getGlobalFrameID().c_str());
+    layered_costmap_->getGlobalFrameID().c_str(),
+    allow_decrease_ ? "true" : "false",
+    decrease_only_in_front_ ? "true" : "false");
 }
 
 unsigned char LocalMirrorLayer::interpretCost(int8_t occ_val)
@@ -128,6 +149,37 @@ unsigned char LocalMirrorLayer::interpretCost(int8_t occ_val)
     1 + (static_cast<int>(occ_val) * 252) / 99);
 }
 
+bool LocalMirrorLayer::decreaseAllowedAt(
+  double wx, double wy,
+  double robot_x, double robot_y, double robot_yaw,
+  bool have_pose) const
+{
+  if (!decrease_only_in_front_) {
+    return true;
+  }
+  if (!have_pose) {
+    return false;
+  }
+
+  const double dx = wx - robot_x;
+  const double dy = wy - robot_y;
+  const double range = std::hypot(dx, dy);
+  if (range < decrease_range_min_m_ || range > decrease_range_max_m_) {
+    return false;
+  }
+
+  const double c = std::cos(robot_yaw);
+  const double s = std::sin(robot_yaw);
+  const double rel_x = c * dx + s * dy;
+  const double rel_y = -s * dx + c * dy;
+  const double angle = std::atan2(rel_y, rel_x);
+
+  if (decrease_angle_min_rad_ <= decrease_angle_max_rad_) {
+    return angle >= decrease_angle_min_rad_ && angle <= decrease_angle_max_rad_;
+  }
+  return angle >= decrease_angle_min_rad_ || angle <= decrease_angle_max_rad_;
+}
+
 void LocalMirrorLayer::mapCallback(
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
@@ -144,7 +196,7 @@ void LocalMirrorLayer::clearCallback(
 }
 
 void LocalMirrorLayer::updateBounds(
-  double robot_x, double robot_y, double /*robot_yaw*/,
+  double robot_x, double robot_y, double robot_yaw,
   double * min_x, double * min_y, double * max_x, double * max_y)
 {
   // Snapshot robot pose for clearCallback — same pattern as LineLayer.
@@ -154,6 +206,7 @@ void LocalMirrorLayer::updateBounds(
     std::lock_guard<std::mutex> lock(msg_mtx_);
     latest_robot_x_ = robot_x;
     latest_robot_y_ = robot_y;
+    latest_robot_yaw_ = robot_yaw;
     have_robot_pose_ = true;
   }
   if (!enabled_) {
@@ -214,7 +267,7 @@ void LocalMirrorLayer::updateCosts(
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg;
   bool have_new;
   bool do_clear;
-  double robot_x = 0.0, robot_y = 0.0;
+  double robot_x = 0.0, robot_y = 0.0, robot_yaw = 0.0;
   bool have_pose = false;
   {
     std::lock_guard<std::mutex> lock(msg_mtx_);
@@ -225,6 +278,7 @@ void LocalMirrorLayer::updateCosts(
     pending_clear_ = false;
     robot_x = latest_robot_x_;
     robot_y = latest_robot_y_;
+    robot_yaw = latest_robot_yaw_;
     have_pose = have_robot_pose_;
   }
 
@@ -266,7 +320,7 @@ void LocalMirrorLayer::updateCosts(
   // Stamp the latest source message into the layer's own costmap.
   // Cells already present in the layer (from previous publishes)
   // stay — they only get overwritten if the new cost is higher
-  // (or, if allow_decrease_, by any non-NO_INFORMATION value).
+  // or if a lower incoming cost passes the configured decrease gate.
   if (msg && have_new) {
     const unsigned int src_w = msg->info.width;
     const unsigned int src_h = msg->info.height;
@@ -327,13 +381,6 @@ void LocalMirrorLayer::updateCosts(
           if (incoming == NO_INFORMATION) {
             continue;
           }
-          // FREE input requires allow_decrease=true to override.
-          // Otherwise we're in strict accumulator mode and FREE
-          // cells from the source can't clear stored marks.
-          if (incoming == FREE_SPACE && !allow_decrease_) {
-            continue;
-          }
-
           const double wx_src = src_ox + (sx + 0.5) * src_res;
           // Apply 2-D rigid transform: rotate then translate.
           const double wx = cos_t * wx_src - sin_t * wy_src + dx;
@@ -343,18 +390,24 @@ void LocalMirrorLayer::updateCosts(
             continue;
           }
           const unsigned int idx = my * size_x_ + mx;
-          if (allow_decrease_) {
-            // Within source window: mirror exactly, including FREE
-            // overriding stored marks. The local's own raytracing /
-            // temporal handling has already filtered transient
-            // obstacles within the source window, so what we receive
-            // is the trusted ground truth at this moment.
-            costmap_[idx] = incoming;
-          } else {
-            const unsigned char existing = costmap_[idx];
-            if (existing == NO_INFORMATION || incoming > existing) {
+
+          const unsigned char existing = costmap_[idx];
+          if (existing == NO_INFORMATION) {
+            if (incoming != FREE_SPACE) {
               costmap_[idx] = incoming;
             }
+            continue;
+          }
+
+          if (incoming > existing) {
+            costmap_[idx] = incoming;
+            continue;
+          }
+
+          if (allow_decrease_ && incoming < existing &&
+            decreaseAllowedAt(wx, wy, robot_x, robot_y, robot_yaw, have_pose))
+          {
+            costmap_[idx] = incoming;
           }
         }
       }
