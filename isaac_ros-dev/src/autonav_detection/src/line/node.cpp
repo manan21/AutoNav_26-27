@@ -46,10 +46,12 @@ public:
 		this->declare_parameter("line_points_topic", "line_points");
 		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true);
-		this->declare_parameter("publish_interval_ms", 250);
+		this->declare_parameter("publish_interval_ms", 100);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
+		this->declare_parameter("tf_wait_for_stamp_ms", 100);
 		this->declare_parameter("line_hold_timeout_ms", 800);
+		this->declare_parameter("motion_cache_hold_ms", 250);
 		this->declare_parameter("line_memory_max_points", 12000);
 		this->declare_parameter("roi_min_y_fraction", 0.35);
 		this->declare_parameter("max_depth_m", 6.0);
@@ -64,21 +66,18 @@ public:
 		this->declare_parameter("cluster_min_aspect_ratio", 3.0);
 		this->declare_parameter("cluster_link_distance_m", 0.18);
 		this->declare_parameter("temporal_voxel_size_m", 0.10);
-		this->declare_parameter("temporal_min_hits", 2);
+		this->declare_parameter("temporal_min_hits", 1);
 		this->declare_parameter("temporal_confirm_window_ms", 750);
-		this->declare_parameter("confirmed_hold_ms", 10000);
+		this->declare_parameter("confirmed_hold_ms", 1500);
 		this->declare_parameter("odom_topic", "/local_ekf/odom");
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
 		this->declare_parameter("debug_image_write_enabled", false);
-		// When true, project pixels using the LATEST available TF instead
-		// of the TF at the exact depth-image stamp. Avoids "extrapolation
-		// into the future" failures when the dynamic-TF receive lag
-		// (odom/base_link arriving 0.4-3s behind the depth capture stamp)
-		// causes every per-frame lookup to throw. Tradeoff: introduces
-		// parallax error of ~(velocity × tf_lag) during motion — at 1 m/s
-		// and 0.5s lag, ~50 cm forward drift on the projected point.
-		// Safe for stationary or slow-moving testing.
+		// Emergency fallback only. Latest-TF projection is responsive but
+		// smears line points during motion because the image/depth frame
+		// was captured at an older robot pose. The default stamped lookup
+		// waits briefly for the exact depth timestamp, then bridges with
+		// cached confirmed lines instead of publishing misregistered points.
 		this->declare_parameter("tf_use_latest", false);
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
@@ -98,7 +97,9 @@ public:
 		publish_interval_ms_ = std::max<int64_t>(50, this->get_parameter("publish_interval_ms").as_int());
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
+		tf_wait_for_stamp_ms_ = std::max<int64_t>(0, this->get_parameter("tf_wait_for_stamp_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
+		motion_cache_hold_ms_ = std::max<int64_t>(0, this->get_parameter("motion_cache_hold_ms").as_int());
 		line_memory_max_points_ = std::max<int64_t>(1, this->get_parameter("line_memory_max_points").as_int());
 		roi_min_y_fraction_ = std::clamp(this->get_parameter("roi_min_y_fraction").as_double(), 0.0, 1.0);
 		max_depth_m_ = std::max(0.1, this->get_parameter("max_depth_m").as_double());
@@ -135,7 +136,9 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Publish interval: %ld ms", publish_interval_ms_);
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Stamped TF wait: %ld ms", tf_wait_for_stamp_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
+		RCLCPP_INFO(this->get_logger(), "Motion cache hold: %ld ms", motion_cache_hold_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line memory max points: %ld", line_memory_max_points_);
 		RCLCPP_INFO(this->get_logger(), "Odom topic: %s", odom_topic.c_str());
 		RCLCPP_INFO(this->get_logger(),
@@ -257,10 +260,12 @@ private:
 	bool enable_timer_;
 	bool configured_ = false;
 	std::string target_frame_;
-	int64_t publish_interval_ms_ = 250;
+	int64_t publish_interval_ms_ = 100;
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
+	int64_t tf_wait_for_stamp_ms_ = 100;
 	int64_t line_hold_timeout_ms_ = 0;
+	int64_t motion_cache_hold_ms_ = 250;
 	int64_t line_memory_max_points_ = 20000;
 	double  roi_min_y_fraction_ = 0.35;
 	double  max_depth_m_ = 6.0;
@@ -275,9 +280,9 @@ private:
 	double  cluster_min_aspect_ratio_ = 3.0;
 	double  cluster_link_distance_m_ = 0.18;
 	double  temporal_voxel_size_m_ = 0.10;
-	int     temporal_min_hits_ = 2;
+	int     temporal_min_hits_ = 1;
 	int64_t temporal_confirm_window_ms_ = 750;
-	int64_t confirmed_hold_ms_ = 10000;
+	int64_t confirmed_hold_ms_ = 1500;
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
@@ -291,6 +296,7 @@ private:
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
+	std::vector<cv::Point> last_valid_debug_pixels_;
 
 	struct DetectionFrameStats {
 		int raw_pixels = 0;
@@ -306,6 +312,8 @@ private:
 		int candidate_points = 0;
 		int confirmed_points = 0;
 		int yaw_gated_frames = 0;
+		int tf_wait_failures = 0;
+		int tf_latest_fallbacks = 0;
 	};
 
 	struct CandidatePoint {
@@ -365,13 +373,17 @@ private:
 	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
 	void publishEmptyPointCloud(const builtin_interfaces::msg::Time & stamp);
 	void publishEmptyLineSet(const builtin_interfaces::msg::Time & stamp, const char * reason);
-	// Republish the currently-held confirmed voxels with a fresh stamp.
-	// Used on transient failure paths (missing image, RGB/depth desync,
-	// cv_bridge error, etc.) so the costmap keeps seeing the lines that
-	// were last successfully confirmed instead of flickering empty on
-	// every bad frame. Mirrors the lidar PCA pipeline's cached-cloud
-	// republish pattern — points stay live for `confirmed_hold_ms`.
+	// Republish the last successfully published candidate set with a
+	// fresh stamp while it is still within `line_hold_timeout_ms`.
 	void republishConfirmedCache(const builtin_interfaces::msg::Time & stamp);
+	void republishConfirmedCacheFor(
+		const builtin_interfaces::msg::Time & stamp,
+		int64_t hold_ms,
+		const char * missing_reason,
+		const char * expired_reason);
+	void publishCandidatePoints(
+		const std::vector<CandidatePoint> & candidates,
+		const builtin_interfaces::msg::Time & stamp);
 	std::vector<CandidatePoint> filterLineClusters(
 		const std::vector<CandidatePoint> & points,
 		DetectionFrameStats & stats) const;
@@ -386,14 +398,14 @@ private:
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
 	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
-	std::vector<cv::Point> confirmedDebugPixels() const;
+	std::vector<cv::Point> publishedDebugPixels() const;
 	void publishDebugImages(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
 		const int2 * line_points,
 		int line_points_len,
 		const std::vector<CandidatePoint> & accepted_candidates,
-		const std::vector<cv::Point> & confirmed_pixels);
+		const std::vector<cv::Point> & published_pixels);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
 	void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -523,6 +535,7 @@ void LineDetectorNode::publishEmptyLineSet(
 	empty_message.header.stamp = this->now();
 	last_valid_message_ = empty_message;
 	has_last_valid_message_ = false;
+	last_valid_debug_pixels_.clear();
 	publishEmptyPointCloud(stamp);
 	publishLinePoints(empty_message);
 	RCLCPP_WARN_THROTTLE(
@@ -533,34 +546,65 @@ void LineDetectorNode::publishEmptyLineSet(
 void LineDetectorNode::republishConfirmedCache(
 	const builtin_interfaces::msg::Time & stamp)
 {
-	// Walk the temporal voxel cache and emit whatever is still confirmed.
-	// Run the same hold-expiry sweep that updateTemporalConfidence does
-	// so this path doesn't grow stale voxels indefinitely.
-	const rclcpp::Time now_stamp(stamp);
+	republishConfirmedCacheFor(
+		stamp,
+		line_hold_timeout_ms_,
+		"missing cached candidate line set",
+		"expired cached candidate line set");
+}
+
+void LineDetectorNode::republishConfirmedCacheFor(
+	const builtin_interfaces::msg::Time & stamp,
+	int64_t hold_ms,
+	const char * missing_reason,
+	const char * expired_reason)
+{
+	const rclcpp::Time now_stamp(stamp, this->get_clock()->get_clock_type());
 	const rclcpp::Duration hold =
-		rclcpp::Duration::from_nanoseconds(confirmed_hold_ms_ * 1000000LL);
-	for (auto it = temporal_voxels_.begin(); it != temporal_voxels_.end();) {
-		if ((now_stamp - it->second.last_seen) > hold) {
-			it = temporal_voxels_.erase(it);
-		} else {
-			++it;
-		}
+		rclcpp::Duration::from_nanoseconds(hold_ms * 1000000LL);
+	if (!has_last_valid_message_) {
+		publishEmptyLineSet(stamp, missing_reason);
+		return;
+	}
+	if (hold_ms >= 0 &&
+		(now_stamp - last_valid_detection_time_) > hold)
+	{
+		publishEmptyLineSet(stamp, expired_reason);
+		return;
 	}
 
-	std::vector<Eigen::Vector3d> confirmed;
-	confirmed.reserve(std::min(
-		temporal_voxels_.size(),
-		static_cast<size_t>(line_memory_max_points_)));
-	for (const auto & item : temporal_voxels_) {
-		if (!item.second.confirmed) {
-			continue;
-		}
-		confirmed.push_back(item.second.point);
-		if (confirmed.size() >= static_cast<size_t>(line_memory_max_points_)) {
-			break;
-		}
+	auto message = last_valid_message_;
+	message.header.stamp = this->now();
+	publishPointCloudFromLineMessage(message);
+	publishLinePoints(message);
+}
+
+void LineDetectorNode::publishCandidatePoints(
+	const std::vector<CandidatePoint> & candidates,
+	const builtin_interfaces::msg::Time & stamp)
+{
+	auto message = autonav_interfaces::msg::LinePoints();
+	message.header.frame_id = target_frame_;
+	message.header.stamp = this->now();  // Use now() to avoid "stale" timestamps on republished messages
+	message.points.reserve(candidates.size());
+
+	last_valid_debug_pixels_.clear();
+	last_valid_debug_pixels_.reserve(candidates.size());
+	for (const auto & candidate : candidates) {
+		geometry_msgs::msg::Vector3 vec_msg;
+		vec_msg.x = candidate.target.x();
+		vec_msg.y = candidate.target.y();
+		vec_msg.z = candidate.target.z();
+		message.points.emplace_back(vec_msg);
+		last_valid_debug_pixels_.push_back(candidate.pixel);
 	}
-	publishConfirmedOrEmpty(confirmed, stamp);
+
+	last_valid_message_ = message;
+	last_valid_detection_time_ =
+		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
+	has_last_valid_message_ = true;
+	publishPointCloudFromLineMessage(message);
+	publishLinePoints(message);
 }
 
 void LineDetectorNode::clearRememberedLines(
@@ -571,6 +615,7 @@ void LineDetectorNode::clearRememberedLines(
 
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
+	last_valid_debug_pixels_.clear();
 	temporal_voxels_.clear();
 	last_valid_detection_time_ = this->now();
 
@@ -632,39 +677,55 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	const uint8_t* depth_ptr_u8 = depth_msg->data.data();
 	std::string frame_id = depth_msg->header.frame_id;
 
-	// Check if transform is available
+	// Check if transform is available. Stamped TF is the normal path:
+	// every projected point uses the robot pose at the depth-image stamp.
+	// The optional latest-TF fallback is intentionally off by default
+	// because it misregisters line points during motion and creates
+	// frayed costmap walls.
 	bool transform_available = false;
 	geometry_msgs::msg::TransformStamped target_transform;
 	geometry_msgs::msg::TransformStamped base_transform;
 	
 	try {
-		if (tf_use_latest_) {
-			// Time(0) tells TF2 to return the most recent available
-			// transform. Use this when dynamic-TF receive lag (odom
-			// arriving seconds behind the depth capture stamp) makes
-			// per-frame exact-stamp lookups fail.
-			const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
-			target_transform = tf_buffer.lookupTransform(
-				target_frame_, frame_id, latest,
-				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
-			base_transform = tf_buffer.lookupTransform(
-				"base_link", frame_id, latest,
-				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
-		} else {
-			const rclcpp::Time depth_stamp(depth_msg->header.stamp);
-			target_transform = tf_buffer.lookupTransform(
-				target_frame_, frame_id, depth_stamp,
-				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
-			base_transform = tf_buffer.lookupTransform(
-				"base_link", frame_id, depth_stamp,
-				rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL));
-		}
+		const rclcpp::Time depth_stamp(depth_msg->header.stamp);
+		const auto stamped_timeout =
+			rclcpp::Duration::from_nanoseconds(tf_wait_for_stamp_ms_ * 1000000LL);
+		target_transform = tf_buffer.lookupTransform(
+			target_frame_, frame_id, depth_stamp, stamped_timeout);
+		base_transform = tf_buffer.lookupTransform(
+			"base_link", frame_id, depth_stamp, stamped_timeout);
 		transform_available = true;
-	} catch (const tf2::TransformException& ex) {
-		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-			"TF not available (%s/base_link <- %s, mode=%s): %s",
-			target_frame_.c_str(), frame_id.c_str(),
-			tf_use_latest_ ? "latest" : "stamped", ex.what());
+	} catch (const tf2::TransformException& stamped_ex) {
+		stats.tf_wait_failures++;
+		if (tf_use_latest_) {
+			try {
+				// Emergency fallback only. This preserves legacy behavior
+				// for field debugging but remains disabled by default.
+				stats.tf_latest_fallbacks++;
+				const auto latest_timeout =
+					rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL);
+				const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
+				target_transform = tf_buffer.lookupTransform(
+					target_frame_, frame_id, latest, latest_timeout);
+				base_transform = tf_buffer.lookupTransform(
+					"base_link", frame_id, latest, latest_timeout);
+				transform_available = true;
+			} catch (const tf2::TransformException& latest_ex) {
+				RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+					"TF not available (%s/base_link <- %s, stamped wait=%ld ms, latest fallback failed): stamped=%s latest=%s",
+					target_frame_.c_str(), frame_id.c_str(), tf_wait_for_stamp_ms_,
+					stamped_ex.what(), latest_ex.what());
+			}
+		} else {
+			RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+				"Stamped TF not available (%s/base_link <- %s, wait=%ld ms): %s",
+				target_frame_.c_str(), frame_id.c_str(), tf_wait_for_stamp_ms_,
+				stamped_ex.what());
+		}
+	}
+
+	if (!transform_available) {
+		return depth_line_points;
 	}
 
 	int valid_count = 0;
@@ -901,15 +962,21 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 		int count = 0;
 	};
 
+	if (yaw_gated) {
+		stats.yaw_gated_frames = 1;
+	}
+
 	std::unordered_map<VoxelKey, FrameVoxelAggregate, VoxelKeyHash> frame_voxels;
-	frame_voxels.reserve(candidates.size());
-	for (const auto & candidate : candidates) {
-		const VoxelKey key = voxelKeyForPoint(candidate.target);
-		auto & aggregate = frame_voxels[key];
-		aggregate.point += candidate.target;
-		aggregate.pixel.x += candidate.pixel.x;
-		aggregate.pixel.y += candidate.pixel.y;
-		aggregate.count++;
+	if (!yaw_gated) {
+		frame_voxels.reserve(candidates.size());
+		for (const auto & candidate : candidates) {
+			const VoxelKey key = voxelKeyForPoint(candidate.target);
+			auto & aggregate = frame_voxels[key];
+			aggregate.point += candidate.target;
+			aggregate.pixel.x += candidate.pixel.x;
+			aggregate.pixel.y += candidate.pixel.y;
+			aggregate.count++;
+		}
 	}
 
 	const rclcpp::Duration confirm_window =
@@ -923,10 +990,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 			item.second.pixel.x / count,
 			item.second.pixel.y / count);
 		auto voxel_it = temporal_voxels_.find(key);
-
-		if (yaw_gated && (voxel_it == temporal_voxels_.end() || !voxel_it->second.confirmed)) {
-			continue;
-		}
 
 		if (voxel_it == temporal_voxels_.end()) {
 			VoxelState state;
@@ -982,9 +1045,6 @@ std::vector<Eigen::Vector3d> LineDetectorNode::updateTemporalConfidence(
 	}
 
 	stats.confirmed_points = static_cast<int>(confirmed.size());
-	if (yaw_gated) {
-		stats.yaw_gated_frames = 1;
-	}
 	return confirmed;
 }
 
@@ -1016,7 +1076,8 @@ void LineDetectorNode::publishConfirmedOrEmpty(
 	}
 
 	last_valid_message_ = message;
-	last_valid_detection_time_ = rclcpp::Time(stamp);
+	last_valid_detection_time_ =
+		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
 	has_last_valid_message_ = true;
 	publishPointCloudFromLineMessage(message);
 	publishLinePoints(message);
@@ -1042,25 +1103,17 @@ void LineDetectorNode::publishDiagnostics(
 		<< "\"kept_clusters\":" << stats.kept_clusters << ","
 		<< "\"candidate_points\":" << stats.candidate_points << ","
 		<< "\"confirmed_points\":" << stats.confirmed_points << ","
-		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames
+		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames << ","
+		<< "\"tf_wait_failures\":" << stats.tf_wait_failures << ","
+		<< "\"tf_latest_fallbacks\":" << stats.tf_latest_fallbacks
 		<< "}";
 	msg.data = out.str();
 	_diagnostics_pub->publish(msg);
 }
 
-std::vector<cv::Point> LineDetectorNode::confirmedDebugPixels() const
+std::vector<cv::Point> LineDetectorNode::publishedDebugPixels() const
 {
-	std::vector<cv::Point> pixels;
-	pixels.reserve(temporal_voxels_.size());
-	for (const auto & item : temporal_voxels_) {
-		if (!item.second.confirmed) {
-			continue;
-		}
-		pixels.emplace_back(
-			static_cast<int>(std::round(item.second.pixel.x)),
-			static_cast<int>(std::round(item.second.pixel.y)));
-	}
-	return pixels;
+	return last_valid_debug_pixels_;
 }
 
 void LineDetectorNode::publishDebugImages(
@@ -1069,7 +1122,7 @@ void LineDetectorNode::publishDebugImages(
 	const int2 * line_points,
 	int line_points_len,
 	const std::vector<CandidatePoint> & accepted_candidates,
-	const std::vector<cv::Point> & confirmed_pixels)
+	const std::vector<cv::Point> & published_pixels)
 {
 	if (!debug_image_publish_enabled_ || !camera_msg || gray_image.empty()) {
 		return;
@@ -1128,7 +1181,7 @@ void LineDetectorNode::publishDebugImages(
 				cv::circle(overlay, candidate.pixel, 3, cv::Scalar(0, 255, 255), -1);
 			}
 		}
-		for (const auto & pixel : confirmed_pixels) {
+		for (const auto & pixel : published_pixels) {
 			if (0 <= pixel.x && pixel.x < overlay.cols && 0 <= pixel.y && pixel.y < overlay.rows) {
 				cv::circle(overlay, pixel, 4, cv::Scalar(0, 255, 0), -1);
 			}
@@ -1324,13 +1377,20 @@ void LineDetectorNode::line_callback()
 	if (*line_points_len == 0) {
 		const rclcpp::Time stamp(depth_msg->header.stamp);
 		const bool yaw_gated = isYawGated();
-		std::vector<Eigen::Vector3d> confirmed =
-			updateTemporalConfidence({}, stamp, yaw_gated, stats);
-		publishConfirmedOrEmpty(confirmed, depth_msg->header.stamp);
+		updateTemporalConfidence({}, stamp, yaw_gated, stats);
+		if (yaw_gated) {
+			republishConfirmedCacheFor(
+				depth_msg->header.stamp,
+				motion_cache_hold_ms_,
+				"missing confirmed cache during yaw gate",
+				"expired motion cache during yaw gate");
+		} else {
+			republishConfirmedCache(depth_msg->header.stamp);
+		}
 		publishDebugImages(
 			camera_msg, cv_ptr->image, line_points, *line_points_len,
-			{}, confirmedDebugPixels());
-		publishDiagnostics(stats, "empty line detection");
+			{}, publishedDebugPixels());
+		publishDiagnostics(stats, yaw_gated ? "yaw gated empty line detection" : "empty line detection");
 		delete[] line_points;
 		delete line_points_len;
 		return;
@@ -1364,11 +1424,36 @@ void LineDetectorNode::line_callback()
 	const bool yaw_gated = isYawGated();
 	std::vector<Eigen::Vector3d> confirmed_points =
 		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
-	publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
+
+	if (stats.tf_wait_failures > 0 && stats.tf_latest_fallbacks == 0 &&
+		clustered_points.empty())
+	{
+		republishConfirmedCacheFor(
+			depth_msg->header.stamp,
+			motion_cache_hold_ms_,
+			"missing confirmed cache after stamped TF miss",
+			"expired motion cache after stamped TF miss");
+	} else if (yaw_gated) {
+		republishConfirmedCacheFor(
+			depth_msg->header.stamp,
+			motion_cache_hold_ms_,
+			"missing confirmed cache during yaw gate",
+			"expired motion cache during yaw gate");
+	} else if (clustered_points.empty()) {
+		republishConfirmedCache(depth_msg->header.stamp);
+	} else if (confirmed_points.empty()) {
+		republishConfirmedCache(depth_msg->header.stamp);
+	} else {
+		publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
+	}
 	publishDebugImages(
 		camera_msg, cv_ptr->image, line_points, *line_points_len,
-		clustered_points, confirmedDebugPixels());
-	publishDiagnostics(stats, yaw_gated ? "yaw gated" : "updated");
+		clustered_points, publishedDebugPixels());
+	publishDiagnostics(
+		stats,
+		(stats.tf_wait_failures > 0 && stats.tf_latest_fallbacks == 0 &&
+		 clustered_points.empty()) ? "stamped TF unavailable" :
+		(yaw_gated ? "yaw gated" : "updated"));
 
 	RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
 		"Line stability: %zu transformed, %zu clustered, %zu confirmed",

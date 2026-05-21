@@ -10,6 +10,14 @@ control_node:
     controller_topic: "joy"
     encoder_topic: "encoders"
     path_planning_topic: "cmd_vel"
+    # Autonomous turn slowdown. Preserve the planner's angular.z, but
+    # reduce forward progress as turn demand rises so the robot advances
+    # less during hard turns and gives perception more time to react.
+    # Live-tunable via `ros2 param set /control_node ...`.
+    turn_slowdown_enabled: true
+    turn_slowdown_start_angular_rad_s: 0.20   # |angular.z| at or below this -> no linear slowdown
+    turn_slowdown_full_angular_rad_s: 0.65    # |angular.z| at or above this -> full slowdown applied
+    turn_slowdown_min_linear_scale: 0.40      # forward cmd bottoms out at 40% during hardest turns
 
     # \/ ------------------PHASE D grade compensation (gravity-vector approach)
     # Reads the IMU's body-frame X accelerometer (= gravity projection

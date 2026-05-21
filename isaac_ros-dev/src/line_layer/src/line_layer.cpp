@@ -88,6 +88,11 @@ LineLayer::LineLayer()
   max_message_age_ms_(750),
   observation_persistence_ms_(0),
   observation_persistence_resolution_m_(0.10),
+  clear_lines_only_in_view_(false),
+  line_clear_angle_min_rad_(-0.55),
+  line_clear_angle_max_rad_(0.55),
+  line_clear_range_min_m_(0.0),
+  line_clear_range_max_m_(5.0),
   max_persisted_points_(12000),
   inflation_radius_(0.90),
   cost_scaling_factor_(5.0),
@@ -97,6 +102,7 @@ LineLayer::LineLayer()
   clear_radius_(3.0),
   latest_robot_x_(0.0),
   latest_robot_y_(0.0),
+  latest_robot_yaw_(0.0),
   have_robot_pose_(false)
 {
 }
@@ -117,6 +123,11 @@ LineLayer::onInitialize()
   declareParameter("max_message_age_ms", rclcpp::ParameterValue(750));
   declareParameter("observation_persistence_ms", rclcpp::ParameterValue(0));
   declareParameter("observation_persistence_resolution_m", rclcpp::ParameterValue(0.10));
+  declareParameter("clear_lines_only_in_view", rclcpp::ParameterValue(false));
+  declareParameter("line_clear_angle_min_rad", rclcpp::ParameterValue(-0.55));
+  declareParameter("line_clear_angle_max_rad", rclcpp::ParameterValue(0.55));
+  declareParameter("line_clear_range_min_m", rclcpp::ParameterValue(0.0));
+  declareParameter("line_clear_range_max_m", rclcpp::ParameterValue(5.0));
   declareParameter("max_persisted_points", rclcpp::ParameterValue(12000));
   declareParameter("inflation_radius", rclcpp::ParameterValue(0.90));
   declareParameter("cost_scaling_factor", rclcpp::ParameterValue(5.0));
@@ -134,6 +145,11 @@ LineLayer::onInitialize()
   node->get_parameter(
     name_ + "." + "observation_persistence_resolution_m",
     observation_persistence_resolution_m_);
+  node->get_parameter(name_ + "." + "clear_lines_only_in_view", clear_lines_only_in_view_);
+  node->get_parameter(name_ + "." + "line_clear_angle_min_rad", line_clear_angle_min_rad_);
+  node->get_parameter(name_ + "." + "line_clear_angle_max_rad", line_clear_angle_max_rad_);
+  node->get_parameter(name_ + "." + "line_clear_range_min_m", line_clear_range_min_m_);
+  node->get_parameter(name_ + "." + "line_clear_range_max_m", line_clear_range_max_m_);
   node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
   node->get_parameter(name_ + "." + "inflation_radius", inflation_radius_);
   node->get_parameter(name_ + "." + "cost_scaling_factor", cost_scaling_factor_);
@@ -149,6 +165,8 @@ LineLayer::onInitialize()
   }
   observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
+  line_clear_range_min_m_ = std::max(0.0, line_clear_range_min_m_);
+  line_clear_range_max_m_ = std::max(line_clear_range_min_m_, line_clear_range_max_m_);
   // Negative means unlimited, zero disables persistence, positive caps memory.
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
@@ -298,6 +316,41 @@ std::uint64_t LineLayer::persistenceKey(double x, double y) const
          static_cast<std::uint32_t>(qy);
 }
 
+bool LineLayer::linePointInClearView(
+  const geometry_msgs::msg::Vector3 & point,
+  double robot_x,
+  double robot_y,
+  double robot_yaw,
+  bool have_pose) const
+{
+  if (!clear_lines_only_in_view_) {
+    return true;
+  }
+  if (!have_pose) {
+    return false;
+  }
+
+  const double dx = point.x - robot_x;
+  const double dy = point.y - robot_y;
+  const double range = std::hypot(dx, dy);
+  if (range < line_clear_range_min_m_ || range > line_clear_range_max_m_) {
+    return false;
+  }
+
+  const double c = std::cos(robot_yaw);
+  const double s = std::sin(robot_yaw);
+  const double rel_x = c * dx + s * dy;
+  const double rel_y = -s * dx + c * dy;
+  const double angle = std::atan2(rel_y, rel_x);
+
+  if (line_clear_angle_min_rad_ <= line_clear_angle_max_rad_) {
+    return angle >= line_clear_angle_min_rad_ &&
+           angle <= line_clear_angle_max_rad_;
+  }
+  return angle >= line_clear_angle_min_rad_ ||
+         angle <= line_clear_angle_max_rad_;
+}
+
 void LineLayer::rememberPersistentPoints(
   const std::vector<geometry_msgs::msg::Vector3> & points,
   const rclcpp::Time & stamp)
@@ -338,13 +391,29 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
     return points;
   }
 
+  double robot_x = 0.0;
+  double robot_y = 0.0;
+  double robot_yaw = 0.0;
+  bool have_pose = false;
+  {
+    std::lock_guard<std::mutex> lock(robot_pose_mutex_);
+    robot_x = latest_robot_x_;
+    robot_y = latest_robot_y_;
+    robot_yaw = latest_robot_yaw_;
+    have_pose = have_robot_pose_;
+  }
+
   std::lock_guard<std::mutex> lock(persisted_points_mutex_);
 
   const rclcpp::Duration max_age =
     rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
   points.reserve(persisted_points_.size());
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
-    if (clearing_ && (now - it->second.stamp) > max_age) {
+    const bool expired = (now - it->second.stamp) > max_age;
+    const bool can_clear =
+      !clear_lines_only_in_view_ ||
+      linePointInClearView(it->second.point, robot_x, robot_y, robot_yaw, have_pose);
+    if (clearing_ && expired && can_clear) {
       it = persisted_points_.erase(it);
       continue;
     }
@@ -634,7 +703,7 @@ LineLayer::clearCallback(std_msgs::msg::Empty::ConstSharedPtr /*msg*/)
 
 void
 LineLayer::updateBounds(
-  double robot_x, double robot_y, double /*robot_yaw*/, double * min_x,
+  double robot_x, double robot_y, double robot_yaw, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
   // Snapshot robot pose for clearCallback (runs on the subscription
@@ -643,6 +712,7 @@ LineLayer::updateBounds(
     std::lock_guard<std::mutex> lock(robot_pose_mutex_);
     latest_robot_x_ = robot_x;
     latest_robot_y_ = robot_y;
+    latest_robot_yaw_ = robot_yaw;
     have_robot_pose_ = true;
   }
   if (!rolling_window_) {
