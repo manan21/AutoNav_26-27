@@ -58,6 +58,10 @@ To force container RViz on the Jetson, run:
 ./isaac_ros-dev/config/run-rviz.sh --container
 ```
 
+Do not run RViz from a plain container shell unless `DISPLAY` is already set.
+If Qt reports `could not connect to display`, exit the container and run the
+host-side command above from the `ssh -Y jetson` session.
+
 If you are forcing a middleware implementation, use the same
 `RMW_IMPLEMENTATION` value on both machines.
 

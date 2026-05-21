@@ -56,11 +56,13 @@ To force the container path on the Jetson:
 ./isaac_ros-dev/config/run-rviz.sh --container
 ```
 
-If you are already inside the container over an attached shell, run the same
-script and it will use the container's local `rviz2`:
+Do not start a plain container shell and run RViz unless that shell has a valid
+`DISPLAY`. If you see `qt.qpa.xcb: could not connect to display`, exit the
+container and run the host-side command above. The host script will forward the
+SSH display into the container when `--container` is needed.
 
 ```bash
-./config/run-rviz.sh
+./isaac_ros-dev/config/run-rviz.sh --container
 ```
 
 ## First-time GUI install (Jetson host)
@@ -147,7 +149,8 @@ cd AutoNav_25-26
 
 If topics don't appear, check that `ROS_DOMAIN_ID` matches the container
 (default `0`) and that the FastDDS profile at `env/docker/fastdds_udp.xml` is
-in use on both ends.
+in use on both ends. This mode requires a working network path between laptop
+and Jetson; if there is no Wi-Fi, use the USB-C SSH workflow below instead.
 
 # Launch RViz without Wi-Fi
 When there is no usable Wi-Fi, do not run RViz on the laptop. SSH into the

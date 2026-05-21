@@ -81,6 +81,24 @@ container mode with `./isaac_ros-dev/config/run-rviz.sh --container`.
 
 **Keywords**: rviz, field, parking-lot, no-wifi, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz
 
+## "RViz in the container says `qt.qpa.xcb: could not connect to display`"
+
+That container shell has no X11 display. Exit the container and launch RViz from
+the Jetson host over USB-C SSH:
+
+```bash
+ssh -Y jetson
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
+./isaac_ros-dev/config/run-rviz.sh --container
+```
+
+The host-side launcher copies the SSH Xauthority into the container and passes
+`DISPLAY` through `docker exec`. A plain attached container shell does not have
+that display unless the container was started specifically for GUI/X11.
+
+**Keywords**: rviz, qt.qpa.xcb, could-not-connect-to-display, display, x11, ssh-y, container-rviz, XAUTHORITY
+
 ## "colcon build fails: `'object_tracking_parameters' has no member`"
 
 The ZED wrapper submodule has drifted past v5.2.0 onto SDK 5.2 ABI, but the Jetson runs SDK 5.1.2. Fix:

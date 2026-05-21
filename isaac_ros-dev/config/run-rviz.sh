@@ -82,9 +82,36 @@ print_env() {
     done
 }
 
+have_display() {
+    [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]
+}
+
+in_container() {
+    [[ -f /.dockerenv ]] || grep -qaE '/docker/|/containerd/' /proc/1/cgroup 2>/dev/null
+}
+
+display_error() {
+    echo "ERROR: RViz needs a display, but DISPLAY/WAYLAND_DISPLAY is not set."
+    if in_container; then
+        echo "You are inside the container. For no-Wi-Fi field use, run RViz from the Jetson host over USB-C SSH:"
+        echo "  ssh -Y jetson"
+        echo "  cd AutoNav_25-26"
+        echo "  ./env/docker/run-container.sh --no-attach"
+        echo "  ./isaac_ros-dev/config/run-rviz.sh --container"
+        echo "If you really want to run from inside the container, attach with X11/display env already passed through."
+    else
+        echo "Reconnect with X11 forwarding, for example: ssh -Y jetson"
+    fi
+}
+
 run_native_rviz() {
     if ! command -v rviz2 >/dev/null 2>&1; then
-        return 1
+        return 127
+    fi
+
+    if ! have_display; then
+        display_error
+        return 2
     fi
 
     echo "run-rviz.sh: launching native RViz"
@@ -124,8 +151,13 @@ run_container_rviz() {
     )
     local xauth_target
 
+    if ! have_display; then
+        display_error
+        return 2
+    fi
+
     if ! command -v docker >/dev/null 2>&1; then
-        echo "ERROR: docker is not available and native rviz2 was not found."
+        echo "ERROR: docker is not available, so container RViz cannot be launched from here."
         return 1
     fi
 
@@ -157,11 +189,15 @@ run_container_rviz() {
 }
 
 if [[ "${RVIZ_MODE}" == "native" ]]; then
-    run_native_rviz "$@" || {
+    if run_native_rviz "$@"; then
+        exit 0
+    else
+        status=$?
+    fi
+    if [[ ${status} -eq 127 ]]; then
         echo "ERROR: rviz2 is not installed or not on PATH for native mode."
-        exit 1
-    }
-    exit 0
+    fi
+    exit "${status}"
 fi
 
 if [[ "${RVIZ_MODE}" == "container" ]]; then
@@ -169,9 +205,20 @@ if [[ "${RVIZ_MODE}" == "container" ]]; then
     exit $?
 fi
 
-if run_native_rviz "$@"; then
+if command -v rviz2 >/dev/null 2>&1; then
+    run_native_rviz "$@" || exit $?
     exit 0
 fi
 
+if in_container; then
+    echo "ERROR: rviz2 is not installed in this container, and Docker is not available from inside the container."
+    exit 1
+fi
+
 echo "run-rviz.sh: native rviz2 was not found; trying container RViz."
-run_container_rviz "$@"
+if run_container_rviz "$@"; then
+    exit 0
+else
+    status=$?
+fi
+exit "${status}"
