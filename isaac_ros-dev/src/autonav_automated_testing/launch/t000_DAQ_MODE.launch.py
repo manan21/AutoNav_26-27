@@ -16,21 +16,23 @@ IMPORTANT: This launch file is designed to run ALONGSIDE the DEMO_DAY bringup.
 Run the 7 DEMO_DAY steps first (pre_slam, zed, lidar, slam, lines, nav2, rviz),
 then launch this in an 8th terminal to add DAQ data collection.
 
-Default mode (enable_legacy_capture:=false): the automator runs a
-`ros2 bag record` subprocess on A-press toggle. Bag captures the
-GUI's full subscription set (see base_automator.DEFAULT_BAG_TOPICS).
-No CSV, no per-sensor MP4 — replay the bag offline and bake video
-from there.
+Default mode (enable_legacy_capture:=false): the automator only
+fires test_actions on A-press; data acquisition is entirely separate.
+ROS bag recording is HUD-driven now — the operator presses R in the
+HUD to start/stop a `ros2 bag record` subprocess that captures the
+canonical topic set (HudWindow._BAG_PLAYBACK_TOPICS). No CSV, no
+per-sensor MP4 from this path.
 
 Legacy mode (enable_legacy_capture:=true): restores the older per-
 sensor CSV + camera/LiDAR MP4 pipeline (data_publisher,
 video_recorder). Kept as an escape hatch while the bag pipeline
-beds in.
+beds in. In legacy mode the automator publishes /data/toggle_collect
+on test start/stop so video_recorder + data_publisher react.
 
 This launch file ONLY starts nodes not already covered by DEMO_DAY:
   - gps_publisher          (GPS fix data)
   - electrical_publisher   (voltage/current/power from INA226)
-  - t000_automator         (A button start/stop control + bag rec)
+  - t000_automator         (A button start/stop control)
   - data_publisher         (legacy CSV — disabled by default)
   - video_recorder         (legacy camera+LiDAR MP4 — disabled by default)
 
@@ -52,8 +54,8 @@ def generate_launch_description():
         description=(
             'true → start the legacy per-sensor CSV + MP4 pipeline '
             '(data_publisher + video_recorder Nodes, base_automator '
-            'CSV writes). false (default) → bag-only mode, '
-            'automator runs ros2 bag record on test start.'
+            'CSV writes). false (default) → no automator-side data '
+            'acquisition; ROS bag recording is HUD-driven via the R key.'
         ),
     )
 
