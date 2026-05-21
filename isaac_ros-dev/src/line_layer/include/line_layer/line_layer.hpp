@@ -127,6 +127,11 @@ private:
   int64_t max_message_age_ms_;
   int64_t observation_persistence_ms_;
   double observation_persistence_resolution_m_;
+  bool clear_lines_only_in_view_;
+  double line_clear_angle_min_rad_;
+  double line_clear_angle_max_rad_;
+  double line_clear_range_min_m_;
+  double line_clear_range_max_m_;
   int max_persisted_points_;
   // Line-specific inflation, baked into stampPoints so this layer can
   // produce a different inflation radius than the global obstacle
@@ -178,6 +183,7 @@ private:
   std::mutex robot_pose_mutex_;
   double latest_robot_x_;
   double latest_robot_y_;
+  double latest_robot_yaw_;
   bool have_robot_pose_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -204,6 +210,12 @@ private:
     const autonav_interfaces::msg::LinePoints & message);
   bool hasObservationPersistence() const;
   std::uint64_t persistenceKey(double x, double y) const;
+  bool linePointInClearView(
+    const geometry_msgs::msg::Vector3 & point,
+    double robot_x,
+    double robot_y,
+    double robot_yaw,
+    bool have_pose) const;
   void rememberPersistentPoints(
     const std::vector<geometry_msgs::msg::Vector3> & points,
     const rclcpp::Time & stamp);
