@@ -22,7 +22,8 @@ xset s noblank
 unclutter -idle 0.5 -root &
 
 # Real screen locker daemon. Configured via ~/.xscreensaver
-# (lock=True, timeout=0 so it never auto-locks).
+# (lock=True, timeout=24:00:00 — xscreensaver treats timeout=0 as
+# "lock immediately on idle", so 24h is the canonical "never auto-lock").
 xscreensaver -no-splash &
 
 # Launch the GUI. exec replaces this shell so killing the GUI ends

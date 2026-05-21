@@ -7,11 +7,12 @@ removal of the in-app PyQt lock overlay — is already in
 
 The defense is layered:
 
-| Layer | Mechanism                              | What it stops                                                                            |
-|------:|----------------------------------------|------------------------------------------------------------------------------------------|
-| 1     | Openbox kiosk session + autologin      | Alt+Tab / Alt+F4 / Super / Ctrl+Alt+T / Ctrl+Alt+Backspace and any other "escape the GUI" |
-| 2     | xscreensaver locker bound to Ctrl+Shift+L | Real input grab + PAM rate limit (3 fails → 15 min lockout) |
-| 3     | systemd-logind drop-in + masked gettys | Ctrl+Alt+F1..F6 cannot drop to a text console                                            |
+| Layer | Mechanism                                 | What it stops                                                                            |
+|------:|-------------------------------------------|------------------------------------------------------------------------------------------|
+| 0     | Install GUI launcher + package to `/opt/autonav/` | Kiosk user can't read admin's home; gives a system-readable, kiosk-callable entry point |
+| 1     | Openbox kiosk session + autologin         | Alt+Tab / Alt+F4 / Super / Ctrl+Alt+T / Ctrl+Alt+Backspace and any other "escape the GUI" |
+| 2     | xscreensaver locker bound to Ctrl+Shift+L | Real input grab + PAM rate limit (3 fails → 15 min lockout)                              |
+| 3     | systemd-logind drop-in + masked gettys    | Ctrl+Alt+F1..F6 cannot drop to a text console                                            |
 
 ## Files
 
@@ -19,6 +20,7 @@ The defense is layered:
 scripts/kiosk/
 ├── README.md                       — this file
 ├── scan.sh                         — pre-flight scan (read-only)
+├── install-layer0-gui.sh           — install GUI launcher + package into /opt/autonav/
 ├── install-layer1-kiosk-wm.sh
 ├── install-layer2-screen-locker.sh
 ├── install-layer3-disable-tty.sh
@@ -26,7 +28,7 @@ scripts/kiosk/
     ├── openbox/
     │   ├── rc.xml                  — Openbox keymap (only Ctrl+Shift+L)
     │   └── autostart               — start xscreensaver daemon, exec GUI
-    ├── xscreensaver                — locker config (manual lock only, 30s passwd timeout)
+    ├── xscreensaver                — locker config (manual lock only, 5min passwd timeout)
     ├── pam.d/xscreensaver          — PAM stack with pam_faillock deny=3 unlock=900
     ├── xorg.conf.d/99-no-zap.conf  — disable Ctrl+Alt+Backspace
     ├── logind.conf.d/10-kiosk.conf — NAutoVTs=0, ReserveVT=0
@@ -42,14 +44,20 @@ Run scan first, then the layers strictly in order; do not skip ahead.
 # 1. Read-only pre-flight. Confirms display server, DM, SSH state.
 ./scripts/kiosk/scan.sh
 
-# 2. Kiosk WM + autologin. Reboot at the end.
+# 2. Install GUI launcher + Python package into /opt/autonav/ so the
+#    autonav-kiosk user (separate UID, no group access to admin home)
+#    can launch it. Idempotent; rerun after pulling new GUI code.
+./scripts/kiosk/install-layer0-gui.sh
+
+# 3. Kiosk WM + autologin. Pulls python3-pam so the Quit GUI button's
+#    PAM gate works. Reboot at the end.
 ./scripts/kiosk/install-layer1-kiosk-wm.sh
 sudo reboot
 
-# 3. Real screen locker + PAM rate limit. No reboot required.
+# 4. Real screen locker + PAM rate limit. No reboot required.
 ./scripts/kiosk/install-layer2-screen-locker.sh
 
-# 4. Disable TTY switching. ONLY after SSH recovery is confirmed
+# 5. Disable TTY switching. ONLY after SSH recovery is confirmed
 #    from a second device. Reboot at the end.
 ./scripts/kiosk/install-layer3-disable-tty.sh
 sudo reboot

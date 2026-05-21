@@ -28,7 +28,7 @@ export DISPLAY="${DISPLAY:-:0}"
 # re-launch of run-gui.sh doesn't spawn a second daemon.
 if command -v xscreensaver >/dev/null 2>&1; then
     # First-run: drop in the kiosk locker config (manual lock only,
-    # 30s passwd timeout). User can override by editing ~/.xscreensaver.
+    # 5min passwd timeout). User can override by editing ~/.xscreensaver.
     if [ ! -f "$HOME/.xscreensaver" ] && [ -r "$KIOSK_XSCREENSAVER" ]; then
         cp "$KIOSK_XSCREENSAVER" "$HOME/.xscreensaver"
     fi

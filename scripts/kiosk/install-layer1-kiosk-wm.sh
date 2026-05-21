@@ -34,9 +34,14 @@ if [ ! -x "$RUN_GUI" ]; then
 fi
 
 # --- packages ---
-echo "[1/6] Installing packages: openbox openbox-session xscreensaver lightdm unclutter"
+# python3-pam: Debian C binding (`import PAM`) used by the GUI's
+# Quit-button PAM gate (HudWindow._confirm_exit_password). Bundling
+# it here so the Quit dialog works on a fresh kiosk install — without
+# it the dialog falls through to a warning and the operator cannot
+# quit the GUI from inside the locked-down session.
+echo "[1/6] Installing packages: openbox openbox-session xscreensaver lightdm unclutter xinit python3-pam"
 sudo apt-get update
-sudo apt-get install -y openbox openbox-session xscreensaver lightdm unclutter xinit
+sudo apt-get install -y openbox openbox-session xscreensaver lightdm unclutter xinit python3-pam
 
 # --- kiosk user ---
 echo "[2/6] Ensuring kiosk user exists"
