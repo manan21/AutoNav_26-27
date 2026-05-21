@@ -1624,6 +1624,13 @@ class HudWindow(QMainWindow):
         self._bag_play_poll_timer.setInterval(500)
         self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
 
+        # HUD-driven `ros2 bag record` subprocess — spawned by the R
+        # key (see _request_record_toggle) so the operator can record
+        # at any moment without launching a test script. Output lands
+        # under _CSV_DIR/manual_<stamp>/bag/ so a fresh session shows
+        # up in the Playback Mode grid as soon as recording stops.
+        self._hud_bag_proc = None
+
         # Performance Mode — last entry in the action stack. Toggles a
         # near-zero-CPU veil that pauses every QTimer the window owns.
         # The button + veil are container-independent (no ROS needed),
@@ -5679,18 +5686,27 @@ class HudWindow(QMainWindow):
     # test script, or the HUD itself via _request_record_toggle / R key).
     # -----------------------------------------------------------------
     def _request_record_toggle(self):
-        """Flip ROS bag recording. Publishes the inverse of the current
-        latest_recording_active on /data/toggle_collect; the existing
-        subscriber updates state and _rec_tick reacts on the next tick.
-        Works whether or not a test script is also driving the topic."""
+        """Flip ROS bag recording. Spawns or stops a HUD-owned
+        `ros2 bag record` subprocess and publishes the new state on
+        /data/toggle_collect so the REC overlay (and any external
+        consumer such as the legacy video_recorder) sees the
+        transition. Works whether or not a test script is running."""
         node = getattr(self, '_ros_node', None)
         if node is None:
             return
         pub = getattr(node, 'toggle_collect_pub', None)
         if pub is None:
             return
+        new_active = not bool(getattr(node, 'latest_recording_active', False))
+        if new_active:
+            # Only flip the indicator if the recorder actually launches
+            # — otherwise the REC overlay would lie about an active bag.
+            if not self._start_hud_bag_record():
+                return
+        else:
+            self._stop_hud_bag_record()
         msg = Bool()
-        msg.data = not bool(getattr(node, 'latest_recording_active', False))
+        msg.data = new_active
         pub.publish(msg)
 
     def _rec_tick(self):
@@ -6205,6 +6221,15 @@ class HudWindow(QMainWindow):
                 self._ros_node.lidar_worker = None
             if hasattr(self, '_lidar_worker') and self._lidar_worker is not None:
                 self._lidar_worker.shutdown()
+        except Exception:
+            pass
+
+        # Stop the HUD's bag recorder, if running. The recorder lives
+        # in its own process group via os.setsid, so it would otherwise
+        # outlive the GUI and leave an orphaned `ros2 bag record`
+        # (and an incomplete bag without metadata.yaml).
+        try:
+            self._stop_hud_bag_record()
         except Exception:
             pass
 
@@ -6872,11 +6897,11 @@ class HudWindow(QMainWindow):
     # subscriptions watch, so the live canvases reanimate exactly as
     # they looked during the original test session.
     # -----------------------------------------------------------------
-    # Visual-only topic subset, used as the --topics filter for
-    # `ros2 bag play`. Mirrors base_automator.DEFAULT_BAG_TOPICS in
-    # the testing package — recording and playback should always
-    # match. If a topic is dropped from one list, drop it from the
-    # other.
+    # Visual-only topic subset. Used as the --topics filter for
+    # `ros2 bag play` AND as the record set passed to
+    # `_start_hud_bag_record` — recording and playback always match
+    # because they read the same list. Single source of truth lives
+    # here; the automated-testing package no longer keeps its own copy.
     #
     # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel, /odom.
     # The IMU/joy/cmd_vel streams produce no pixel; together they were
@@ -6979,6 +7004,85 @@ class HudWindow(QMainWindow):
             self._gui_log_msg("Bag playback finished")
             self._bag_play_proc = None
             self._bag_play_poll_timer.stop()
+
+    # -----------------------------------------------------------------
+    # ROS bag RECORDING — operator-driven via the R key. Spawns
+    # `ros2 bag record` capturing the same topic set the playback /
+    # baker stack reads, into _CSV_DIR/manual_<stamp>/bag/.
+    # -----------------------------------------------------------------
+    def _start_hud_bag_record(self):
+        """Spawn `ros2 bag record` for _BAG_PLAYBACK_TOPICS into
+        _CSV_DIR/manual_<YYYYMMDD_HHMMSS>/bag/. Returns True on
+        success, False if the process couldn't be launched (e.g. ros2
+        not on PATH or the output directory could not be created)."""
+        if self._hud_bag_proc is not None and self._hud_bag_proc.poll() is None:
+            self._gui_log_msg("Bag recorder already running — ignoring start.")
+            return True
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        session_dir = os.path.join(self._CSV_DIR, f'manual_{stamp}')
+        # `ros2 bag record` creates the leaf bag/ directory itself —
+        # if it already exists it bails. Only pre-create the session
+        # parent so the leaf is free for ros2 to claim.
+        try:
+            os.makedirs(session_dir, exist_ok=True)
+        except OSError as e:
+            self._gui_log_msg(f"Failed to create bag directory: {e}")
+            return False
+        bag_dir = os.path.join(session_dir, 'bag')
+        cmd = [
+            'ros2', 'bag', 'record',
+            '-o', bag_dir,
+            '--max-cache-size', str(1_000_000_000),
+            *self._BAG_PLAYBACK_TOPICS,
+        ]
+        try:
+            self._hud_bag_proc = subprocess.Popen(
+                cmd,
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag recorder. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._hud_bag_proc = None
+            return False
+        self._gui_log_msg(
+            f"Recording bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} topics)"
+        )
+        return True
+
+    def _stop_hud_bag_record(self):
+        """SIGINT the HUD's bag-record subprocess and wait briefly for
+        clean shutdown. Falls back to SIGKILL on timeout so a wedged
+        recorder never blocks GUI exit. Idempotent."""
+        proc = self._hud_bag_proc
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            self._hud_bag_proc = None
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except ProcessLookupError:
+            self._hud_bag_proc = None
+            return
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self._gui_log_msg(
+                "Bag recorder did not exit within 5 s; sending SIGKILL"
+            )
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        self._gui_log_msg("Bag recorder stopped.")
+        self._hud_bag_proc = None
 
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
