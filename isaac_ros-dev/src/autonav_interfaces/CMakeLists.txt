@@ -12,6 +12,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development NumPy)
+include_directories(${Python3_NumPy_INCLUDE_DIRS})
 
 
 

@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus \
     evtest \
     joystick \
+    python3-numpy \
+    python3-numpy-dev \
+    python3-dev \
     ros-humble-robot-localization \
     ros-humble-zed-msgs \
     udev \
@@ -18,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pin numpy<2 so pip doesn't upgrade past the 1.x ABI that
 # the system python3-opencv / cv_bridge were compiled against.
 RUN python3 -m pip install --no-cache-dir pyserial "numpy<2"
+RUN python3 -c "import os, numpy; header=os.path.join(numpy.get_include(), 'numpy', 'ndarrayobject.h'); assert os.path.exists(header), header; print(header)"
 
 ENV CMAKE_PREFIX_PATH=/usr/local/zed \
     CPATH=/usr/local/zed/include \
