@@ -3,13 +3,16 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-NAV_PATH="${AUTONAV_RVIZ_CONFIG:-${SCRIPT_DIR}/../src/sim/config/view_bot.rviz}"
+DEFAULT_NAV_RVIZ_PATH="${SCRIPT_DIR}/../src/sim/config/view_bot.rviz"
+DEFAULT_SENSOR_RVIZ_PATH="${SCRIPT_DIR}/../src/sim/config/sensors.rviz"
+NAV_PATH="${AUTONAV_RVIZ_CONFIG:-}"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONTAINER_WORKSPACE_ROOT="${AUTONAV_CONTAINER_WORKSPACE_ROOT:-/autonav/isaac_ros-dev}"
-CONTAINER_NAV_PATH="${AUTONAV_RVIZ_CONTAINER_CONFIG:-${CONTAINER_WORKSPACE_ROOT}/src/sim/config/view_bot.rviz}"
+CONTAINER_NAV_PATH="${AUTONAV_RVIZ_CONTAINER_CONFIG:-}"
 CONTAINER_NAME="${AUTONAV_CONTAINER_NAME:-koopa-kingdom}"
 CONTAINER_USER="${AUTONAV_CONTAINER_USER:-admin}"
 RVIZ_MODE="${AUTONAV_RVIZ_MODE:-auto}"
+RVIZ_CONFIG_MODE="${AUTONAV_RVIZ_CONFIG_MODE:-auto}"
 
 while (($# > 0)); do
     case "${1}" in
@@ -31,6 +34,14 @@ while (($# > 0)); do
             ;;
         --auto)
             RVIZ_MODE="auto"
+            shift
+            ;;
+        --nav)
+            RVIZ_CONFIG_MODE="nav"
+            shift
+            ;;
+        --sensors|--sensor)
+            RVIZ_CONFIG_MODE="sensors"
             shift
             ;;
         --)
@@ -62,14 +73,58 @@ if [[ "${RVIZ_MODE}" != "auto" && "${RVIZ_MODE}" != "native" && "${RVIZ_MODE}" !
     exit 1
 fi
 
+if [[ "${RVIZ_CONFIG_MODE}" != "auto" && "${RVIZ_CONFIG_MODE}" != "nav" && "${RVIZ_CONFIG_MODE}" != "sensors" ]]; then
+    echo "ERROR: unsupported AUTONAV_RVIZ_CONFIG_MODE=${RVIZ_CONFIG_MODE}; expected 'auto', 'nav', or 'sensors'."
+    exit 1
+fi
+
 for passthrough_var in RMW_IMPLEMENTATION ROS_DISCOVERY_SERVER FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE CYCLONEDDS_URI; do
     if [[ -n "${!passthrough_var:-}" ]]; then
         export "${passthrough_var}=${!passthrough_var}"
     fi
 done
 
+topic_exists() {
+    local topic="$1"
+    command -v ros2 >/dev/null 2>&1 || return 1
+    timeout 3 ros2 topic list 2>/dev/null | grep -qx "${topic}"
+}
+
+select_rviz_config() {
+    if [[ -n "${NAV_PATH}" ]]; then
+        CONTAINER_NAV_PATH="${CONTAINER_NAV_PATH:-${NAV_PATH}}"
+        return 0
+    fi
+
+    case "${RVIZ_CONFIG_MODE}" in
+        nav)
+            NAV_PATH="${DEFAULT_NAV_RVIZ_PATH}"
+            CONTAINER_NAV_PATH="${CONTAINER_NAV_PATH:-${CONTAINER_WORKSPACE_ROOT}/src/sim/config/view_bot.rviz}"
+            ;;
+        sensors)
+            NAV_PATH="${DEFAULT_SENSOR_RVIZ_PATH}"
+            CONTAINER_NAV_PATH="${CONTAINER_NAV_PATH:-${CONTAINER_WORKSPACE_ROOT}/src/sim/config/sensors.rviz}"
+            ;;
+        auto)
+            if topic_exists "/map"; then
+                RVIZ_CONFIG_MODE="nav"
+                NAV_PATH="${DEFAULT_NAV_RVIZ_PATH}"
+                CONTAINER_NAV_PATH="${CONTAINER_NAV_PATH:-${CONTAINER_WORKSPACE_ROOT}/src/sim/config/view_bot.rviz}"
+            else
+                RVIZ_CONFIG_MODE="sensors"
+                NAV_PATH="${DEFAULT_SENSOR_RVIZ_PATH}"
+                CONTAINER_NAV_PATH="${CONTAINER_NAV_PATH:-${CONTAINER_WORKSPACE_ROOT}/src/sim/config/sensors.rviz}"
+            fi
+            ;;
+    esac
+}
+
+select_rviz_config
+
 print_env() {
     echo "AUTONAV_RVIZ_MODE=${RVIZ_MODE}"
+    echo "AUTONAV_RVIZ_CONFIG_MODE=${RVIZ_CONFIG_MODE}"
+    echo "AUTONAV_RVIZ_CONFIG=${NAV_PATH}"
     echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
     echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY}"
     if [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
@@ -86,21 +141,53 @@ have_display() {
     [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]
 }
 
+have_x11_display() {
+    [[ -n "${DISPLAY:-}" ]]
+}
+
+is_ssh_x11_display() {
+    [[ -n "${SSH_CONNECTION:-}" && "${DISPLAY:-}" =~ ^(localhost|127\.0\.0\.1|\[::1\]|::1): ]]
+}
+
 in_container() {
     [[ -f /.dockerenv ]] || grep -qaE '/docker/|/containerd/' /proc/1/cgroup 2>/dev/null
 }
 
 display_error() {
-    echo "ERROR: RViz needs a display, but DISPLAY/WAYLAND_DISPLAY is not set."
+    echo "ERROR: RViz needs an X11 display, but DISPLAY is not set."
     if in_container; then
         echo "You are inside the container. For no-Wi-Fi field use, run RViz from the Jetson host over USB-C SSH:"
         echo "  ssh -Y jetson"
+        echo "  echo \$DISPLAY   # should look like localhost:10.0"
         echo "  cd AutoNav_25-26"
         echo "  ./env/docker/run-container.sh --no-attach"
         echo "  ./isaac_ros-dev/config/run-rviz.sh --container"
         echo "If you really want to run from inside the container, attach with X11/display env already passed through."
     else
         echo "Reconnect with X11 forwarding, for example: ssh -Y jetson"
+    fi
+}
+
+require_container_x11() {
+    if ! have_x11_display; then
+        display_error
+        return 2
+    fi
+
+    if [[ -n "${SSH_CONNECTION:-}" ]] && ! is_ssh_x11_display; then
+        echo "ERROR: DISPLAY=${DISPLAY} does not look like an SSH-forwarded X11 display."
+        echo "The Jetson is headless, so reconnect from the laptop with:"
+        echo "  ssh -Y jetson"
+        echo "Then confirm:"
+        echo "  echo \$DISPLAY   # should look like localhost:10.0"
+        return 2
+    fi
+}
+
+configure_ssh_x11_gl() {
+    if is_ssh_x11_display; then
+        export QT_X11_NO_MITSHM="${QT_X11_NO_MITSHM:-1}"
+        export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
     fi
 }
 
@@ -116,6 +203,7 @@ run_native_rviz() {
 
     echo "run-rviz.sh: launching native RViz"
     print_env
+    configure_ssh_x11_gl
     rviz2 -d "${NAV_PATH}" "$@"
 }
 
@@ -151,10 +239,8 @@ run_container_rviz() {
     )
     local xauth_target
 
-    if ! have_display; then
-        display_error
-        return 2
-    fi
+    require_container_x11 || return $?
+    configure_ssh_x11_gl
 
     if ! command -v docker >/dev/null 2>&1; then
         echo "ERROR: docker is not available, so container RViz cannot be launched from here."
@@ -172,6 +258,9 @@ run_container_rviz() {
     fi
     if [[ -n "${CYCLONEDDS_URI:-}" ]]; then
         docker_args+=(-e "CYCLONEDDS_URI=${CYCLONEDDS_URI}")
+    fi
+    if [[ -n "${LIBGL_ALWAYS_SOFTWARE:-}" ]]; then
+        docker_args+=(-e "LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE}")
     fi
     if [[ -n "${DISPLAY:-}" ]]; then
         docker_args+=(-e "DISPLAY=${DISPLAY}")

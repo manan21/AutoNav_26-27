@@ -40,6 +40,7 @@ From the laptop:
 
 ```bash
 ssh -Y jetson
+echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
 ./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh
@@ -52,15 +53,30 @@ The same launcher works in three places:
 - Jetson host over USB-C SSH without host RViz: automatic `docker exec` into
   `koopa-kingdom` and forwards the SSH display into the container.
 
+The launcher auto-selects the RViz config. If `/map` is present, it opens the
+full SLAM/Nav view. If `/map` is missing, it opens the sensor bringup view fixed
+to `odom`. You can force either mode:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --sensors
+./isaac_ros-dev/config/run-rviz.sh --nav
+```
+
 To force container RViz on the Jetson, run:
 
 ```bash
+ssh -Y jetson
+echo $DISPLAY   # must be set; this is the laptop display tunnel
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh --container
 ```
 
 Do not run RViz from a plain container shell unless `DISPLAY` is already set.
 If Qt reports `could not connect to display`, exit the container and run the
-host-side command above from the `ssh -Y jetson` session.
+host-side command above from the `ssh -Y jetson` session. The host-side launcher
+copies the SSH Xauthority into the container and passes `DISPLAY` through
+`docker exec`.
 
 If you are forcing a middleware implementation, use the same
 `RMW_IMPLEMENTATION` value on both machines.

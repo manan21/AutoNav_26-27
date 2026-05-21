@@ -69,6 +69,7 @@ Use the USB-C SSH path instead of DDS over infrastructure Wi-Fi:
 
 ```bash
 ssh -Y jetson
+echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
 ./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh
@@ -81,6 +82,27 @@ container mode with `./isaac_ros-dev/config/run-rviz.sh --container`.
 
 **Keywords**: rviz, field, parking-lot, no-wifi, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz
 
+## "RViz opens but says `Frame [map] does not exist`"
+
+RViz is connected to ROS, but the full Nav view was loaded before SLAM produced
+the `map` frame. In a sensor-only/pre-SLAM graph you may see topics like
+`/odom`, `/tf`, and ZED topics, but no `/map`, `/map_padded`, or costmaps.
+
+Use the sensor view until SLAM is running:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --sensors
+```
+
+Use the full map/Nav view after `ros2 launch slam slam.launch.py` publishes
+`/map`:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --nav
+```
+
+**Keywords**: rviz, map-frame, frame-map-does-not-exist, fixed-frame, sensors-view, nav-view, /map, /odom, slam
+
 ## "RViz in the container says `qt.qpa.xcb: could not connect to display`"
 
 That container shell has no X11 display. Exit the container and launch RViz from
@@ -88,6 +110,7 @@ the Jetson host over USB-C SSH:
 
 ```bash
 ssh -Y jetson
+echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
 ./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh --container

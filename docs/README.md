@@ -40,6 +40,7 @@ connect with X11 forwarding:
 
 ```bash
 ssh -Y jetson
+echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
 ./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh
@@ -50,16 +51,33 @@ the Jetson it first tries native Jetson RViz; if `rviz2` is not installed on the
 Jetson host, it automatically runs RViz inside the `koopa-kingdom` container
 with the SSH display forwarded through Docker.
 
+The launcher also chooses the RViz config from the live ROS graph:
+
+- If `/map` exists, it opens the full SLAM/Nav view with fixed frame `map`.
+- If `/map` does not exist yet, it opens a sensor bringup view with fixed frame
+  `odom` and ZED/odom/TF displays.
+
 To force the container path on the Jetson:
 
 ```bash
+ssh -Y jetson
+echo $DISPLAY   # must be set; this is the laptop display tunnel
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh --container
+```
+
+To force a specific RViz view:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --sensors  # odom/ZED/pre-SLAM view
+./isaac_ros-dev/config/run-rviz.sh --nav      # map/costmap/Nav2 view
 ```
 
 Do not start a plain container shell and run RViz unless that shell has a valid
 `DISPLAY`. If you see `qt.qpa.xcb: could not connect to display`, exit the
 container and run the host-side command above. The host script will forward the
-SSH display into the container when `--container` is needed.
+SSH X11 display and Xauthority into the container when `--container` is needed.
 
 ```bash
 ./isaac_ros-dev/config/run-rviz.sh --container
@@ -152,12 +170,21 @@ If topics don't appear, check that `ROS_DOMAIN_ID` matches the container
 in use on both ends. This mode requires a working network path between laptop
 and Jetson; if there is no Wi-Fi, use the USB-C SSH workflow below instead.
 
+If RViz opens but the full map view is blank with `Frame [map] does not exist`,
+SLAM is not running yet. Either start SLAM (`ros2 launch slam slam.launch.py`) or
+use the sensor view:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --sensors
+```
+
 # Launch RViz without Wi-Fi
 When there is no usable Wi-Fi, do not run RViz on the laptop. SSH into the
 Jetson over USB-C with X11 forwarding and run the same launcher there:
 
 ```bash
 ssh -Y jetson
+echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
 ./env/docker/run-container.sh --no-attach
 ./isaac_ros-dev/config/run-rviz.sh
