@@ -5602,9 +5602,17 @@ class HudWindow(QMainWindow):
 
         self._performance_mode = True
         self._perf_resume_timers = []
+        # _rec_timer must stay alive: it polls latest_recording_active
+        # and drives the unified overlay's state transitions. Pausing
+        # it while in PERF + REC means an R-press to stop recording
+        # leaves the red half stuck on; an R-press to start recording
+        # while in PERF never slides the overlay to BOTH. Same exemption
+        # rationale as _perf_stats_timer (which keeps the Now sample
+        # fresh while the veil is up).
+        _perf_keep_alive = (self._perf_stats_timer, self._rec_timer)
         for val in self.__dict__.values():
             if (isinstance(val, QTimer) and val.isActive()
-                    and val is not self._perf_stats_timer):
+                    and val not in _perf_keep_alive):
                 val.stop()
                 self._perf_resume_timers.append(val)
 
