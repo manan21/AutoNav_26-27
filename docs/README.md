@@ -33,6 +33,36 @@ cd AutoNav_25-26
 ./env/docker/run-container.sh
 ```
 
+## Field RViz with no Wi-Fi
+Use the USB-C SSH link and run RViz on the Jetson, forwarding the RViz window
+back to the laptop over SSH. Plug USB-C into the Jetson and laptop, then
+connect with X11 forwarding:
+
+```bash
+ssh -Y jetson
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
+./isaac_ros-dev/config/run-rviz.sh
+```
+
+`run-rviz.sh` is the only RViz launcher. On the laptop it runs native RViz. On
+the Jetson it first tries native Jetson RViz; if `rviz2` is not installed on the
+Jetson host, it automatically runs RViz inside the `koopa-kingdom` container
+with the SSH display forwarded through Docker.
+
+To force the container path on the Jetson:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --container
+```
+
+If you are already inside the container over an attached shell, run the same
+script and it will use the container's local `rviz2`:
+
+```bash
+./config/run-rviz.sh
+```
+
 ## First-time GUI install (Jetson host)
 Run once on the Jetson, **outside** the container:
 ```bash
@@ -106,13 +136,29 @@ git submodule update --init
 ```
 (We hit this once by accidentally deleting `isaac_ros-dev/`.)
 
-# Launch RViz (locally, on your Linux machine)
-We no longer run RViz inside the container — run it on your own Linux laptop with ROS2 Humble installed. As long as `ROS_DOMAIN_ID` matches the container (default `0`) and your network can reach the Jetson, topics will show up:
+# Launch RViz with Wi-Fi
+When laptop and Jetson are on the same reachable network, run RViz on your Linux
+laptop with ROS2 Humble installed:
+
 ```bash
-export ROS_DOMAIN_ID=0
-rviz2
+cd AutoNav_25-26
+./isaac_ros-dev/config/run-rviz.sh
 ```
-If topics don't appear, check the FastDDS profile at `env/docker/fastdds_udp.xml` is in use on both ends.
+
+If topics don't appear, check that `ROS_DOMAIN_ID` matches the container
+(default `0`) and that the FastDDS profile at `env/docker/fastdds_udp.xml` is
+in use on both ends.
+
+# Launch RViz without Wi-Fi
+When there is no usable Wi-Fi, do not run RViz on the laptop. SSH into the
+Jetson over USB-C with X11 forwarding and run the same launcher there:
+
+```bash
+ssh -Y jetson
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
+./isaac_ros-dev/config/run-rviz.sh
+```
 
 # Move files between container and Jetson
 ```bash

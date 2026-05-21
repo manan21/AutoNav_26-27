@@ -5,6 +5,7 @@ import os
 import queue
 import random
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -6173,11 +6174,29 @@ class HudWindow(QMainWindow):
         safe_cmd = cmd.replace("'", "'\\''")
         # Use a sanitized label for the PID file
         pid_tag = (label or 'unknown').replace(' ', '_').replace('/', '_')
+        dds_env_args = []
+        container_repo_root = str(Path(self._container_workdir).parent)
+        profile_path = f"{container_repo_root}/env/docker/fastdds_udp.xml"
+        for env_name in (
+            'ROS_DOMAIN_ID',
+            'ROS_LOCALHOST_ONLY',
+            'RMW_IMPLEMENTATION',
+            'ROS_DISCOVERY_SERVER',
+            'CYCLONEDDS_URI',
+        ):
+            env_value = os.environ.get(env_name)
+            if env_value:
+                dds_env_args.append(f"-e {shlex.quote(f'{env_name}={env_value}')} ")
+        for env_name in ('FASTRTPS_DEFAULT_PROFILES_FILE', 'FASTDDS_DEFAULT_PROFILES_FILE'):
+            if os.environ.get(env_name):
+                dds_env_args.append(f"-e {env_name}={shlex.quote(profile_path)} ")
+        dds_env = ''.join(dds_env_args)
         return (
             f"docker exec "
             f"-u {self._container_user} "
             f"-e HOME=/home/{self._container_user} "
             f"-e USER={self._container_user} "
+            f"{dds_env}"
             f"--workdir {self._container_workdir} "
             f"{self._container_name} "
             f"/bin/bash -lc "

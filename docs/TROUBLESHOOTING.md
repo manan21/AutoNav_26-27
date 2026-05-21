@@ -63,6 +63,24 @@ A flat **[Keyword index](#keyword-index)** at the very bottom maps topical keywo
 
 **Keywords**: rviz, dds, fastdds, fastrtps, rmw, ros_domain_id, rmw_implementation, fastdds_udp.xml, ros_localhost_only, remote-rviz, no-topics, discovery, shared-memory, udp-transport, rmw_fastrtps_cpp, network, laptop
 
+## "RViz stops working in the field with no Wi-Fi"
+
+Use the USB-C SSH path instead of DDS over infrastructure Wi-Fi:
+
+```bash
+ssh -Y jetson
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
+./isaac_ros-dev/config/run-rviz.sh
+```
+
+The single RViz launcher runs native RViz when available; on the Jetson it falls
+back to `docker exec` into `koopa-kingdom` and forwards the SSH display into the
+container. If the window does not open, reconnect with `ssh -Y jetson` and force
+container mode with `./isaac_ros-dev/config/run-rviz.sh --container`.
+
+**Keywords**: rviz, field, parking-lot, no-wifi, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz
+
 ## "colcon build fails: `'object_tracking_parameters' has no member`"
 
 The ZED wrapper submodule has drifted past v5.2.0 onto SDK 5.2 ABI, but the Jetson runs SDK 5.1.2. Fix:
@@ -920,6 +938,13 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Fix**: Restructured with submodule-pin policy front and center.
 - **Keywords**: zed, zed.md, doc, submodule-pin, v5.2.0, 506e047, modernize
 
+## 2026-05-21 — Unified RViz launcher for Wi-Fi and USB-C field use
+
+- **Cause**: Laptop RViz over DDS depends on a reachable network; field testing without Wi-Fi broke discovery.
+- **Fix**: `isaac_ros-dev/config/run-rviz.sh` now works on the laptop, Jetson host, and Jetson container. No-Wi-Fi field mode is `ssh -Y jetson` over USB-C, then running the same launcher on the Jetson.
+- **Triage tip**: If Jetson host `rviz2` is unavailable or the window does not open, start `koopa-kingdom` and use `./isaac_ros-dev/config/run-rviz.sh --container`.
+- **Keywords**: rviz, field, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz, no-wifi
+
 ---
 
 # Keyword index
@@ -951,21 +976,21 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `behavior-tree`, `bt`, `bt_nav.xml` → 2026-03-24 hardcoded BT, 2026-04-29 BT gating, 2026-04-30 retries, 2026-04-30 BT plugin, 2026-04-30 goal-bender, 2026-04-30 gradient-escape
 - `costmap`, `local-costmap`, `global-costmap`, `inflation`, `footprint`, `static-layer`, `rolling_window` → 2026-03-20 tilt, 2026-03-21 dimensions, 2026-03-21 ghost traces, 2026-04-15 footprint+inflation, 2026-04-22 rolling, 2026-04-22 geometry, 2026-04-25 PointCloud2 obstacles
 - `cuda`, `nvcc`, `-Wpedantic`, `kernel`, `line-detection` → 2026-04-22 thresholds, 2026-04-22 window size, 2026-05-05 -Wpedantic
-- `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch
+- `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch, 2026-05-21 unified RViz launcher
 - `docker`, `container`, `koopa-kingdom`, `entrypoint` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind
 - `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous
 - `gui`, `hud`, `hud_node.py`, `[GUI_READY]`, `dot`, `live-mode` → 2026-04-24 live-mode, 2026-04-24 playback, 2026-04-24 QoS, 2026-04-24 terminal, 2026-04-24 buttons, 2026-04-28 (5 entries), 2026-05-06 startup race, 2026-05-06 5s pacing, 2026-05-06 run-detect
 - `map_padder` → 2026-04-30 dynamic-res, 2026-04-30 seed-and-flood
 - `nav2`, `planner`, `dwb`, `dijkstra`, `astar`, `tolerance` → 2026-04-15 footprint, 2026-04-15 critic, 2026-04-22 rolling, 2026-04-30 retries, 2026-04-30 dijkstra, 2026-05-04 dijkstra revert
 - `pca`, `grade-detector`, `dbscan`, `eigen`, `planarity` → 2026-05-05 (8 entries)
-- `x11`, `display`, `rviz`, `xauth`, `mit-shm` → 2026-04-08 MIT-SHM, 2026-04-15 xauth, 2026-04-15 SSH→GL, 2026-04-22 headless
+- `x11`, `display`, `rviz`, `xauth`, `mit-shm` → 2026-04-08 MIT-SHM, 2026-04-15 xauth, 2026-04-15 SSH→GL, 2026-04-22 headless, 2026-05-21 unified RViz launcher
 
 **Symptoms / errors / phrases**
 - `bricked`, `no-boot`, `no-ssh`, `force-recovery`, `fc-rec` → 2026-04-17 incident
 - `colcon`, `build-error`, `object_tracking_parameters` → 2026-05-04 wrapper saga
 - `costmap-tilted`, `costmap-inverted` → 2026-03-20 local costmap tilt, 2026-05-06 frame rotations
 - `crash`, `null-deref`, `segfault` → 2026-04-04 null deref, 2026-04-22 numpy, 2026-04-28 stoi
-- `discovery-broken`, `awaiting-live-data` → 2026-04-22 DDS, 2026-04-24 QoS mismatch
+- `discovery-broken`, `awaiting-live-data` → 2026-04-22 DDS, 2026-04-24 QoS mismatch, 2026-05-21 unified RViz launcher
 - `drift`, `right-drift`, `straight-line-drift` → 2026-04-29 left encoder
 - `flicker`, `ghost-obstacle`, `stale` → 2026-03-21 ghost traces, 2026-03-24 line-hold, 2026-03-26 line-layer staleness
 - `lag`, `slow`, `performance` → 2026-04-28 (multiple), 2026-05-05 (PCA performance entries)

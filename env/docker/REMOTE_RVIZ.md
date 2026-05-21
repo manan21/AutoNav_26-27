@@ -30,6 +30,34 @@ DDS UDP profile as the container launcher:
 ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./isaac_ros-dev/config/run-rviz.sh
 ```
 
+## No-Wi-Fi USB-C Mode
+
+When there is no usable Wi-Fi, run RViz on the Jetson and forward the RViz
+window back to the laptop over the USB-C SSH session. This keeps ROS/DDS local
+to the Jetson instead of depending on network discovery.
+
+From the laptop:
+
+```bash
+ssh -Y jetson
+cd AutoNav_25-26
+./env/docker/run-container.sh --no-attach
+./isaac_ros-dev/config/run-rviz.sh
+```
+
+The same launcher works in three places:
+
+- Laptop with Wi-Fi: native laptop RViz joins the Jetson DDS graph.
+- Jetson host over USB-C SSH: native Jetson RViz if `rviz2` is installed.
+- Jetson host over USB-C SSH without host RViz: automatic `docker exec` into
+  `koopa-kingdom` and forwards the SSH display into the container.
+
+To force container RViz on the Jetson, run:
+
+```bash
+./isaac_ros-dev/config/run-rviz.sh --container
+```
+
 If you are forcing a middleware implementation, use the same
 `RMW_IMPLEMENTATION` value on both machines.
 
