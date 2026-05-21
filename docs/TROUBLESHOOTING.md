@@ -65,62 +65,55 @@ A flat **[Keyword index](#keyword-index)** at the very bottom maps topical keywo
 
 ## "RViz stops working in the field with no Wi-Fi"
 
-Use the USB-C SSH path instead of DDS over infrastructure Wi-Fi:
+Use the USB-C SSH/X11 path instead of DDS over infrastructure Wi-Fi:
 
 ```bash
 ssh -Y jetson
 echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
-./env/docker/run-container.sh --no-attach
-./isaac_ros-dev/config/run-rviz.sh
+docker rm -f koopa-kingdom   # only needed if an old container is already running
+AUTONAV_CONTAINER_GUI=1 AUTONAV_KEEP_SSH_X11=1 ./env/docker/run-container.sh
+
+# Inside the container:
+./config/run-rviz-jetson.sh
 ```
 
-The single RViz launcher runs native RViz when available; on the Jetson it falls
-back to `docker exec` into `koopa-kingdom` and forwards the SSH display into the
-container. If the window does not open, reconnect with `ssh -Y jetson` and force
-container mode with `./isaac_ros-dev/config/run-rviz.sh --container`.
+This requires the container to be created from the `ssh -Y` session so
+`DISPLAY` and `XAUTHORITY` are passed through. If `DISPLAY` is empty inside the
+container, recreate it with the command above.
 
-**Keywords**: rviz, field, parking-lot, no-wifi, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz
+**Keywords**: rviz, field, parking-lot, no-wifi, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz-jetson, container-rviz
 
 ## "RViz opens but says `Frame [map] does not exist`"
 
-RViz is connected to ROS, but the full Nav view was loaded before SLAM produced
-the `map` frame. In a sensor-only/pre-SLAM graph you may see topics like
-`/odom`, `/tf`, and ZED topics, but no `/map`, `/map_padded`, or costmaps.
+RViz is connected to ROS, but the default RViz config uses fixed frame `map`.
+Start SLAM (`ros2 launch slam slam.launch.py`) so `/map` and `map -> odom`
+exist, or temporarily change RViz's fixed frame to `odom` in the GUI while
+debugging pre-SLAM sensor topics.
 
-Use the sensor view until SLAM is running:
-
-```bash
-./isaac_ros-dev/config/run-rviz.sh --sensors
-```
-
-Use the full map/Nav view after `ros2 launch slam slam.launch.py` publishes
-`/map`:
-
-```bash
-./isaac_ros-dev/config/run-rviz.sh --nav
-```
-
-**Keywords**: rviz, map-frame, frame-map-does-not-exist, fixed-frame, sensors-view, nav-view, /map, /odom, slam
+**Keywords**: rviz, map-frame, frame-map-does-not-exist, fixed-frame, /map, /odom, slam
 
 ## "RViz in the container says `qt.qpa.xcb: could not connect to display`"
 
-That container shell has no X11 display. Exit the container and launch RViz from
-the Jetson host over USB-C SSH:
+That container was not created from an SSH-X11 session. Recreate it from the
+Jetson host over USB-C SSH:
 
 ```bash
 ssh -Y jetson
 echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
-./env/docker/run-container.sh --no-attach
-./isaac_ros-dev/config/run-rviz.sh --container
+docker rm -f koopa-kingdom
+AUTONAV_CONTAINER_GUI=1 AUTONAV_KEEP_SSH_X11=1 ./env/docker/run-container.sh
+
+# Inside the container:
+echo $DISPLAY
+./config/run-rviz-jetson.sh
 ```
 
-The host-side launcher copies the SSH Xauthority into the container and passes
-`DISPLAY` through `docker exec`. A plain attached container shell does not have
-that display unless the container was started specifically for GUI/X11.
+The Jetson RViz script is intentionally container-only. It expects `DISPLAY` and
+`XAUTHORITY` to already be present inside the container.
 
-**Keywords**: rviz, qt.qpa.xcb, could-not-connect-to-display, display, x11, ssh-y, container-rviz, XAUTHORITY
+**Keywords**: rviz, qt.qpa.xcb, could-not-connect-to-display, display, x11, ssh-y, container-rviz, XAUTHORITY, run-rviz-jetson
 
 ## "colcon build fails: `'object_tracking_parameters' has no member`"
 
@@ -979,12 +972,12 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Fix**: Restructured with submodule-pin policy front and center.
 - **Keywords**: zed, zed.md, doc, submodule-pin, v5.2.0, 506e047, modernize
 
-## 2026-05-21 — Unified RViz launcher for Wi-Fi and USB-C field use
+## 2026-05-21 — Split RViz launchers for laptop Wi-Fi and Jetson X11
 
 - **Cause**: Laptop RViz over DDS depends on a reachable network; field testing without Wi-Fi broke discovery.
-- **Fix**: `isaac_ros-dev/config/run-rviz.sh` now works on the laptop, Jetson host, and Jetson container. No-Wi-Fi field mode is `ssh -Y jetson` over USB-C, then running the same launcher on the Jetson.
-- **Triage tip**: If Jetson host `rviz2` is unavailable or the window does not open, start `koopa-kingdom` and use `./isaac_ros-dev/config/run-rviz.sh --container`.
-- **Keywords**: rviz, field, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz, container-rviz, no-wifi
+- **Fix**: Added `run-rviz-laptop.sh` for laptop-native RViz over Wi-Fi/DDS and `run-rviz-jetson.sh` for RViz inside the Jetson container over SSH-X11.
+- **Triage tip**: No-Wi-Fi field mode requires `ssh -Y jetson` and starting the container with `AUTONAV_CONTAINER_GUI=1 AUTONAV_KEEP_SSH_X11=1` so `DISPLAY` exists inside the container.
+- **Keywords**: rviz, field, usb-c, 192.168.55.1, ssh-y, x11-forwarding, run-rviz-laptop, run-rviz-jetson, container-rviz, no-wifi
 
 ---
 

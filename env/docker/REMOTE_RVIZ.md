@@ -27,14 +27,14 @@ same DDS settings used on the Jetson. The launcher uses the same default Fast
 DDS UDP profile as the container launcher:
 
 ```bash
-ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./isaac_ros-dev/config/run-rviz.sh
+ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 ./isaac_ros-dev/config/run-rviz-laptop.sh
 ```
 
 ## No-Wi-Fi USB-C Mode
 
-When there is no usable Wi-Fi, run RViz on the Jetson and forward the RViz
-window back to the laptop over the USB-C SSH session. This keeps ROS/DDS local
-to the Jetson instead of depending on network discovery.
+When there is no usable Wi-Fi, run RViz inside the Jetson container and forward
+the RViz window back to the laptop over the USB-C SSH X11 session. This keeps
+ROS/DDS local to the Jetson instead of depending on network discovery.
 
 From the laptop:
 
@@ -42,41 +42,16 @@ From the laptop:
 ssh -Y jetson
 echo $DISPLAY   # should look like localhost:10.0
 cd AutoNav_25-26
-./env/docker/run-container.sh --no-attach
-./isaac_ros-dev/config/run-rviz.sh
+docker rm -f koopa-kingdom   # only needed if an old container is already running
+AUTONAV_CONTAINER_GUI=1 AUTONAV_KEEP_SSH_X11=1 ./env/docker/run-container.sh
+
+# Inside the container:
+echo $DISPLAY
+./config/run-rviz-jetson.sh
 ```
 
-The same launcher works in three places:
-
-- Laptop with Wi-Fi: native laptop RViz joins the Jetson DDS graph.
-- Jetson host over USB-C SSH: native Jetson RViz if `rviz2` is installed.
-- Jetson host over USB-C SSH without host RViz: automatic `docker exec` into
-  `koopa-kingdom` and forwards the SSH display into the container.
-
-The launcher auto-selects the RViz config. If `/map` is present, it opens the
-full SLAM/Nav view. If `/map` is missing, it opens the sensor bringup view fixed
-to `odom`. You can force either mode:
-
-```bash
-./isaac_ros-dev/config/run-rviz.sh --sensors
-./isaac_ros-dev/config/run-rviz.sh --nav
-```
-
-To force container RViz on the Jetson, run:
-
-```bash
-ssh -Y jetson
-echo $DISPLAY   # must be set; this is the laptop display tunnel
-cd AutoNav_25-26
-./env/docker/run-container.sh --no-attach
-./isaac_ros-dev/config/run-rviz.sh --container
-```
-
-Do not run RViz from a plain container shell unless `DISPLAY` is already set.
-If Qt reports `could not connect to display`, exit the container and run the
-host-side command above from the `ssh -Y jetson` session. The host-side launcher
-copies the SSH Xauthority into the container and passes `DISPLAY` through
-`docker exec`.
+Do not use `run-rviz-laptop.sh` for this mode. It is only for laptop-native RViz
+over a working Wi-Fi/DDS network.
 
 If you are forcing a middleware implementation, use the same
 `RMW_IMPLEMENTATION` value on both machines.
