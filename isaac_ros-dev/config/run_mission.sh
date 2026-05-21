@@ -33,6 +33,31 @@ if [[ $TOTAL -eq 0 ]]; then
   exit 0
 fi
 
+# ── Pre-mission green-light gate ─────────────────────────────────────
+# GPS waypoint navigation only works once every upstream signal is
+# live (AUTO mode, GPS fix, global EKF, gps_handler, TF, action
+# server). Block here until mission_precheck.py reports ALL GREEN.
+# Override knobs:
+#   MISSION_PRECHECK=0           skip the gate entirely (dev only)
+#   MISSION_PRECHECK_TIMEOUT=N   seconds to wait for green-light
+#   MISSION_PRECHECK_ARGS="..."  extra args passed to the checker
+PRECHECK="$SCRIPT_DIR/mission_precheck.py"
+if [[ ${MISSION_PRECHECK:-1} != "0" ]]; then
+  if [[ ! -f $PRECHECK ]]; then
+    echo "pre-check script missing: $PRECHECK" >&2
+    exit 1
+  fi
+  echo "running mission pre-check before dispatch..."
+  if ! python3 "$PRECHECK" \
+        --timeout "${MISSION_PRECHECK_TIMEOUT:-60}" \
+        ${MISSION_PRECHECK_ARGS:-}; then
+    echo "mission pre-check FAILED — not starting mission." >&2
+    exit 1
+  fi
+else
+  echo "MISSION_PRECHECK=0 — skipping pre-mission green-light gate." >&2
+fi
+
 i=0
 while IFS= read -r raw || [[ -n $raw ]]; do
   line=${raw%%#*}                           # strip inline comments
