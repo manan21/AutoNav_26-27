@@ -149,10 +149,33 @@ class ControlNode : public rclcpp::Node {
 
     private:
     bool autonomousMode = false;
-    float linear_move;
-    float angular_move;
-    float left_wheel_speed;
-    float right_wheel_speed;
+    // Cached AUTO wheel-speed state. Zero-init matters: without it the
+    // first AUTO tick after node startup would write uninitialized
+    // memory into motors.move(); with it, AUTO-on with no /cmd_vel
+    // yet arrived holds the wheels at rest.
+    float linear_move = 0.0f;
+    float angular_move = 0.0f;
+    float left_wheel_speed = 0.0f;
+    float right_wheel_speed = 0.0f;
+
+    // AUTO /cmd_vel safety constants. The manual branch already has a
+    // 0.5 s /joy watchdog (see publish_encoder_data); these are the
+    // AUTO-side analogue plus a transition grace window.
+    //
+    //   kCmdVelStaleSec — wall-clock budget. If no /cmd_vel arrives
+    //     within this many seconds the AUTO branch zeroes motors
+    //     instead of re-applying the latched wheel-speed values.
+    //     Slightly under velocity_smoother's 1.0 s velocity_timeout
+    //     so we react before the smoother's own ramp-down would.
+    //
+    //   kAutoOnGraceSec — held-at-zero window after the AUTO rising
+    //     edge. velocity_smoother runs OPEN_LOOP at 20 Hz; on AUTO-on
+    //     it can deliver a stale-content / fresh-timestamp tick within
+    //     ~50 ms, which used to translate straight into a lurch. The
+    //     grace window eats that tail; a freshly-dispatched goal
+    //     simply starts ~200 ms later — below operator perception.
+    static constexpr double kCmdVelStaleSec = 0.35;
+    static constexpr double kAutoOnGraceSec = 0.20;
 
     // subscription for joystick
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr controllerSub;
@@ -187,6 +210,18 @@ class ControlNode : public rclcpp::Node {
     // /joy watchdog: timestamp of last received /joy. Initialized to
     // epoch so the watchdog also fires before the first /joy arrives.
     rclcpp::Time last_joy_msg_time_{0, 0, RCL_ROS_TIME};
+
+    // /cmd_vel watchdog (AUTO branch only). Stamped on every
+    // path_planning_callback. Reset to epoch on the AUTO rising edge
+    // so a stale-but-fresh-timestamp message from velocity_smoother
+    // can't slip past kAutoOnGraceSec and immediately drive motors.
+    rclcpp::Time last_cmd_vel_time_{0, 0, RCL_ROS_TIME};
+
+    // AUTO rising-edge grace deadline. Set to (now + kAutoOnGraceSec)
+    // inside joystick_callback when autonomousMode flips true. While
+    // now() < auto_on_grace_until_, publish_encoder_data() forces
+    // motors.move(0, 0) regardless of what /cmd_vel says.
+    rclcpp::Time auto_on_grace_until_{0, 0, RCL_ROS_TIME};
 
     bool currX = false;
     bool prevX = false;
@@ -241,6 +276,22 @@ class ControlNode : public rclcpp::Node {
             } else {
                 char mode[8] = "MANUAL\n";
                 arduinoSerial.writeString(mode);
+            }
+
+            // Clear cached wheel-speed state on EVERY transition so the
+            // AUTO branch can't re-apply a value latched from a
+            // previous AUTO session. On the AUTO-ON transition arm the
+            // grace window and reset last_cmd_vel_time_ to epoch — the
+            // staleness watchdog will hold motors at zero until a
+            // genuinely fresh /cmd_vel arrives AFTER the grace window.
+            linear_move = 0.0f;
+            angular_move = 0.0f;
+            left_wheel_speed = 0.0f;
+            right_wheel_speed = 0.0f;
+            if (autonomousMode) {
+                auto_on_grace_until_ = this->now() +
+                    rclcpp::Duration::from_seconds(kAutoOnGraceSec);
+                last_cmd_vel_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
             }
 
             // Publish mode so NAV2 / GPS waypoint handler know the state
@@ -638,16 +689,44 @@ class ControlNode : public rclcpp::Node {
             }
         }
         else {
-           // PHASE D — apply gravity-vector grade compensation. Forward
-           // command = average of left/right wheel speeds (positive means
-           // forward intent). The multiplier is 1.0 unless climbing or
-           // descending past the deadband; clamped to safe motor-current
-           // bounds by grade_comp_max_uphill_multiplier /
-           // grade_comp_min_downhill_multiplier.
-           const double forward_cmd = 0.5 * (left_wheel_speed + right_wheel_speed);
-           const double mult = grade_speed_multiplier(forward_cmd);
-           motors.move(right_wheel_speed * 40 * mult, left_wheel_speed * 40 * mult);
-
+           // AUTO safety gates BEFORE applying the latched wheel-speed
+           // values. Two independent ways to land at motors.move(0, 0):
+           //
+           //   1. Grace window. For kAutoOnGraceSec after the AUTO
+           //      rising edge, hold the wheels at rest even if a fresh
+           //      /cmd_vel arrives. velocity_smoother (OPEN_LOOP,
+           //      smoothing_frequency=20 Hz, velocity_timeout=1.0 s)
+           //      can deliver a fresh-timestamp / stale-content tick
+           //      within ~50 ms of AUTO-on; the grace window eats it.
+           //
+           //   2. Staleness watchdog. If /cmd_vel hasn't arrived
+           //      within kCmdVelStaleSec, stop. Symmetric to the
+           //      manual-mode 0.5 s /joy watchdog above. Without it,
+           //      the AUTO branch would re-apply the last
+           //      left/right_wheel_speed every 30 ms forever — so a
+           //      nav2 crash mid-mission leaves the robot driving
+           //      blind at its last commanded velocity.
+           //
+           // Both gates also handle the AUTO-on case where /cmd_vel
+           // has never been received this session: last_cmd_vel_time_
+           // is at epoch, so (now - epoch) >> kCmdVelStaleSec.
+           const rclcpp::Time now_t = this->now();
+           const bool in_grace = now_t < auto_on_grace_until_;
+           const bool cmd_stale =
+               (now_t - last_cmd_vel_time_).seconds() > kCmdVelStaleSec;
+           if (in_grace || cmd_stale) {
+               motors.move(0, 0);
+           } else {
+               // PHASE D — apply gravity-vector grade compensation. Forward
+               // command = average of left/right wheel speeds (positive means
+               // forward intent). The multiplier is 1.0 unless climbing or
+               // descending past the deadband; clamped to safe motor-current
+               // bounds by grade_comp_max_uphill_multiplier /
+               // grade_comp_min_downhill_multiplier.
+               const double forward_cmd = 0.5 * (left_wheel_speed + right_wheel_speed);
+               const double mult = grade_speed_multiplier(forward_cmd);
+               motors.move(right_wheel_speed * 40 * mult, left_wheel_speed * 40 * mult);
+           }
         }
 
         arduinoEncoderCounts += "\n";
@@ -666,6 +745,12 @@ class ControlNode : public rclcpp::Node {
     }
 
     void path_planning_callback(const geometry_msgs::msg::Twist::SharedPtr msg) {
+
+        // Stamp the AUTO-side watchdog on every arrival, regardless of
+        // mode — guarantees that the first /cmd_vel after AUTO-on
+        // refreshes the staleness clock even if the message races the
+        // mode flip by a few microseconds.
+        last_cmd_vel_time_ = this->now();
 
         if (autonomousMode) {
             /*Move to Pose Way*/
