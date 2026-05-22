@@ -32,8 +32,8 @@
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
     tf_wait_for_stamp_ms: 250         # Bounded wait for TF at the depth-image stamp. Red pixels with missing yellow overlay usually mean this stamped TF/depth projection path missed, not that CUDA line pixels failed.
-    line_hold_timeout_ms: 3000        # Bridge short RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
-    motion_cache_hold_ms: 1000        # Short bridge during yaw/TF misses; long enough to avoid flicker, short enough to avoid preserving turn-time smears.
+    line_hold_timeout_ms: 5000        # Bridge RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
+    motion_cache_hold_ms: 5000        # Same 5s hold during yaw/TF misses so projection gaps do not clear the local costmap.
     line_memory_max_points: 12000     # cap confirmed output points
     odom_topic: "/local_ekf/odom"
 

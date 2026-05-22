@@ -50,8 +50,8 @@ public:
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("tf_wait_for_stamp_ms", 100);
-		this->declare_parameter("line_hold_timeout_ms", 800);
-		this->declare_parameter("motion_cache_hold_ms", 250);
+		this->declare_parameter("line_hold_timeout_ms", 5000);
+		this->declare_parameter("motion_cache_hold_ms", 5000);
 		this->declare_parameter("line_memory_max_points", 12000);
 		this->declare_parameter("roi_min_y_fraction", 0.35);
 		this->declare_parameter("max_depth_m", 6.0);
@@ -264,8 +264,8 @@ private:
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t tf_wait_for_stamp_ms_ = 100;
-	int64_t line_hold_timeout_ms_ = 0;
-	int64_t motion_cache_hold_ms_ = 250;
+	int64_t line_hold_timeout_ms_ = 5000;
+	int64_t motion_cache_hold_ms_ = 5000;
 	int64_t line_memory_max_points_ = 20000;
 	double  roi_min_y_fraction_ = 0.35;
 	double  max_depth_m_ = 6.0;
@@ -559,7 +559,7 @@ void LineDetectorNode::republishConfirmedCacheFor(
 	const char * missing_reason,
 	const char * expired_reason)
 {
-	const rclcpp::Time now_stamp(stamp, this->get_clock()->get_clock_type());
+	const rclcpp::Time now_stamp = this->now();
 	const rclcpp::Duration hold =
 		rclcpp::Duration::from_nanoseconds(hold_ms * 1000000LL);
 	if (!has_last_valid_message_) {
@@ -583,6 +583,7 @@ void LineDetectorNode::publishCandidatePoints(
 	const std::vector<CandidatePoint> & candidates,
 	const builtin_interfaces::msg::Time & stamp)
 {
+	(void)stamp;
 	auto message = autonav_interfaces::msg::LinePoints();
 	message.header.frame_id = target_frame_;
 	message.header.stamp = this->now();  // Use now() to avoid "stale" timestamps on republished messages
@@ -600,8 +601,11 @@ void LineDetectorNode::publishCandidatePoints(
 	}
 
 	last_valid_message_ = message;
-	last_valid_detection_time_ =
-		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
+	// Cache freshness is wall/node-time based. Depth image stamps can
+	// arrive old or jitter relative to ROS now; using them here makes a
+	// healthy confirmed cache expire during exactly the TF/depth gaps this
+	// cache is meant to bridge.
+	last_valid_detection_time_ = this->now();
 	has_last_valid_message_ = true;
 	publishPointCloudFromLineMessage(message);
 	publishLinePoints(message);
@@ -1056,6 +1060,7 @@ void LineDetectorNode::publishConfirmedOrEmpty(
 		publishEmptyLineSet(stamp, "unconfirmed or expired line evidence");
 		return;
 	}
+	(void)stamp;
 
 	auto message = autonav_interfaces::msg::LinePoints();
 	message.header.frame_id = target_frame_;
@@ -1076,8 +1081,10 @@ void LineDetectorNode::publishConfirmedOrEmpty(
 	}
 
 	last_valid_message_ = message;
-	last_valid_detection_time_ =
-		rclcpp::Time(stamp, this->get_clock()->get_clock_type());
+	// See publishCandidatePoints: cache expiration must be measured in
+	// node time, not depth-frame stamp time, to avoid transient projection
+	// gaps publishing empty /line_points.
+	last_valid_detection_time_ = this->now();
 	has_last_valid_message_ = true;
 	publishPointCloudFromLineMessage(message);
 	publishLinePoints(message);
