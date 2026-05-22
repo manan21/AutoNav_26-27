@@ -60,6 +60,7 @@ public:
 		this->declare_parameter("base_max_abs_y_m", 3.0);
 		this->declare_parameter("ground_z_m", -0.11);
 		this->declare_parameter("ground_z_tolerance_m", 0.25);
+		this->declare_parameter("depth_fill_radius_px", 3);
 		this->declare_parameter("cluster_min_points", 15);
 		this->declare_parameter("cluster_min_length_m", 0.30);
 		this->declare_parameter("cluster_max_width_m", 0.25);
@@ -108,6 +109,8 @@ public:
 		base_max_abs_y_m_ = std::max(0.0, this->get_parameter("base_max_abs_y_m").as_double());
 		ground_z_m_ = this->get_parameter("ground_z_m").as_double();
 		ground_z_tolerance_m_ = std::max(0.0, this->get_parameter("ground_z_tolerance_m").as_double());
+		depth_fill_radius_px_ = std::clamp<int>(
+			this->get_parameter("depth_fill_radius_px").as_int(), 0, 15);
 		cluster_min_points_ = std::max<int>(1, this->get_parameter("cluster_min_points").as_int());
 		cluster_min_length_m_ = std::max(0.0, this->get_parameter("cluster_min_length_m").as_double());
 		cluster_max_width_m_ = std::max(0.01, this->get_parameter("cluster_max_width_m").as_double());
@@ -145,6 +148,7 @@ public:
 			"Geometry gates: roi_y>=%.2f depth<=%.2fm base_x=[%.2f, %.2f] |base_y|<=%.2f ground=%.2f±%.2f",
 			roi_min_y_fraction_, max_depth_m_, base_min_x_m_, base_max_x_m_,
 			base_max_abs_y_m_, ground_z_m_, ground_z_tolerance_m_);
+		RCLCPP_INFO(this->get_logger(), "Depth fill radius: %d px", depth_fill_radius_px_);
 		RCLCPP_INFO(this->get_logger(),
 			"Cluster gates: min_points=%d min_length=%.2fm max_width=%.2fm min_aspect=%.2f link=%.2fm",
 			cluster_min_points_, cluster_min_length_m_, cluster_max_width_m_,
@@ -274,6 +278,7 @@ private:
 	double  base_max_abs_y_m_ = 3.0;
 	double  ground_z_m_ = -0.11;
 	double  ground_z_tolerance_m_ = 0.25;
+	int     depth_fill_radius_px_ = 3;
 	int     cluster_min_points_ = 15;
 	double  cluster_min_length_m_ = 0.30;
 	double  cluster_max_width_m_ = 0.25;
@@ -304,6 +309,7 @@ private:
 		int kept_components = 0;
 		int roi_rejects = 0;
 		int depth_rejects = 0;
+		int depth_fill_hits = 0;
 		int geometry_rejects = 0;
 		int out_of_bounds = 0;
 		int transform_rejects = 0;
@@ -681,11 +687,59 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	const uint8_t* depth_ptr_u8 = depth_msg->data.data();
 	std::string frame_id = depth_msg->header.frame_id;
 
-	// Check if transform is available. Stamped TF is the normal path:
-	// every projected point uses the robot pose at the depth-image stamp.
-	// The optional latest-TF fallback is intentionally off by default
-	// because it misregisters line points during motion and creates
-	// frayed costmap walls.
+	auto read_valid_depth = [&](int x, int y, float & depth_m) -> bool {
+		if (x < 0 || x >= static_cast<int>(depth_msg->width) ||
+			y < 0 || y >= static_cast<int>(depth_msg->height)) {
+			return false;
+		}
+		const size_t offset = static_cast<size_t>(y) * row_step +
+			static_cast<size_t>(x) * bytes_per_pixel;
+		if (offset + sizeof(float) > depth_msg->data.size()) {
+			return false;
+		}
+		std::memcpy(&depth_m, depth_ptr_u8 + offset, sizeof(float));
+		return depth_m >= 0.1f &&
+			depth_m <= static_cast<float>(max_depth_m_) &&
+			std::isfinite(depth_m);
+	};
+
+	auto read_nearest_depth = [&](int x, int y, float & depth_m) -> bool {
+		if (read_valid_depth(x, y, depth_m)) {
+			return true;
+		}
+		const int radius = depth_fill_radius_px_;
+		int best_dist_sq = std::numeric_limits<int>::max();
+		float best_depth = 0.0f;
+		bool found = false;
+		for (int dy = -radius; dy <= radius; ++dy) {
+			for (int dx = -radius; dx <= radius; ++dx) {
+				if (dx == 0 && dy == 0) {
+					continue;
+				}
+				const int dist_sq = dx * dx + dy * dy;
+				if (dist_sq > radius * radius || dist_sq >= best_dist_sq) {
+					continue;
+				}
+				float candidate_depth = 0.0f;
+				if (!read_valid_depth(x + dx, y + dy, candidate_depth)) {
+					continue;
+				}
+				best_depth = candidate_depth;
+				best_dist_sq = dist_sq;
+				found = true;
+			}
+		}
+		if (found) {
+			depth_m = best_depth;
+			stats.depth_fill_hits++;
+		}
+		return found;
+	};
+
+	// Stamped TF is preferred: every projected point uses the robot pose
+	// at the depth-image stamp. If that transform lags and the robot is
+	// not yawing, latest TF keeps static yellow annotations responsive.
+	// During turns, fall back to the cache instead of smearing lines.
 	bool transform_available = false;
 	geometry_msgs::msg::TransformStamped target_transform;
 	geometry_msgs::msg::TransformStamped base_transform;
@@ -701,10 +755,13 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		transform_available = true;
 	} catch (const tf2::TransformException& stamped_ex) {
 		stats.tf_wait_failures++;
-		if (tf_use_latest_) {
+		const bool allow_latest_fallback = tf_use_latest_ || !isYawGated();
+		if (allow_latest_fallback) {
 			try {
-				// Emergency fallback only. This preserves legacy behavior
-				// for field debugging but remains disabled by default.
+				// When the robot is not yawing, latest TF is a practical
+				// low-latency fallback for visualization and costmap marking.
+				// During turns, keep the older stamped-TF/cache behavior to
+				// avoid smearing line points into arcs.
 				stats.tf_latest_fallbacks++;
 				const auto latest_timeout =
 					rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL);
@@ -716,9 +773,9 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 				transform_available = true;
 			} catch (const tf2::TransformException& latest_ex) {
 				RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-					"TF not available (%s/base_link <- %s, stamped wait=%ld ms, latest fallback failed): stamped=%s latest=%s",
+					"TF not available (%s/base_link <- %s, stamped wait=%ld ms, latest fallback %s failed): stamped=%s latest=%s",
 					target_frame_.c_str(), frame_id.c_str(), tf_wait_for_stamp_ms_,
-					stamped_ex.what(), latest_ex.what());
+					tf_use_latest_ ? "enabled" : "static", stamped_ex.what(), latest_ex.what());
 			}
 		} else {
 			RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -770,17 +827,8 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 			continue;
 		}
 
-		// Get depth value (meters)
-		const size_t offset = (size_t)line_points[i].y * row_step + (size_t)line_points[i].x * bytes_per_pixel;
-		if (offset + sizeof(float) > depth_msg->data.size()) {
-			continue;
-		}
-
 		float depth_m;
-		std::memcpy(&depth_m, depth_ptr_u8 + offset, sizeof(float));
-
-		if (depth_m < 0.1f || depth_m > static_cast<float>(max_depth_m_) ||
-			std::isnan(depth_m) || std::isinf(depth_m)) {
+		if (!read_nearest_depth(line_points[i].x, line_points[i].y, depth_m)) {
 			stats.depth_rejects++;
 			continue;
 		}
@@ -831,9 +879,9 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	}
 
 	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
-		"Processing: %d valid depth, %d depth rejects, %d ROI rejects, %d geometry rejects, %d out-of-bounds -> %d candidate points",
-		valid_count, stats.depth_rejects, stats.roi_rejects, stats.geometry_rejects,
-		stats.out_of_bounds, tf_success);
+		"Processing: %d valid depth, %d depth fills, %d depth rejects, %d ROI rejects, %d geometry rejects, %d out-of-bounds -> %d candidate points",
+		valid_count, stats.depth_fill_hits, stats.depth_rejects, stats.roi_rejects,
+		stats.geometry_rejects, stats.out_of_bounds, tf_success);
 
 	return depth_line_points;
 }
@@ -1103,6 +1151,7 @@ void LineDetectorNode::publishDiagnostics(
 		<< "\"kept_components\":" << stats.kept_components << ","
 		<< "\"roi_rejects\":" << stats.roi_rejects << ","
 		<< "\"depth_rejects\":" << stats.depth_rejects << ","
+		<< "\"depth_fill_hits\":" << stats.depth_fill_hits << ","
 		<< "\"geometry_rejects\":" << stats.geometry_rejects << ","
 		<< "\"out_of_bounds\":" << stats.out_of_bounds << ","
 		<< "\"transform_rejects\":" << stats.transform_rejects << ","
