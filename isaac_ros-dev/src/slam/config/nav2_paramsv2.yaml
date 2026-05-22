@@ -180,12 +180,17 @@ controller_server:
       ObstacleFootprint.scale: 1.0
       BaseObstacle.scale: 0.08
       PathAlign.scale: 64.0
-      # Keep forward_point_distance short. A long forward sample makes
-      # DWB align the robot's nose/lookahead point to /plan; PathDist
-      # now handles the actual nav_center (body-center) path lock.
-      PathAlign.forward_point_distance: 0.10
+      # forward_point_distance = 0.0: score alignment at nav_center itself,
+      # not at a forward virtual probe. With the path already spawned at
+      # nav_center (see global_costmap.robot_base_frame), a forward probe
+      # would let the body cut inside small bends — the probe finds the
+      # path ahead while nav_center drifts toward the chord. Zero makes
+      # the body center stay rigidly on every bend in /plan, at the cost
+      # of giving up the lookahead-style heading anticipation that a
+      # nonzero FPD provides on long straights.
+      PathAlign.forward_point_distance: 0.0
       GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.10
+      GoalAlign.forward_point_distance: 0.0
       PathDist.scale: 96.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
