@@ -58,11 +58,25 @@ public:
       return child_node_->executeTick();
     }
 
-    // Path didn't materially change — return RUNNING so the parent
-    // PipelineSequence keeps thinking the child is alive, but DO NOT
-    // tick the child. FollowPath's action goal stays exactly where
-    // it was; the controller_server keeps following the existing path
-    // uninterrupted.
+    // Path didn't materially change — don't cancel-restart the
+    // FollowPath action. But DO propagate the child's last-known
+    // terminal status (SUCCESS / FAILURE) if it has one. Returning
+    // RUNNING here unconditionally would hide a completed or aborted
+    // FollowPath from the parent BT: the goal-reached SUCCESS would
+    // never propagate to NavigateRecovery, and a controller-side abort
+    // would never trigger the FollowPathRecovery fallback. Status only
+    // updates when executeTick was called, so this catches "child
+    // terminated on a previous tick we DID run, then path stayed the
+    // same so we stopped ticking it" — not "child terminated
+    // silently while we were skipping ticks" (BT.CPP can't observe
+    // that). For the latter the only protection is the 1 Hz replan:
+    // the next significantly-changed path will tick the child and
+    // surface its actual status.
+    const auto last_status = child_node_->status();
+    if (last_status == BT::NodeStatus::SUCCESS ||
+        last_status == BT::NodeStatus::FAILURE) {
+      return last_status;
+    }
     return BT::NodeStatus::RUNNING;
   }
 
@@ -88,11 +102,40 @@ private:
                           double rms_threshold_m,
                           int n_compare) {
     if (a.poses.empty() || b.poses.empty()) return true;
-    if (a.poses.front().pose.position.x != b.poses.front().pose.position.x
-     || a.poses.front().pose.position.y != b.poses.front().pose.position.y) {
-      // First pose moved — definitely a new plan.
+
+    // Goal-endpoint change check — fires when a NEW NavigateToPose goal
+    // arrives. Without this, the RMS-over-first-N-poses check below can
+    // miss a new goal whose path happens to start in the same direction
+    // as the last path (most common when the robot is sitting still
+    // near the previous goal: front poses byte-identical, RMS over the
+    // first 50 cm of two different goals' paths can fall under
+    // rms_threshold_m, decorator returns RUNNING without ticking
+    // FollowPath, and the robot only moves on the second goal-send
+    // because that forces a tree halt-reset). Endpoint comparison is
+    // unambiguous: a new goal moves the path's last pose, period.
+    // Threshold is generous (3× the planner's typical xy_goal_tolerance)
+    // so a one-tick goal-pose jitter doesn't fire false positives.
+    constexpr double GOAL_ENDPOINT_DELTA_M = 0.30;
+    const auto & a_end = a.poses.back().pose.position;
+    const auto & b_end = b.poses.back().pose.position;
+    const double dxe = a_end.x - b_end.x;
+    const double dye = a_end.y - b_end.y;
+    if (std::sqrt(dxe*dxe + dye*dye) > GOAL_ENDPOINT_DELTA_M) {
       return true;
     }
+
+    // Float-tolerant start-pose displacement check. Was exact-equality,
+    // which never fired when the planner cached the start pose between
+    // ticks. 1 cm tolerance: smaller than any meaningful robot motion,
+    // larger than float-roundtrip noise on a TF lookup.
+    const double sdx =
+      a.poses.front().pose.position.x - b.poses.front().pose.position.x;
+    const double sdy =
+      a.poses.front().pose.position.y - b.poses.front().pose.position.y;
+    if (std::sqrt(sdx*sdx + sdy*sdy) > 0.01) {
+      return true;
+    }
+
     const size_t n = std::min({static_cast<size_t>(n_compare),
                                a.poses.size(), b.poses.size()});
     double sum_sq = 0.0;
