@@ -33,16 +33,18 @@ lidar_line_detector:
     layer_max: -1
     echo_filter: -1
 
-    # Adaptive RSSI thresholding. Intensities are compared within
-    # range/layer bins so close bright asphalt does not dominate far tape.
+    # Adaptive RSSI thresholding. Lab default is white duct tape on grey
+    # rubber flooring. Duct tape gives a moderate RSSI lift, but it does not
+    # reliably behave like retroreflective tape, so the detector should pass
+    # from RSSI contrast alone.
     adaptive_range_bin_m: 0.50
-    adaptive_stddev_multiplier: 1.5
-    adaptive_min_delta: 5.0
+    adaptive_stddev_multiplier: 1.15
+    adaptive_min_delta: 9.0
     adaptive_min_samples: 20
-    min_intensity: 0.0
+    min_intensity: 50.0
     normalize_by_layer: true
     use_reflector_boost: true
-    reflector_threshold_boost: 25.0
+    reflector_threshold_boost: 8.0
 
     # Shape filter for tape-like marks in the local ground plane.
     cluster_link_distance_m: 0.20
