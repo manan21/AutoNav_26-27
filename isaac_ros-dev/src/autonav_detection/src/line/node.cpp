@@ -50,9 +50,9 @@ public:
 		this->declare_parameter("publish_interval_ms", 100);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
-		this->declare_parameter("tf_wait_for_stamp_ms", 100);
-		this->declare_parameter("line_hold_timeout_ms", 5000);
-		this->declare_parameter("motion_cache_hold_ms", 5000);
+		this->declare_parameter("tf_wait_for_stamp_ms", 125);
+		this->declare_parameter("line_hold_timeout_ms", 8000);
+		this->declare_parameter("motion_cache_hold_ms", 8000);
 		this->declare_parameter("line_memory_max_points", 12000);
 		this->declare_parameter("roi_min_y_fraction", 0.35);
 		this->declare_parameter("max_depth_m", 6.0);
@@ -60,11 +60,11 @@ public:
 		this->declare_parameter("base_max_x_m", 5.0);
 		this->declare_parameter("base_max_abs_y_m", 3.0);
 		this->declare_parameter("ground_z_m", -0.11);
-		this->declare_parameter("ground_z_tolerance_m", 0.25);
-		this->declare_parameter("depth_fill_radius_px", 3);
-		this->declare_parameter("depth_fill_min_neighbors", 3);
-		this->declare_parameter("depth_fill_max_spread_m", 0.35);
-		this->declare_parameter("projection_max_points", 2000);
+		this->declare_parameter("ground_z_tolerance_m", 0.35);
+		this->declare_parameter("depth_fill_radius_px", 5);
+		this->declare_parameter("depth_fill_min_neighbors", 2);
+		this->declare_parameter("depth_fill_max_spread_m", 0.60);
+		this->declare_parameter("projection_max_points", 8000);
 		this->declare_parameter("cluster_min_points", 15);
 		this->declare_parameter("cluster_min_length_m", 0.30);
 		this->declare_parameter("cluster_max_width_m", 0.25);
@@ -73,7 +73,7 @@ public:
 		this->declare_parameter("temporal_voxel_size_m", 0.10);
 		this->declare_parameter("temporal_min_hits", 1);
 		this->declare_parameter("temporal_confirm_window_ms", 750);
-		this->declare_parameter("confirmed_hold_ms", 1500);
+		this->declare_parameter("confirmed_hold_ms", 8000);
 		this->declare_parameter("odom_topic", "/local_ekf/odom");
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
@@ -284,9 +284,9 @@ private:
 	int64_t publish_interval_ms_ = 100;
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
-	int64_t tf_wait_for_stamp_ms_ = 100;
-	int64_t line_hold_timeout_ms_ = 5000;
-	int64_t motion_cache_hold_ms_ = 5000;
+	int64_t tf_wait_for_stamp_ms_ = 125;
+	int64_t line_hold_timeout_ms_ = 8000;
+	int64_t motion_cache_hold_ms_ = 8000;
 	int64_t line_memory_max_points_ = 20000;
 	double  roi_min_y_fraction_ = 0.35;
 	double  max_depth_m_ = 6.0;
@@ -294,11 +294,11 @@ private:
 	double  base_max_x_m_ = 5.0;
 	double  base_max_abs_y_m_ = 3.0;
 	double  ground_z_m_ = -0.11;
-	double  ground_z_tolerance_m_ = 0.25;
-	int     depth_fill_radius_px_ = 3;
-	int     depth_fill_min_neighbors_ = 3;
-	double  depth_fill_max_spread_m_ = 0.35;
-	int     projection_max_points_ = 2000;
+	double  ground_z_tolerance_m_ = 0.35;
+	int     depth_fill_radius_px_ = 5;
+	int     depth_fill_min_neighbors_ = 2;
+	double  depth_fill_max_spread_m_ = 0.60;
+	int     projection_max_points_ = 8000;
 	int     cluster_min_points_ = 15;
 	double  cluster_min_length_m_ = 0.30;
 	double  cluster_max_width_m_ = 0.25;
@@ -307,7 +307,7 @@ private:
 	double  temporal_voxel_size_m_ = 0.10;
 	int     temporal_min_hits_ = 1;
 	int64_t temporal_confirm_window_ms_ = 750;
-	int64_t confirmed_hold_ms_ = 1500;
+	int64_t confirmed_hold_ms_ = 8000;
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
@@ -924,15 +924,19 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 			cudaGetErrorString(projection_err));
 	}
 
-	// Pre-decimate. With 16k+ raw line pixels and a 10 cm temporal voxel
-	// size, candidates within 10 cm collapse to one voxel anyway. Striding
-	// to keep ~4000 pixels preserves voxel coverage while cutting the
-	// per-pixel transform/branch cost by ~4x.
-	const int stride = std::max(1, line_points_len / projection_max_points_);
+	// CPU fallback uses the same even sampling as the GPU path. Avoid a
+	// simple integer stride here: when line_points_len is only slightly
+	// above the cap, floor-striding samples a biased prefix of the line.
+	const int cpu_projection_count = std::min(line_points_len, projection_max_points_);
 
 	// Process each line point
 	const auto projection_start = std::chrono::steady_clock::now();
-	for (int i = 0; i < line_points_len; i += stride) {
+	for (int sample_idx = 0; sample_idx < cpu_projection_count; ++sample_idx) {
+		const int i = std::min(
+			line_points_len - 1,
+			static_cast<int>(
+				(static_cast<int64_t>(sample_idx) * line_points_len) /
+				cpu_projection_count));
 		if (line_points[i].y < roi_min_y) {
 			stats.roi_rejects++;
 			continue;

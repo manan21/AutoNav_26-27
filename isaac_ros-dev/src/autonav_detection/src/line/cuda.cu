@@ -189,7 +189,6 @@ __global__ void __project_line_pixels_kernel(
     const float * target_transform,
     const float * base_transform,
     int projection_count,
-    int stride,
     int roi_min_y,
     float max_depth_m,
     float base_min_x_m,
@@ -209,10 +208,11 @@ __global__ void __project_line_pixels_kernel(
     if (idx >= projection_count) {
         return;
     }
-    int source_idx = idx * stride;
-    if (source_idx >= line_points_len) {
-        source_idx = line_points_len - 1;
-    }
+    const int source_idx = min(
+        line_points_len - 1,
+        static_cast<int>(
+            (static_cast<long long>(idx) * static_cast<long long>(line_points_len)) /
+            static_cast<long long>(projection_count)));
     const int2 pixel = line_points[source_idx];
 
     if (pixel.y < roi_min_y) {
@@ -412,7 +412,6 @@ extern "C" cudaError_t project_line_pixels_cuda(
     }
 
     const int projection_count = std::min(line_points_len, projection_max_points);
-    const int stride = std::max(1, line_points_len / projection_count);
     if (!g_projection_bufs.ensure(line_points_len, depth_data_bytes, projection_count)) {
         return cudaErrorMemoryAllocation;
     }
@@ -475,7 +474,6 @@ extern "C" cudaError_t project_line_pixels_cuda(
         g_projection_bufs.target_transform,
         g_projection_bufs.base_transform,
         projection_count,
-        stride,
         roi_min_y,
         max_depth_m,
         base_min_x_m,

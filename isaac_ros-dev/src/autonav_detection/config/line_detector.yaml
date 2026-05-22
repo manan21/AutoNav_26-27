@@ -31,9 +31,9 @@
     publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
-    tf_wait_for_stamp_ms: 75          # Short bounded wait for stamped TF. Latest-TF projection stays disabled by default because it can scatter line points when image/depth and pose stamps disagree.
-    line_hold_timeout_ms: 5000        # Bridge RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
-    motion_cache_hold_ms: 5000        # Same 5s hold during yaw/TF misses so projection gaps do not clear the local costmap.
+    tf_wait_for_stamp_ms: 125         # Bounded stamped-TF wait. GPU projection leaves enough budget to wait a little longer without using scatter-prone latest TF.
+    line_hold_timeout_ms: 8000        # Bridge RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
+    motion_cache_hold_ms: 8000        # Same hold during yaw/TF misses so projection gaps do not clear the local costmap.
     line_memory_max_points: 12000     # cap confirmed output points
     odom_topic: "/local_ekf/odom"
 
@@ -44,11 +44,11 @@
     base_max_x_m: 5.0
     base_max_abs_y_m: 3.0
     ground_z_m: -0.11
-    ground_z_tolerance_m: 0.25
-    depth_fill_radius_px: 3           # Fill small ZED depth holes on bright painted lines using only a consistent local depth neighborhood.
-    depth_fill_min_neighbors: 3
-    depth_fill_max_spread_m: 0.35
-    projection_max_points: 2000       # Cap red pixels projected into depth/TF each frame; keeps yellow path under the 10 Hz timer budget.
+    ground_z_tolerance_m: 0.35
+    depth_fill_radius_px: 5           # Fill ZED depth holes on bright painted lines using only a consistent local depth neighborhood.
+    depth_fill_min_neighbors: 2
+    depth_fill_max_spread_m: 0.60
+    projection_max_points: 8000       # GPU projection can afford denser sampling; improves stability when depth is sparse on the painted line.
     # Cluster shape filter now uses PCA-aligned extents (see node.cpp
     # filterLineClusters); previously it used cv::minAreaRect which
     # axis-aligned to the depth-ray direction at low point counts and
@@ -82,7 +82,7 @@
     # 1500 ms == ~7 frames at 5 Hz: covers brief out-of-FOV periods
     # (turning the robot, panning the camera) without persisting stale
     # voxels long enough to confuse the planner.
-    confirmed_hold_ms: 5000
+    confirmed_hold_ms: 8000
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
     debug_image_write_enabled: false
