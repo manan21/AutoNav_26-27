@@ -2,7 +2,12 @@ bt_navigator:
   ros__parameters:
     use_sim_time: False
     global_frame: map
-    robot_base_frame: base_link
+    # nav_center = body geometric center (shogi.urdf: fixed child of
+    # base_link at +0.225 m forward). Driving every NAV2 frame off
+    # nav_center spawns /plan at the body center and locks PathDist to the
+    # body center — killing the corner-cut feedback where the path used to
+    # originate at the drive axle (base_link) 22.5 cm behind the body.
+    robot_base_frame: nav_center
     # Use the EKF-fused odom (wheel + SICK IMU) so behavior-tree
     # conditions (IsStuck, GoalUpdated staleness checks, etc.) reason
     # about smoothed velocity/pose, not raw wheel encoder readings.
@@ -109,13 +114,16 @@ controller_server:
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
     # DWB Local Planner — line-avoidance path tracking.
-    # /plan is generated for robot_base_frame=base_link, so PathDist is
-    # the primary path-lock critic: it scores base_link distance from the
-    # global plan and keeps the robot from cutting inside the planned
-    # trajectory. PathAlign/GoalAlign remain enabled with a short 10 cm
-    # forward sample as heading aids only. ObstacleFootprint is active so
-    # candidate trajectories whose full footprint brushes line/obstacle
-    # cost are penalized/rejected instead of only checking base_link.
+    # /plan is generated for robot_base_frame=nav_center (body geometric
+    # center, +0.225 m forward of the drive axle). PathDist is the primary
+    # path-lock critic: it scores nav_center distance from the global plan
+    # and keeps the body center on the planned trajectory. Because the
+    # plan now spawns at the same point PathDist scores, there is no
+    # geometric offset for continuous replanning to bake into inward
+    # corner-cutting. PathAlign/GoalAlign remain enabled with a short
+    # 10 cm forward sample as heading aids only. ObstacleFootprint is
+    # active so candidate trajectories whose full footprint brushes
+    # line/obstacle cost are penalized/rejected.
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: False
@@ -163,17 +171,18 @@ controller_server:
       stateful: True
       # PathDist/GoalDist intentionally stay in the active critic list:
       # DWB's PathAlign critic scores a virtual point in front of the
-      # robot, while PathDist scores base_link itself. With the Shogi
-      # footprint extending from x=-0.32..+0.77 around base_link, relying
-      # only on the forward virtual point can make the body cut inside
-      # turns even though the sampled point looks aligned to /plan.
+      # robot, while PathDist scores robot_base_frame itself. With
+      # robot_base_frame=nav_center the footprint is symmetric in that
+      # frame (x in -0.545..+0.545) and PathDist locks the body center
+      # to /plan, so relying only on the forward virtual point would
+      # still leak heading error into position tracking.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       ObstacleFootprint.scale: 1.0
       BaseObstacle.scale: 0.08
       PathAlign.scale: 64.0
       # Keep forward_point_distance short. A long forward sample makes
       # DWB align the robot's nose/lookahead point to /plan; PathDist
-      # now handles the actual base_link path lock.
+      # now handles the actual nav_center (body-center) path lock.
       PathAlign.forward_point_distance: 0.10
       GoalAlign.scale: 24.0
       GoalAlign.forward_point_distance: 0.10
@@ -189,13 +198,15 @@ local_costmap:
       update_frequency: 15.0
       publish_frequency: 15.0
       global_frame: odom
-      robot_base_frame: base_link
+      robot_base_frame: nav_center
       use_sim_time: False
       rolling_window: true
       width: 6
       height: 6
       resolution: 0.05
-      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
+      # Footprint expressed in nav_center frame (was base_link with
+      # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
+      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
       footprint_padding: 0.0
       plugins: ["obstacle_layer", "inflation_layer", "line_layer"]
       obstacle_layer:
@@ -283,9 +294,15 @@ global_costmap:
       update_frequency: 3.0
       publish_frequency: 2.0
       global_frame: map
-      robot_base_frame: base_link
+      # nav_center: planner's start pose for every replan is looked up as
+      # map → nav_center, so /plan spawns at the body geometric center
+      # instead of the drive axle (was base_link). Eliminates the inward
+      # corner-cut from continuous replanning around the axle offset.
+      robot_base_frame: nav_center
       use_sim_time: False
-      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
+      # Footprint expressed in nav_center frame (symmetric ±0.545 x,
+      # ±0.41 y) — see local_costmap footprint note.
+      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
       footprint_padding: 0.0
       resolution: 0.10
       # static_layer drives the global costmap geometry from /map_padded, which is a dynamic bounding box covering robot footprint + goal + plan. The width/height/origin below are only the pre-first-/map_padded fallback.
@@ -408,7 +425,12 @@ behavior_server:
     gradient_escape:
       plugin: "gradient_escape::GradientEscape"
     global_frame: odom
-    robot_base_frame: base_link
+    # Stay on nav_center for footprint/costmap consistency with the local
+    # costmap. Spin/BackUp/DriveOnHeading still command angular velocity
+    # against base_link kinematics (the diff-drive rotation center is the
+    # axle), but the footprint-collision check during simulate_ahead_time
+    # uses nav_center so it matches the published footprint.
+    robot_base_frame: nav_center
     transform_tolerance: 0.1
     use_sim_time: False
     simulate_ahead_time: 2.0
