@@ -143,17 +143,25 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       # Velocity envelope (matches old DWB limits).
       desired_linear_vel: 1.5
-      min_approach_linear_velocity: 0.05
+      min_approach_linear_velocity: 0.10
       approach_velocity_scaling_dist: 0.6
       max_robot_pose_search_dist: 10.0
-      # Fixed (not velocity-scaled) lookahead — predictable tracking
-      # geometry at all speeds. Short to keep nav_center pinned to the
-      # plan; smaller = tighter, but more sensitive to plan jitter.
-      use_velocity_scaled_lookahead_dist: false
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.6
-      lookahead_time: 1.5
+      # ── Lookahead tuned for DWB-like smoothness ───────────────────
+      # A fixed-short lookahead (0.4 m at 1.5 m/s = 0.27 s of preview)
+      # made RPP yaw-oscillate: every centimeter of path jitter became
+      # a steering correction. DWB looked smooth because its sim_time
+      # of 1.2 s evaluated each candidate trajectory ~1.2 s ahead and
+      # discarded the high-curvature ones. To recreate that here we
+      # velocity-scale the lookahead so the carrot sits ~1.0 s of
+      # travel ahead — wide at speed, tightening at low velocity.
+      # Floor (min) prevents tight wobble when the robot slows for
+      # curves; ceiling (max) prevents the carrot from running off
+      # past the goal on long straight segments.
+      use_velocity_scaled_lookahead_dist: true
+      lookahead_time: 1.0
+      lookahead_dist: 1.0           # fallback if velocity_scaled is disabled
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 2.0
       transform_tolerance: 0.2
       # Heading is NOT controlled by this controller. nav_center
       # position-on-path is the sole tracking objective; body yaw is
@@ -162,14 +170,19 @@ controller_server:
       use_rotate_to_heading: false
       rotate_to_heading_min_angle: 3.15
       rotate_to_heading_angular_vel: 0.0
-      max_angular_accel: 3.2
+      # Matches DWB's acc_lim_theta: 0.9. RPP only consults this when
+      # rotate_to_heading is active (off here), but set it consistent
+      # so any future enable doesn't import a hidden 3.2 rad/s² jerk.
+      max_angular_accel: 0.9
       # Forward-only (per competition constraint).
       allow_reversing: false
-      # Curvature regulation: slow down on tight bends so nav_center
-      # stays close to the planned arc. radius below which the linear
-      # velocity scales toward regulated_linear_scaling_min_speed.
+      # Curvature regulation: slow down on tight bends so the body
+      # tracks the planned arc instead of overshooting. Min radius
+      # widened from 0.6 → 1.2 m so the robot eases off velocity well
+      # before it has to swing hard — straight contributor to the
+      # DWB-style smoothness.
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.6
+      regulated_linear_scaling_min_radius: 1.2
       regulated_linear_scaling_min_speed: 0.25
       # Path is already collision-free by construction — don't slow
       # for general cost gradients near the path.
