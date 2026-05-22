@@ -23,6 +23,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
@@ -63,6 +64,7 @@ public:
 		this->declare_parameter("depth_fill_radius_px", 3);
 		this->declare_parameter("depth_fill_min_neighbors", 3);
 		this->declare_parameter("depth_fill_max_spread_m", 0.35);
+		this->declare_parameter("projection_max_points", 2000);
 		this->declare_parameter("cluster_min_points", 15);
 		this->declare_parameter("cluster_min_length_m", 0.30);
 		this->declare_parameter("cluster_max_width_m", 0.25);
@@ -117,6 +119,8 @@ public:
 			1, this->get_parameter("depth_fill_min_neighbors").as_int());
 		depth_fill_max_spread_m_ = std::max<double>(
 			0.0, this->get_parameter("depth_fill_max_spread_m").as_double());
+		projection_max_points_ = std::max<int>(
+			1, this->get_parameter("projection_max_points").as_int());
 		cluster_min_points_ = std::max<int>(1, this->get_parameter("cluster_min_points").as_int());
 		cluster_min_length_m_ = std::max(0.0, this->get_parameter("cluster_min_length_m").as_double());
 		cluster_max_width_m_ = std::max(0.01, this->get_parameter("cluster_max_width_m").as_double());
@@ -157,6 +161,7 @@ public:
 		RCLCPP_INFO(this->get_logger(),
 			"Depth fill: radius=%d px min_neighbors=%d max_spread=%.2f m",
 			depth_fill_radius_px_, depth_fill_min_neighbors_, depth_fill_max_spread_m_);
+		RCLCPP_INFO(this->get_logger(), "Projection max points: %d", projection_max_points_);
 		RCLCPP_INFO(this->get_logger(),
 			"Cluster gates: min_points=%d min_length=%.2fm max_width=%.2fm min_aspect=%.2f link=%.2fm",
 			cluster_min_points_, cluster_min_length_m_, cluster_max_width_m_,
@@ -265,6 +270,10 @@ private:
 	
 	tf2_ros::Buffer tf_buffer;
 	tf2_ros::TransformListener tf_listener;
+	std::mutex static_tf_lock;
+	std::string cached_camera_frame_;
+	bool has_base_camera_transform_ = false;
+	Eigen::Affine3d T_base_camera_ = Eigen::Affine3d::Identity();
 	
 	// Store camera intrinsics directly - no PinholeCameraModel to avoid dangling pointer issues
 	double fx_ = 0.0, fy_ = 0.0, cx_ = 0.0, cy_ = 0.0;
@@ -289,6 +298,7 @@ private:
 	int     depth_fill_radius_px_ = 3;
 	int     depth_fill_min_neighbors_ = 3;
 	double  depth_fill_max_spread_m_ = 0.35;
+	int     projection_max_points_ = 2000;
 	int     cluster_min_points_ = 15;
 	double  cluster_min_length_m_ = 0.30;
 	double  cluster_max_width_m_ = 0.25;
@@ -327,9 +337,16 @@ private:
 		int kept_clusters = 0;
 		int candidate_points = 0;
 		int confirmed_points = 0;
+		int projected_output_count = 0;
 		int yaw_gated_frames = 0;
 		int tf_wait_failures = 0;
 		int tf_latest_fallbacks = 0;
+		double total_callback_ms = 0.0;
+		double cuda_detect_ms = 0.0;
+		double tf_lookup_ms = 0.0;
+		double projection_ms = 0.0;
+		double temporal_update_ms = 0.0;
+		double debug_publish_ms = 0.0;
 	};
 
 	struct CandidatePoint {
@@ -752,21 +769,36 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	};
 
 	// Stamped TF is the normal path: every projected point uses the robot
-	// pose at the depth-image stamp. Latest TF is an explicit emergency
-	// fallback only; mixing latest pose with older images can scatter line
-	// points through the map even when the 2D pixels are correct.
+	// pose at the depth-image stamp. Cache the camera->base static leg and
+	// wait only for target<-base each frame; latest TF remains an explicit
+	// emergency fallback only because it can scatter points.
 	bool transform_available = false;
-	geometry_msgs::msg::TransformStamped target_transform;
-	geometry_msgs::msg::TransformStamped base_transform;
+	Eigen::Affine3d T_target = Eigen::Affine3d::Identity();
+	Eigen::Affine3d T_base = Eigen::Affine3d::Identity();
 	
+	const auto tf_start = std::chrono::steady_clock::now();
 	try {
+		{
+			std::lock_guard<std::mutex> lock(static_tf_lock);
+			if (!has_base_camera_transform_ || cached_camera_frame_ != frame_id) {
+				const auto latest_timeout =
+					rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL);
+				const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
+				const auto base_camera_transform = tf_buffer.lookupTransform(
+					"base_link", frame_id, latest, latest_timeout);
+				T_base_camera_ = tf2::transformToEigen(base_camera_transform);
+				cached_camera_frame_ = frame_id;
+				has_base_camera_transform_ = true;
+			}
+			T_base = T_base_camera_;
+		}
+
 		const rclcpp::Time depth_stamp(depth_msg->header.stamp);
 		const auto stamped_timeout =
 			rclcpp::Duration::from_nanoseconds(tf_wait_for_stamp_ms_ * 1000000LL);
-		target_transform = tf_buffer.lookupTransform(
-			target_frame_, frame_id, depth_stamp, stamped_timeout);
-		base_transform = tf_buffer.lookupTransform(
-			"base_link", frame_id, depth_stamp, stamped_timeout);
+		const auto target_base_transform = tf_buffer.lookupTransform(
+			target_frame_, "base_link", depth_stamp, stamped_timeout);
+		T_target = tf2::transformToEigen(target_base_transform) * T_base;
 		transform_available = true;
 	} catch (const tf2::TransformException& stamped_ex) {
 		stats.tf_wait_failures++;
@@ -778,10 +810,12 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 				const auto latest_timeout =
 					rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL);
 				const rclcpp::Time latest(0, 0, RCL_ROS_TIME);
-				target_transform = tf_buffer.lookupTransform(
-					target_frame_, frame_id, latest, latest_timeout);
-				base_transform = tf_buffer.lookupTransform(
+				const auto base_camera_transform = tf_buffer.lookupTransform(
 					"base_link", frame_id, latest, latest_timeout);
+				const auto target_base_transform = tf_buffer.lookupTransform(
+					target_frame_, "base_link", latest, latest_timeout);
+				T_base = tf2::transformToEigen(base_camera_transform);
+				T_target = tf2::transformToEigen(target_base_transform) * T_base;
 				transform_available = true;
 			} catch (const tf2::TransformException& latest_ex) {
 				RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -796,6 +830,9 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 				stamped_ex.what());
 		}
 	}
+	stats.tf_lookup_ms =
+		std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - tf_start).count();
 
 	if (!transform_available) {
 		return depth_line_points;
@@ -806,26 +843,95 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	const int roi_min_y = static_cast<int>(
 		std::round(static_cast<double>(depth_msg->height) * roi_min_y_fraction_));
 
-	// Convert TF stamps to plain Eigen affine matrices ONCE, then do the
-	// per-pixel 3D transform as a single 4x4 multiply instead of
-	// tf2::doTransform's PointStamped/Quaternion roundtrip (~3-5 us each
-	// call -> ~40 ms/frame at 16k pixels). The transforms are constant
-	// across all pixels in this frame anyway.
-	Eigen::Affine3d T_target = Eigen::Affine3d::Identity();
-	Eigen::Affine3d T_base = Eigen::Affine3d::Identity();
-	if (transform_available) {
-		T_target = tf2::transformToEigen(target_transform);
-		T_base = tf2::transformToEigen(base_transform);
+	auto to_row_major_float = [](const Eigen::Affine3d & transform, float * out) {
+		const Eigen::Matrix4d matrix = transform.matrix();
+		for (int r = 0; r < 4; ++r) {
+			for (int c = 0; c < 4; ++c) {
+				out[r * 4 + c] = static_cast<float>(matrix(r, c));
+			}
+		}
+	};
+
+	const int projection_count = std::min(line_points_len, projection_max_points_);
+	if (projection_count > 0) {
+		float target_matrix[16];
+		float base_matrix[16];
+		to_row_major_float(T_target, target_matrix);
+		to_row_major_float(T_base, base_matrix);
+		std::vector<LineProjectionResult> projection_results(projection_count);
+		LineProjectionStats projection_stats;
+		const auto projection_start = std::chrono::steady_clock::now();
+		const cudaError_t projection_err = project_line_pixels_cuda(
+			line_points,
+			line_points_len,
+			depth_ptr_u8,
+			depth_msg->data.size(),
+			static_cast<int>(depth_msg->width),
+			static_cast<int>(depth_msg->height),
+			row_step,
+			static_cast<float>(fx),
+			static_cast<float>(fy),
+			static_cast<float>(cx),
+			static_cast<float>(cy),
+			target_matrix,
+			base_matrix,
+			projection_max_points_,
+			roi_min_y,
+			static_cast<float>(max_depth_m_),
+			static_cast<float>(base_min_x_m_),
+			static_cast<float>(base_max_x_m_),
+			static_cast<float>(base_max_abs_y_m_),
+			static_cast<float>(ground_z_m_),
+			static_cast<float>(ground_z_tolerance_m_),
+			depth_fill_radius_px_,
+			depth_fill_min_neighbors_,
+			static_cast<float>(depth_fill_max_spread_m_),
+			projection_results.data(),
+			static_cast<int>(projection_results.size()),
+			&projection_stats);
+		stats.projection_ms =
+			std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - projection_start).count();
+
+		if (projection_err == cudaSuccess) {
+			stats.depth_rejects += projection_stats.depth_rejects;
+			stats.depth_fill_hits += projection_stats.depth_fill_hits;
+			stats.roi_rejects += projection_stats.roi_rejects;
+			stats.geometry_rejects += projection_stats.geometry_rejects;
+			stats.out_of_bounds += projection_stats.out_of_bounds;
+			stats.transform_rejects += projection_stats.transform_rejects;
+			stats.projected_output_count = projection_stats.projected_count;
+			depth_line_points.reserve(static_cast<size_t>(projection_stats.projected_count));
+			for (int i = 0; i < projection_stats.projected_count; ++i) {
+				const auto & result = projection_results[i];
+				CandidatePoint candidate;
+				candidate.target = Eigen::Vector3d(result.target_x, result.target_y, result.target_z);
+				candidate.base = Eigen::Vector3d(result.base_x, result.base_y, result.base_z);
+				candidate.pixel = cv::Point(result.pixel_x, result.pixel_y);
+				depth_line_points.emplace_back(candidate);
+			}
+			RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
+				"GPU projection: %d valid depth, %d depth fills, %d depth rejects, %d ROI rejects, %d geometry rejects, %d out-of-bounds -> %d candidate points",
+				projection_stats.valid_depth, projection_stats.depth_fill_hits,
+				projection_stats.depth_rejects, projection_stats.roi_rejects,
+				projection_stats.geometry_rejects, projection_stats.out_of_bounds,
+				projection_stats.projected_count);
+			return depth_line_points;
+		}
+
+		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+			"GPU line projection failed (%s); falling back to CPU projection",
+			cudaGetErrorString(projection_err));
 	}
 
 	// Pre-decimate. With 16k+ raw line pixels and a 10 cm temporal voxel
 	// size, candidates within 10 cm collapse to one voxel anyway. Striding
 	// to keep ~4000 pixels preserves voxel coverage while cutting the
 	// per-pixel transform/branch cost by ~4x.
-	const int kTargetMaxPoints = 4000;
-	const int stride = std::max(1, line_points_len / kTargetMaxPoints);
+	const int stride = std::max(1, line_points_len / projection_max_points_);
 
 	// Process each line point
+	const auto projection_start = std::chrono::steady_clock::now();
 	for (int i = 0; i < line_points_len; i += stride) {
 		if (line_points[i].y < roi_min_y) {
 			stats.roi_rejects++;
@@ -889,6 +995,10 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 			tf_success++;
 		}
 	}
+	stats.projection_ms =
+		std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - projection_start).count();
+	stats.projected_output_count = tf_success;
 
 	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000,
 		"Processing: %d valid depth, %d depth fills, %d depth rejects, %d ROI rejects, %d geometry rejects, %d out-of-bounds -> %d candidate points",
@@ -1171,9 +1281,16 @@ void LineDetectorNode::publishDiagnostics(
 		<< "\"kept_clusters\":" << stats.kept_clusters << ","
 		<< "\"candidate_points\":" << stats.candidate_points << ","
 		<< "\"confirmed_points\":" << stats.confirmed_points << ","
+		<< "\"projected_output_count\":" << stats.projected_output_count << ","
 		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames << ","
 		<< "\"tf_wait_failures\":" << stats.tf_wait_failures << ","
-		<< "\"tf_latest_fallbacks\":" << stats.tf_latest_fallbacks
+		<< "\"tf_latest_fallbacks\":" << stats.tf_latest_fallbacks << ","
+		<< "\"total_callback_ms\":" << stats.total_callback_ms << ","
+		<< "\"cuda_detect_ms\":" << stats.cuda_detect_ms << ","
+		<< "\"tf_lookup_ms\":" << stats.tf_lookup_ms << ","
+		<< "\"projection_ms\":" << stats.projection_ms << ","
+		<< "\"temporal_update_ms\":" << stats.temporal_update_ms << ","
+		<< "\"debug_publish_ms\":" << stats.debug_publish_ms
 		<< "}";
 	msg.data = out.str();
 	_diagnostics_pub->publish(msg);
@@ -1333,6 +1450,15 @@ void LineDetectorNode::line_service(
 void LineDetectorNode::line_callback()
 {
 	DetectionFrameStats stats;
+	const auto callback_start = std::chrono::steady_clock::now();
+	auto elapsed_ms = [](const auto & start) {
+		return std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - start).count();
+	};
+	auto publish_timed_diagnostics = [&](const char * reason) {
+		stats.total_callback_ms = elapsed_ms(callback_start);
+		publishDiagnostics(stats, reason);
+	};
 
 	// Check prerequisites
 	if (!configured_){
@@ -1358,12 +1484,12 @@ void LineDetectorNode::line_callback()
 		// republish pattern so the local_costmap sees stable line
 		// obstacles across transient input gaps.
 		republishConfirmedCache(this->now());
-		publishDiagnostics(stats, "missing camera/depth image");
+		publish_timed_diagnostics("missing camera/depth image");
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
 		republishConfirmedCache(depth_msg->header.stamp);
-		publishDiagnostics(stats, "RGB/depth desynchronization");
+		publish_timed_diagnostics("RGB/depth desynchronization");
 		return;
 	}
 
@@ -1381,14 +1507,14 @@ void LineDetectorNode::line_callback()
 	} catch (cv_bridge::Exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
-		publishDiagnostics(stats, "cv_bridge exception");
+		publish_timed_diagnostics("cv_bridge exception");
 		return;
 	}
 
 	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
 		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
 		republishConfirmedCache(depth_msg->header.stamp);
-		publishDiagnostics(stats, "invalid grayscale image");
+		publish_timed_diagnostics("invalid grayscale image");
 		return;
 	}
 
@@ -1396,14 +1522,16 @@ void LineDetectorNode::line_callback()
 	std::pair<int2*,int*> line_pair;
 	lines::LinePixelDetectionStats pixel_stats;
 	try {
+		const auto detect_start = std::chrono::steady_clock::now();
 		line_pair = lines::detect_line_pixels(cv_ptr->image,
 				brightness_threshold_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
 				debug_image_write_enabled_, &pixel_stats);
+		stats.cuda_detect_ms = elapsed_ms(detect_start);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Line detection failed: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
-		publishDiagnostics(stats, "line detection failure");
+		publish_timed_diagnostics("line detection failure");
 		return;
 	}
 	
@@ -1445,7 +1573,9 @@ void LineDetectorNode::line_callback()
 	if (*line_points_len == 0) {
 		const rclcpp::Time stamp(depth_msg->header.stamp);
 		const bool yaw_gated = isYawGated();
+		const auto temporal_start = std::chrono::steady_clock::now();
 		updateTemporalConfidence({}, stamp, yaw_gated, stats);
+		stats.temporal_update_ms = elapsed_ms(temporal_start);
 		if (yaw_gated) {
 			republishConfirmedCacheFor(
 				depth_msg->header.stamp,
@@ -1455,10 +1585,12 @@ void LineDetectorNode::line_callback()
 		} else {
 			republishConfirmedCache(depth_msg->header.stamp);
 		}
+		const auto debug_start = std::chrono::steady_clock::now();
 		publishDebugImages(
 			camera_msg, cv_ptr->image, line_points, *line_points_len,
 			{}, publishedDebugPixels());
-		publishDiagnostics(stats, yaw_gated ? "yaw gated empty line detection" : "empty line detection");
+		stats.debug_publish_ms = elapsed_ms(debug_start);
+		publish_timed_diagnostics(yaw_gated ? "yaw gated empty line detection" : "empty line detection");
 		delete[] line_points;
 		delete line_points_len;
 		return;
@@ -1471,7 +1603,7 @@ void LineDetectorNode::line_callback()
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Transform failed: %s", e.what());
 		republishConfirmedCache(depth_msg->header.stamp);
-		publishDiagnostics(stats, "transform failure");
+		publish_timed_diagnostics("transform failure");
 		delete[] line_points;
 		delete line_points_len;
 		return;
@@ -1490,8 +1622,10 @@ void LineDetectorNode::line_callback()
 
 	const rclcpp::Time stamp(depth_msg->header.stamp);
 	const bool yaw_gated = isYawGated();
+	const auto temporal_start = std::chrono::steady_clock::now();
 	std::vector<Eigen::Vector3d> confirmed_points =
 		updateTemporalConfidence(clustered_points, stamp, yaw_gated, stats);
+	stats.temporal_update_ms = elapsed_ms(temporal_start);
 
 	if (stats.tf_wait_failures > 0 && stats.tf_latest_fallbacks == 0 &&
 		clustered_points.empty())
@@ -1514,11 +1648,12 @@ void LineDetectorNode::line_callback()
 	} else {
 		publishConfirmedOrEmpty(confirmed_points, depth_msg->header.stamp);
 	}
+	const auto debug_start = std::chrono::steady_clock::now();
 	publishDebugImages(
 		camera_msg, cv_ptr->image, line_points, *line_points_len,
 		clustered_points, publishedDebugPixels());
-	publishDiagnostics(
-		stats,
+	stats.debug_publish_ms = elapsed_ms(debug_start);
+	publish_timed_diagnostics(
 		(stats.tf_wait_failures > 0 && stats.tf_latest_fallbacks == 0 &&
 		 clustered_points.empty()) ? "stamped TF unavailable" :
 		(yaw_gated ? "yaw gated" : "updated"));

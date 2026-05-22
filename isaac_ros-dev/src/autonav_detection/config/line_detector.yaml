@@ -48,6 +48,7 @@
     depth_fill_radius_px: 3           # Fill small ZED depth holes on bright painted lines using only a consistent local depth neighborhood.
     depth_fill_min_neighbors: 3
     depth_fill_max_spread_m: 0.35
+    projection_max_points: 2000       # Cap red pixels projected into depth/TF each frame; keeps yellow path under the 10 Hz timer budget.
     # Cluster shape filter now uses PCA-aligned extents (see node.cpp
     # filterLineClusters); previously it used cv::minAreaRect which
     # axis-aligned to the depth-ray direction at low point counts and
