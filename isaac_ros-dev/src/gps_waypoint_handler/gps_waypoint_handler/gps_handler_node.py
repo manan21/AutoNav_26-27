@@ -919,6 +919,15 @@ class GpsHandlerNode(Node):
                         self._ekf.update(zx, zy)
                     self._maybe_resync_heading()
 
+            # ── θ measurement: GPS-CoG + IMU yaw ───────────────────
+            # PRIMARY θ source. Uses no odom angle. Fires every odom
+            # tick after bootstrap, with a 1.5 m baseline gate so
+            # CoG isn't sampled from GPS noise alone. The disabled
+            # resync paths (_maybe_resync_heading,
+            # _periodic_heading_refit, _force_heading_resync) used
+            # ``atan2(odom_displacement)`` — this replaces them.
+            self._inject_gps_cog_theta_measurement()
+
             # ── Self-correction layers ─────────────────────────────
             self._update_candidate_smoother()
             self._update_next_hint_smoother()
@@ -1048,6 +1057,17 @@ class GpsHandlerNode(Node):
     # ── Heading resync (§5.5 / sim 1681-1715) ──────────────────────
 
     def _maybe_resync_heading(self) -> None:
+        """DISABLED — see _inject_gps_cog_theta_measurement.
+
+        This path called ``closed_form_theta_window`` whose θ estimate
+        was derived from ``atan2(odom_displacement)``: encoder yaw
+        bias propagated straight into the EKF heading every time this
+        fired. Replaced by a GPS-course-of-ground + IMU-yaw injection
+        that never touches an odom angle.
+        """
+        return
+        # Original body preserved below — restore by removing the
+        # ``return`` above if you need to debug the old behaviour.
         """Lock held. Standard cooldown-gated resync against a 100-sample
         sliding window. ``_force_heading_resync`` is the moving-away-
         triggered, wider-window, no-cooldown variant."""
@@ -1088,6 +1108,18 @@ class GpsHandlerNode(Node):
             self._heading_resync_count += 1
 
     def _periodic_heading_refit(self) -> None:
+        """DISABLED — see _inject_gps_cog_theta_measurement.
+
+        Same root cause as ``_maybe_resync_heading``: the closed-form
+        fit it injected used ``atan2(odom_displacement)`` as the body-
+        direction reference, so encoder yaw bias was being plumbed
+        into the EKF's θ every PERIODIC_REFIT_PERIOD_S. The
+        replacement is the GPS-CoG + IMU-yaw injection (called from
+        every odom tick) which uses no odom angle.
+        """
+        return
+        # Original body preserved below; remove the ``return`` above
+        # to reactivate.
         """Timer callback: unconditional periodic θ refit, every
         PERIODIC_REFIT_PERIOD_S. Sim parity — catches small persistent
         biases below the moving-away/divergence thresholds before they
@@ -1133,6 +1165,19 @@ class GpsHandlerNode(Node):
             )
 
     def _force_heading_resync(self) -> bool:
+        """DISABLED — see _inject_gps_cog_theta_measurement.
+
+        Same reasoning as the other two resync paths: this calls
+        ``closed_form_theta_window`` whose result is contaminated by
+        encoder-bias-laden odom-displacement angles. θ now updates
+        only through ``_inject_gps_cog_theta_measurement``.
+
+        Returns False (the original return type) so callers that
+        check the result for "did a resync fire?" see a no-op.
+        """
+        return False
+        # Original body preserved below; remove the ``return False``
+        # above to reactivate.
         """Lock held. Wide window (500 samples), 3 m floor, 20° diff —
         no cooldown. Sim 1717-1747."""
         # Pass the deque directly (no list copy) — see
@@ -1295,6 +1340,63 @@ class GpsHandlerNode(Node):
         else:
             a = CANDIDATE_SMOOTH_ALPHA
             self._next_hint_smoothed_candidate = (sx + a * dx, sy + a * dy)
+
+    def _inject_gps_cog_theta_measurement(self) -> None:
+        """Lock held. Continuous GPS-CoG + IMU-yaw θ measurement.
+
+        Replaces ``_maybe_resync_heading`` / ``_periodic_heading_refit``
+        / ``_force_heading_resync`` (all three disabled — see their
+        docstrings). Those paths fed θ values derived from
+        ``atan2(odom_displacement)`` into the EKF, which means encoder
+        yaw bias propagated straight into the heading estimate every
+        time they fired. THIS path uses no odom angle:
+
+            cog_gps   = atan2(gps[-1] − gps[-N])     # world-frame
+                                                      # direction of motion
+            theta_obs = cog_gps − last_odom_yaw       # last_odom_yaw is
+                                                      # /local_ekf/odom yaw
+                                                      # — IMU-fused, no
+                                                      # encoder bias
+            ekf.update_theta_measurement(theta_obs, σ=2°)
+
+        Why this works: GPS noise is zero-mean centered on truth, so
+        averaging many CoG samples converges to the true direction of
+        motion. ``_last_odom_yaw`` comes from ``/local_ekf/odom`` which
+        fuses IMU + wheels — IMU dominates short-term so the encoder
+        bias never reaches this signal. The difference (= world rotation
+        between odom and world) is exactly what θ is supposed to be.
+
+        Gated on:
+          * bootstrap done (don't fight the bootstrap reset_theta path)
+          * ≥ 8 GPS samples in history (need a window)
+          * baseline ≥ 1.5 m over the window (sub-baseline → CoG
+            uncertainty σ ≈ σ_pos / baseline dominates GPS noise)
+
+        Called from ``_odom_callback`` on every odom tick. Pairs with
+        ``gps_ekf.predict``'s zeroed F[0,2]/F[1,2] cross-terms (which
+        prevent GPS position updates from rotating θ via correlation):
+        together they make the EKF's θ depend ONLY on GPS-CoG +
+        IMU-yaw, with no contribution from raw odom integration.
+        """
+        if not self._bootstrap_done:
+            return
+        if len(self._gps_history) < 8:
+            return
+        # Window of the most recent samples — ~3 s at 10 Hz GPS.
+        n = min(30, len(self._gps_history))
+        old_gps = self._gps_history[-n][1]
+        new_gps = self._gps_history[-1][1]
+        dx = new_gps[0] - old_gps[0]
+        dy = new_gps[1] - old_gps[1]
+        baseline = math.hypot(dx, dy)
+        if baseline < 1.5:
+            return
+        cog_gps = math.atan2(dy, dx)
+        theta_obs = wrap_pi(cog_gps - self._last_odom_yaw)
+        # Tight σ — this is now the EKF's primary θ source. Wider σ
+        # lets θ coast; tighter σ keeps it pinned to GPS-CoG.
+        sigma_rad = math.radians(2.0)
+        self._ekf.update_theta_measurement(theta_obs, sigma_rad)
 
     def _update_candidate_smoother(self) -> None:
         """Lock held. EWMA + 5 m snap with a 1/r-envelope gate.
