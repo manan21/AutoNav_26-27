@@ -202,7 +202,7 @@ local_costmap:
       resolution: 0.05
       footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
       footprint_padding: 0.0
-      plugins: ["obstacle_layer", "inflation_layer", "line_layer"]
+      plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -253,6 +253,7 @@ local_costmap:
         plugin: "line_layer::LineLayer"
         enabled: True
         line_topic: "/line_points"
+        costmap_topic: "/line_costmap"
         transform_tolerance: 0.2
         max_message_age_ms: 750
         # With view-gated clearing, this is the time a stale line must be
@@ -265,6 +266,25 @@ local_costmap:
         line_clear_angle_max_rad: 0.55
         line_clear_range_min_m: 0.6
         line_clear_range_max_m: 5.0
+        max_persisted_points: 12000
+        clearing: True
+        rolling_window: True
+        publish_costmap: True
+
+      lidar_line_layer:
+        plugin: "line_layer::LineLayer"
+        enabled: True
+        line_topic: "/lidar_line_points"
+        costmap_topic: "/lidar_line_costmap"
+        transform_tolerance: 0.2
+        max_message_age_ms: 750
+        observation_persistence_ms: 1500
+        observation_persistence_resolution_m: 0.10
+        clear_lines_only_in_view: true
+        line_clear_angle_min_rad: -0.95
+        line_clear_angle_max_rad: 0.95
+        line_clear_range_min_m: 0.2
+        line_clear_range_max_m: 6.0
         max_persisted_points: 12000
         clearing: True
         rolling_window: True
@@ -309,7 +329,7 @@ global_costmap:
       # inflation_layer so the already-inflated local line costs from
       # /line_costmap are copied into global without being inflated a
       # second time.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer"]
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -344,6 +364,15 @@ global_costmap:
         # Strict accumulator mode for line memory: line cells promoted
         # from the local line-only costmap stay in global for the
         # whole run and are not cleared by later FREE cells.
+        allow_decrease: false
+        track_unknown_space: true
+
+      lidar_line_memory_mirror_layer:
+        plugin: "local_mirror_layer::LocalMirrorLayer"
+        enabled: True
+        source_topic: /lidar_line_costmap
+        # Same strict accumulator mode as the camera line mirror, but fed
+        # by the parallel LiDAR RSSI line detector.
         allow_decrease: false
         track_unknown_space: true
 

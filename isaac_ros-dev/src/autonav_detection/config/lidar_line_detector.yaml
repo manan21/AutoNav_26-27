@@ -1,0 +1,54 @@
+# lidar_line_detector parameters.
+#
+# SICK multiScan white-line detector. This runs parallel to the camera
+# detector and publishes /lidar_line_points, not /line_points.
+
+lidar_line_detector:
+  ros__parameters:
+    # I/O
+    cloud_topic: "/cloud_all_fields_fullframe"
+    line_points_topic: "/lidar_line_points"
+    debug_points_topic: "/lidar_line_detection/debug/points"
+    diagnostics_topic: "/lidar_line_detection/diagnostics"
+    intensity_field: "i"
+    base_frame: "base_link"
+    target_frame: "odom"
+
+    # Runtime cadence / TF
+    tf_lookup_timeout_ms: 100
+    tf_use_latest: false
+    max_processing_rate_hz: 10.0
+    publish_empty_messages: true
+    publish_debug_points: true
+
+    # Ground-region gate in base_link coordinates.
+    range_min_m: 0.20
+    range_max_m: 6.0
+    base_min_x_m: -0.10
+    base_max_x_m: 5.0
+    base_max_abs_y_m: 3.0
+    ground_z_m: -0.11
+    ground_z_tolerance_m: 0.18
+    layer_min: -1
+    layer_max: -1
+    echo_filter: -1
+
+    # Adaptive RSSI thresholding. Intensities are compared within
+    # range/layer bins so close bright asphalt does not dominate far tape.
+    adaptive_range_bin_m: 0.50
+    adaptive_stddev_multiplier: 1.5
+    adaptive_min_delta: 5.0
+    adaptive_min_samples: 20
+    min_intensity: 0.0
+    normalize_by_layer: true
+    use_reflector_boost: true
+    reflector_threshold_boost: 25.0
+
+    # Shape filter for tape-like marks in the local ground plane.
+    cluster_link_distance_m: 0.20
+    cluster_min_points: 4
+    cluster_min_length_m: 0.35
+    cluster_max_width_m: 0.22
+    cluster_min_aspect_ratio: 2.5
+    output_voxel_size_m: 0.08
+    max_line_points: 8000

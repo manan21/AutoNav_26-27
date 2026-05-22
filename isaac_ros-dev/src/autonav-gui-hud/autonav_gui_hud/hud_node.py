@@ -1728,10 +1728,12 @@ class HudWindow(QMainWindow):
             # plugins come up — same reasoning as PCA above.
             ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
             ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("LIDAR LINE DETECT", ["LIDAR LINE DETECT"], "./config/run-lidar-lines.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
+        self._launch_all_excluded = {"LIDAR LINE DETECT"}
 
         self._launch_nav_buttons = []  # same tuple format as _nav_buttons
         self._launch_states = {}   # label -> False | 'starting' | True
@@ -1759,6 +1761,7 @@ class HudWindow(QMainWindow):
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
             "LINE DETECT": 45.0,
+            "LIDAR LINE DETECT": 45.0,
             "PCA DETECT": 45.0,
         }
 
@@ -2560,7 +2563,10 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA DETECT"]
+        virtual_names = [
+            "SLAM", "CONTROL", "NAV2", "LINE DETECT",
+            "PCA DETECT", "LIDAR LINE DETECT",
+        ]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
@@ -5303,6 +5309,8 @@ class HudWindow(QMainWindow):
     def _launch_all_in_sequence(self):
         """Queue all devices that aren't already on or starting."""
         for label, _keys, _cmd in self._launch_devices:
+            if label in getattr(self, '_launch_all_excluded', set()):
+                continue
             state = self._launch_states.get(label, False)
             if not state:  # not on, not starting
                 self._toggle_device(label)

@@ -3,7 +3,7 @@
 <package format="3">
   <name>autonav_detection</name>
   <version>0.0.0</version>
-  <description>AutoNav perception detectors: camera-based line detector and LiDAR-based PCA grade detector. Both run as separate executables sharing this package.</description>
+  <description>AutoNav perception detectors: camera lines, LiDAR RSSI lines, and LiDAR PCA grade obstacles.</description>
   <maintainer email="jb5@vt.edu">joe</maintainer>
   <license>TODO: License declaration</license>
 

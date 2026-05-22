@@ -165,6 +165,7 @@ private:
   rclcpp::Subscription<autonav_interfaces::msg::LinePoints>::SharedPtr line_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   std::string line_topic_;
+  std::string costmap_topic_;
 
   // Debug clear: Y on the controller publishes std_msgs/Empty here.
   // On receipt this layer drops persisted_points_ within clear_radius_
