@@ -61,6 +61,8 @@ public:
 		this->declare_parameter("ground_z_m", -0.11);
 		this->declare_parameter("ground_z_tolerance_m", 0.25);
 		this->declare_parameter("depth_fill_radius_px", 3);
+		this->declare_parameter("depth_fill_min_neighbors", 3);
+		this->declare_parameter("depth_fill_max_spread_m", 0.35);
 		this->declare_parameter("cluster_min_points", 15);
 		this->declare_parameter("cluster_min_length_m", 0.30);
 		this->declare_parameter("cluster_max_width_m", 0.25);
@@ -111,6 +113,10 @@ public:
 		ground_z_tolerance_m_ = std::max(0.0, this->get_parameter("ground_z_tolerance_m").as_double());
 		depth_fill_radius_px_ = std::clamp<int>(
 			this->get_parameter("depth_fill_radius_px").as_int(), 0, 15);
+		depth_fill_min_neighbors_ = std::max<int>(
+			1, this->get_parameter("depth_fill_min_neighbors").as_int());
+		depth_fill_max_spread_m_ = std::max<double>(
+			0.0, this->get_parameter("depth_fill_max_spread_m").as_double());
 		cluster_min_points_ = std::max<int>(1, this->get_parameter("cluster_min_points").as_int());
 		cluster_min_length_m_ = std::max(0.0, this->get_parameter("cluster_min_length_m").as_double());
 		cluster_max_width_m_ = std::max(0.01, this->get_parameter("cluster_max_width_m").as_double());
@@ -148,7 +154,9 @@ public:
 			"Geometry gates: roi_y>=%.2f depth<=%.2fm base_x=[%.2f, %.2f] |base_y|<=%.2f ground=%.2f±%.2f",
 			roi_min_y_fraction_, max_depth_m_, base_min_x_m_, base_max_x_m_,
 			base_max_abs_y_m_, ground_z_m_, ground_z_tolerance_m_);
-		RCLCPP_INFO(this->get_logger(), "Depth fill radius: %d px", depth_fill_radius_px_);
+		RCLCPP_INFO(this->get_logger(),
+			"Depth fill: radius=%d px min_neighbors=%d max_spread=%.2f m",
+			depth_fill_radius_px_, depth_fill_min_neighbors_, depth_fill_max_spread_m_);
 		RCLCPP_INFO(this->get_logger(),
 			"Cluster gates: min_points=%d min_length=%.2fm max_width=%.2fm min_aspect=%.2f link=%.2fm",
 			cluster_min_points_, cluster_min_length_m_, cluster_max_width_m_,
@@ -279,6 +287,8 @@ private:
 	double  ground_z_m_ = -0.11;
 	double  ground_z_tolerance_m_ = 0.25;
 	int     depth_fill_radius_px_ = 3;
+	int     depth_fill_min_neighbors_ = 3;
+	double  depth_fill_max_spread_m_ = 0.35;
 	int     cluster_min_points_ = 15;
 	double  cluster_min_length_m_ = 0.30;
 	double  cluster_max_width_m_ = 0.25;
@@ -708,38 +718,43 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 			return true;
 		}
 		const int radius = depth_fill_radius_px_;
-		int best_dist_sq = std::numeric_limits<int>::max();
-		float best_depth = 0.0f;
-		bool found = false;
+		std::vector<float> neighbor_depths;
+		neighbor_depths.reserve((2 * radius + 1) * (2 * radius + 1));
 		for (int dy = -radius; dy <= radius; ++dy) {
 			for (int dx = -radius; dx <= radius; ++dx) {
 				if (dx == 0 && dy == 0) {
 					continue;
 				}
 				const int dist_sq = dx * dx + dy * dy;
-				if (dist_sq > radius * radius || dist_sq >= best_dist_sq) {
+				if (dist_sq > radius * radius) {
 					continue;
 				}
 				float candidate_depth = 0.0f;
 				if (!read_valid_depth(x + dx, y + dy, candidate_depth)) {
 					continue;
 				}
-				best_depth = candidate_depth;
-				best_dist_sq = dist_sq;
-				found = true;
+				neighbor_depths.push_back(candidate_depth);
 			}
 		}
-		if (found) {
-			depth_m = best_depth;
-			stats.depth_fill_hits++;
+		if (static_cast<int>(neighbor_depths.size()) < depth_fill_min_neighbors_) {
+			return false;
 		}
-		return found;
+		const auto minmax =
+			std::minmax_element(neighbor_depths.begin(), neighbor_depths.end());
+		if ((*minmax.second - *minmax.first) > depth_fill_max_spread_m_) {
+			return false;
+		}
+		const auto middle = neighbor_depths.begin() + neighbor_depths.size() / 2;
+		std::nth_element(neighbor_depths.begin(), middle, neighbor_depths.end());
+		depth_m = *middle;
+		stats.depth_fill_hits++;
+		return true;
 	};
 
-	// Stamped TF is preferred: every projected point uses the robot pose
-	// at the depth-image stamp. If that transform lags and the robot is
-	// not yawing, latest TF keeps static yellow annotations responsive.
-	// During turns, fall back to the cache instead of smearing lines.
+	// Stamped TF is the normal path: every projected point uses the robot
+	// pose at the depth-image stamp. Latest TF is an explicit emergency
+	// fallback only; mixing latest pose with older images can scatter line
+	// points through the map even when the 2D pixels are correct.
 	bool transform_available = false;
 	geometry_msgs::msg::TransformStamped target_transform;
 	geometry_msgs::msg::TransformStamped base_transform;
@@ -755,13 +770,10 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		transform_available = true;
 	} catch (const tf2::TransformException& stamped_ex) {
 		stats.tf_wait_failures++;
-		const bool allow_latest_fallback = tf_use_latest_ || !isYawGated();
-		if (allow_latest_fallback) {
+		if (tf_use_latest_) {
 			try {
-				// When the robot is not yawing, latest TF is a practical
-				// low-latency fallback for visualization and costmap marking.
-				// During turns, keep the older stamped-TF/cache behavior to
-				// avoid smearing line points into arcs.
+				// Emergency fallback only. This preserves legacy behavior
+				// for field debugging but remains disabled by default.
 				stats.tf_latest_fallbacks++;
 				const auto latest_timeout =
 					rclcpp::Duration::from_nanoseconds(tf_lookup_timeout_ms_ * 1000000LL);
@@ -773,9 +785,9 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 				transform_available = true;
 			} catch (const tf2::TransformException& latest_ex) {
 				RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-					"TF not available (%s/base_link <- %s, stamped wait=%ld ms, latest fallback %s failed): stamped=%s latest=%s",
+					"TF not available (%s/base_link <- %s, stamped wait=%ld ms, latest fallback failed): stamped=%s latest=%s",
 					target_frame_.c_str(), frame_id.c_str(), tf_wait_for_stamp_ms_,
-					tf_use_latest_ ? "enabled" : "static", stamped_ex.what(), latest_ex.what());
+					stamped_ex.what(), latest_ex.what());
 			}
 		} else {
 			RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
