@@ -13,16 +13,6 @@
 namespace breadcrumb
 {
 
-namespace
-{
-double wrap_pi(double a)
-{
-  while (a > M_PI) a -= 2.0 * M_PI;
-  while (a < -M_PI) a += 2.0 * M_PI;
-  return a;
-}
-}  // namespace
-
 BreadcrumbReverse::BreadcrumbReverse()
 : nav2_behaviors::TimedBehavior<DriveOnHeadingAction>(),
   reverse_speed_(0.10),
