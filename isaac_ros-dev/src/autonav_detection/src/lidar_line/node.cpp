@@ -17,6 +17,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -162,6 +163,8 @@ public:
     diagnostics_topic_ = declare_parameter<std::string>(
       "diagnostics_topic", "/lidar_line_detection/diagnostics");
     intensity_field_ = declare_parameter<std::string>("intensity_field", "i");
+    candidate_mode_name_ = declare_parameter<std::string>(
+      "candidate_mode", "intensity");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
     target_frame_ = declare_parameter<std::string>("target_frame", "odom");
 
@@ -205,7 +208,7 @@ public:
       "cluster_link_distance_m", 0.20);
     cluster_min_points_ = declare_parameter<int>("cluster_min_points", 4);
     cluster_min_length_m_ = declare_parameter<double>(
-      "cluster_min_length_m", 0.35);
+      "cluster_min_length_m", 0.34);
     cluster_max_width_m_ = declare_parameter<double>(
       "cluster_max_width_m", 0.22);
     cluster_min_aspect_ratio_ = declare_parameter<double>(
@@ -227,6 +230,7 @@ public:
     cluster_min_aspect_ratio_ = std::max(1.0, cluster_min_aspect_ratio_);
     output_voxel_size_m_ = std::max(0.01, output_voxel_size_m_);
     max_line_points_ = std::max(1, max_line_points_);
+    candidate_mode_ = parseCandidateMode(candidate_mode_name_);
 
     rclcpp::QoS qos(rclcpp::KeepLast(5));
     qos.best_effort();
@@ -242,12 +246,20 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "lidar_line_detector up. cloud=%s out=%s target=%s intensity_field=%s",
+      "lidar_line_detector up. cloud=%s out=%s target=%s intensity_field=%s candidate_mode=%s",
       cloud_topic_.c_str(), line_points_topic_.c_str(),
-      target_frame_.c_str(), intensity_field_.c_str());
+      target_frame_.c_str(), intensity_field_.c_str(),
+      candidate_mode_name_.c_str());
   }
 
 private:
+  enum class CandidateMode
+  {
+    Reflector,
+    Intensity,
+    ReflectorOrIntensity,
+  };
+
   struct Sample
   {
     Eigen::Vector3f lidar;
@@ -260,6 +272,48 @@ private:
     bool reflector = false;
     double score = 0.0;
   };
+
+  struct CandidateSelection
+  {
+    std::vector<Sample> candidates;
+    std::size_t reflector_candidates = 0;
+    std::size_t intensity_candidates = 0;
+    int adaptive_bins_used = 0;
+  };
+
+  CandidateMode parseCandidateMode(std::string mode)
+  {
+    std::transform(
+      mode.begin(), mode.end(), mode.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const auto first = mode.find_first_not_of(" \t\n\r");
+    const auto last = mode.find_last_not_of(" \t\n\r");
+    if (first == std::string::npos) {
+      mode.clear();
+    } else {
+      mode = mode.substr(first, last - first + 1);
+    }
+
+    if (mode == "reflector") {
+      candidate_mode_name_ = mode;
+      return CandidateMode::Reflector;
+    }
+    if (mode == "intensity") {
+      candidate_mode_name_ = mode;
+      return CandidateMode::Intensity;
+    }
+    if (mode == "reflector_or_intensity" || mode == "combined") {
+      candidate_mode_name_ = "reflector_or_intensity";
+      return CandidateMode::ReflectorOrIntensity;
+    }
+
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown candidate_mode '%s'; using 'intensity'. Valid values: reflector, intensity, reflector_or_intensity.",
+      mode.c_str());
+    candidate_mode_name_ = "intensity";
+    return CandidateMode::Intensity;
+  }
 
   bool lookupTransform(
     const std::string & target,
@@ -337,6 +391,13 @@ private:
         "PointCloud2 missing required fields x/y/z/%s.",
         intensity_field_.c_str());
       return samples;
+    }
+    if (!field_reflector && candidate_mode_ != CandidateMode::Intensity) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "candidate_mode=%s needs PointCloud2 field 'reflector'; "
+        "no reflector candidates will be produced.",
+        candidate_mode_name_.c_str());
     }
 
     const std::size_t point_count =
@@ -416,9 +477,8 @@ private:
     return samples;
   }
 
-  std::vector<Sample> selectBrightCandidates(
-    const std::vector<Sample> & samples,
-    int & adaptive_bins_used)
+  CandidateSelection selectCandidates(
+    const std::vector<Sample> & samples)
   {
     RunningStats global_stats;
     std::unordered_map<int, RunningStats> bin_stats;
@@ -429,16 +489,15 @@ private:
       bin_stats[statsKey(sample)].add(sample.intensity);
     }
 
-    std::vector<Sample> candidates;
-    candidates.reserve(samples.size() / 10 + 1);
-    adaptive_bins_used = 0;
+    CandidateSelection result;
+    result.candidates.reserve(samples.size() / 10 + 1);
     for (const auto & sample : samples) {
       const auto bin_it = bin_stats.find(statsKey(sample));
       const RunningStats * stats = &global_stats;
       if (bin_it != bin_stats.end() &&
           bin_it->second.count >= adaptive_min_samples_) {
         stats = &bin_it->second;
-        ++adaptive_bins_used;
+        ++result.adaptive_bins_used;
       }
 
       double threshold = stats->mean() + std::max(
@@ -449,14 +508,37 @@ private:
         threshold -= reflector_threshold_boost_;
       }
 
-      if (sample.intensity >= threshold) {
+      const bool intensity_candidate = sample.intensity >= threshold;
+      const bool reflector_candidate = sample.reflector;
+      if (intensity_candidate) {
+        ++result.intensity_candidates;
+      }
+      if (reflector_candidate) {
+        ++result.reflector_candidates;
+      }
+
+      bool selected = false;
+      switch (candidate_mode_) {
+        case CandidateMode::Reflector:
+          selected = reflector_candidate;
+          break;
+        case CandidateMode::Intensity:
+          selected = intensity_candidate;
+          break;
+        case CandidateMode::ReflectorOrIntensity:
+          selected = reflector_candidate || intensity_candidate;
+          break;
+      }
+
+      if (selected) {
         Sample candidate = sample;
-        candidate.score = sample.intensity - threshold;
-        candidates.push_back(candidate);
+        candidate.score = reflector_candidate ?
+          1.0 : sample.intensity - threshold;
+        result.candidates.push_back(candidate);
       }
     }
 
-    return candidates;
+    return result;
   }
 
   std::vector<std::vector<int>> clusterCandidates(
@@ -660,6 +742,8 @@ private:
     const sensor_msgs::msg::PointCloud2 & cloud,
     std::size_t samples,
     std::size_t candidates,
+    std::size_t reflector_candidates,
+    std::size_t intensity_candidates,
     std::size_t clusters,
     int accepted_clusters,
     int rejected_clusters,
@@ -670,8 +754,11 @@ private:
     std::ostringstream ss;
     ss << "frame=" << cloud.header.frame_id
        << " raw=" << static_cast<std::size_t>(cloud.width) * cloud.height
+       << " candidate_mode=" << candidate_mode_name_
        << " ground_samples=" << samples
        << " bright_candidates=" << candidates
+       << " reflector_candidates=" << reflector_candidates
+       << " intensity_candidates=" << intensity_candidates
        << " clusters=" << clusters
        << " accepted_clusters=" << accepted_clusters
        << " rejected_clusters=" << rejected_clusters
@@ -710,13 +797,12 @@ private:
     }
 
     const auto samples = extractGroundSamples(*msg, lidar_to_base, lidar_to_target);
-    int adaptive_bins_used = 0;
-    const auto candidates = selectBrightCandidates(samples, adaptive_bins_used);
-    const auto clusters = clusterCandidates(candidates);
+    const auto selection = selectCandidates(samples);
+    const auto clusters = clusterCandidates(selection.candidates);
     int accepted_clusters = 0;
     int rejected_clusters = 0;
     auto points = acceptedLinePoints(
-      candidates, clusters, accepted_clusters, rejected_clusters);
+      selection.candidates, clusters, accepted_clusters, rejected_clusters);
 
     std_msgs::msg::Header out_header = msg->header;
     out_header.frame_id = target_frame_;
@@ -730,14 +816,17 @@ private:
 
     const double elapsed_ms = (now() - start).seconds() * 1000.0;
     publishDiagnostics(
-      *msg, samples.size(), candidates.size(), clusters.size(),
+      *msg, samples.size(), selection.candidates.size(),
+      selection.reflector_candidates, selection.intensity_candidates,
+      clusters.size(),
       accepted_clusters, rejected_clusters, points.size(), elapsed_ms);
 
     RCLCPP_DEBUG(
       get_logger(),
       "lidar lines: samples=%zu candidates=%zu bins=%d clusters=%zu accepted=%d points=%zu %.1fms",
-      samples.size(), candidates.size(), adaptive_bins_used, clusters.size(),
-      accepted_clusters, points.size(), elapsed_ms);
+      samples.size(), selection.candidates.size(),
+      selection.adaptive_bins_used, clusters.size(), accepted_clusters,
+      points.size(), elapsed_ms);
   }
 
   std::string cloud_topic_;
@@ -745,6 +834,8 @@ private:
   std::string debug_points_topic_;
   std::string diagnostics_topic_;
   std::string intensity_field_;
+  std::string candidate_mode_name_;
+  CandidateMode candidate_mode_ = CandidateMode::Intensity;
   std::string base_frame_;
   std::string target_frame_;
 

@@ -1,7 +1,7 @@
 # lidar_line_detector parameters.
 #
-# SICK multiScan white-line detector. This runs parallel to the camera
-# detector and publishes /lidar_line_points, not /line_points.
+# SICK multiScan retroreflective tape detector. This runs parallel to the
+# camera detector and publishes /lidar_line_points, not /line_points.
 
 lidar_line_detector:
   ros__parameters:
@@ -11,6 +11,7 @@ lidar_line_detector:
     debug_points_topic: "/lidar_line_detection/debug/points"
     diagnostics_topic: "/lidar_line_detection/diagnostics"
     intensity_field: "i"
+    candidate_mode: "reflector"
     base_frame: "base_link"
     target_frame: "odom"
 
@@ -33,10 +34,13 @@ lidar_line_detector:
     layer_max: -1
     echo_filter: -1
 
-    # Adaptive RSSI thresholding. Measured SICK "i" values for grey rubber
-    # floor are around 33k-35k, while white duct tape produces a modest upper
-    # tail around 35.5k-37.5k. Duct tape did not set the reflector bit in lab
-    # bags, so this detector should pass from RSSI contrast alone.
+    # Candidate mode:
+    #   reflector              only retroreflective SICK reflector hits
+    #   intensity              adaptive RSSI fallback for non-reflective tape
+    #   reflector_or_intensity union of both field-test modes
+    #
+    # Adaptive RSSI values below are inactive in reflector-only mode, but kept
+    # as a fallback for dirty/non-reflective line experiments.
     adaptive_range_bin_m: 0.25
     adaptive_stddev_multiplier: 1.5
     adaptive_min_delta: 900.0
@@ -49,7 +53,7 @@ lidar_line_detector:
     # Shape filter for tape-like marks in the local ground plane.
     cluster_link_distance_m: 0.20
     cluster_min_points: 4
-    cluster_min_length_m: 0.25
+    cluster_min_length_m: 0.34
     cluster_max_width_m: 0.22
     cluster_min_aspect_ratio: 2.5
     output_voxel_size_m: 0.08
