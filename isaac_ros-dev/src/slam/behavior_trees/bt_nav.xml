@@ -77,8 +77,16 @@
               <RecoveryNode number_of_retries="8" name="ComputePathRecovery">
                 <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
                 <Sequence name="PlanRecovery">
-                  <ClearEntireCostmap name="ClearGlobalCostmap-Context"
-                    service_name="global_costmap/clear_entirely_global_costmap"/>
+                  <!-- LOCAL clear only (sim spec): wiping the entire
+                       global costmap erases distant lidar marks the
+                       robot needs to re-find its way back, and the
+                       planner immediately draws a straight line through
+                       the now-empty space. A 1 m around-robot clear
+                       handles the transient-inflation case without that
+                       memory loss. -->
+                  <ClearCostmapAroundRobot name="ClearAroundRobot-PlanRecovery"
+                    service_name="local_costmap/clear_around_local_costmap"
+                    reset_distance="1.0"/>
                   <Wait wait_duration="0.5"/>
                 </Sequence>
               </RecoveryNode>
@@ -119,12 +127,14 @@
           <BackUp backup_dist="0.10" backup_speed="0.05"/>
           <DriveOnHeading server_name="gradient_escape"
             dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
-          <Sequence name="ClearingActions">
-            <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
-              service_name="local_costmap/clear_entirely_local_costmap"/>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
-              service_name="global_costmap/clear_entirely_global_costmap"/>
-          </Sequence>
+          <!-- LOCAL-only clear in the recovery dance. Global wipe was
+               removed per sim spec: the global costmap accumulates
+               distant obstacles via local_mirror_layer; wiping it makes
+               the planner think the world is empty and route through
+               invisible walls. -->
+          <ClearCostmapAroundRobot name="ClearAroundRobot-Dance"
+            service_name="local_costmap/clear_around_local_costmap"
+            reset_distance="2.0"/>
           <Wait wait_duration="1"/>
         </RoundRobin>
       </ReactiveFallback>
