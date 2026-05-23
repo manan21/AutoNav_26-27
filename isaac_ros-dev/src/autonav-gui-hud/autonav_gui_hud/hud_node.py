@@ -1835,13 +1835,13 @@ class HudWindow(QMainWindow):
         lbl_git.setStyleSheet(group_label_style)
         dev_layout.addWidget(lbl_git)
 
-        self._dev_pull_btn = QPushButton("git pull")
+        self._dev_pull_btn = QPushButton("git sync (hard)")
         self._dev_pull_btn.setStyleSheet(dev_btn_compact)
         self._dev_pull_btn.setFocusPolicy(Qt.NoFocus)
         self._dev_pull_btn.clicked.connect(self._dev_git_pull)
         dev_layout.addWidget(self._dev_pull_btn)
         self._dev_nav_buttons.append(
-            (self._dev_pull_btn, "git pull", dev_btn_compact)
+            (self._dev_pull_btn, "git sync (hard)", dev_btn_compact)
         )
 
         # Branch switching is on its own sub-page (one click deeper) so
@@ -3477,16 +3477,50 @@ class HudWindow(QMainWindow):
                 return True
         return False
 
+    def _dev_git_hard_sync(self, log=None):
+        """Force the host repo to match origin/<current-branch>.
+
+        Sequence: fetch → reset --hard origin/<branch> → clean -fd →
+        submodule update --init --recursive. Untracked files in the
+        working tree are deleted; gitignored build artifacts are kept.
+
+        Returns (ok: bool, summary: str). When `log` is provided, every
+        sub-step's stdout/stderr is passed to it.
+        """
+        def _emit(msg):
+            if log is not None and msg:
+                log(msg)
+
+        rc_b, branch, err_b = self._dev_run_git(
+            ['branch', '--show-current'])
+        if rc_b != 0 or not branch:
+            return False, f"branch lookup failed: {err_b or 'detached HEAD'}"
+
+        for step_args, step_timeout in (
+            (['fetch', 'origin', '--prune'], 60),
+            (['reset', '--hard', f'origin/{branch}'], 30),
+            (['clean', '-fd'], 30),
+            (['submodule', 'update', '--init', '--recursive'], 120),
+        ):
+            _emit(f"$ git {' '.join(step_args)}")
+            rc, out, err = self._dev_run_git(step_args, timeout=step_timeout)
+            _emit(out)
+            _emit(err)
+            if rc != 0:
+                msg = (err or out or 'unknown').splitlines()[-1]
+                return False, f"git {step_args[0]} failed: {msg}"
+
+        return True, f"synced to origin/{branch}"
+
     def _dev_git_pull(self):
-        self._dev_set_status("Running git pull --ff-only…", color='#ff0')
+        self._dev_set_status(
+            "Hard-syncing to origin/<branch>…", color='#ff0')
         QApplication.processEvents()
-        rc, out, err = self._dev_run_git(['pull', '--ff-only'], timeout=60)
-        if rc == 0:
-            summary = out.splitlines()[-1] if out else 'Up to date'
-            self._dev_set_status(f"Pull OK: {summary}", color='#0f0')
+        ok, summary = self._dev_git_hard_sync()
+        if ok:
+            self._dev_set_status(f"Sync OK: {summary}", color='#0f0')
         else:
-            msg = (err or out or 'unknown error').splitlines()[-1]
-            self._dev_set_status(f"Pull failed: {msg}", color='#f44')
+            self._dev_set_status(f"Sync failed: {summary}", color='#f44')
         self._dev_update_branch_label()
         self._dev_refresh_branches()
 
@@ -3923,19 +3957,16 @@ class HudWindow(QMainWindow):
                 # start step below will surface real issues.
                 log(f"[stop] {e}")
 
-            # 2. git pull --ff-only on the host repo.
+            # 2. Hard-sync host repo to origin/<branch> — discards any
+            #    local edits and untracked files so the Jetson tree
+            #    always matches origin.
             self._dev_ui_status(
-                "[2/5] git pull --ff-only…", color='#ff0')
-            log("$ git pull --ff-only")
-            rc, out, err = self._dev_run_git(
-                ['pull', '--ff-only'], timeout=120)
-            log(out)
-            log(err)
-            if rc != 0:
-                msg = (err or out or 'unknown').splitlines()[-1]
+                "[2/5] git hard-sync to origin…", color='#ff0')
+            ok, summary = self._dev_git_hard_sync(log=log)
+            if not ok:
                 self._dev_ui_status(
-                    f"Pull failed: {msg}", color='#f44')
-                log(f"[!] Pull failed: {msg}")
+                    f"Sync failed: {summary}", color='#f44')
+                log(f"[!] Sync failed: {summary}")
                 return
 
             # 3. Start container detached.
