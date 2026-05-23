@@ -16,61 +16,13 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 import csv
 import os
-import signal
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
-# Default topic list for the ros2 bag recorder. ONLY topics that
-# directly drive a GUI visual go in here — high-rate non-visual
-# streams (raw IMU, joy, cmd_vel) were saturating the recorder's
-# write cache and getting dropped, leaving the rest of the bag with
-# multi-second gaps. Trimmed list keeps median publish rate well
-# under the storage budget.
-#
-# Keep in sync with the playback filter `_BAG_PLAYBACK_TOPICS` in
-# isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py —
-# the two lists should match exactly so the bag captures only what
-# we'll replay.
-#
-# Dropped relative to the previous superset (do NOT add back without
-# also bumping the cache size further):
-#   /sick_scansegment_xd/imu          — ~250 Hz raw IMU, only the
-#                                       EKF consumes it; we already
-#                                       record /local_ekf/odom which
-#                                       is the fused result.
-#   /sick_scansegment_xd/imu_inflated — same story, no visual.
-#   /joy                              — 100 Hz of stick state, no
-#                                       canvas reads it.
-#   /cmd_vel                          — operator velocity command,
-#                                       not displayed.
-DEFAULT_BAG_TOPICS = [
-    '/zed/zed_node/rgb/color/rect/image',
-    '/line_detection/debug/mask',
-    '/line_detection/line_pixels',
-    '/scan_fullframe',
-    '/scan_pca_filtered',
-    '/gps_fix',
-    '/odom',
-    '/local_ekf/odom',
-    '/global_ekf/odom',
-    '/pose',
-    '/global_costmap/costmap',
-    '/plan',
-    '/autonomous_mode',
-    '/electrical/voltage',
-    '/electrical/current',
-    '/electrical/power',
-    '/electrical/soc',
-    '/data/toggle_collect',
-]
-
-# Bag-record in-memory cache. Default in rosbag2 is ~100 MB, which
-# overflowed under the Jetson's writer thread when the full stack
-# was live + bagging — the recorder dropped 50 % of high-rate
-# samples and left 3-second gaps in camera/lidar. 1 GB gives the
-# writer plenty of headroom to absorb storage spikes.
-BAG_MAX_CACHE_BYTES = 1_000_000_000
+# Bag recording is no longer the automator's job — it's HUD-driven via
+# the R key (see HudWindow._start_hud_bag_record in
+# isaac_ros-dev/src/autonav-gui-hud/autonav_gui_hud/hud_node.py). The
+# canonical topic list lives on HudWindow._BAG_PLAYBACK_TOPICS.
 
 class BaseAutomator(Node):
     def __init__(self, node_name: str, test_id: str, test_name: str):
@@ -99,22 +51,17 @@ class BaseAutomator(Node):
 
         # ── Parameters ──────────────────────────────────────────────
         # When False (default) the legacy CSV + MP4 capture paths stay
-        # dormant — no /data/dump subscription, no CSV writes — and a
-        # `ros2 bag record` subprocess captures the GUI's subscription
-        # set instead. The bag is the single source of truth; videos
-        # get baked offline by replaying the bag back through the GUI.
-        # Set True to revert to the old per-sensor CSV + MP4 pipeline.
+        # dormant — no /data/dump subscription, no CSV writes. Bag
+        # recording is HUD-driven and is unaffected by this flag. Set
+        # True to opt back into the per-sensor CSV + MP4 pipeline.
         self.declare_parameter('enable_legacy_capture', False)
-        self.declare_parameter('bag_topics', DEFAULT_BAG_TOPICS)
         self.enable_legacy_capture = bool(
             self.get_parameter('enable_legacy_capture').value
         )
-        self._bag_topics = list(self.get_parameter('bag_topics').value)
-        self._bag_proc = None
 
-        # Common Publishers — toggle_pub is now also the
-        # "recording-state" signal the GUI subscribes to. Same Bool
-        # semantics; just one more consumer.
+        # Toggle publisher — only the legacy MP4/CSV nodes consume
+        # /data/toggle_collect from the automator side. The HUD also
+        # publishes here independently when the operator presses R.
         self.toggle_pub = self.create_publisher(Bool, '/data/toggle_collect', 10)
 
         # Common Subscribers — /data/dump only carries CSV-bound data,
@@ -177,25 +124,23 @@ class BaseAutomator(Node):
             self.stop_test()
 
     def start_test(self):
-        """Start the test - common for all tests"""
+        """Start the test - common for all tests.
+
+        Data acquisition is no longer the automator's responsibility:
+        bag recording is owned by the HUD (operator presses R) and the
+        legacy MP4/CSV pipeline runs in its own nodes. The automator
+        only fires the /data/toggle_collect signal when legacy capture
+        is explicitly enabled, since that's the path that still needs
+        a start/stop edge from the test runner.
+        """
         self.get_logger().info(f'Starting {self.test_name} Test')
         self.test_started = True
 
-        # Spawn the bag recorder BEFORE flipping the toggle — that way
-        # the very first /data/toggle_collect=True message is in the
-        # bag, which is useful for offline replay: the GUI's REC-mode
-        # overlay turns on at the same moment in the replayed stream
-        # as it did during the live run.
-        if not self.enable_legacy_capture:
-            self._start_bag_record()
-
-        # Enable data collection (also drives the GUI's REC indicator
-        # and, when enable_legacy_capture is True, the legacy
-        # video_recorder + CSV path).
-        toggle_msg = Bool()
-        toggle_msg.data = True
-        self.toggle_pub.publish(toggle_msg)
-        self.get_logger().info('Data collection enabled')
+        if self.enable_legacy_capture:
+            toggle_msg = Bool()
+            toggle_msg.data = True
+            self.toggle_pub.publish(toggle_msg)
+            self.get_logger().info('Legacy data collection enabled')
 
         # Schedule test-specific actions after a short delay (one-shot timer)
         def _start_actions_once():
@@ -224,21 +169,13 @@ class BaseAutomator(Node):
         self.get_logger().info(f'Stopping {self.test_name} Test')
         self.test_complete = True
 
-        # Disable data collection (signals the GUI to clear REC and,
-        # in legacy mode, stops the video_recorder + CSV publisher).
-        toggle_msg = Bool()
-        toggle_msg.data = False
-        self.toggle_pub.publish(toggle_msg)
-        self.get_logger().info('Data collection disabled')
-
-        # Stop the bag recorder after the False toggle is published so
-        # the OFF transition is captured in the bag too.
-        if not self.enable_legacy_capture:
-            self._stop_bag_record()
-
-        # Save collected data (legacy path only — no CSV exists in
-        # bag-only mode).
         if self.enable_legacy_capture:
+            # Stop the legacy video_recorder + CSV publisher. Bag
+            # recording is HUD-owned now and is not affected.
+            toggle_msg = Bool()
+            toggle_msg.data = False
+            self.toggle_pub.publish(toggle_msg)
+            self.get_logger().info('Legacy data collection disabled')
             self.save_data()
 
         # Shutdown
@@ -246,81 +183,6 @@ class BaseAutomator(Node):
             f'Test complete. Artifacts in: {self.log_dir}'
         )
         rclpy.shutdown()
-
-    # ── ros2 bag recording subprocess ──────────────────────────────
-    def _start_bag_record(self):
-        """Spawn a `ros2 bag record` subprocess in its own process
-        group. The process group is what lets us SIGINT cleanly later
-        — `ros2 bag` flushes the last messages and closes the bag on
-        SIGINT but ignores SIGTERM from a foreign group.
-        """
-        if self._bag_proc is not None:
-            self.get_logger().warn('bag recorder already running; not restarting')
-            return
-        bag_dir = self.log_dir / 'bag'
-        # `ros2 bag record` will create the directory itself; passing a
-        # path that already exists makes it bail. Use a unique
-        # subdirectory inside the test's log_dir.
-        if bag_dir.exists():
-            stamp = datetime.now().strftime('%H%M%S')
-            bag_dir = self.log_dir / f'bag_{stamp}'
-        cmd = [
-            'ros2', 'bag', 'record',
-            '-o', str(bag_dir),
-            '--max-cache-size', str(BAG_MAX_CACHE_BYTES),
-            *self._bag_topics,
-        ]
-        self.get_logger().info(
-            f'starting ros2 bag record → {bag_dir} '
-            f'({len(self._bag_topics)} topics)'
-        )
-        try:
-            # Both stdout and stderr to DEVNULL — `ros2 bag record`
-            # writes its log to a sidecar file anyway, and PIPEing
-            # without an active reader would fill the kernel pipe
-            # buffer (~64 KB) and block the recorder mid-message.
-            self._bag_proc = subprocess.Popen(
-                cmd,
-                preexec_fn=os.setsid,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            self.get_logger().error(
-                'ros2 not on PATH inside the automator process — '
-                'cannot start bag recorder. Source the ROS2 setup '
-                'before launching this node.'
-            )
-            self._bag_proc = None
-
-    def _stop_bag_record(self):
-        """SIGINT the bag subprocess and wait briefly for clean
-        shutdown. Falls back to SIGKILL on timeout so a wedged
-        recorder never blocks rclpy.shutdown()."""
-        proc = self._bag_proc
-        if proc is None:
-            return
-        if proc.poll() is not None:
-            self._bag_proc = None
-            return
-        self.get_logger().info('stopping ros2 bag record (SIGINT)')
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-        except ProcessLookupError:
-            self._bag_proc = None
-            return
-        try:
-            proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            self.get_logger().warn(
-                'bag recorder did not exit within 5 s; sending SIGKILL'
-            )
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-        self._bag_proc = None
 
     def data_callback(self, msg: String):
         """Collect and parse data from /data/dump topic"""

@@ -208,35 +208,21 @@ def main(args=None):
         rclpy.spin(automator)
     except KeyboardInterrupt:
         print('\n[INFO] Keyboard interrupt detected (Ctrl+C)')
-        if automator is not None:
-            # Stop the bag recorder FIRST — without this, SIGINT to
-            # the automator orphans the bag (it's in its own process
-            # group via os.setsid, so it doesn't catch our SIGINT
-            # propagation).
+        if automator is not None and automator.enable_legacy_capture:
+            print('[INFO] Saving collected data before shutdown...')
             try:
-                automator._stop_bag_record()
+                automator.save_data()
+                print(f'[INFO] Data saved to: {automator.log_file}')
             except Exception as e:
-                print(f'[WARN] Failed to stop bag recorder: {e}')
-            if automator.enable_legacy_capture:
-                print('[INFO] Saving collected data before shutdown...')
-                try:
-                    automator.save_data()
-                    print(f'[INFO] Data saved to: {automator.log_file}')
-                except Exception as e:
-                    print(f'[ERROR] Failed to save data: {e}')
+                print(f'[ERROR] Failed to save data: {e}')
     except Exception as e:
         print(f'[ERROR] Unexpected error: {e}')
-        if automator is not None:
+        if automator is not None and automator.enable_legacy_capture:
             try:
-                automator._stop_bag_record()
-            except Exception:
+                automator.save_data()
+                print(f'[INFO] Data saved to: {automator.log_file}')
+            except:
                 pass
-            if automator.enable_legacy_capture:
-                try:
-                    automator.save_data()
-                    print(f'[INFO] Data saved to: {automator.log_file}')
-                except:
-                    pass
     finally:
         if automator is not None:
             try:
