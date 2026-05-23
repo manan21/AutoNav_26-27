@@ -174,15 +174,7 @@ controller_server:
       # cells very close to the body.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign"]
       ObstacleFootprint.scale: 1.0
-      # Sim-tuned bump (0.08 → 0.30): sim showed the controller was
-      # carving paths right along the costmap halo edge with the low
-      # weight, which produced frequent halo entries → NO_PATH →
-      # GRADIENT_ESCAPE loops. 0.30 biases the trajectory away from
-      # high-cost cells without dropping v_des — at the same forward
-      # speed DWB just picks a (v, ω) combo whose endpoint sits in
-      # lower-cost cells. Drop back toward 0.08 if you observe the
-      # robot refusing to take valid narrow corridors.
-      BaseObstacle.scale: 0.30
+      BaseObstacle.scale: 0.08
       PathAlign.scale: 64.0
       PathAlign.forward_point_distance: 0.29
       GoalAlign.scale: 24.0
