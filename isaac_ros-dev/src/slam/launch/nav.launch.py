@@ -89,6 +89,14 @@ def generate_launch_description():
             parameters=[configured_params]
     )
 
+    breadcrumb_buffer = Node(
+            package='custom_behavior_tree_plugins',
+            executable='breadcrumb_buffer',
+            name='breadcrumb_buffer',
+            output='screen',
+            parameters=[configured_params]
+    )
+
     planner = Node(
             package='nav2_planner',
             executable='planner_server',
@@ -96,15 +104,16 @@ def generate_launch_description():
             output='screen',
             parameters=[configured_params]
     )
-       
+
     return LaunchDescription([
         use_sim_time,
         nav2_params,
         planner,
         controller,
         behavior_server,
+        breadcrumb_buffer,
         planner,
         navigator,
         manager
-        
+
     ])

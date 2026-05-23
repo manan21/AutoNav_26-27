@@ -74,6 +74,7 @@ bt_navigator:
       - nav2_is_battery_charging_condition_bt_node
       - autonav_goal_bender_bt_node
       - autonav_path_significantly_changed_bt_node   # PHASEB
+      - autonav_is_forward_blocked_bt_node            # breadcrumb dispatch
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -407,7 +408,7 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape", "breadcrumb_reverse"]
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
@@ -420,6 +421,8 @@ behavior_server:
       plugin: "nav2_behaviors/AssistedTeleop"
     gradient_escape:
       plugin: "gradient_escape::GradientEscape"
+    breadcrumb_reverse:
+      plugin: "breadcrumb::BreadcrumbReverse"
     global_frame: odom
     # Stay on nav_center for footprint/costmap consistency with the local
     # costmap. Spin/BackUp/DriveOnHeading still command angular velocity
@@ -433,12 +436,74 @@ behavior_server:
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
-    # GradientEscape parameters
+    # GradientEscape parameters.
+    # sample_radius 0.15 → 0.80: must reach beyond the inflation_layer's
+    # high-cost region (inflation_radius 1.40 m with cost_scaling_factor
+    # 3.0 → effective stay-away ~0.75 m). At 0.15 m every sample was
+    # inside the inflation field with nearly identical cost, so the
+    # gradient was indistinguishable and escape direction was arbitrary.
+    # cost_threshold 127 → 200: a robot stuck near a wall typically reads
+    # cost in the 150-250 range (inflated but not lethal). 127 was below
+    # the steady-state cost the robot lives in during normal driving, so
+    # the SUCCESS check almost never tripped before timeout.
     gradient_escape.escape_speed: 0.1
-    gradient_escape.cost_threshold: 127.0
-    gradient_escape.sample_radius: 0.15
+    gradient_escape.cost_threshold: 200.0
+    gradient_escape.sample_radius: 0.80
     gradient_escape.num_samples: 16
     gradient_escape.timeout: 15.0
+    # BreadcrumbReverse parameters. Targets the most recent breadcrumb
+    # on /breadcrumb_tail; arrival tolerance matches the buffer's
+    # consume_tolerance_m so the buffer pops the crumb as the robot
+    # arrives. timeout 5 s caps a single ~10 cm reverse step; the BT's
+    # outer fallback runs us again next cycle if more crumbs remain.
+    # lethal_cost_threshold queries the global costmap (which retains
+    # rear lidar marks via local_mirror_layer) before committing.
+    breadcrumb_reverse.reverse_speed: 0.10
+    breadcrumb_reverse.max_angular_speed: 0.50
+    breadcrumb_reverse.arrival_tolerance_m: 0.05
+    breadcrumb_reverse.lethal_cost_threshold: 253.0
+    breadcrumb_reverse.timeout: 5.0
+    breadcrumb_reverse.breadcrumb_topic: "/breadcrumb_tail"
+    breadcrumb_reverse.global_costmap_topic: "global_costmap/costmap_raw"
+    # Sim-ported tunings (Phase 3a):
+    #   max_crumbs_per_session: hard cap on crumbs consumed across the
+    #     BT's ReactiveFallback loop. Once hit the plugin returns FAILED
+    #     and the BT falls through to Wait → next RateController tick →
+    #     GoalBender (bend away from the costmap).
+    #   session_reset_s: idle gap before the count resets. The BT's
+    #     1 Hz RateController calls us in ~1 s bursts, so 2 s is enough
+    #     to distinguish "still in the same dead-end" from "fresh trap".
+    #   bonus_crumb_after_forward: after a successful pop, peek at /plan;
+    #     if its first useful waypoint is solidly forward (err <
+    #     forward_threshold_deg), pop ONE MORE crumb to give the
+    #     controller margin from the costmap halo before handing back.
+    #   forward_threshold_deg: tighter than the BT's angle_threshold so
+    #     the bonus-crumb chain only fires on a clear forward plan, not
+    #     a near-perpendicular wobble.
+    #   min_lookahead_m: closest-point + scan-forward lookahead distance
+    #     for the plan-direction check (same as IsForwardBlocked).
+    breadcrumb_reverse.max_crumbs_per_session: 15
+    breadcrumb_reverse.session_reset_s: 2.0
+    breadcrumb_reverse.bonus_crumb_after_forward: true
+    breadcrumb_reverse.forward_threshold_deg: 60.0
+    breadcrumb_reverse.min_lookahead_m: 0.6
+    breadcrumb_reverse.plan_topic: "/plan"
+
+# Standalone breadcrumb buffer node. Drops a pose every stride_m of
+# forward travel into a ring of buffer_size. Pops the most recent crumb
+# when the robot's odom pose returns within consume_tolerance_m of it
+# while reversing (vx < -min_forward_vx_m).
+breadcrumb_buffer:
+  ros__parameters:
+    stride_m: 0.10
+    buffer_size: 10
+    min_forward_vx: 0.05
+    consume_tolerance_m: 0.05
+    odom_frame: "odom"
+    # Local EKF output — matches the source that publishes odom→base_link
+    # TF, so drop poses align with breadcrumb_reverse's TF-based pose
+    # lookup. Change for sim if the EKF topic is named differently.
+    odom_topic: "/local_ekf/odom"
 
 robot_state_publisher:
   ros__parameters:

@@ -1,6 +1,8 @@
 #ifndef GRADIENT_ESCAPE__GOAL_BENDER_HPP_
 #define GRADIENT_ESCAPE__GOAL_BENDER_HPP_
 
+#include <atomic>
+
 #include "behaviortree_cpp_v3/action_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -10,13 +12,17 @@
 namespace gradient_escape
 {
 
-// Emits a forward intermediate goal *only* when both the real goal
-// and the previously-planned path are behind the robot. In every
-// other case (goal-in-front-of-robot, path-in-front, or path-behind
-// while goal-in-front) the input_goal is passed straight through.
-// The "path behind but goal in front" case is intentionally left to
-// the backup-recovery BT node — that's a breadcrumb-backtrack
-// problem, not a goal-bending problem.
+// Emits a forward intermediate goal when the previously-planned path
+// loops behind the robot. The bend fires when:
+//   * goal AND path are both behind the robot                  (always), OR
+//   * path is behind the robot AND the breadcrumb buffer is
+//     empty (i.e. the breadcrumb-reverse recovery has nothing
+//     left to spend, so we must turn the robot around).
+//
+// In every other case (goal-in-front-of-robot, path-in-front, or
+// path-behind while goal-in-front with breadcrumbs available) the
+// input_goal is passed through unchanged — the breadcrumb-reverse
+// behavior takes over the "goal-front / path-behind" case.
 class GoalBender : public BT::SyncActionNode
 {
 public:
@@ -31,19 +37,22 @@ public:
       BT::InputPort<double>("angle_threshold", 1.57, "Behind-robot angle threshold (rad)"),
       BT::InputPort<double>("bend_angle", 1.05, "Forward-bend angle offset (rad)"),
       BT::InputPort<nav_msgs::msg::Path>("previous_path", "Last path from ComputePathToPose; enables path-direction trigger"),
-      BT::InputPort<int>("path_lookahead_index", 5, "Waypoint index used to test path direction"),
+      // Pure-pursuit lookahead distance (matches IsForwardBlocked).
+      // > 0 selects closest-point + scan-forward (sim-validated);
+      // == 0 falls back to the legacy fixed `path_lookahead_index`.
+      BT::InputPort<double>("min_lookahead_m", 0.6,
+        "Pure-pursuit lookahead distance (m). 0 = use path_lookahead_index."),
+      BT::InputPort<int>("path_lookahead_index", 5,
+        "[LEGACY] Fixed waypoint index. Only used when min_lookahead_m <= 0."),
     };
   }
 
   BT::NodeStatus tick() override;
 
 private:
-  // Publishes the chosen goal (bent or pass-through) every tick so
-  // map_padder can pad the corridor toward the actual planner target,
-  // not just the unbent /goal_pose. Without this, a bent goal lands
-  // outside the global costmap and the planner returns "goal off
-  // global costmap" failures.
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr nav_goal_pub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr breadcrumb_sub_;
+  std::atomic<bool> breadcrumb_buffer_empty_{true};
 };
 
 }  // namespace gradient_escape
