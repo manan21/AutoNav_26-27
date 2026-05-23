@@ -114,87 +114,74 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # Regulated Pure Pursuit (RPP) — replaces DWB.
+    # DWB Local Planner — mirrors the fix/lines_again critic tuning.
+    # Speed capped at 0.25 m/s (matches fix/lines_again), ObstacleFootprint
+    # added on top of the GPS-branch critic set.
     #
-    # Why the swap: DWB samples (vx, vω) trajectories and forward-simulates
-    # them with a unicycle model that assumes the tracked point moves at
-    # vx along its heading with vy=0 in body frame. On shogi this is
-    # wrong: robot_base_frame is nav_center, which sits 22.5 cm forward
-    # of the drive-wheel axle (base_link). During any rotation, the real
-    # nav_center sweeps an arc of radius 0.225 m around base_link — i.e.
-    # in body frame the velocity is vy = ω × 0.225, exactly the term DWB
-    # drops. PathDist scores DWB's predicted nav_center poses, but the
-    # executed command produces a different nav_center trajectory. No
-    # critic tuning fixes this — it's structural.
-    #
-    # RPP doesn't forward-simulate. Every tick it: (1) reads the actual
-    # robot_base_frame pose from TF (lever-arm baked in by URDF), (2)
-    # picks a lookahead point on /plan at distance lookahead_dist ahead
-    # of that pose, (3) computes the arc that hits the lookahead point,
-    # (4) emits (vx, vω). The control law is "drive nav_center toward
-    # the path" — exactly the requirement.
-    #
-    # No heading-to-tangent enforcement. The body yaw is left to evolve
-    # naturally; the geometric center is what tracks. Per operator:
-    # "the path is already designed to avoid obstacles, the robot just
-    # needs to follow it." use_cost_regulated_linear_velocity_scaling
-    # is off because the planner's already routed around cost gradients.
+    # CAVEAT specific to path_following: this branch keeps
+    # robot_base_frame = nav_center (body geometric center), unlike
+    # fix/lines_again which uses base_link (rear axle). The PathAlign
+    # forward_point_distance of 0.29 m below was sized on fix/lines_again
+    # so the alignment probe lands AT the body center (0.29 m forward of
+    # the axle). On nav_center the same 0.29 m places the probe 29 cm
+    # AHEAD of the body center — i.e. into a "lookahead" position, not
+    # at the body center itself. Kept as 0.29 here to honor the "same
+    # changes" request; if you want the alignment probe at the body
+    # center on this branch instead, set FPD to 0.0 (and consider
+    # re-adding PathDist, which scores robot_base_frame directly — when
+    # the frame IS the body center, PathDist becomes the right
+    # position-lock critic).
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      # Velocity envelope (matches old DWB limits).
-      desired_linear_vel: 1.5
-      min_approach_linear_velocity: 0.10
-      approach_velocity_scaling_dist: 0.6
-      max_robot_pose_search_dist: 10.0
-      # ── Lookahead tuned for DWB-like smoothness ───────────────────
-      # A fixed-short lookahead (0.4 m at 1.5 m/s = 0.27 s of preview)
-      # made RPP yaw-oscillate: every centimeter of path jitter became
-      # a steering correction. DWB looked smooth because its sim_time
-      # of 1.2 s evaluated each candidate trajectory ~1.2 s ahead and
-      # discarded the high-curvature ones. To recreate that here we
-      # velocity-scale the lookahead so the carrot sits ~1.0 s of
-      # travel ahead — wide at speed, tightening at low velocity.
-      # Floor (min) prevents tight wobble when the robot slows for
-      # curves; ceiling (max) prevents the carrot from running off
-      # past the goal on long straight segments.
-      use_velocity_scaled_lookahead_dist: true
-      lookahead_time: 1.0
-      lookahead_dist: 1.0           # fallback if velocity_scaled is disabled
-      min_lookahead_dist: 0.5
-      max_lookahead_dist: 2.0
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: False
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      # Capped at 0.25 m/s to match fix/lines_again — line-following
+      # needs the camera to keep up with painted lines.
+      max_vel_x: 0.25
+      max_vel_y: 0.0
+      max_vel_theta: 0.65
+      min_speed_xy: 0.0
+      max_speed_xy: 0.25
+      # ──────────────────────────────────────────────────────────────
+      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.15 prevents
+      # DWB from sampling near-zero angular trajectories that, paired
+      # with a jittering goal, produce yaw chatter in place. Lowering
+      # it has reintroduced in-place wobble.
+      # ──────────────────────────────────────────────────────────────
+      min_speed_theta: 0.15
+      acc_lim_x: 2.5
+      acc_lim_y: 0.0
+      acc_lim_theta: 0.9
+      decel_lim_x: -2.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -0.9
+      vx_samples: 20
+      vy_samples: 5
+      vtheta_samples: 24
+      sim_time: 1.2            # short horizon reduces turn overcommit when camera-visible line evidence drops out
+      linear_granularity: 0.05
+      angular_granularity: 0.025
       transform_tolerance: 0.2
-      # Heading is NOT controlled by this controller. nav_center
-      # position-on-path is the sole tracking objective; body yaw is
-      # whatever the diff-drive kinematics make it. Rotate-to-heading
-      # behaviors are explicitly disabled.
-      use_rotate_to_heading: false
-      rotate_to_heading_min_angle: 3.15
-      rotate_to_heading_angular_vel: 0.0
-      # Matches DWB's acc_lim_theta: 0.9. RPP only consults this when
-      # rotate_to_heading is active (off here), but set it consistent
-      # so any future enable doesn't import a hidden 3.2 rad/s² jerk.
-      max_angular_accel: 0.9
-      # Forward-only (per competition constraint).
-      allow_reversing: false
-      # Curvature regulation: slow down on tight bends so the body
-      # tracks the planned arc instead of overshooting. Min radius
-      # widened from 0.6 → 1.2 m so the robot eases off velocity well
-      # before it has to swing hard — straight contributor to the
-      # DWB-style smoothness.
-      use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 1.2
-      regulated_linear_scaling_min_speed: 0.25
-      # Path is already collision-free by construction — don't slow
-      # for general cost gradients near the path.
-      use_cost_regulated_linear_velocity_scaling: false
-      # Collision check along the chosen arc as a safety net only.
-      # Stops the robot if a lethal cell sits within ~1 s of arc travel.
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      # Walk the path in order (don't snap to the closest point on
-      # multi-pass / loopback paths). Tighter pose-search than the
-      # default keeps the controller from jumping ahead on bends.
-      use_interpolation: false
+      xy_goal_tolerance: 0.25
+      trans_stopped_velocity: 0.05
+      short_circuit_trajectory_evaluation: True
+      stateful: True
+      # ObstacleFootprint walks the full footprint polygon along each
+      # candidate trajectory and scores the worst cell touched —
+      # complements BaseObstacle (which only scores trajectory
+      # endpoints) for line-following where painted lines become lethal
+      # cells very close to the body.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign"]
+      ObstacleFootprint.scale: 1.0
+      BaseObstacle.scale: 0.08
+      PathAlign.scale: 64.0
+      PathAlign.forward_point_distance: 0.29
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.29
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
   local_costmap:
