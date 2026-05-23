@@ -278,7 +278,7 @@ local_costmap:
         costmap_topic: "/lidar_line_costmap"
         transform_tolerance: 0.2
         max_message_age_ms: 750
-        observation_persistence_ms: 1500
+        observation_persistence_ms: 10000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
         line_clear_angle_min_rad: -0.95
