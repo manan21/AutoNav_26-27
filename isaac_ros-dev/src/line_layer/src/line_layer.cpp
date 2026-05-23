@@ -579,8 +579,10 @@ void LineLayer::publishCostmap() {
   msg->header.stamp = node_.lock()->now();
   msg->info.width = size_x_;
   msg->info.height = size_y_;
+  msg->info.resolution = resolution_;
   msg->info.origin.position.x = origin_x_;
   msg->info.origin.position.y = origin_y_;
+  msg->info.origin.orientation.w = 1.0;
   msg->data.resize(size_x_ * size_y_);
   for (unsigned int i = 0; i < size_x_ * size_y_; ++i) {
     unsigned char cost = costmap_[i];
