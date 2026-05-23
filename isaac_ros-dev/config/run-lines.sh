@@ -1,5 +1,5 @@
 #!/bin/bash
-# Standalone bring-up for just the line detector. Loads parameters from
+# Standalone bring-up for just the camera line detector. Loads parameters from
 # the package-share YAML; override individual values via --ros-args at
 # the command line. For both detectors at once, use ./config/run-detect.sh.
 
@@ -10,6 +10,6 @@ launchpid=$!
 trap 'kill -INT "$launchpid" 2>/dev/null' INT TERM
 
 sleep 0.5
-echo "[GUI_READY] LINE DETECT"
+echo "[GUI_READY] CAMERA LINE DETECT"
 
 wait "$launchpid"

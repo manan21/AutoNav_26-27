@@ -1723,11 +1723,12 @@ class HudWindow(QMainWindow):
             # first, slam_toolbox starves of scans, never produces
             # /pose or the map→odom TF, and the Nav2 lifecycle
             # stalls at "Activating planner_server."
-            # LINE DETECT also goes before SLAM so the line-pixel
+            # CAMERA LINE DETECT also goes before SLAM so the line-pixel
             # stream is producing by the time the nav2 / line_layer
             # plugins come up — same reasoning as PCA above.
             ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
-            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("CAMERA LINE DETECT", ["CAMERA LINE DETECT"],
+             "./config/run-lines.sh"),
             ("LIDAR LINE DETECT", ["LIDAR LINE DETECT"], "./config/run-lidar-lines.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
@@ -1760,7 +1761,7 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "LINE DETECT": 45.0,
+            "CAMERA LINE DETECT": 45.0,
             "LIDAR LINE DETECT": 45.0,
             "PCA DETECT": 45.0,
         }
@@ -2564,7 +2565,7 @@ class HudWindow(QMainWindow):
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
         virtual_names = [
-            "SLAM", "CONTROL", "NAV2", "LINE DETECT",
+            "SLAM", "CONTROL", "NAV2", "CAMERA LINE DETECT",
             "PCA DETECT", "LIDAR LINE DETECT",
         ]
         for name in virtual_names:
@@ -6884,7 +6885,7 @@ class HudWindow(QMainWindow):
         practice.
         """
         return {
-            'LINE DETECT': [
+            'CAMERA LINE DETECT': [
                 'autonav_detection line_detector',
                 'autonav_detection/line_detector',
             ],
