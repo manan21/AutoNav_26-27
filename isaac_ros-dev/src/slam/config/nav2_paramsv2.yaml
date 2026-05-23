@@ -198,7 +198,11 @@ local_costmap:
       # Footprint expressed in nav_center frame (was base_link with
       # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      footprint_padding: 0.0
+      # 0.0 → 0.10: gives DWB's ObstacleFootprint critic 10 cm of extra
+      # clearance by enlarging the polygon it walks along each candidate
+      # trajectory. Local-only — global footprint stays unpadded so the
+      # planner can still thread tight gates.
+      footprint_padding: 0.10
       plugins: ["obstacle_layer", "inflation_layer", "line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
