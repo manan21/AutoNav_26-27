@@ -49,6 +49,21 @@ try:
 except ImportError:
     _HAS_CV2 = False
 
+# psutil + NVML are only consulted while the Performance mode veil is up,
+# so missing imports just blank out the matching stat rather than blocking
+# the rest of the GUI.
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
+try:
+    import pynvml
+    _HAS_NVML = True
+except ImportError:
+    _HAS_NVML = False
+
 import numpy as np
 from PIL import Image as PILImage
 
@@ -735,8 +750,13 @@ class _LidarFrameWorker(QObject):
         return img
 
 
-from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette
+from PyQt5.QtCore import (
+    QEasingCurve, QEvent, QParallelAnimationGroup, QPoint,
+    QPropertyAnimation, Qt, QTimer,
+)
+from PyQt5.QtGui import (
+    QColor, QFont, QKeyEvent, QPainter, QPalette, QPen, QPolygon,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -795,6 +815,262 @@ def _style_ax(ax, title=None):
     ax.yaxis.label.set_color('#888')
     if title:
         ax.set_title(title, fontsize=8, color='#ccc')
+
+
+class _ModeOverlay(QWidget):
+    """Unified PERF + REC overlay.
+
+    One widget that's wider than the parent (≈ 2× window width + the 60°
+    diagonal width). It paints a blue trapezoid on the left, a red
+    trapezoid on the right, with the diagonal between them. Horizontal
+    translation chooses what's visible:
+
+        PERF — widget at x = 0; blue trapezoid covers the window.
+        REC  — widget at x = -(W + diag); red trapezoid covers the window.
+        BOTH — widget at x = -(W + diag) / 2; diagonal centred, both
+               trapezoids' visible slabs sit either side.
+
+    Two child labels (PERF + REC) shimmy between solo-centred and
+    split-trapezoid-centred positions as the state changes. A third
+    label (CPU/GPU stats) tracks the PERF label.
+
+    All transitions are QParallelAnimationGroups with InOutCubic easing
+    on the widget pos and on each label pos, so the whole composition
+    moves as one piece.
+    """
+
+    OFF = 'off'
+    PERF = 'perf'
+    REC = 'rec'
+    BOTH = 'both'
+
+    _BLUE_FILL = QColor(40, 90, 200, 110)
+    _BLUE_BORDER = QColor(20, 50, 140, 220)
+    _RED_FILL = QColor(255, 0, 0, 14)
+    _RED_BORDER = QColor(255, 0, 0, 200)
+    _BORDER_PX = 8
+    _ANIM_MS = 300
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        title_font = QFont()
+        title_font.setPointSize(96)
+        title_font.setBold(True)
+
+        self.perf_label = QLabel('PERF', self)
+        self.perf_label.setFont(title_font)
+        self.perf_label.setStyleSheet(
+            'color: #ffffff; background: transparent; border: none;'
+        )
+        self.perf_label.setAlignment(Qt.AlignCenter)
+        self.perf_label.adjustSize()
+
+        self.rec_label = QLabel('REC', self)
+        self.rec_label.setFont(title_font)
+        self.rec_label.setStyleSheet(
+            'color: rgba(255, 80, 80, 230);'
+            ' background: transparent; border: none;'
+        )
+        self.rec_label.setAlignment(Qt.AlignCenter)
+        self.rec_label.adjustSize()
+
+        stats_font = QFont()
+        stats_font.setPointSize(20)
+        stats_font.setFamily('Consolas')
+        self.perf_stats_label = QLabel(
+            'CPU   Before: --     Now: --\n'
+            'GPU   Before: --     Now: --',
+            self,
+        )
+        self.perf_stats_label.setFont(stats_font)
+        self.perf_stats_label.setStyleSheet(
+            'color: #cfe4ff; background: transparent; border: none;'
+        )
+        self.perf_stats_label.setAlignment(Qt.AlignCenter)
+        self.perf_stats_label.adjustSize()
+
+        # Screen dims — set by configure_for_screen, also recomputed on
+        # window resize. Until then, harmless placeholder values.
+        self._sw = 1
+        self._sh = 1
+        self._diag = 1
+        self._anim = None
+        self._state = self.OFF
+        self.hide()
+
+    # ── Geometry helpers ─────────────────────────────────────────────
+
+    def configure_for_screen(self, sw, sh):
+        """Set / refresh the parent (window) dimensions and recompute the
+        widget's total width + diagonal width. Snaps to the current state
+        without animation so resize jumps are atomic."""
+        import math as _math
+        sw = max(1, int(sw))
+        sh = max(1, int(sh))
+        self._sw = sw
+        self._sh = sh
+        # 60° diagonal — width = h * cot(60°).
+        self._diag = max(1, int(sh / _math.tan(_math.radians(60.0))))
+        widget_w = 2 * sw + self._diag
+        self.setFixedSize(widget_w, sh)
+        self._apply_state(self._state, animate=False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        W, H, D = self._sw, self._sh, self._diag
+
+        blue_poly = QPolygon([
+            QPoint(0, 0), QPoint(W + D, 0),
+            QPoint(W, H), QPoint(0, H),
+        ])
+        red_poly = QPolygon([
+            QPoint(W + D, 0), QPoint(2 * W + D, 0),
+            QPoint(2 * W + D, H), QPoint(W, H),
+        ])
+
+        # Fills first.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._BLUE_FILL)
+        painter.drawPolygon(blue_poly)
+        painter.setBrush(self._RED_FILL)
+        painter.drawPolygon(red_poly)
+
+        # Then thick polygon outlines. Both colors stamp their own
+        # border along the shared diagonal — in BOTH mode that reads as
+        # an emphatic split-stripe; in solo modes the diagonal sits at
+        # one screen edge and acts as that side's border.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(self._BLUE_BORDER, self._BORDER_PX))
+        painter.drawPolygon(blue_poly)
+        painter.setPen(QPen(self._RED_BORDER, self._BORDER_PX))
+        painter.drawPolygon(red_poly)
+
+    # ── State machine ───────────────────────────────────────────────
+
+    def _widget_pos_for(self, state):
+        if state == self.PERF:
+            return QPoint(0, 0)
+        if state == self.REC:
+            return QPoint(-(self._sw + self._diag), 0)
+        if state == self.BOTH:
+            return QPoint(-(self._sw + self._diag) // 2, 0)
+        # OFF — pinned past the window; exact value irrelevant since
+        # we hide right after the animation finishes.
+        return self.pos()
+
+    def _centre_label(self, label, cx, cy):
+        return QPoint(cx - label.width() // 2, cy - label.height() // 2)
+
+    def _label_positions_for(self, state):
+        """Return (perf, stats, rec) widget-local top-left QPoints for
+        the three labels at the given state."""
+        W, H, D = self._sw, self._sh, self._diag
+        offset_both = (W + D) // 2
+
+        if state == self.PERF:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.REC:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.BOTH:
+            perf_cx = W // 4 + offset_both
+            rec_cx = 3 * W // 4 + offset_both
+        else:
+            return (self.perf_label.pos(), self.perf_stats_label.pos(),
+                    self.rec_label.pos())
+
+        cy = H // 2
+        stats_cy = cy + self.perf_label.height() // 2 + 12 \
+            + self.perf_stats_label.height() // 2
+        return (
+            self._centre_label(self.perf_label, perf_cx, cy),
+            self._centre_label(self.perf_stats_label, perf_cx, stats_cy),
+            self._centre_label(self.rec_label, rec_cx, cy),
+        )
+
+    def state(self):
+        return self._state
+
+    def set_state(self, new_state, animate=True):
+        if new_state == self._state:
+            return
+        prev = self._state
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+
+        if new_state == self.OFF:
+            if prev == self.PERF:
+                off_pos = QPoint(self._sw, 0)
+            elif prev == self.REC:
+                off_pos = QPoint(-(2 * self._sw + self._diag), 0)
+            else:
+                off_pos = self.pos()
+
+            def _on_done():
+                self.hide()
+
+            self._animate_widget_pos(off_pos, animate, _on_done)
+            self._state = new_state
+            return
+
+        if prev == self.OFF:
+            # Coming from OFF — snap to target without sliding from
+            # nowhere; the visible slide-in happens only when going
+            # between active states.
+            self._apply_state(new_state, animate=False)
+            self.show()
+            self.raise_()
+            self._state = new_state
+            return
+
+        self._apply_state(new_state, animate=animate)
+        self._state = new_state
+
+    def _apply_state(self, state, animate=True):
+        target_widget = self._widget_pos_for(state)
+        perf_pos, stats_pos, rec_pos = self._label_positions_for(state)
+        if not animate:
+            self.move(target_widget)
+            self.perf_label.move(perf_pos)
+            self.perf_stats_label.move(stats_pos)
+            self.rec_label.move(rec_pos)
+            return
+        group = QParallelAnimationGroup(self)
+        for widget, target in [
+            (self, target_widget),
+            (self.perf_label, perf_pos),
+            (self.perf_stats_label, stats_pos),
+            (self.rec_label, rec_pos),
+        ]:
+            a = QPropertyAnimation(widget, b'pos')
+            a.setDuration(self._ANIM_MS)
+            a.setStartValue(widget.pos())
+            a.setEndValue(target)
+            a.setEasingCurve(QEasingCurve.InOutCubic)
+            group.addAnimation(a)
+        self._anim = group
+        group.start()
+
+    def _animate_widget_pos(self, target, animate, on_finished=None):
+        if not animate:
+            self.move(target)
+            if on_finished is not None:
+                on_finished()
+            return
+        a = QPropertyAnimation(self, b'pos', self)
+        a.setDuration(self._ANIM_MS)
+        a.setStartValue(self.pos())
+        a.setEndValue(target)
+        a.setEasingCurve(QEasingCurve.InOutCubic)
+        if on_finished is not None:
+            a.finished.connect(on_finished)
+        self._anim = a
+        a.start()
 
 
 class HudWindow(QMainWindow):
@@ -1092,6 +1368,55 @@ class HudWindow(QMainWindow):
         self._lock_hint_label = None
         self._lock_status_label = None
 
+        # Performance Mode — opt-in low-CPU veil. When on, every QTimer
+        # the window owns is paused (live tick, playback, EKF pulse,
+        # process polling, etc.) so the GUI hovers at near-zero CPU
+        # behind a translucent blue panel with a giant centred
+        # "PERFORMANCE" label and a Before/Now CPU/GPU comparison.
+        # _perf_resume_timers stores the timers we stopped so toggle-off
+        # resumes exactly those that were running on entry — anything
+        # started while in performance mode is left alone.
+        self._performance_mode = False
+        self._perf_resume_timers = []
+        # Unified mode overlay — single wide widget that carries both
+        # PERF (blue) and REC (red) veils with a 60° diagonal split.
+        # Translated horizontally to expose PERF / REC / BOTH. Built
+        # lazily on first use; _perf_stats_label is aliased to the
+        # overlay's stats QLabel so the existing CPU/GPU update path
+        # keeps working with no other changes.
+        self._mode_overlay = None
+        self._perf_stats_label = None
+        # 5 s sampler runs CONTINUOUSLY (not just in Perf mode) so the
+        # overlay can show a Before/Now comparison — Before being the
+        # most recent sample taken before the operator entered Perf
+        # mode, Now being the latest sample taken while paused. The
+        # sampler is also the one timer skipped by the pause loop.
+        self._perf_stats_timer = QTimer(self)
+        self._perf_stats_timer.setInterval(5000)
+        self._perf_stats_timer.timeout.connect(self._sample_perf_stats)
+        self._perf_proc = None
+        self._perf_cpu_count = 1
+        if _HAS_PSUTIL:
+            try:
+                self._perf_proc = psutil.Process()
+                # Prime per-process cpu_percent so the first reading
+                # reflects real work, not the all-time-since-start
+                # fallback.
+                self._perf_proc.cpu_percent(interval=None)
+                self._perf_cpu_count = max(1, psutil.cpu_count(logical=True))
+            except Exception:
+                self._perf_proc = None
+        self._perf_nvml_handle = None  # populated lazily on first sample
+        # Latest samples — refreshed every 5 s by _sample_perf_stats.
+        self._last_gui_cpu_pct = None
+        self._last_sys_gpu_pct = None
+        # Baseline — snapshotted at the moment Perf mode is entered.
+        self._baseline_gui_cpu_pct = None
+        self._baseline_sys_gpu_pct = None
+        # Start the sampler. QTimer is queued to fire from the event
+        # loop, so this is safe even though __init__ hasn't returned.
+        self._perf_stats_timer.start()
+
         # Container connection state
         self._container_connected = False
         self._container_name = 'koopa-kingdom'
@@ -1298,6 +1623,32 @@ class HudWindow(QMainWindow):
         self._bag_play_poll_timer = QTimer(self)
         self._bag_play_poll_timer.setInterval(500)
         self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
+
+        # HUD-driven `ros2 bag record` subprocess — spawned by the R
+        # key (see _request_record_toggle) so the operator can record
+        # at any moment without launching a test script. Output lands
+        # under _CSV_DIR/manual_<stamp>/bag/ so a fresh session shows
+        # up in the Playback Mode grid as soon as recording stops.
+        self._hud_bag_proc = None
+
+        # Performance Mode — last entry in the action stack. Toggles a
+        # near-zero-CPU veil that pauses every QTimer the window owns.
+        # The button + veil are container-independent (no ROS needed),
+        # so it sits alongside Playback Mode.
+        self._perf_off_style = button_style
+        self._perf_on_style = (
+            button_style.replace("#2a2a2a", "#1a3a6a")
+                        .replace("#3a3a3a", "#2a4a7a")
+                        .replace("#1a1a1a", "#0a2a4a")
+        )
+        self.btn_performance = QPushButton("Performance Mode")
+        self.btn_performance.setStyleSheet(self._perf_off_style)
+        self.btn_performance.setFocusPolicy(Qt.NoFocus)
+        self.btn_performance.clicked.connect(self._on_performance_clicked)
+        options_layout.addWidget(self.btn_performance)
+        self._nav_buttons.append(
+            (self.btn_performance, "Performance Mode", self._perf_off_style)
+        )
 
         options_layout.addStretch()
 
@@ -4465,6 +4816,14 @@ class HudWindow(QMainWindow):
             buf.append(f"[ERROR] Failed to launch: {e}\n")
             self._gui_log_msg(f"Test {tid} failed to launch: {e}")
 
+        # Point the terminal pane at this test's buffer so the operator
+        # sees the automator's WARMING UP / READY banners and knows when
+        # the physical Xbox A press will produce a useful bag. Every
+        # other launcher (mission, build, install) does the same thing.
+        self._selected_process = test_label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
+
         self._update_selection()
 
     def _stop_test(self, tid):
@@ -5331,37 +5690,245 @@ class HudWindow(QMainWindow):
         return overlay
 
     # -----------------------------------------------------------------
-    # REC mode — driven by /data/toggle_collect from base_automator
+    # Performance mode — opt-in low-CPU veil
     # -----------------------------------------------------------------
-    def _build_rec_overlay(self):
-        """Lazy-construct the transparent REC overlay (faint red wash
-        + thin solid red border) on first need. Same window-fill +
-        mouse-pass-through pattern as the lock overlay."""
+    def _build_mode_overlay(self):
+        """Lazy-construct the unified PERF + REC overlay. One wide widget
+        carries both veils with a 60° diagonal split between them; it
+        translates horizontally to expose whichever combination of modes
+        is active. See `_ModeOverlay` for the geometry."""
         central = self.centralWidget()
         if central is None:
             return None
-        overlay = QFrame(central)
-        overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-        overlay.setStyleSheet(
-            "QFrame {"
-            "  background-color: rgba(255, 0, 0, 14);"
-            "  border: 4px solid rgba(255, 0, 0, 200);"
-            "}"
-        )
-        overlay.hide()
-        self._rec_overlay = overlay
+        overlay = _ModeOverlay(central)
+        overlay.configure_for_screen(central.width(), central.height())
+        self._mode_overlay = overlay
+        # Alias the stats label so the existing CPU/GPU update path
+        # (_sample_perf_stats → _refresh_perf_overlay_text) keeps
+        # working with no other changes.
+        self._perf_stats_label = overlay.perf_stats_label
         return overlay
+
+    def _update_mode_overlay_state(self):
+        """Compute the target overlay state from the perf + rec flags
+        and animate the unified overlay to it."""
+        if self._mode_overlay is None:
+            if self._build_mode_overlay() is None:
+                return
+        perf_on = self._performance_mode
+        rec_on = bool(self._rec_active)
+        if perf_on and rec_on:
+            target = _ModeOverlay.BOTH
+        elif perf_on:
+            target = _ModeOverlay.PERF
+        elif rec_on:
+            target = _ModeOverlay.REC
+        else:
+            target = _ModeOverlay.OFF
+        self._mode_overlay.set_state(target)
+
+    def _sample_perf_stats(self):
+        """Take a fresh CPU/GPU sample and (when the veil is up) refresh
+        the overlay. Runs every 5 s for the lifetime of the window so
+        we always have a fresh Before snapshot the moment Perf mode is
+        entered.
+
+        GUI CPU is per-process, normalised by total logical-core count
+        so a single saturated core reads as 100/N% (matches Task
+        Manager's column). GPU is whole-device — per-process GPU isn't
+        reliably queryable across drivers, and on the Jetson the GUI
+        is the dominant graphics client so this is a fair proxy for
+        what the HUD is costing the GPU.
+        """
+        if self._perf_proc is not None:
+            try:
+                raw = self._perf_proc.cpu_percent(interval=None)
+                self._last_gui_cpu_pct = raw / self._perf_cpu_count
+            except Exception:
+                pass
+        if _HAS_NVML:
+            try:
+                if self._perf_nvml_handle is None:
+                    pynvml.nvmlInit()
+                    self._perf_nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(
+                    self._perf_nvml_handle
+                )
+                self._last_sys_gpu_pct = float(util.gpu)
+            except Exception:
+                pass
+        if self._performance_mode:
+            self._refresh_perf_overlay_text()
+
+    def _refresh_perf_overlay_text(self):
+        """Write the Before/Now values into the overlay label."""
+        if self._perf_stats_label is None:
+            return
+
+        def fmt(v):
+            return '--' if v is None else f'{v:.1f}%'
+
+        self._perf_stats_label.setText(
+            f'CPU   Before: {fmt(self._baseline_gui_cpu_pct)}     '
+            f'Now: {fmt(self._last_gui_cpu_pct)}\n'
+            f'GPU   Before: {fmt(self._baseline_sys_gpu_pct)}     '
+            f'Now: {fmt(self._last_sys_gpu_pct)}'
+        )
+
+    def _on_performance_clicked(self):
+        """Toggle Performance Mode."""
+        if self._performance_mode:
+            self._exit_performance_mode()
+        else:
+            self._enter_performance_mode()
+
+    def _enter_performance_mode(self):
+        """Pause every QTimer the window owns + raise the PERFORMANCE veil.
+
+        Iterating __dict__ catches new timers added in the future
+        automatically; isActive() filters down to the ones that were
+        genuinely running so toggle-off doesn't kick idle timers awake.
+        The perf-stats sampler is skipped here — it's the one timer
+        that stays alive while the veil is up so the CPU/GPU readout
+        keeps refreshing.
+        """
+        if self._performance_mode:
+            return
+        # Force a fresh sample BEFORE flipping the mode flag so the
+        # Before baseline isn't None for users who hit Perf within
+        # the first 5 s (before the periodic sampler has ticked). The
+        # sample's refresh-overlay branch is gated on _performance_mode,
+        # so calling it here with the flag still False is safe.
+        self._sample_perf_stats()
+
+        self._performance_mode = True
+        self._perf_resume_timers = []
+        # _rec_timer must stay alive: it polls latest_recording_active
+        # and drives the unified overlay's state transitions. Pausing
+        # it while in PERF + REC means an R-press to stop recording
+        # leaves the red half stuck on; an R-press to start recording
+        # while in PERF never slides the overlay to BOTH. Same exemption
+        # rationale as _perf_stats_timer (which keeps the Now sample
+        # fresh while the veil is up).
+        _perf_keep_alive = (self._perf_stats_timer, self._rec_timer)
+        for val in self.__dict__.values():
+            if (isinstance(val, QTimer) and val.isActive()
+                    and val not in _perf_keep_alive):
+                val.stop()
+                self._perf_resume_timers.append(val)
+
+        # Snapshot the last-seen samples as the Before baseline before
+        # the GUI throttles down. The sampler keeps running so Now
+        # will refresh at the next 5 s tick.
+        self._baseline_gui_cpu_pct = self._last_gui_cpu_pct
+        self._baseline_sys_gpu_pct = self._last_sys_gpu_pct
+
+        # Pause the camera + lidar worker threads via their slot_ready
+        # backpressure. With the event cleared and the slots gated to
+        # not re-set it, the workers drain submissions in their loop
+        # without doing downscale/render work. This is the biggest
+        # remaining CPU sink after the timer pause.
+        for w in (getattr(self, '_camera_worker', None),
+                  getattr(self, '_lidar_worker', None)):
+            if w is not None and hasattr(w, '_slot_ready'):
+                try:
+                    w._slot_ready.clear()
+                except Exception:
+                    pass
+
+        # Slide the unified overlay to its new state (PERF or BOTH
+        # depending on whether REC is also active). Paint the stats
+        # immediately so the operator sees Before / -- before the
+        # 5 s tick lands.
+        self._update_mode_overlay_state()
+        self._refresh_perf_overlay_text()
+
+        self.btn_performance.setText("Exit Performance")
+        self.btn_performance.setStyleSheet(self._perf_on_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_performance:
+                self._nav_buttons[i] = (
+                    b, "Exit Performance", self._perf_on_style,
+                )
+                break
+
+    def _exit_performance_mode(self):
+        if not self._performance_mode:
+            return
+        self._performance_mode = False
+        # Leave the sampler running — it's the source of the Before
+        # snapshot the next time we enter Perf mode.
+        # Slide overlay back: REC stays full-screen if REC is still
+        # on, otherwise slides off entirely.
+        self._update_mode_overlay_state()
+
+        # Wake the camera + lidar workers — calling slot_ready() sets
+        # the event so the next submission processes normally. Without
+        # this, both workers would stay drained forever.
+        for w in (getattr(self, '_camera_worker', None),
+                  getattr(self, '_lidar_worker', None)):
+            if w is not None and hasattr(w, 'slot_ready'):
+                try:
+                    w.slot_ready()
+                except Exception:
+                    pass
+
+        for t in self._perf_resume_timers:
+            try:
+                t.start()
+            except RuntimeError:
+                # Timer may have been deleted while we were paused.
+                pass
+        self._perf_resume_timers = []
+
+        self.btn_performance.setText("Performance Mode")
+        self.btn_performance.setStyleSheet(self._perf_off_style)
+        for i, (b, lbl, _s) in enumerate(self._nav_buttons):
+            if b is self.btn_performance:
+                self._nav_buttons[i] = (
+                    b, "Performance Mode", self._perf_off_style,
+                )
+                break
+
+    # -----------------------------------------------------------------
+    # REC mode — driven by /data/toggle_collect (base_automator from a
+    # test script, or the HUD itself via _request_record_toggle / R key).
+    # -----------------------------------------------------------------
+    def _request_record_toggle(self):
+        """Flip ROS bag recording. Spawns or stops a HUD-owned
+        `ros2 bag record` subprocess and publishes the new state on
+        /data/toggle_collect so the REC overlay (and any external
+        consumer such as the legacy video_recorder) sees the
+        transition. Works whether or not a test script is running."""
+        node = getattr(self, '_ros_node', None)
+        if node is None:
+            return
+        pub = getattr(node, 'toggle_collect_pub', None)
+        if pub is None:
+            return
+        new_active = not bool(getattr(node, 'latest_recording_active', False))
+        if new_active:
+            # Only flip the indicator if the recorder actually launches
+            # — otherwise the REC overlay would lie about an active bag.
+            if not self._start_hud_bag_record():
+                return
+        else:
+            self._stop_hud_bag_record()
+        msg = Bool()
+        msg.data = new_active
+        pub.publish(msg)
 
     def _rec_tick(self):
         """20 Hz tick. Reads HudNode.latest_recording_active and:
-          • On OFF→ON edge: snapshot existing dot styles, show the
-            overlay.
+          • On OFF→ON edge: snapshot existing dot styles, slide the
+            unified overlay to its REC or BOTH state.
           • While ON: ramp every status dot's background between
             #000000 and #ff0000 on a 2 Hz cosine.
-          • On ON→OFF edge: restore the snapshotted styles, hide the
-            overlay. (The existing participation-pulse code will
-            reassert correct colors on its own next tick; the
-            snapshot just spares us a flash of stale red.)
+          • On ON→OFF edge: restore the snapshotted styles, slide the
+            unified overlay back (PERF if Perf mode still on, else OFF).
+        The dot ramping is independent of the overlay — same code path
+        as before; only the overlay manipulation flows through
+        `_update_mode_overlay_state` now.
         """
         node = getattr(self, '_ros_node', None)
         active = bool(getattr(node, 'latest_recording_active', False))
@@ -5374,15 +5941,11 @@ class HudWindow(QMainWindow):
                 }
             except Exception:
                 self._dot_styles_before_rec = None
-            if self._rec_overlay is None:
-                self._build_rec_overlay()
-            if self._rec_overlay is not None:
-                self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
-                self._rec_overlay.show()
-                self._rec_overlay.raise_()
             self._rec_phase_t0 = time.monotonic()
+            self._rec_active = True
+            self._update_mode_overlay_state()
 
-        if not active and self._rec_active:
+        elif not active and self._rec_active:
             # ON → OFF
             if self._dot_styles_before_rec is not None:
                 for k, style in self._dot_styles_before_rec.items():
@@ -5393,9 +5956,9 @@ class HudWindow(QMainWindow):
                         except Exception:
                             pass
             self._dot_styles_before_rec = None
-            if self._rec_overlay is not None:
-                self._rec_overlay.hide()
             self._rec_phase_t0 = None
+            self._rec_active = False
+            self._update_mode_overlay_state()
 
         self._rec_active = active
         if not active:
@@ -5508,13 +6071,27 @@ class HudWindow(QMainWindow):
 
     def resizeEvent(self, event):
         """Keep the lock + REC overlays sized to the window and the
-        auto badge pinned."""
+        auto badge pinned.
+
+        Qt fires resizeEvent during __init__ before the overlay widgets
+        and the auto badge exist, so getattr-guard every attribute we
+        touch — otherwise the first resize during construction raises
+        AttributeError and kills the process.
+        """
         super().resizeEvent(event)
-        if self._lock_overlay is not None:
-            self._lock_overlay.setGeometry(0, 0, self.width(), self.height())
-        if self._rec_overlay is not None:
-            self._rec_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._position_auto_badge()
+        lock = getattr(self, '_lock_overlay', None)
+        if lock is not None:
+            lock.setGeometry(0, 0, self.width(), self.height())
+        # Unified mode overlay handles its own geometry; just hand it
+        # the new central-widget dimensions and it'll resize + snap to
+        # its current state.
+        mode = getattr(self, '_mode_overlay', None)
+        if mode is not None:
+            central = self.centralWidget()
+            if central is not None:
+                mode.configure_for_screen(central.width(), central.height())
+        if hasattr(self, '_position_auto_badge'):
+            self._position_auto_badge()
 
     def showEvent(self, event):
         """Re-pin the auto badge on first show and on any hide/show cycle.
@@ -5856,6 +6433,15 @@ class HudWindow(QMainWindow):
         except Exception:
             pass
 
+        # Stop the HUD's bag recorder, if running. The recorder lives
+        # in its own process group via os.setsid, so it would otherwise
+        # outlive the GUI and leave an orphaned `ros2 bag record`
+        # (and an incomplete bag without metadata.yaml).
+        try:
+            self._stop_hud_bag_record()
+        except Exception:
+            pass
+
         # Stop live mode if active
         if self._live_active:
             self._stop_live_mode()
@@ -5932,6 +6518,17 @@ class HudWindow(QMainWindow):
         # field / lock password) still enters the character.
         if key == Qt.Key_A and not event.modifiers():
             self._toggle_auto_mode()
+            return
+
+        # 'P' toggles Performance Mode — same mod/focus rules as 'A'.
+        if key == Qt.Key_P and not event.modifiers():
+            self._on_performance_clicked()
+            return
+
+        # 'R' toggles ROS-bag recording — same mod/focus rules as 'A'.
+        # Works from any screen and at any time, no test script required.
+        if key == Qt.Key_R and not event.modifiers():
+            self._request_record_toggle()
             return
 
         # --- Local goal-pick mode: arrows nudge map-frame target, Enter sends, Esc cancels ---
@@ -6566,24 +7163,28 @@ class HudWindow(QMainWindow):
     # subscriptions watch, so the live canvases reanimate exactly as
     # they looked during the original test session.
     # -----------------------------------------------------------------
-    # Visual-only topic subset, used as the --topics filter for
-    # `ros2 bag play`. Mirrors base_automator.DEFAULT_BAG_TOPICS in
-    # the testing package — recording and playback should always
-    # match. If a topic is dropped from one list, drop it from the
-    # other.
+    # Visual-only topic subset. Used as the --topics filter for
+    # `ros2 bag play` AND as the record set passed to
+    # `_start_hud_bag_record` — recording and playback always match
+    # because they read the same list. Single source of truth lives
+    # here; the automated-testing package no longer keeps its own copy.
     #
-    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel. None
-    # of them produce a pixel; together they were ~83 % of the
-    # earlier bag's message volume and were the reason camera/lidar
-    # paint got shoved off-rhythm.
+    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel, /odom.
+    # The IMU/joy/cmd_vel streams produce no pixel; together they were
+    # ~83 % of the earlier bag's message volume and were the reason
+    # camera/lidar paint got shoved off-rhythm. Raw /odom is dropped
+    # because the live tick prefers /local_ekf/odom for the Encoders
+    # panel whenever it's fresh, and the standalone bake also drops
+    # raw /odom rows in favour of EKF — so replaying it adds no
+    # extra signal on either consumer.
     _BAG_PLAYBACK_TOPICS = [
         '/zed/zed_node/rgb/color/rect/image',
         '/line_detection/debug/mask',
+        '/line_detection/debug/overlay',
         '/line_detection/line_pixels',
         '/scan_fullframe',
         '/scan_pca_filtered',
         '/gps_fix',
-        '/odom',
         '/local_ekf/odom',
         '/global_ekf/odom',
         '/pose',
@@ -6669,6 +7270,85 @@ class HudWindow(QMainWindow):
             self._gui_log_msg("Bag playback finished")
             self._bag_play_proc = None
             self._bag_play_poll_timer.stop()
+
+    # -----------------------------------------------------------------
+    # ROS bag RECORDING — operator-driven via the R key. Spawns
+    # `ros2 bag record` capturing the same topic set the playback /
+    # baker stack reads, into _CSV_DIR/manual_<stamp>/bag/.
+    # -----------------------------------------------------------------
+    def _start_hud_bag_record(self):
+        """Spawn `ros2 bag record` for _BAG_PLAYBACK_TOPICS into
+        _CSV_DIR/manual_<YYYYMMDD_HHMMSS>/bag/. Returns True on
+        success, False if the process couldn't be launched (e.g. ros2
+        not on PATH or the output directory could not be created)."""
+        if self._hud_bag_proc is not None and self._hud_bag_proc.poll() is None:
+            self._gui_log_msg("Bag recorder already running — ignoring start.")
+            return True
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        session_dir = os.path.join(self._CSV_DIR, f'manual_{stamp}')
+        # `ros2 bag record` creates the leaf bag/ directory itself —
+        # if it already exists it bails. Only pre-create the session
+        # parent so the leaf is free for ros2 to claim.
+        try:
+            os.makedirs(session_dir, exist_ok=True)
+        except OSError as e:
+            self._gui_log_msg(f"Failed to create bag directory: {e}")
+            return False
+        bag_dir = os.path.join(session_dir, 'bag')
+        cmd = [
+            'ros2', 'bag', 'record',
+            '-o', bag_dir,
+            '--max-cache-size', str(1_000_000_000),
+            *self._BAG_PLAYBACK_TOPICS,
+        ]
+        try:
+            self._hud_bag_proc = subprocess.Popen(
+                cmd,
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag recorder. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._hud_bag_proc = None
+            return False
+        self._gui_log_msg(
+            f"Recording bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} topics)"
+        )
+        return True
+
+    def _stop_hud_bag_record(self):
+        """SIGINT the HUD's bag-record subprocess and wait briefly for
+        clean shutdown. Falls back to SIGKILL on timeout so a wedged
+        recorder never blocks GUI exit. Idempotent."""
+        proc = self._hud_bag_proc
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            self._hud_bag_proc = None
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except ProcessLookupError:
+            self._hud_bag_proc = None
+            return
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self._gui_log_msg(
+                "Bag recorder did not exit within 5 s; sending SIGKILL"
+            )
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        self._gui_log_msg("Bag recorder stopped.")
+        self._hud_bag_proc = None
 
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
@@ -7747,6 +8427,13 @@ class HudWindow(QMainWindow):
         Changing source rebuilds the AxesImage; set_data alone won't
         change the colormap and would render the mask in 'viridis'.
         """
+        # In Performance Mode we deliberately DON'T re-arm the worker —
+        # leaving _slot_ready cleared keeps the worker's backpressure
+        # check tripping `continue`, so it drains submissions without
+        # downscaling or emitting. Returning here also short-circuits
+        # the matplotlib paint below.
+        if self._performance_mode:
+            return
         # Re-arm the worker first thing so it can downscale the next
         # frame in parallel with our paint here. This is what bounds
         # the Qt event queue to 1 paint deep regardless of source rate.
@@ -7774,7 +8461,9 @@ class HudWindow(QMainWindow):
             self._cam_im.set_data(arr)
         self._live_set_dot_received('Camera')
 
-        if source == 'mask':
+        if source == 'overlay':
+            title = 'Camera CUDA OVERLAY'
+        elif source == 'mask':
             title = 'Camera MASK'
         elif line_fresh:
             title = 'Camera CUDA'
@@ -7810,8 +8499,12 @@ class HudWindow(QMainWindow):
         in_fps = 0.0
         node = self._ros_node
         if node is not None:
-            in_ts = (node._mask_in_ts if source == 'mask'
-                     else node._camera_in_ts)
+            if source == 'overlay':
+                in_ts = node._overlay_in_ts
+            elif source == 'mask':
+                in_ts = node._mask_in_ts
+            else:
+                in_ts = node._camera_in_ts
             if len(in_ts) >= 2:
                 in_span = in_ts[-1] - in_ts[0]
                 if in_span > 0:
@@ -7863,6 +8556,11 @@ class HudWindow(QMainWindow):
         HxWx3 RGB arrays of the same size, so set_data without recreate
         is the steady-state path; recreate only fires if size changed.
         """
+        # Same backpressure pause as the camera slot — leave the
+        # worker's _slot_ready cleared in Performance Mode so it
+        # drains submissions without rendering BEVs.
+        if self._performance_mode:
+            return
         self._lidar_worker.slot_ready()
         if not self._live_active:
             return
@@ -8348,6 +9046,12 @@ if _HAS_ROS:
             # the raw camera (mask is silent) or defer to the mask path
             # (detector is active).
             self.latest_mask_image_t = 0.0
+            # Receipt time of the most recent /line_detection/debug/overlay
+            # message — the raw camera frame with red/yellow/green dots
+            # already drawn by the detector (see line/node.cpp ~L1114-1138).
+            # _cb_image / _cb_mask_image both defer to this when fresh so
+            # the overlay variant wins the precedence at the camera panel.
+            self.latest_overlay_image_t = 0.0
             # Per-source IN-rate timestamp deques. Each ROS callback
             # appends the wall-clock time of arrival; the GUI reads these
             # to render the "IN" half of the camera FPS overlay so the
@@ -8356,6 +9060,7 @@ if _HAS_ROS:
             # line-detector debug mask under publish_interval_ms: 250).
             self._camera_in_ts = deque(maxlen=20)
             self._mask_in_ts = deque(maxlen=20)
+            self._overlay_in_ts = deque(maxlen=20)
 
             # Lidar worker, set by HudWindow once the worker is built.
             # _cb_scan (heightband) and _cb_pca_scan (PCA) submit
@@ -8436,6 +9141,20 @@ if _HAS_ROS:
                 Image,
                 '/line_detection/debug/mask',
                 self._cb_mask_image, 10,
+            )
+            # Debug OVERLAY from the line detector — the raw camera frame
+            # with red dots at every detected line pixel and yellow/green
+            # dots for accepted/confirmed candidates (see line/node.cpp
+            # ~L1114-1138). Same subscriber-count gating as the mask, so
+            # subscribing here is what makes the detector publish it.
+            # When this stream is fresh (1 s window) _cb_image AND
+            # _cb_mask_image both defer to this variant — the dots are
+            # already baked into the frame so the post-paint line_pixels
+            # scatter is also skipped in _on_camera_frame_ready.
+            self.create_subscription(
+                Image,
+                '/line_detection/debug/overlay',
+                self._cb_overlay_image, 10,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
@@ -8565,16 +9284,20 @@ if _HAS_ROS:
                 self._cb_autonomous_mode, _RELIABLE_QOS,
             )
 
-            # Test recording state — the t000_automator publishes True
-            # on the A-button press that starts a test, False on the
-            # press that ends it. Drives the GUI's REC indicator:
-            # device-dot black↔red ramp + transparent red overlay over
-            # the central widget so the operator can see at a glance
-            # that a bag is being recorded.
+            # Test recording state — base_automator publishes True on
+            # the A-button press that starts a test, False on the press
+            # that ends it. The HUD itself also publishes here from the
+            # R key (see HudWindow._request_record_toggle) so an operator
+            # can record without a test script. Either source drives the
+            # GUI's REC indicator: device-dot black↔red ramp + transparent
+            # red overlay over the central widget.
             self.latest_recording_active = False
             self.create_subscription(
                 Bool, '/data/toggle_collect',
                 self._cb_recording_toggle, _RELIABLE_QOS,
+            )
+            self.toggle_collect_pub = self.create_publisher(
+                Bool, '/data/toggle_collect', _RELIABLE_QOS,
             )
 
             # Xbox D-pad → GUI arrow keys. HudWindow assigns
@@ -8611,12 +9334,21 @@ if _HAS_ROS:
                 worker = getattr(self, 'camera_worker', None)
                 if worker is None:
                     return
-                # Prefer the line detector's debug MASK when it's
-                # actively publishing — single-channel and matches what
-                # the detector "sees" as line. _cb_mask_image drives the
-                # display on that path; the raw camera is the fallback
-                # only when the detector is silent (mask gone stale).
-                if (time.monotonic() - self.latest_mask_image_t) < 1.0:
+                # Prefer the line detector's debug OVERLAY when fresh —
+                # it's the raw frame with the detector's red/yellow/green
+                # dots already drawn, so it's the most informative camera
+                # variant. _cb_overlay_image drives the display on that
+                # path; we silently drop the raw frame here so the worker
+                # isn't fighting two source streams for the same panel.
+                now_t = time.monotonic()
+                if (now_t - self.latest_overlay_image_t) < 1.0:
+                    return
+                # Otherwise prefer the line detector's debug MASK when
+                # it's actively publishing — single-channel and matches
+                # what the detector "sees" as line. _cb_mask_image drives
+                # the display on that path; the raw camera is the
+                # fallback only when both overlay and mask are silent.
+                if (now_t - self.latest_mask_image_t) < 1.0:
                     return
                 worker.submit(img, None, False, source='raw')
             except Exception:
@@ -8625,16 +9357,50 @@ if _HAS_ROS:
         def _cb_mask_image(self, msg):
             """/line_detection/debug/mask — MONO8 binary mask from the
             detector's brightness threshold. Hand straight to the camera
-            worker; the slot will imshow it with cmap='gray'.
+            worker; the slot will imshow it with cmap='gray'. Deferred to
+            the overlay variant when /line_detection/debug/overlay is
+            fresh — overlay sits above mask in the panel precedence.
             """
             self.latest_mask_image_t = time.monotonic()
             self._mask_in_ts.append(self.latest_mask_image_t)
             try:
+                # If the overlay variant is publishing, let it drive the
+                # panel — same fight-for-the-source guard as in _cb_image.
+                if (self.latest_mask_image_t
+                        - self.latest_overlay_image_t) < 1.0:
+                    return
                 img = np.frombuffer(msg.data, dtype=np.uint8)
                 img = img.reshape((msg.height, msg.width))
                 worker = getattr(self, 'camera_worker', None)
                 if worker is not None:
                     worker.submit(img, None, True, source='mask')
+            except Exception:
+                pass
+
+        def _cb_overlay_image(self, msg):
+            """/line_detection/debug/overlay — BGR8 raw camera frame with
+            the detector's red/yellow/green dots already drawn (see
+            line/node.cpp ~L1114-1138). Decode like _cb_image (BGR→RGB)
+            and hand to the camera worker with source='overlay' so the
+            slot suppresses the post-paint line_pixels scatter (the dots
+            are already baked in) and uses the 'Camera CUDA OVERLAY'
+            title.
+            """
+            self.latest_overlay_image_t = time.monotonic()
+            self._overlay_in_ts.append(self.latest_overlay_image_t)
+            try:
+                channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
+                img = np.frombuffer(msg.data, dtype=np.uint8)
+                img = img.reshape((msg.height, msg.width, channels))
+                if msg.encoding == 'bgra8':
+                    img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                elif msg.encoding in ('bgr8', 'bgr16'):
+                    img = img[:, :, ::-1]  # BGR to RGB
+                elif msg.encoding == 'rgba8':
+                    img = img[:, :, :3]  # RGBA to RGB
+                worker = getattr(self, 'camera_worker', None)
+                if worker is not None:
+                    worker.submit(img, None, False, source='overlay')
             except Exception:
                 pass
 
