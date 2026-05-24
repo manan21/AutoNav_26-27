@@ -116,10 +116,27 @@ class GpsEkf:
         s = math.sin(self.x[2])
         self.x[0] += c * dxo - s * dyo
         self.x[1] += s * dxo + c * dyo
-        # F = ∂f/∂x linearization around the current θ
+        # F = ∂f/∂x linearization around the current θ.
+        #
+        # The off-diagonal F[0,2] / F[1,2] entries are the mechanism
+        # by which a GPS-position update could rotate θ via
+        # correlation: GPS reduces position uncertainty, and the
+        # correlation built up during predict propagates that
+        # reduction into θ. That sounds useful, but the ``dxo, dyo``
+        # we feed here are encoder-derived odom deltas — when the
+        # encoder is yaw-biased, the EKF "explains" the GPS-vs-predict
+        # mismatch by rotating θ in the direction of the bias. The
+        # result is that θ tracks the encoder drift rather than world
+        # truth.
+        #
+        # Zeroing F[0,2] and F[1,2] decouples θ from position
+        # entirely: GPS updates correct (x_w, y_w) only, and θ is
+        # updated exclusively by direct ``update_theta_measurement``
+        # calls sourced from GPS course-over-ground + IMU yaw (see
+        # ``gps_handler_node._inject_gps_cog_theta_measurement``).
+        # No ODOM angle anywhere in the θ chain.
         F = np.eye(3)
-        F[0, 2] = -s * dxo - c * dyo
-        F[1, 2] = c * dxo - s * dyo
+        # F[0, 2] and F[1, 2] intentionally left at 0.
         self.P = F @ self.P @ F.T + self._Q * float(dt)
         # Position-variance floor — see EKF_POS_VAR_FLOOR docstring.
         # When clamping a diagonal entry up, scale the corresponding row

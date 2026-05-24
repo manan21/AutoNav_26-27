@@ -48,6 +48,21 @@ try:
 except ImportError:
     _HAS_CV2 = False
 
+# psutil + NVML are only consulted while the Performance mode veil is up,
+# so missing imports just blank out the matching stat rather than blocking
+# the rest of the GUI.
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
+try:
+    import pynvml
+    _HAS_NVML = True
+except ImportError:
+    _HAS_NVML = False
+
 import numpy as np
 from PIL import Image as PILImage
 
@@ -717,8 +732,13 @@ class _LidarFrameWorker(QObject):
         return img
 
 
-from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtCore import (
+    QEasingCurve, QEvent, QParallelAnimationGroup, QPoint,
+    QPropertyAnimation, Qt, QTimer,
+)
+from PyQt5.QtGui import (
+    QColor, QFont, QPainter, QPalette, QPen, QPolygon,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -783,6 +803,262 @@ def _style_ax(ax, title=None):
         ax.set_title(title, fontsize=8, color='#ccc')
 
 
+class _ModeOverlay(QWidget):
+    """Unified PERF + REC overlay.
+
+    One widget that's wider than the parent (≈ 2× window width + the 60°
+    diagonal width). It paints a blue trapezoid on the left, a red
+    trapezoid on the right, with the diagonal between them. Horizontal
+    translation chooses what's visible:
+
+        PERF — widget at x = 0; blue trapezoid covers the window.
+        REC  — widget at x = -(W + diag); red trapezoid covers the window.
+        BOTH — widget at x = -(W + diag) / 2; diagonal centred, both
+               trapezoids' visible slabs sit either side.
+
+    Two child labels (PERF + REC) shimmy between solo-centred and
+    split-trapezoid-centred positions as the state changes. A third
+    label (CPU/GPU stats) tracks the PERF label.
+
+    All transitions are QParallelAnimationGroups with InOutCubic easing
+    on the widget pos and on each label pos, so the whole composition
+    moves as one piece.
+    """
+
+    OFF = 'off'
+    PERF = 'perf'
+    REC = 'rec'
+    BOTH = 'both'
+
+    _BLUE_FILL = QColor(40, 90, 200, 110)
+    _BLUE_BORDER = QColor(20, 50, 140, 220)
+    _RED_FILL = QColor(255, 0, 0, 14)
+    _RED_BORDER = QColor(255, 0, 0, 200)
+    _BORDER_PX = 8
+    _ANIM_MS = 300
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        title_font = QFont()
+        title_font.setPointSize(96)
+        title_font.setBold(True)
+
+        self.perf_label = QLabel('PERF', self)
+        self.perf_label.setFont(title_font)
+        self.perf_label.setStyleSheet(
+            'color: #ffffff; background: transparent; border: none;'
+        )
+        self.perf_label.setAlignment(Qt.AlignCenter)
+        self.perf_label.adjustSize()
+
+        self.rec_label = QLabel('REC', self)
+        self.rec_label.setFont(title_font)
+        self.rec_label.setStyleSheet(
+            'color: rgba(255, 80, 80, 230);'
+            ' background: transparent; border: none;'
+        )
+        self.rec_label.setAlignment(Qt.AlignCenter)
+        self.rec_label.adjustSize()
+
+        stats_font = QFont()
+        stats_font.setPointSize(20)
+        stats_font.setFamily('Consolas')
+        self.perf_stats_label = QLabel(
+            'CPU   Before: --     Now: --\n'
+            'GPU   Before: --     Now: --',
+            self,
+        )
+        self.perf_stats_label.setFont(stats_font)
+        self.perf_stats_label.setStyleSheet(
+            'color: #cfe4ff; background: transparent; border: none;'
+        )
+        self.perf_stats_label.setAlignment(Qt.AlignCenter)
+        self.perf_stats_label.adjustSize()
+
+        # Screen dims — set by configure_for_screen, also recomputed on
+        # window resize. Until then, harmless placeholder values.
+        self._sw = 1
+        self._sh = 1
+        self._diag = 1
+        self._anim = None
+        self._state = self.OFF
+        self.hide()
+
+    # ── Geometry helpers ─────────────────────────────────────────────
+
+    def configure_for_screen(self, sw, sh):
+        """Set / refresh the parent (window) dimensions and recompute the
+        widget's total width + diagonal width. Snaps to the current state
+        without animation so resize jumps are atomic."""
+        import math as _math
+        sw = max(1, int(sw))
+        sh = max(1, int(sh))
+        self._sw = sw
+        self._sh = sh
+        # 60° diagonal — width = h * cot(60°).
+        self._diag = max(1, int(sh / _math.tan(_math.radians(60.0))))
+        widget_w = 2 * sw + self._diag
+        self.setFixedSize(widget_w, sh)
+        self._apply_state(self._state, animate=False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        W, H, D = self._sw, self._sh, self._diag
+
+        blue_poly = QPolygon([
+            QPoint(0, 0), QPoint(W + D, 0),
+            QPoint(W, H), QPoint(0, H),
+        ])
+        red_poly = QPolygon([
+            QPoint(W + D, 0), QPoint(2 * W + D, 0),
+            QPoint(2 * W + D, H), QPoint(W, H),
+        ])
+
+        # Fills first.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._BLUE_FILL)
+        painter.drawPolygon(blue_poly)
+        painter.setBrush(self._RED_FILL)
+        painter.drawPolygon(red_poly)
+
+        # Then thick polygon outlines. Both colors stamp their own
+        # border along the shared diagonal — in BOTH mode that reads as
+        # an emphatic split-stripe; in solo modes the diagonal sits at
+        # one screen edge and acts as that side's border.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(self._BLUE_BORDER, self._BORDER_PX))
+        painter.drawPolygon(blue_poly)
+        painter.setPen(QPen(self._RED_BORDER, self._BORDER_PX))
+        painter.drawPolygon(red_poly)
+
+    # ── State machine ───────────────────────────────────────────────
+
+    def _widget_pos_for(self, state):
+        if state == self.PERF:
+            return QPoint(0, 0)
+        if state == self.REC:
+            return QPoint(-(self._sw + self._diag), 0)
+        if state == self.BOTH:
+            return QPoint(-(self._sw + self._diag) // 2, 0)
+        # OFF — pinned past the window; exact value irrelevant since
+        # we hide right after the animation finishes.
+        return self.pos()
+
+    def _centre_label(self, label, cx, cy):
+        return QPoint(cx - label.width() // 2, cy - label.height() // 2)
+
+    def _label_positions_for(self, state):
+        """Return (perf, stats, rec) widget-local top-left QPoints for
+        the three labels at the given state."""
+        W, H, D = self._sw, self._sh, self._diag
+        offset_both = (W + D) // 2
+
+        if state == self.PERF:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.REC:
+            perf_cx = W // 2
+            rec_cx = W + D + W // 2
+        elif state == self.BOTH:
+            perf_cx = W // 4 + offset_both
+            rec_cx = 3 * W // 4 + offset_both
+        else:
+            return (self.perf_label.pos(), self.perf_stats_label.pos(),
+                    self.rec_label.pos())
+
+        cy = H // 2
+        stats_cy = cy + self.perf_label.height() // 2 + 12 \
+            + self.perf_stats_label.height() // 2
+        return (
+            self._centre_label(self.perf_label, perf_cx, cy),
+            self._centre_label(self.perf_stats_label, perf_cx, stats_cy),
+            self._centre_label(self.rec_label, rec_cx, cy),
+        )
+
+    def state(self):
+        return self._state
+
+    def set_state(self, new_state, animate=True):
+        if new_state == self._state:
+            return
+        prev = self._state
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+
+        if new_state == self.OFF:
+            if prev == self.PERF:
+                off_pos = QPoint(self._sw, 0)
+            elif prev == self.REC:
+                off_pos = QPoint(-(2 * self._sw + self._diag), 0)
+            else:
+                off_pos = self.pos()
+
+            def _on_done():
+                self.hide()
+
+            self._animate_widget_pos(off_pos, animate, _on_done)
+            self._state = new_state
+            return
+
+        if prev == self.OFF:
+            # Coming from OFF — snap to target without sliding from
+            # nowhere; the visible slide-in happens only when going
+            # between active states.
+            self._apply_state(new_state, animate=False)
+            self.show()
+            self.raise_()
+            self._state = new_state
+            return
+
+        self._apply_state(new_state, animate=animate)
+        self._state = new_state
+
+    def _apply_state(self, state, animate=True):
+        target_widget = self._widget_pos_for(state)
+        perf_pos, stats_pos, rec_pos = self._label_positions_for(state)
+        if not animate:
+            self.move(target_widget)
+            self.perf_label.move(perf_pos)
+            self.perf_stats_label.move(stats_pos)
+            self.rec_label.move(rec_pos)
+            return
+        group = QParallelAnimationGroup(self)
+        for widget, target in [
+            (self, target_widget),
+            (self.perf_label, perf_pos),
+            (self.perf_stats_label, stats_pos),
+            (self.rec_label, rec_pos),
+        ]:
+            a = QPropertyAnimation(widget, b'pos')
+            a.setDuration(self._ANIM_MS)
+            a.setStartValue(widget.pos())
+            a.setEndValue(target)
+            a.setEasingCurve(QEasingCurve.InOutCubic)
+            group.addAnimation(a)
+        self._anim = group
+        group.start()
+
+    def _animate_widget_pos(self, target, animate, on_finished=None):
+        if not animate:
+            self.move(target)
+            if on_finished is not None:
+                on_finished()
+            return
+        a = QPropertyAnimation(self, b'pos', self)
+        a.setDuration(self._ANIM_MS)
+        a.setStartValue(self.pos())
+        a.setEndValue(target)
+        a.setEasingCurve(QEasingCurve.InOutCubic)
+        if on_finished is not None:
+            a.finished.connect(on_finished)
+        self._anim = a
+        a.start()
+
+
 class HudWindow(QMainWindow):
     """1920x720 dark-themed HUD window for the AutoNav bar display."""
 
@@ -819,7 +1095,7 @@ class HudWindow(QMainWindow):
         '#ffffff': '#000000',  # title text (full 6-char form)
         '#0f0':    '#0a8800',  # active green text
         '#0af':    '#0a5a9a',  # info blue
-        '#ff0':    '#a06000',  # yellow text status (dots use #ffff00 below)
+        '#ff0':    '#cc5500',  # yellow text status (dots use #ffff00 below)
         '#f44':    '#cc3030',  # red dot
         '#4f4':    '#0db000',  # green dot — distinct from #0f0 so reverse map is bijective
         '#111111': '#f5f5f5',  # mpl axes facecolor
@@ -1033,6 +1309,55 @@ class HudWindow(QMainWindow):
         # locker. See GUI_SAFETY_PLAN.md and scripts/kiosk/ for the
         # kiosk setup.
 
+        # Performance Mode — opt-in low-CPU veil. When on, every QTimer
+        # the window owns is paused (live tick, playback, EKF pulse,
+        # process polling, etc.) so the GUI hovers at near-zero CPU
+        # behind a translucent blue panel with a giant centred
+        # "PERFORMANCE" label and a Before/Now CPU/GPU comparison.
+        # _perf_resume_timers stores the timers we stopped so toggle-off
+        # resumes exactly those that were running on entry — anything
+        # started while in performance mode is left alone.
+        self._performance_mode = False
+        self._perf_resume_timers = []
+        # Unified mode overlay — single wide widget that carries both
+        # PERF (blue) and REC (red) veils with a 60° diagonal split.
+        # Translated horizontally to expose PERF / REC / BOTH. Built
+        # lazily on first use; _perf_stats_label is aliased to the
+        # overlay's stats QLabel so the existing CPU/GPU update path
+        # keeps working with no other changes.
+        self._mode_overlay = None
+        self._perf_stats_label = None
+        # 5 s sampler runs CONTINUOUSLY (not just in Perf mode) so the
+        # overlay can show a Before/Now comparison — Before being the
+        # most recent sample taken before the operator entered Perf
+        # mode, Now being the latest sample taken while paused. The
+        # sampler is also the one timer skipped by the pause loop.
+        self._perf_stats_timer = QTimer(self)
+        self._perf_stats_timer.setInterval(5000)
+        self._perf_stats_timer.timeout.connect(self._sample_perf_stats)
+        self._perf_proc = None
+        self._perf_cpu_count = 1
+        if _HAS_PSUTIL:
+            try:
+                self._perf_proc = psutil.Process()
+                # Prime per-process cpu_percent so the first reading
+                # reflects real work, not the all-time-since-start
+                # fallback.
+                self._perf_proc.cpu_percent(interval=None)
+                self._perf_cpu_count = max(1, psutil.cpu_count(logical=True))
+            except Exception:
+                self._perf_proc = None
+        self._perf_nvml_handle = None  # populated lazily on first sample
+        # Latest samples — refreshed every 5 s by _sample_perf_stats.
+        self._last_gui_cpu_pct = None
+        self._last_sys_gpu_pct = None
+        # Baseline — snapshotted at the moment Perf mode is entered.
+        self._baseline_gui_cpu_pct = None
+        self._baseline_sys_gpu_pct = None
+        # Start the sampler. QTimer is queued to fire from the event
+        # loop, so this is safe even though __init__ hasn't returned.
+        self._perf_stats_timer.start()
+
         # Container connection state
         self._container_connected = False
         self._container_name = 'koopa-kingdom'
@@ -1230,6 +1555,41 @@ class HudWindow(QMainWindow):
         self.btn_playback.clicked.connect(self._on_playback_clicked)
         options_layout.addWidget(self.btn_playback)
         self._nav_buttons.append((self.btn_playback, "Playback Mode", button_style))
+
+        # ROS bag playback state — populated by the Playback Mode
+        # page's row scanner, driven by `ros2 bag play` subprocesses.
+        # The poll timer detects natural end-of-bag and clears the
+        # row so the operator doesn't have to.
+        self._bag_play_proc = None
+        self._bag_play_poll_timer = QTimer(self)
+        self._bag_play_poll_timer.setInterval(500)
+        self._bag_play_poll_timer.timeout.connect(self._bag_play_poll)
+
+        # HUD-driven `ros2 bag record` subprocess — spawned by the R
+        # key (see _request_record_toggle) so the operator can record
+        # at any moment without launching a test script. Output lands
+        # under _CSV_DIR/manual_<stamp>/bag/ so a fresh session shows
+        # up in the Playback Mode grid as soon as recording stops.
+        self._hud_bag_proc = None
+
+        # Performance Mode — last entry in the action stack. Toggles a
+        # near-zero-CPU veil that pauses every QTimer the window owns.
+        # The button + veil are container-independent (no ROS needed),
+        # so it sits alongside Playback Mode.
+        self._perf_off_style = button_style
+        self._perf_on_style = (
+            button_style.replace("#2a2a2a", "#1a3a6a")
+                        .replace("#3a3a3a", "#2a4a7a")
+                        .replace("#1a1a1a", "#0a2a4a")
+        )
+        self.btn_performance = QPushButton("Performance Mode")
+        self.btn_performance.setStyleSheet(self._perf_off_style)
+        self.btn_performance.setFocusPolicy(Qt.NoFocus)
+        self.btn_performance.clicked.connect(self._on_performance_clicked)
+        options_layout.addWidget(self.btn_performance)
+        self._nav_buttons.append(
+            (self.btn_performance, "Performance Mode", self._perf_off_style)
+        )
 
         options_layout.addStretch()
 
@@ -1429,102 +1789,46 @@ class HudWindow(QMainWindow):
         )
 
         # --- One-shot script runners: send_goal.sh / send_GPS_waypoint.sh ---
-        # Each row is [label | QLineEdit args | Send button]. The button
-        # fires the script (wrapped for the container) with the args
-        # string appended; output is captured into _process_buffers
-        # under the label so it shows up in the terminal display when
-        # the device dot is selected (no dot is wired for these, so the
-        # operator selects via the existing dot UI — output is mostly
-        # informational anyway).
+        # Each is a single button that hands the operator into a temporary
+        # "goal pick" mode. In that mode arrow keys move a crosshair on
+        # the corresponding data-column plot (ODOM for local, GPS map for
+        # GPS); Enter fires the script with the picked coordinates and
+        # Esc cancels. See _enter_local_goal_mode / _enter_gps_goal_mode
+        # and the goal-mode branch in keyPressEvent.
         sep_send = QFrame()
         sep_send.setFrameShape(QFrame.HLine)
         sep_send.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
         sep_send.setFixedHeight(1)
         launch_layout.addWidget(sep_send)
 
-        send_field_style = (
-            "QLineEdit {"
-            "  background-color: #1a1a1a; color: #dcdcdc;"
-            "  border: 1px solid #555; border-radius: 3px;"
-            "  padding: 4px 6px; font-size: 11px; font-family: monospace;"
-            "}"
-            "QLineEdit:focus { border: 1px solid #0af; }"
-        )
         send_btn_style = (
             "QPushButton {"
             "  background-color: #2a2a2a; color: #0af;"
             "  border: 1px solid #0af; border-radius: 4px;"
-            "  padding: 6px 8px; font-size: 11px;"
+            "  padding: 8px 8px; font-size: 11px;"
             "}"
             "QPushButton:hover { background-color: #3a3a3a; }"
             "QPushButton:pressed { background-color: #1a1a1a; }"
         )
-
-        # Selected-state style for the input fields: green border so
-        # the operator can see which row arrow-nav is on. Stored on
-        # self because _update_selection reads it.
-        self._send_field_base_style = send_field_style
-        self._send_field_sel_style = (
-            "QLineEdit {"
-            "  background-color: #1a2a1a; color: #dcdcdc;"
-            "  border: 2px solid #0f0; border-radius: 3px;"
-            "  padding: 3px 5px; font-size: 11px; font-family: monospace;"
-            "}"
-        )
         self._send_btn_base_style = send_btn_style
 
-        send_grid = QGridLayout()
-        send_grid.setSpacing(4)
-
-        lbl_goal = QLabel("Send Goal")
-        lbl_goal.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
-        self._send_goal_input = QLineEdit()
-        self._send_goal_input.setStyleSheet(send_field_style)
-        btn_send_goal = QPushButton("Send")
-        btn_send_goal.setStyleSheet(send_btn_style)
-        btn_send_goal.setFocusPolicy(Qt.NoFocus)
-        btn_send_goal.setFixedWidth(60)
-        btn_send_goal.clicked.connect(self._on_send_goal_clicked)
-        self._send_goal_input.returnPressed.connect(self._on_send_goal_clicked)
-        send_grid.addWidget(lbl_goal, 0, 0)
-        send_grid.addWidget(self._send_goal_input, 0, 1)
-        send_grid.addWidget(btn_send_goal, 0, 2)
-        # Arrow-key nav participation. Up/Down through these in col 0
-        # of the launch-page nav grid. Enter on the QLineEdit focuses
-        # it (for typing); Enter on the button submits. See
-        # _update_selection / keyPressEvent for the QLineEdit-aware
-        # paths.
+        btn_local_goal = QPushButton("Set Local Goal…")
+        btn_local_goal.setStyleSheet(send_btn_style)
+        btn_local_goal.setFocusPolicy(Qt.NoFocus)
+        btn_local_goal.clicked.connect(self._enter_local_goal_mode)
+        launch_layout.addWidget(btn_local_goal)
         self._launch_nav_buttons.append(
-            (self._send_goal_input, "Send Goal Args", send_field_style)
-        )
-        self._launch_nav_buttons.append(
-            (btn_send_goal, "Send", send_btn_style)
+            (btn_local_goal, "Set Local Goal…", send_btn_style)
         )
 
-        lbl_gps = QLabel("Send GPS")
-        lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
-        self._send_gps_input = QLineEdit()
-        self._send_gps_input.setStyleSheet(send_field_style)
-        btn_send_gps = QPushButton("Send")
-        btn_send_gps.setStyleSheet(send_btn_style)
-        btn_send_gps.setFocusPolicy(Qt.NoFocus)
-        btn_send_gps.setFixedWidth(60)
-        btn_send_gps.clicked.connect(self._on_send_gps_clicked)
-        self._send_gps_input.returnPressed.connect(self._on_send_gps_clicked)
-        send_grid.addWidget(lbl_gps, 1, 0)
-        send_grid.addWidget(self._send_gps_input, 1, 1)
-        send_grid.addWidget(btn_send_gps, 1, 2)
+        btn_gps_goal = QPushButton("Set GPS Goal…")
+        btn_gps_goal.setStyleSheet(send_btn_style)
+        btn_gps_goal.setFocusPolicy(Qt.NoFocus)
+        btn_gps_goal.clicked.connect(self._enter_gps_goal_mode)
+        launch_layout.addWidget(btn_gps_goal)
         self._launch_nav_buttons.append(
-            (self._send_gps_input, "Send GPS Args", send_field_style)
+            (btn_gps_goal, "Set GPS Goal…", send_btn_style)
         )
-        self._launch_nav_buttons.append(
-            (btn_send_gps, "Send", send_btn_style)
-        )
-
-        send_grid.setColumnStretch(0, 0)
-        send_grid.setColumnStretch(1, 1)
-        send_grid.setColumnStretch(2, 0)
-        launch_layout.addLayout(send_grid)
 
         launch_layout.addStretch()
 
@@ -1929,12 +2233,12 @@ class HudWindow(QMainWindow):
         self._dev_branch_grid.setSpacing(4)
         branch_holder = QWidget()
         branch_holder.setLayout(self._dev_branch_grid)
-        branch_scroll = QScrollArea()
-        branch_scroll.setWidgetResizable(True)
-        branch_scroll.setWidget(branch_holder)
-        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
-        branch_scroll.setMinimumHeight(280)
-        branches_layout.addWidget(branch_scroll, stretch=1)
+        self._branch_scroll = QScrollArea()
+        self._branch_scroll.setWidgetResizable(True)
+        self._branch_scroll.setWidget(branch_holder)
+        self._branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._branch_scroll.setMinimumHeight(280)
+        branches_layout.addWidget(self._branch_scroll, stretch=1)
 
         # Back to Developer
         exit_branches_style = (
@@ -2339,6 +2643,29 @@ class HudWindow(QMainWindow):
         self._gps_map_img = None          # numpy RGB array
         self._gps_trail, = self._gps_ax.plot([], [], 'c-', linewidth=1, alpha=0.6)
         self._gps_dot, = self._gps_ax.plot([], [], 'ro', markersize=5, zorder=5)
+        # Goal-pick crosshair + banner. Hidden until the operator enters
+        # GPS goal-pick mode via the launch-page "Set GPS Goal" button.
+        # See _enter_gps_goal_mode / _exit_gps_goal_mode.
+        self._gps_goal_cross, = self._gps_ax.plot(
+            [], [], marker='+', color='#0ff', markersize=18,
+            markeredgewidth=2, linestyle='none', zorder=10,
+        )
+        self._gps_goal_cross.set_visible(False)
+        self._gps_goal_banner = self._gps_ax.text(
+            0.5, 0.02,
+            'GPS GOAL PICK · ←↑↓→ move · ENTER send · ESC cancel',
+            transform=self._gps_ax.transAxes, fontsize=7, color='#0ff',
+            ha='center', va='bottom', family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='#0ff', pad=2),
+        )
+        self._gps_goal_banner.set_visible(False)
+        self._gps_goal_readout = self._gps_ax.text(
+            0.98, 0.02, '', transform=self._gps_ax.transAxes,
+            fontsize=7, color='#0ff', ha='right', va='bottom',
+            family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='none', pad=2),
+        )
+        self._gps_goal_readout.set_visible(False)
         self._gps_canvas.setMinimumSize(50, 50)
         gps_layout.addWidget(self._gps_canvas, stretch=1)
 
@@ -2383,6 +2710,29 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._odom_live_txt.set_visible(False)
+        # Goal-pick crosshair + banner. Hidden until the operator enters
+        # local goal-pick mode via the launch-page "Set Local Goal" button.
+        # See _enter_local_goal_mode / _exit_local_goal_mode.
+        self._odom_goal_cross, = self._odom_ax.plot(
+            [], [], marker='+', color='#0ff', markersize=18,
+            markeredgewidth=2, linestyle='none', zorder=10,
+        )
+        self._odom_goal_cross.set_visible(False)
+        self._odom_goal_banner = self._odom_ax.text(
+            0.5, 0.02,
+            'LOCAL GOAL PICK · ←↑↓→ move · ENTER send · ESC cancel',
+            transform=self._odom_ax.transAxes, fontsize=7, color='#0ff',
+            ha='center', va='bottom', family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='#0ff', pad=2),
+        )
+        self._odom_goal_banner.set_visible(False)
+        self._odom_goal_readout = self._odom_ax.text(
+            0.98, 0.02, '', transform=self._odom_ax.transAxes,
+            fontsize=7, color='#0ff', ha='right', va='bottom',
+            family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='none', pad=2),
+        )
+        self._odom_goal_readout.set_visible(False)
         self._odom_canvas.setMinimumSize(50, 50)
         enc_layout.addWidget(self._odom_canvas, stretch=1)
 
@@ -2542,6 +2892,17 @@ class HudWindow(QMainWindow):
             "QFrame#sensorCell {"
             "  border: 2px solid #0af;"
             "  background-color: #1a2a3a;"
+            "  border-radius: 3px;"
+            "}"
+        )
+        # Goal-pick border for the ODOM / GPS cell while the operator is
+        # placing a crosshair. Cyan to match the crosshair color and
+        # thicker than the nav-selection border so it's unmistakable
+        # even when the cell also happens to be the nav-selected one.
+        self._sensor_goal_style = (
+            "QFrame#sensorCell {"
+            "  border: 3px solid #0ff;"
+            "  background-color: #1a2a2a;"
             "  border-radius: 3px;"
             "}"
         )
@@ -2793,6 +3154,16 @@ class HudWindow(QMainWindow):
         self._nav_last_row = [0, 0, 0, 0]
         self._scrub_mode = False  # True when actively scrubbing with arrows
         self._speed_mode = False  # True when selecting playback speed with arrows
+        # Goal-pick modes hijack arrow keys to move a crosshair on the
+        # ODOM / GPS data-column plot. Coordinates are stored as the
+        # target the operator is currently aiming at (map-frame x/y for
+        # local, lat/lon for GPS). See _enter_*_goal_mode handlers.
+        self._local_goal_mode = False
+        self._gps_goal_mode = False
+        self._local_goal_x = 0.0
+        self._local_goal_y = 0.0
+        self._gps_goal_lat = 0.0
+        self._gps_goal_lon = 0.0
 
         self._sel_frames_r = [' <', '< ']
         self._sel_frames_l = ['> ', ' >']
@@ -3237,35 +3608,175 @@ class HudWindow(QMainWindow):
                 break
         self._refresh_terminal_display()
 
-    def _on_send_goal_clicked(self):
-        """Run ./config/send_goal.sh with the args from the textfield."""
-        args = self._send_goal_input.text().strip()
-        # Hand focus back to the main window so arrow-key nav resumes
-        # instead of staying trapped inside the QLineEdit.
-        self._send_goal_input.clearFocus()
-        self.setFocus(Qt.OtherFocusReason)
-        self._run_one_shot_script(
-            label="Send Goal",
-            script="./config/send_goal.sh",
-            args=args,
-        )
+    # --- Goal-pick modes -------------------------------------------------
+    # Two operator-facing modes that hijack arrow keys to position a
+    # crosshair on a data-column plot. Each is entered by clicking a
+    # launch-page button; arrows nudge the target, Enter fires the
+    # corresponding script, Esc cancels. Local picks use 0.1 m so the
+    # operator can park within wheelbase tolerance; GPS picks use 1.0 m
+    # (lat/lon converted via the WGS84 small-step approx) since the
+    # waypoint radius soaks up sub-meter precision anyway.
+    _LOCAL_GOAL_STEP_M = 0.1
+    _GPS_GOAL_STEP_M = 1.0
 
-    def _on_send_gps_clicked(self):
-        """Run ./config/send_GPS_waypoint.sh with the args from the textfield.
-
-        Commas in the field (e.g. ``37.23028, -80.42502``) are normalized
-        to spaces so the script's positional <lat> <lon> [radius] parser
-        accepts the input as-pasted from a maps app.
-        """
-        raw = self._send_gps_input.text().strip()
-        args = re.sub(r'[,\s]+', ' ', raw).strip()
-        self._send_gps_input.clearFocus()
-        self.setFocus(Qt.OtherFocusReason)
-        self._run_one_shot_script(
-            label="Send GPS",
-            script="./config/send_GPS_waypoint.sh",
-            args=args,
+    def _enter_local_goal_mode(self):
+        """Show the local-goal crosshair on the ODOM plot and seed the
+        target at the robot's current map-frame pose."""
+        if self._gps_goal_mode:
+            self._exit_gps_goal_mode(send=False)
+        xs = self._odom_buf.get('x')
+        ys = self._odom_buf.get('y')
+        if not xs or not ys:
+            self._gui_log_msg(
+                "Set Local Goal: no odom yet — start the Local EKF first"
+            )
+            return
+        self._local_goal_x = float(xs[-1])
+        self._local_goal_y = float(ys[-1])
+        self._local_goal_mode = True
+        self._odom_goal_cross.set_data([self._local_goal_x], [self._local_goal_y])
+        self._odom_goal_cross.set_visible(True)
+        self._odom_goal_banner.set_visible(True)
+        self._odom_goal_readout.set_visible(True)
+        self._odom_goal_readout.set_text(
+            f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
         )
+        self._odom_canvas.draw_idle()
+        self._update_selection()
+
+    def _exit_local_goal_mode(self, send):
+        """Hide the crosshair. If `send`, fire send_goal.sh with the
+        picked map-frame x/y."""
+        if not self._local_goal_mode:
+            return
+        self._local_goal_mode = False
+        self._odom_goal_cross.set_visible(False)
+        self._odom_goal_banner.set_visible(False)
+        self._odom_goal_readout.set_visible(False)
+        self._odom_canvas.draw_idle()
+        self._update_selection()
+        if send:
+            args = f"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"
+            self._run_one_shot_script(
+                label="Send Goal",
+                script="./config/send_goal.sh",
+                args=args,
+            )
+
+    def _move_local_goal(self, dx, dy):
+        """Nudge the local-goal crosshair by (dx, dy) meters in the map
+        frame and refresh the readout. If the new position falls outside
+        the current ODOM viewport, expand the limits immediately so the
+        crosshair stays visible without waiting for the next live tick."""
+        self._local_goal_x += dx
+        self._local_goal_y += dy
+        self._odom_goal_cross.set_data([self._local_goal_x], [self._local_goal_y])
+        self._odom_goal_readout.set_text(
+            f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
+        )
+        # Auto-pan/zoom so the crosshair is never off-screen between
+        # arrow presses. Margin sized for visible breathing room — the
+        # crosshair should clearly sit *inside* the viewport, not on
+        # the edge. The next live-tick redraw re-derives the bounds
+        # (also including the goal — see _redraw_plots) so any pad here
+        # gets normalized within ~100-200 ms.
+        x0, x1 = self._odom_ax.get_xlim()
+        y0, y1 = self._odom_ax.get_ylim()
+        margin = 2.0
+        gx, gy = self._local_goal_x, self._local_goal_y
+        new_x0 = min(x0, gx - margin)
+        new_x1 = max(x1, gx + margin)
+        new_y0 = min(y0, gy - margin)
+        new_y1 = max(y1, gy + margin)
+        if (new_x0, new_x1, new_y0, new_y1) != (x0, x1, y0, y1):
+            self._odom_ax.set_xlim(new_x0, new_x1)
+            self._odom_ax.set_ylim(new_y0, new_y1)
+        self._odom_canvas.draw_idle()
+
+    def _enter_gps_goal_mode(self):
+        """Show the GPS-goal crosshair on the GPS map and seed the target
+        at the latest fix. Refuses if no GPS fix is in the buffer."""
+        if self._local_goal_mode:
+            self._exit_local_goal_mode(send=False)
+        lats = self._gps_buf.get('lat')
+        lons = self._gps_buf.get('lon')
+        if not lats or not lons:
+            self._gui_log_msg(
+                "Set GPS Goal: no GPS fix yet — wait for a lock"
+            )
+            return
+        self._gps_goal_lat = float(lats[-1])
+        self._gps_goal_lon = float(lons[-1])
+        self._gps_goal_mode = True
+        self._gps_goal_cross.set_data([self._gps_goal_lon], [self._gps_goal_lat])
+        self._gps_goal_cross.set_visible(True)
+        self._gps_goal_banner.set_visible(True)
+        self._gps_goal_readout.set_visible(True)
+        self._gps_goal_readout.set_text(
+            f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
+        )
+        self._gps_canvas.draw_idle()
+        self._update_selection()
+
+    def _exit_gps_goal_mode(self, send):
+        """Hide the crosshair. If `send`, fire send_GPS_waypoint.sh with
+        the picked lat/lon."""
+        if not self._gps_goal_mode:
+            return
+        self._gps_goal_mode = False
+        self._gps_goal_cross.set_visible(False)
+        self._gps_goal_banner.set_visible(False)
+        self._gps_goal_readout.set_visible(False)
+        self._gps_canvas.draw_idle()
+        self._update_selection()
+        if send:
+            args = f"{self._gps_goal_lat:.7f} {self._gps_goal_lon:.7f}"
+            self._run_one_shot_script(
+                label="Send GPS",
+                script="./config/send_GPS_waypoint.sh",
+                args=args,
+            )
+
+    def _move_gps_goal(self, d_north_m, d_east_m):
+        """Nudge the GPS-goal crosshair by (north, east) meters and
+        refresh the readout. Uses a WGS84 small-step approximation.
+        Viewport is re-derived as a uniform square (in meters) around
+        the robot — extending only one axis stretches the satellite
+        tile because 1° of lon ≠ 1° of lat at this latitude."""
+        dlat = d_north_m / 111320.0
+        dlon = d_east_m / (
+            111320.0 * max(0.1, math.cos(math.radians(self._gps_goal_lat)))
+        )
+        self._gps_goal_lat += dlat
+        self._gps_goal_lon += dlon
+        self._gps_goal_cross.set_data([self._gps_goal_lon], [self._gps_goal_lat])
+        self._gps_goal_readout.set_text(
+            f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
+        )
+        # Recompute the GPS viewport: square radius in meters, centered
+        # on the robot, sized to include the crosshair plus a 5 m
+        # breathing-room buffer. Identical math to the live-tick
+        # redraw so the view doesn't snap when the next tick fires.
+        lats = self._gps_buf.get('lat')
+        lons = self._gps_buf.get('lon')
+        if lats and lons:
+            cur_lat = float(lats[-1])
+            cur_lon = float(lons[-1])
+            dnorth_m = (self._gps_goal_lat - cur_lat) * 111320.0
+            deast_m = (
+                (self._gps_goal_lon - cur_lon)
+                * 111320.0
+                * max(0.1, math.cos(math.radians(cur_lat)))
+            )
+            needed = max(abs(dnorth_m), abs(deast_m)) + 5.0
+            view_radius_m = max(_GPS_VIEW_RADIUS_M, needed)
+            view_dlat = view_radius_m / 111320.0
+            view_dlon = view_radius_m / (
+                111320.0 * max(0.1, math.cos(math.radians(cur_lat)))
+            )
+            self._gps_ax.set_xlim(cur_lon - view_dlon, cur_lon + view_dlon)
+            self._gps_ax.set_ylim(cur_lat - view_dlat, cur_lat + view_dlat)
+        self._gps_canvas.draw_idle()
 
     def _run_one_shot_script(self, label, script, args):
         """Fire-and-forget runner for the send_goal/send_GPS scripts.
@@ -3665,6 +4176,24 @@ class HudWindow(QMainWindow):
         self._branches_nav_buttons = head_entries + new_branch_entries + (
             [exit_entry] if exit_entry else []
         )
+
+        # _show_branches_page assigns self._nav_groups[0] = self._branches_nav_buttons
+        # BEFORE this method rebuilds the list, so the nav group ends up
+        # pointing at the old (pre-refresh) entries — arrow keys then only
+        # see Refresh + Back. Re-bind here so arrow nav reaches the
+        # branch buttons that were just added.
+        if (
+            hasattr(self, '_options_stack')
+            and self._options_stack.currentIndex() == 5
+            and hasattr(self, '_nav_groups')
+            and self._nav_groups
+        ):
+            self._nav_groups[0] = self._branches_nav_buttons
+            n = len(self._branches_nav_buttons)
+            if n and self._nav_col == 0:
+                self._nav_row = min(self._nav_row, n - 1)
+                self._nav_last_row[0] = self._nav_row
+                self._update_selection()
 
     def _dev_ahead_behind(self, branch):
         rc, out, _err = self._dev_run_git([
@@ -4151,6 +4680,14 @@ class HudWindow(QMainWindow):
         except Exception as e:
             buf.append(f"[ERROR] Failed to launch: {e}\n")
             self._gui_log_msg(f"Test {tid} failed to launch: {e}")
+
+        # Point the terminal pane at this test's buffer so the operator
+        # sees the automator's WARMING UP / READY banners and knows when
+        # the physical Xbox A press will produce a useful bag. Every
+        # other launcher (mission, build, install) does the same thing.
+        self._selected_process = test_label
+        self._term_last_text = ''
+        self._refresh_terminal_display()
 
         self._update_selection()
 
@@ -4661,18 +5198,19 @@ class HudWindow(QMainWindow):
         if self._launch_queue:
             q_str = " > ".join(self._launch_queue)
             parts.append(f"Queued: {q_str}")
+        T = self._translate_to_theme
         if parts:
             self._queue_label.setText(" | ".join(parts))
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #ff0; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
         else:
             self._queue_label.setText("Queue: idle")
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #888; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
 
     def _toggle_device(self, label):
         """Toggle a device on/off. Uses a queue so only one starts at a time."""
@@ -4733,7 +5271,7 @@ class HudWindow(QMainWindow):
                 for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
                     if blabel == label:
                         btn.setText("Waiting")
-                        btn.setStyleSheet(self._launch_wait_style)
+                        btn.setStyleSheet(self._translate_to_theme(self._launch_wait_style))
                         self._launch_nav_buttons[i] = (btn, blabel, self._launch_wait_style)
                         break
                 self._update_selection()
@@ -5023,9 +5561,25 @@ class HudWindow(QMainWindow):
                                 "Authentication failed.")
 
     def resizeEvent(self, event):
-        """Keep the auto badge pinned through window resizes."""
+        """Keep the mode overlay sized to the window and the auto
+        badge pinned.
+
+        Qt fires resizeEvent during __init__ before the overlay widgets
+        and the auto badge exist, so getattr-guard every attribute we
+        touch — otherwise the first resize during construction raises
+        AttributeError and kills the process.
+        """
         super().resizeEvent(event)
-        self._position_auto_badge()
+        # Unified mode overlay handles its own geometry; just hand it
+        # the new central-widget dimensions and it'll resize + snap to
+        # its current state.
+        mode = getattr(self, '_mode_overlay', None)
+        if mode is not None:
+            central = self.centralWidget()
+            if central is not None:
+                mode.configure_for_screen(central.width(), central.height())
+        if hasattr(self, '_position_auto_badge'):
+            self._position_auto_badge()
 
     def showEvent(self, event):
         """Re-pin the auto badge on first show and on any hide/show cycle.
@@ -5296,6 +5850,15 @@ class HudWindow(QMainWindow):
         except Exception:
             pass
 
+        # Stop the HUD's bag recorder, if running. The recorder lives
+        # in its own process group via os.setsid, so it would otherwise
+        # outlive the GUI and leave an orphaned `ros2 bag record`
+        # (and an incomplete bag without metadata.yaml).
+        try:
+            self._stop_hud_bag_record()
+        except Exception:
+            pass
+
         # Stop live mode if active
         if self._live_active:
             self._stop_live_mode()
@@ -5349,6 +5912,51 @@ class HudWindow(QMainWindow):
         # field) still enters the character.
         if key == Qt.Key_A and not event.modifiers():
             self._toggle_auto_mode()
+            return
+
+        # 'P' toggles Performance Mode — same mod/focus rules as 'A'.
+        if key == Qt.Key_P and not event.modifiers():
+            self._on_performance_clicked()
+            return
+
+        # 'R' toggles ROS-bag recording — same mod/focus rules as 'A'.
+        # Works from any screen and at any time, no test script required.
+        if key == Qt.Key_R and not event.modifiers():
+            self._request_record_toggle()
+            return
+
+        # --- Local goal-pick mode: arrows nudge map-frame target, Enter sends, Esc cancels ---
+        if self._local_goal_mode:
+            step = self._LOCAL_GOAL_STEP_M
+            if key == Qt.Key_Up:
+                self._move_local_goal(0.0, step)
+            elif key == Qt.Key_Down:
+                self._move_local_goal(0.0, -step)
+            elif key == Qt.Key_Right:
+                self._move_local_goal(step, 0.0)
+            elif key == Qt.Key_Left:
+                self._move_local_goal(-step, 0.0)
+            elif key in (Qt.Key_Return, Qt.Key_Enter):
+                self._exit_local_goal_mode(send=True)
+            elif key == Qt.Key_Escape:
+                self._exit_local_goal_mode(send=False)
+            return
+
+        # --- GPS goal-pick mode: arrows nudge lat/lon, Enter sends, Esc cancels ---
+        if self._gps_goal_mode:
+            step = self._GPS_GOAL_STEP_M
+            if key == Qt.Key_Up:
+                self._move_gps_goal(step, 0.0)
+            elif key == Qt.Key_Down:
+                self._move_gps_goal(-step, 0.0)
+            elif key == Qt.Key_Right:
+                self._move_gps_goal(0.0, step)
+            elif key == Qt.Key_Left:
+                self._move_gps_goal(0.0, -step)
+            elif key in (Qt.Key_Return, Qt.Key_Enter):
+                self._exit_gps_goal_mode(send=True)
+            elif key == Qt.Key_Escape:
+                self._exit_gps_goal_mode(send=False)
             return
 
         # --- Scrub mode: arrows move the slider, Enter exits ---
@@ -5445,14 +6053,7 @@ class HudWindow(QMainWindow):
                 self._toggle_sensor_expand(cell)
             else:
                 widget, _, _ = self._cur_btn()
-                if isinstance(widget, QLineEdit):
-                    # Hand keyboard focus to the field so the operator
-                    # can type. Pressing Enter inside the field fires
-                    # returnPressed → _on_send_*_clicked, which calls
-                    # clearFocus to hand control back to nav.
-                    widget.setFocus(Qt.OtherFocusReason)
-                    widget.selectAll()
-                elif widget.isEnabled():
+                if widget.isEnabled():
                     widget.click()
         elif key == Qt.Key_Space:
             if self._pb_state in ('playing', 'paused', 'ended'):
@@ -5484,18 +6085,21 @@ class HudWindow(QMainWindow):
                         .replace("color: #dcdcdc", "color: #0f0")
                     ))
                 elif widget in self._sensor_cells or widget is self._power_cell:
-                    if is_selected:
+                    # Goal-pick mode wins over nav selection — the cyan
+                    # border tells the operator which plot the crosshair
+                    # is being placed on.
+                    goal_active = (
+                        (self._local_goal_mode
+                         and widget is self._canvas_to_cell.get(self._odom_canvas))
+                        or (self._gps_goal_mode
+                            and widget is self._canvas_to_cell.get(self._gps_canvas))
+                    )
+                    if goal_active:
+                        widget.setStyleSheet(T(self._sensor_goal_style))
+                    elif is_selected:
                         widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
                         widget.setStyleSheet(T(self._sensor_frame_style))
-                elif isinstance(widget, QLineEdit):
-                    # QLineEdit nav participation. Don't call setText —
-                    # that would clobber the user's typed value. Highlight
-                    # via stylesheet instead.
-                    if is_selected:
-                        widget.setStyleSheet(T(self._send_field_sel_style))
-                    else:
-                        widget.setStyleSheet(T(base_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -5523,6 +6127,33 @@ class HudWindow(QMainWindow):
                             widget.setStyleSheet(T(base_style))
         # Position floating directional indicators around the selected widget
         self._position_indicators()
+        # Auto-scroll the branches sub-page so arrow-key nav keeps the
+        # selected branch visible. The list often overflows the 280 px
+        # min-height scroll area once a repo accumulates branches.
+        self._ensure_branch_visible()
+
+    def _ensure_branch_visible(self):
+        """If the operator is navigating the Switch Branch sub-page,
+        scroll the branch list so the currently selected widget is in
+        view. No-op on every other page."""
+        if not hasattr(self, '_branch_scroll'):
+            return
+        if not hasattr(self, '_options_stack'):
+            return
+        if self._options_stack.currentIndex() != 5:
+            return
+        if self._nav_col != 0:
+            return
+        try:
+            widget, _, _ = self._cur_btn()
+        except Exception:
+            return
+        if widget is None:
+            return
+        # ensureWidgetVisible no-ops if `widget` isn't a descendant of
+        # the scroll area's viewport — that's the desired behavior for
+        # the Refresh / Back nav rows that live outside the scroller.
+        self._branch_scroll.ensureWidgetVisible(widget, 0, 40)
 
     def _position_indicators(self):
         """Show << and >> around the slider knob only when in scrub mode."""
@@ -5919,6 +6550,199 @@ class HudWindow(QMainWindow):
         if self._live_active:
             self._stop_live_mode()
         self._show_playback_page()
+
+    # -----------------------------------------------------------------
+    # ROS bag playback — wraps `ros2 bag play` as a subprocess. The
+    # bag's messages replay onto the same topic names the GUI's live
+    # subscriptions watch, so the live canvases reanimate exactly as
+    # they looked during the original test session.
+    # -----------------------------------------------------------------
+    # Visual-only topic subset. Used as the --topics filter for
+    # `ros2 bag play` AND as the record set passed to
+    # `_start_hud_bag_record` — recording and playback always match
+    # because they read the same list. Single source of truth lives
+    # here; the automated-testing package no longer keeps its own copy.
+    #
+    # Notably ABSENT: raw + inflated SICK IMU, /joy, /cmd_vel, /odom.
+    # The IMU/joy/cmd_vel streams produce no pixel; together they were
+    # ~83 % of the earlier bag's message volume and were the reason
+    # camera/lidar paint got shoved off-rhythm. Raw /odom is dropped
+    # because the live tick prefers /local_ekf/odom for the Encoders
+    # panel whenever it's fresh, and the standalone bake also drops
+    # raw /odom rows in favour of EKF — so replaying it adds no
+    # extra signal on either consumer.
+    _BAG_PLAYBACK_TOPICS = [
+        '/zed/zed_node/rgb/color/rect/image',
+        '/line_detection/debug/mask',
+        '/line_detection/debug/overlay',
+        '/line_detection/line_pixels',
+        '/scan_fullframe',
+        '/scan_pca_filtered',
+        '/gps_fix',
+        '/local_ekf/odom',
+        '/global_ekf/odom',
+        '/pose',
+        '/global_costmap/costmap',
+        '/plan',
+        '/autonomous_mode',
+        '/electrical/voltage',
+        '/electrical/current',
+        '/electrical/power',
+        '/electrical/soc',
+        '/data/toggle_collect',
+    ]
+
+    def _load_and_play_bag(self, bag_dir):
+        """Replace any running playback / live source with this bag.
+        Called by the "Load" buttons in the Playback Mode grid."""
+        # Make sure nothing else is fighting for the topics: stop a
+        # prior bag, stop any CSV-based playback timer (the historical
+        # PB state machine is still here, just dormant), and DO NOT
+        # stop live mode — live mode IS what makes the bag's replayed
+        # messages reach the GUI canvases. Start live mode if it
+        # isn't already on.
+        self._stop_bag_play()
+        try:
+            self._stop_playback()
+        except Exception:
+            pass
+        if not self._live_active:
+            self._start_live_mode()
+        cmd = [
+            'ros2', 'bag', 'play', bag_dir,
+            '--rate', '1.0',
+            '--topics', *self._BAG_PLAYBACK_TOPICS,
+        ]
+        try:
+            self._bag_play_proc = subprocess.Popen(
+                cmd,
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag playback. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._bag_play_proc = None
+            return
+        self._gui_log_msg(
+            f"Playing bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} visual topics)"
+        )
+        self._bag_play_poll_timer.start()
+        # Pop back to the main page so the operator sees the live
+        # canvases reanimate from the bag.
+        self._show_main_page()
+
+    def _stop_bag_play(self):
+        """SIGINT the bag-playback subprocess. Idempotent."""
+        proc = self._bag_play_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+        self._bag_play_proc = None
+        self._bag_play_poll_timer.stop()
+
+    def _bag_play_poll(self):
+        """Detect natural end-of-bag and clear state."""
+        if self._bag_play_proc is None:
+            self._bag_play_poll_timer.stop()
+            return
+        if self._bag_play_proc.poll() is not None:
+            self._gui_log_msg("Bag playback finished")
+            self._bag_play_proc = None
+            self._bag_play_poll_timer.stop()
+
+    # -----------------------------------------------------------------
+    # ROS bag RECORDING — operator-driven via the R key. Spawns
+    # `ros2 bag record` capturing the same topic set the playback /
+    # baker stack reads, into _CSV_DIR/manual_<stamp>/bag/.
+    # -----------------------------------------------------------------
+    def _start_hud_bag_record(self):
+        """Spawn `ros2 bag record` for _BAG_PLAYBACK_TOPICS into
+        _CSV_DIR/manual_<YYYYMMDD_HHMMSS>/bag/. Returns True on
+        success, False if the process couldn't be launched (e.g. ros2
+        not on PATH or the output directory could not be created)."""
+        if self._hud_bag_proc is not None and self._hud_bag_proc.poll() is None:
+            self._gui_log_msg("Bag recorder already running — ignoring start.")
+            return True
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        session_dir = os.path.join(self._CSV_DIR, f'manual_{stamp}')
+        # `ros2 bag record` creates the leaf bag/ directory itself —
+        # if it already exists it bails. Only pre-create the session
+        # parent so the leaf is free for ros2 to claim.
+        try:
+            os.makedirs(session_dir, exist_ok=True)
+        except OSError as e:
+            self._gui_log_msg(f"Failed to create bag directory: {e}")
+            return False
+        bag_dir = os.path.join(session_dir, 'bag')
+        cmd = [
+            'ros2', 'bag', 'record',
+            '-o', bag_dir,
+            '--max-cache-size', str(1_000_000_000),
+            *self._BAG_PLAYBACK_TOPICS,
+        ]
+        try:
+            self._hud_bag_proc = subprocess.Popen(
+                cmd,
+                preexec_fn=os.setsid,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            self._gui_log_msg(
+                "ros2 not on PATH — can't start bag recorder. "
+                "Source the ROS2 setup before launching the GUI."
+            )
+            self._hud_bag_proc = None
+            return False
+        self._gui_log_msg(
+            f"Recording bag: {bag_dir} "
+            f"({len(self._BAG_PLAYBACK_TOPICS)} topics)"
+        )
+        return True
+
+    def _stop_hud_bag_record(self):
+        """SIGINT the HUD's bag-record subprocess and wait briefly for
+        clean shutdown. Falls back to SIGKILL on timeout so a wedged
+        recorder never blocks GUI exit. Idempotent."""
+        proc = self._hud_bag_proc
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            self._hud_bag_proc = None
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except ProcessLookupError:
+            self._hud_bag_proc = None
+            return
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self._gui_log_msg(
+                "Bag recorder did not exit within 5 s; sending SIGKILL"
+            )
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        self._gui_log_msg("Bag recorder stopped.")
+        self._hud_bag_proc = None
 
     def _load_csv(self, path):
         self._gui_log_msg(f"Loading CSV: {os.path.basename(path)}")
@@ -6466,10 +7290,29 @@ class HudWindow(QMainWindow):
             self._gps_trail.set_data(lons, lats)
             # Current position dot
             self._gps_dot.set_data([lons[-1]], [lats[-1]])
-            # 100 ft window centered on current position
             cur_lat, cur_lon = lats[-1], lons[-1]
-            dlat = _GPS_VIEW_RADIUS_M / 111320.0
-            dlon = _GPS_VIEW_RADIUS_M / (111320.0 * math.cos(math.radians(cur_lat)))
+            # View is a square in meters centered on the robot. Default
+            # radius is 100 ft; while the operator is placing a GPS
+            # goal, the radius grows uniformly to include the crosshair
+            # plus a 5 m buffer. Scaling stays proportional in both
+            # axes so the satellite tile never gets squished — without
+            # this, extending lon-only or lat-only stretches the image
+            # because 1° of lon is shorter than 1° of lat at this
+            # latitude.
+            view_radius_m = _GPS_VIEW_RADIUS_M
+            if self._gps_goal_mode:
+                dnorth_m = (self._gps_goal_lat - cur_lat) * 111320.0
+                deast_m = (
+                    (self._gps_goal_lon - cur_lon)
+                    * 111320.0
+                    * max(0.1, math.cos(math.radians(cur_lat)))
+                )
+                needed = max(abs(dnorth_m), abs(deast_m)) + 5.0
+                view_radius_m = max(view_radius_m, needed)
+            dlat = view_radius_m / 111320.0
+            dlon = view_radius_m / (
+                111320.0 * max(0.1, math.cos(math.radians(cur_lat)))
+            )
             self._gps_ax.set_xlim(cur_lon - dlon, cur_lon + dlon)
             self._gps_ax.set_ylim(cur_lat - dlat, cur_lat + dlat)
             # Show lat/lon truncated to 4 decimals
@@ -6495,6 +7338,24 @@ class HudWindow(QMainWindow):
             # Adjust window to fit all current points with padding
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
+            if cm_extent is not None:
+                cm_x0, cm_x1, cm_y0, cm_y1 = cm_extent
+                min_x = min(min_x, cm_x0)
+                max_x = max(max_x, cm_x1)
+                min_y = min(min_y, cm_y0)
+                max_y = max(max_y, cm_y1)
+            # If the operator is currently placing a local goal, include
+            # the crosshair (plus a buffer) in the bounds so arrowing
+            # past the visible area auto-zooms with breathing room
+            # instead of pinning the crosshair to the edge. The next
+            # redraw after _exit_local_goal_mode skips this branch, so
+            # the view snaps back to the normal bounds on send/cancel.
+            if self._local_goal_mode:
+                buf = 2.0
+                min_x = min(min_x, self._local_goal_x - buf)
+                max_x = max(max_x, self._local_goal_x + buf)
+                min_y = min(min_y, self._local_goal_y - buf)
+                max_y = max(max_y, self._local_goal_y + buf)
             dx = max_x - min_x
             dy = max_y - min_y
             span = max(dx, dy) * 1.3
@@ -6893,6 +7754,13 @@ class HudWindow(QMainWindow):
         Changing source rebuilds the AxesImage; set_data alone won't
         change the colormap and would render the mask in 'viridis'.
         """
+        # In Performance Mode we deliberately DON'T re-arm the worker —
+        # leaving _slot_ready cleared keeps the worker's backpressure
+        # check tripping `continue`, so it drains submissions without
+        # downscaling or emitting. Returning here also short-circuits
+        # the matplotlib paint below.
+        if self._performance_mode:
+            return
         # Re-arm the worker first thing so it can downscale the next
         # frame in parallel with our paint here. This is what bounds
         # the Qt event queue to 1 paint deep regardless of source rate.
@@ -6920,7 +7788,9 @@ class HudWindow(QMainWindow):
             self._cam_im.set_data(arr)
         self._live_set_dot_received('Camera')
 
-        if source == 'mask':
+        if source == 'overlay':
+            title = 'Camera CUDA OVERLAY'
+        elif source == 'mask':
             title = 'Camera MASK'
         elif line_fresh:
             title = 'Camera CUDA'
@@ -6956,8 +7826,12 @@ class HudWindow(QMainWindow):
         in_fps = 0.0
         node = self._ros_node
         if node is not None:
-            in_ts = (node._mask_in_ts if source == 'mask'
-                     else node._camera_in_ts)
+            if source == 'overlay':
+                in_ts = node._overlay_in_ts
+            elif source == 'mask':
+                in_ts = node._mask_in_ts
+            else:
+                in_ts = node._camera_in_ts
             if len(in_ts) >= 2:
                 in_span = in_ts[-1] - in_ts[0]
                 if in_span > 0:
@@ -7009,6 +7883,11 @@ class HudWindow(QMainWindow):
         HxWx3 RGB arrays of the same size, so set_data without recreate
         is the steady-state path; recreate only fires if size changed.
         """
+        # Same backpressure pause as the camera slot — leave the
+        # worker's _slot_ready cleared in Performance Mode so it
+        # drains submissions without rendering BEVs.
+        if self._performance_mode:
+            return
         self._lidar_worker.slot_ready()
         if not self._live_active:
             return
@@ -7465,6 +8344,12 @@ if _HAS_ROS:
             # the raw camera (mask is silent) or defer to the mask path
             # (detector is active).
             self.latest_mask_image_t = 0.0
+            # Receipt time of the most recent /line_detection/debug/overlay
+            # message — the raw camera frame with red/yellow/green dots
+            # already drawn by the detector (see line/node.cpp ~L1114-1138).
+            # _cb_image / _cb_mask_image both defer to this when fresh so
+            # the overlay variant wins the precedence at the camera panel.
+            self.latest_overlay_image_t = 0.0
             # Per-source IN-rate timestamp deques. Each ROS callback
             # appends the wall-clock time of arrival; the GUI reads these
             # to render the "IN" half of the camera FPS overlay so the
@@ -7473,6 +8358,7 @@ if _HAS_ROS:
             # line-detector debug mask under publish_interval_ms: 250).
             self._camera_in_ts = deque(maxlen=20)
             self._mask_in_ts = deque(maxlen=20)
+            self._overlay_in_ts = deque(maxlen=20)
 
             # Lidar worker, set by HudWindow once the worker is built.
             # _cb_scan (heightband) and _cb_pca_scan (PCA) submit
@@ -7528,6 +8414,20 @@ if _HAS_ROS:
                 Image,
                 '/line_detection/debug/mask',
                 self._cb_mask_image, 10,
+            )
+            # Debug OVERLAY from the line detector — the raw camera frame
+            # with red dots at every detected line pixel and yellow/green
+            # dots for accepted/confirmed candidates (see line/node.cpp
+            # ~L1114-1138). Same subscriber-count gating as the mask, so
+            # subscribing here is what makes the detector publish it.
+            # When this stream is fresh (1 s window) _cb_image AND
+            # _cb_mask_image both defer to this variant — the dots are
+            # already baked into the frame so the post-paint line_pixels
+            # scatter is also skipped in _on_camera_frame_ready.
+            self.create_subscription(
+                Image,
+                '/line_detection/debug/overlay',
+                self._cb_overlay_image, 10,
             )
             self.create_subscription(
                 LaserScan, '/scan_fullframe', self._cb_scan, _SENSOR_QOS,
@@ -7621,6 +8521,39 @@ if _HAS_ROS:
                 self._cb_autonomous_mode, _RELIABLE_QOS,
             )
 
+            # Test recording state — base_automator publishes True on
+            # the A-button press that starts a test, False on the press
+            # that ends it. The HUD itself also publishes here from the
+            # R key (see HudWindow._request_record_toggle) so an operator
+            # can record without a test script. Either source drives the
+            # GUI's REC indicator: device-dot black↔red ramp + transparent
+            # red overlay over the central widget.
+            self.latest_recording_active = False
+            self.create_subscription(
+                Bool, '/data/toggle_collect',
+                self._cb_recording_toggle, _RELIABLE_QOS,
+            )
+            self.toggle_collect_pub = self.create_publisher(
+                Bool, '/data/toggle_collect', _RELIABLE_QOS,
+            )
+
+            # Xbox D-pad → GUI arrow keys. HudWindow assigns
+            # ``joy_nav_bus`` after constructing the bus; until then
+            # the callback no-ops. The D-pad lives on axes[6] (left=+1,
+            # right=-1) and axes[7] (up=+1, down=-1) — verified in the
+            # field with a controller dump. We hold previous axis
+            # values to fire on rising-edge crossings only, so holding
+            # the D-pad doesn't auto-repeat (matches single-key
+            # arrow-press semantics).
+            self.joy_nav_bus = None
+            self._joy_prev_dpad_x = 0.0
+            self._joy_prev_dpad_y = 0.0
+            self._joy_prev_select_btn = 0
+            self.create_subscription(
+                Joy, '/joy',
+                self._cb_joy_nav, _SENSOR_QOS,
+            )
+
         def _cb_image(self, msg):
             self.last_msg_t['image'] = time.monotonic()
             self._camera_in_ts.append(self.last_msg_t['image'])
@@ -7638,12 +8571,21 @@ if _HAS_ROS:
                 worker = getattr(self, 'camera_worker', None)
                 if worker is None:
                     return
-                # Prefer the line detector's debug MASK when it's
-                # actively publishing — single-channel and matches what
-                # the detector "sees" as line. _cb_mask_image drives the
-                # display on that path; the raw camera is the fallback
-                # only when the detector is silent (mask gone stale).
-                if (time.monotonic() - self.latest_mask_image_t) < 1.0:
+                # Prefer the line detector's debug OVERLAY when fresh —
+                # it's the raw frame with the detector's red/yellow/green
+                # dots already drawn, so it's the most informative camera
+                # variant. _cb_overlay_image drives the display on that
+                # path; we silently drop the raw frame here so the worker
+                # isn't fighting two source streams for the same panel.
+                now_t = time.monotonic()
+                if (now_t - self.latest_overlay_image_t) < 1.0:
+                    return
+                # Otherwise prefer the line detector's debug MASK when
+                # it's actively publishing — single-channel and matches
+                # what the detector "sees" as line. _cb_mask_image drives
+                # the display on that path; the raw camera is the
+                # fallback only when both overlay and mask are silent.
+                if (now_t - self.latest_mask_image_t) < 1.0:
                     return
                 worker.submit(img, None, False, source='raw')
             except Exception:
@@ -7652,16 +8594,50 @@ if _HAS_ROS:
         def _cb_mask_image(self, msg):
             """/line_detection/debug/mask — MONO8 binary mask from the
             detector's brightness threshold. Hand straight to the camera
-            worker; the slot will imshow it with cmap='gray'.
+            worker; the slot will imshow it with cmap='gray'. Deferred to
+            the overlay variant when /line_detection/debug/overlay is
+            fresh — overlay sits above mask in the panel precedence.
             """
             self.latest_mask_image_t = time.monotonic()
             self._mask_in_ts.append(self.latest_mask_image_t)
             try:
+                # If the overlay variant is publishing, let it drive the
+                # panel — same fight-for-the-source guard as in _cb_image.
+                if (self.latest_mask_image_t
+                        - self.latest_overlay_image_t) < 1.0:
+                    return
                 img = np.frombuffer(msg.data, dtype=np.uint8)
                 img = img.reshape((msg.height, msg.width))
                 worker = getattr(self, 'camera_worker', None)
                 if worker is not None:
                     worker.submit(img, None, True, source='mask')
+            except Exception:
+                pass
+
+        def _cb_overlay_image(self, msg):
+            """/line_detection/debug/overlay — BGR8 raw camera frame with
+            the detector's red/yellow/green dots already drawn (see
+            line/node.cpp ~L1114-1138). Decode like _cb_image (BGR→RGB)
+            and hand to the camera worker with source='overlay' so the
+            slot suppresses the post-paint line_pixels scatter (the dots
+            are already baked in) and uses the 'Camera CUDA OVERLAY'
+            title.
+            """
+            self.latest_overlay_image_t = time.monotonic()
+            self._overlay_in_ts.append(self.latest_overlay_image_t)
+            try:
+                channels = max(1, msg.step // msg.width) if msg.width > 0 else 3
+                img = np.frombuffer(msg.data, dtype=np.uint8)
+                img = img.reshape((msg.height, msg.width, channels))
+                if msg.encoding == 'bgra8':
+                    img = img[:, :, [2, 1, 0]]  # BGRA to RGB
+                elif msg.encoding in ('bgr8', 'bgr16'):
+                    img = img[:, :, ::-1]  # BGR to RGB
+                elif msg.encoding == 'rgba8':
+                    img = img[:, :, :3]  # RGBA to RGB
+                worker = getattr(self, 'camera_worker', None)
+                if worker is not None:
+                    worker.submit(img, None, False, source='overlay')
             except Exception:
                 pass
 
