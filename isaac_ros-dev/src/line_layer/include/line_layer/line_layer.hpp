@@ -200,6 +200,8 @@ private:
     rclcpp::Time stamp;
   };
   std::unordered_map<std::uint64_t, PersistentPoint> persisted_points_;
+  rclcpp::Time last_nonempty_points_time_;
+  bool have_nonempty_points_time_ = false;
   // Guards persisted_points_ across the subscription thread (linePointCallback
   // persists on receipt for "lines can never be lost" reliability) and the
   // costmap-update thread (updateCosts stamps from persisted_points_, also

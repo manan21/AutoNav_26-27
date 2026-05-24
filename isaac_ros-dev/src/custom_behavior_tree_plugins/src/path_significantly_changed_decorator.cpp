@@ -49,10 +49,18 @@ public:
     const bool significantly_changed = pathDiffers(
       new_path, last_path_, rms_threshold, n_compare);
 
-    if (significantly_changed || !child_started_) {
+    const auto last_status = child_node_->status();
+
+    if (significantly_changed || !child_started_ ||
+        last_status == BT::NodeStatus::IDLE) {
       // Path changed enough OR child hasn't run yet — tick the child
       // (FollowPath), which on a fresh path will cancel-restart its
       // action goal. This is the ONLY place we let cancel-restart fire.
+      //
+      // A halted/aborted FollowPath can leave the child IDLE while this
+      // decorator still remembers a same-looking path. In that state,
+      // returning RUNNING would make Nav2 keep replanning forever with
+      // no active FollowPath action and no cmd_vel output.
       last_path_ = new_path;
       child_started_ = true;
       return child_node_->executeTick();
@@ -72,7 +80,6 @@ public:
     // that). For the latter the only protection is the 1 Hz replan:
     // the next significantly-changed path will tick the child and
     // surface its actual status.
-    const auto last_status = child_node_->status();
     if (last_status == BT::NodeStatus::SUCCESS ||
         last_status == BT::NodeStatus::FAILURE) {
       return last_status;

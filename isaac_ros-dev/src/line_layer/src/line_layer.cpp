@@ -176,8 +176,12 @@ LineLayer::onInitialize()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
 
-  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1,
-    std::bind(&LineLayer::linePointCallback, this, std::placeholders::_1));
+  rclcpp::SubscriptionOptions line_sub_options;
+  line_sub_options.callback_group = callback_group_;
+  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(
+    line_topic_, 1,
+    std::bind(&LineLayer::linePointCallback, this, std::placeholders::_1),
+    line_sub_options);
 
   // Clear-request subscription. Bind to callback_group_ — the costmap's
   // dedicated executor only spins callbacks on this group; subscriptions
@@ -217,6 +221,33 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       line->points = message->points;
 
       buffer_.buffer(line);
+
+      if (message->points.empty() && hasObservationPersistence() &&
+        !clear_lines_only_in_view_)
+      {
+        auto node = node_.lock();
+        if (node) {
+          const rclcpp::Time now = node->now();
+          const rclcpp::Duration max_age =
+            rclcpp::Duration::from_nanoseconds(
+              observation_persistence_ms_ * 1000000LL);
+          bool cleared = false;
+          {
+            std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+            const bool ttl_elapsed =
+              observation_persistence_ms_ <= 0 ||
+              !have_nonempty_points_time_ ||
+              (now - last_nonempty_points_time_) > max_age;
+            if (ttl_elapsed && !persisted_points_.empty()) {
+              persisted_points_.clear();
+              cleared = true;
+            }
+          }
+          if (cleared) {
+            need_recalculation_ = true;
+          }
+        }
+      }
 
       // Persist on receipt — lines must be as reliable as obstacle marks,
       // so we don't depend on updateCosts catching the message before
@@ -373,6 +404,8 @@ void LineLayer::rememberPersistentPoints(
       it->second = PersistentPoint{point, stamp};
     }
   }
+  last_nonempty_points_time_ = stamp;
+  have_nonempty_points_time_ = true;
 
   while (
     max_persisted_points_ > 0 &&
