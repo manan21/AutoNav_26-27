@@ -158,11 +158,15 @@ Next: how are we getting to waypoints? What is the robot doing to know where it 
 
 ## Self-Correcting GPS (brief synopsis)
 
-1. Assume you can reliably apply ENU with a fixed origin and convert GPS Lat/Lon to an X, Y Cartesian candidate goal.
-2. Use your own odometry to get a heading. Use the GPS using a closed-form fit on motion samples to get a heading.
-3. Compute the θ offset from these two frames of reference and refine the candidate goal.
-4. Plot a candidate goal using ENU with the assumed direction and allow the robot to move a bit.
-5. Repeat the steps, allowing θ to converge as the robot gets closer to the goal expressed in the robot's frame.
+1. The robot only has access to its own GPS position and local coordinates.
+2. Assume there is some imaginary plane with north assumed to be where the robot is facing, anchored at some fixed datum point.
+3. Place a candidate goal in the frame of the imaginary plane corresponding to the ENU projection, assuming that the plane's north is True.
+4. Allow the robot to drive in whatever direction it would like to.
+5. Gather four headings, each pair in its own frame of reference.
+6. Take the robot's GPS heading sampled from movement and the GPS heading assuming movement towards the goal exactly. Angle in GPS space measured CCW from north.
+7. The heading in that imaginary frame (assisted by the robot's local coordinates) and the angle to the candidate goal measured CCW from fake north.
+8. According to the DOF of the system, if R is known, then if theta is equal, the position of the candidate goal and the real GPS goal are equal.
+9. Collapse the error in theta with successive iterations.
 
 Additionally, you might be wondering how we are calculating voltage, current, power, and battery level?
 

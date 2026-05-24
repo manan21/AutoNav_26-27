@@ -160,6 +160,8 @@ Break any of those and the robot reintroduces map↔odom drift/stall oscillation
 
 ## EKF global (`ekf_global.yaml`)
 
+> **Note:** `ekf_global` + `navsat_transform_node` are gated by the `enable_gps_fusion` launch arg on `slam.launch.py`, which defaults to `false`. Live GPS waypoint navigation runs through `gps_handler_node` (reads `/local_ekf/odom`) without `ekf_global` in the loop. The parameters below only take effect when the operator launches with `enable_gps_fusion:=true`.
+
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
 | `ekf_global.frequency` | 🟡 | `30.0` Hz | Global EKF update rate | |
@@ -176,11 +178,16 @@ Break any of those and the robot reintroduces map↔odom drift/stall oscillation
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
-| `success_radius_m` | 🟢 | `0.5` m | Goal-reached arrival distance | Tighter than the 1.0 m default |
-| `nav2_goal_hz` | 🟢 | `1.0` Hz | Goal republish cadence | Internal `gps_ekf` runs at GPS sample rate; this is just the submit rate |
+| `success_radius_m` | 🟢 | `0.5` m | Goal-reached arrival distance | Tighter than the 1.0 m default; per-goal override via `goal_msg.success_radius_m` |
+| `nav2_goal_hz` | 🟢 | `1.0` Hz | Goal republish cadence | Internal `gps_ekf` runs at GPS sample rate; this is just the submit rate. Same value gates both `/goal_pose` (leg start) and `/goal_update` (in-mission corrections) |
 | `feedback_hz` | 🟢 | `2.0` Hz | Action feedback rate | |
 | `gps_stale_timeout_s` | 🟢 | `5.0` s | GPS outage timeout | |
 | `tf_timeout_s` | 🟢 | `0.5` s | TF lookup timeout (map→odom) | |
+| `map_frame` / `odom_frame` | 🟢 | `map` / `odom` | Frame names for TF lookups | |
+| `next_hint_enabled` | 🟢 | `false` | Consume `/gps_waypoint/next_hint` for look-ahead on chained legs | |
+| `hint_match_tolerance_m` | 🟢 | `0.5` m | Acceptance radius for matching a hint to the next leg | |
+| `coldstart_bias_enabled` | 🟢 | `false` | Snap θ_offset on first GPS goal so the waypoint lands ahead of `base_link` | `run-gps.sh` passes `true` |
+| `coldstart_theta_seed_variance_deg` | 🟢 | `45.0`° | Initial variance for the coldstart θ seed | Intentionally loose so the first real EKF heading update dominates immediately |
 
 ### File-edit constants (gps_handler_node.py header)
 

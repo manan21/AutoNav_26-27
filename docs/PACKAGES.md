@@ -119,16 +119,19 @@ Custom ROS2 message and service definitions used across the project. Pure interf
 | Type | Name | Purpose |
 |---|---|---|
 | msg | `Encoders.msg` | Left/right wheel RPM and tick counts |
-| msg | `GpsData.msg` | GNSS lat/lon/alt |
+| msg | `GpsData.msg` | GNSS lat/lon/alt — **vestigial**, no longer published; live GPS is `sensor_msgs/NavSatFix` on `/gps_fix` |
 | msg | `LinePoints.msg` | Timestamped 3D line waypoint array |
 | srv | `AnvLines.srv` | Request line waypoints |
 | srv | `ConfigureControl.srv` | Toggle Arduino / motor / GPS / e-stop subsystems |
+| srv | `GpsToLocal.srv` | Convert lat/lon to a `PoseStamped` in the robot's local frame (served by `gps_handler_node`) |
+| srv | `LocalToGps.srv` | Inverse of the above — local `PoseStamped` → lat/lon |
+| action | `NavigateToWaypoint.action` | Unified GPS-or-local navigation goal (`goal_type` discriminator + `success_radius_m`). Single endpoint for both `send_GPS_waypoint.sh` and local-pose missions. See file header for the full status enum and feedback fields |
 
 | | |
 |---|---|
 | **Build** | `ament_cmake` + `rosidl_default_generators` |
 
-> **Heads up:** These exist because the standard ROS message set doesn't cover encoder ticks, our specific GPS framing, or our line-detection format. Consumed by `control` (Encoders), `gps_*` (GpsData), and `line_layer`/`autonav_detection` (LinePoints).
+> **Heads up:** These exist because the standard ROS message set doesn't cover encoder ticks, our line-detection format, or the unified GPS/local action shape. Consumed by `control` (Encoders), `gps_waypoint_handler` (NavigateToWaypoint, GpsToLocal, LocalToGps), and `line_layer` / `autonav_detection` (LinePoints).
 
 ---
 
@@ -256,7 +259,7 @@ Custom Nav2 BT plugins that extend recovery behavior when the robot is stuck.
 
 ## gps_handler
 
-C++ driver for the u-blox ZED-F9P GPS. Talks NMEA over serial, publishes `NavSatFix`.
+C++ driver for the u-blox ZED-F9P GPS. Talks NMEA (GGA + RMC) over serial, publishes `NavSatFix`. Mission/waypoint logic is **not** here — see `gps_waypoint_handler` for the action server that consumes `/gps_fix`.
 
 | | |
 |---|---|
@@ -266,29 +269,39 @@ C++ driver for the u-blox ZED-F9P GPS. Talks NMEA over serial, publishes `NavSat
 | **Vendored libs** | `serialib.{cpp,hpp}` (also duplicated in `odom_handler` — not shared) |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** Driver only. Mission/waypoint logic lives in `gps_waypoint_handler`.
+> **Heads up:** Driver only. Reconnects automatically on parse errors / serial hangups (see TROUBLESHOOTING.md 2026-04-28 `stoi` crash entry).
 
 ---
 
 ## gps_waypoint_handler
 
-Python mission layer that turns stored GPS waypoints into Nav2 goals.
+Self-correcting GPS waypoint **action server** with a magnetometer-less heading EKF. Replaces the older "read a file, call `BasicNavigator.followWaypoints`" mission layer — goals now arrive as `/navigate_to_waypoint` actions from anywhere in the stack (GUI, `send_GPS_waypoint.sh`, mission BTs).
 
 | Console script | Role |
 |---|---|
-| `gps_conversions` | Lat/lon → Cartesian conversion |
-| `waypoint_commander` | Reads `stored_waypoints.txt`, builds `PoseStamped` goals, calls `BasicNavigator.followWaypoints` |
+| `gps_handler_node` | The action server. Owns the heading EKF, candidate-goal smoother, and the `/goal_pose` ↔ `/goal_update` republisher |
 | `get_gps_positioning` | Captures current `/gps_fix` to `cur_gps_positon.txt` ("record this waypoint") |
-| `gps_waypoint_bringup` | Top-level runner; listens on `/autonomous_mode`, orchestrates the mission |
-| `tester_publisher` | Test utility |
+
+Python modules:
+
+| Module | What it does |
+|---|---|
+| `gps_handler_node.py` | Main node (~2.6 k lines). Action server, two callback groups (action vs estimator), threaded EKF heartbeat, candidate-goal pipeline (EWMA → 1/r envelope → moving-away trip-wire → force-resync) |
+| `gps_ekf.py` | Magnetometer-less heading EKF: closed-form θ fit over rolling motion samples + Kalman update. Anchors the imaginary "fake-north" ENU frame to the real GPS frame |
+| `gps_conversions.py` | Lat/lon ↔ local Cartesian (used by the `GpsToLocal` / `LocalToGps` services) |
+| `get_gps_positioning.py` | One-shot helper for recording current GPS position to a file |
 
 | | |
 |---|---|
-| **Data** | `stored_waypoints.txt`, `cur_gps_positon.txt` |
-| **Depends on** | `rclpy`, `nav2_simple_commander`, `geometry_msgs`, `sensor_msgs` |
+| **Action** | `/navigate_to_waypoint` (`autonav_interfaces/action/NavigateToWaypoint`) — unified GPS-or-local goal with `goal_type` discriminator + per-goal `success_radius_m` |
+| **Services** | `/gps_waypoint/gps_to_local`, `/gps_waypoint/local_to_gps` (`autonav_interfaces/srv`) |
+| **Subscribes** | `/gps_fix` (sensor QoS), `/odometry/filtered` (EKF heartbeat at ~30 Hz), `/gps_waypoint/next_hint` (look-ahead for chained legs) |
+| **Publishes** | `/goal_pose` at 1 Hz on leg start (NAV2 trigger); `/goal_update` at 1 Hz in-mission (consumed by the `GoalUpdater` in `bt_nav.xml` — rewrites the live goal without canceling FollowPath); diagnostics on `/gps_waypoint/heading_offset`, `…/heading_offset_std_deg`, `…/debug`, `…/candidate_marker`, `…/health` |
+| **Data** | `cur_gps_positon.txt` (only used by the recorder; the action server takes goals over the action interface, not from a file) |
+| **Depends on** | `rclpy`, `autonav_interfaces`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `tf2_ros`, `visualization_msgs` |
 | **Build** | `ament_python` |
 
-> **Heads up:** Consumes `/gps_fix` from `gps_handler`; doesn't talk to hardware itself.
+> **Heads up:** `run-gps.sh` starts the C++ `gps_publisher` *and* `gps_handler_node` together, passing `coldstart_bias_enabled:=true` so the first GPS goal snaps θ_offset to land the waypoint in front of `base_link` — the EKF then overwrites that seed once the robot accumulates motion baseline. See `docs/HUMAN-WRITTEN-README.md` "Self-Correcting GPS" for the algorithm synopsis.
 
 ---
 
@@ -406,10 +419,10 @@ Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correctio
 
 | File | What it brings up |
 |---|---|
-| `slam.launch.py` | **Active.** `ekf_local` + `slam_toolbox` + `map_padder` + a `sleep 5 && echo "[GUI_READY] SLAM"` ExecuteProcess |
+| `slam.launch.py` | **Active.** `ekf_local` + `slam_toolbox` + `map_padder` + a `sleep 5 && echo "[GUI_READY] SLAM"` ExecuteProcess. Also declares the `enable_gps_fusion` arg (default `false`) — flipping to `true` brings up `ekf_global` + `navsat_transform_node` inline |
 | `nav.launch.py` | Nav2 standalone, `nav2_paramsv2.yaml`, `bt_2.xml` |
 | `nav_lc.launch.py` | Minimal lifecycle manager for loop-closure testing |
-| `dual_ekf_navsat.launch.py` | Planned upgrade: dual EKF + GPS via `navsat_transform_node` |
+| `dual_ekf_navsat.launch.py` | Standalone variant of the global-EKF + `navsat_transform_node` path. Superseded for normal use by the gated branch inside `slam.launch.py`; kept for isolation testing |
 
 **Configs (`config/`):**
 
@@ -424,14 +437,14 @@ Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correctio
 | `dual_ekf_navsat_params.yaml` | Future GPS-fusion config |
 | `mapper_params_online_async.yaml` | `slam_toolbox` mapper specifics |
 
-### Behavior trees and the dormant GPS path
+### Behavior trees and the GPS fusion path
 
 | | |
 |---|---|
-| **Behavior trees** | `bt.xml`, `bt_2.xml`, `bt_nav.xml` (the latter is what `run-nav2.sh` loads via `default_bt_xml_filename`) |
-| **GPS pipeline status** | `gps_transform` and `ekf_global` are **commented out** in `slam.launch.py`. Today, `slam_toolbox` publishes `map → odom` directly; GPS fusion is a flip-the-switch upgrade when needed |
+| **Behavior trees** | `bt.xml`, `bt_2.xml`, `bt_nav.xml` (the latter is what `run-nav2.sh` loads via `default_bt_xml_filename`). `bt_nav.xml` wraps the planner in a `<GoalUpdater>` that consumes `/goal_update` — that's how `gps_handler_node` corrects the live goal mid-leg without canceling FollowPath |
+| **Global EKF / navsat status** | `ekf_global` + `navsat_transform_node` are wired into `slam.launch.py` but gated on the `enable_gps_fusion` launch arg (default `false`). Today, `slam_toolbox` publishes `map → odom` directly; `gps_handler_node` runs its own heading EKF and reads `/local_ekf/odom`, so GPS goals work without `ekf_global` in the loop |
 
-> **Heads up:** Don't expect the global EKF or `navsat_transform_node` to be running on the live robot — they're plumbed but disabled.
+> **Heads up:** The global EKF was observed publishing a frozen pose at startup, which made GPS goals worse rather than better — that's why `enable_gps_fusion` defaults off. Re-enabling it requires fixing the frozen-pose seed first. `gps_handler_node` is the live GPS path either way.
 
 ---
 

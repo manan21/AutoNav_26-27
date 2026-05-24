@@ -212,6 +212,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: Python scripts hardcoded `/home/vtuser/...` paths that didn't exist on the deploy Jetson.
 - **Fix**: Updated to `/home/vtcro/AutoNav/...` to match the actual deploy structure.
 - **Triage tip**: Waypoint commander reports "file not found" → check `stored_waypoints.txt` path in `gps_waypoint_handler/setup.py` console_scripts.
+- **Superseded (2026)**: `waypoint_commander` and `stored_waypoints.txt` no longer exist. GPS goals arrive over the `/navigate_to_waypoint` action (`autonav_interfaces`), not a file. Entry kept for historical context.
 - **Keywords**: gps, waypoint, gps_waypoint_handler, stored_waypoints.txt, hardcoded-path, /home/vtuser, /home/vtcro, file-not-found, deploy-path, console_scripts, setup.py
 
 ## 2025-11-12 — Stale TF used for line projection
