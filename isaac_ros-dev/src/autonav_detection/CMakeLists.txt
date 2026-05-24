@@ -158,8 +158,44 @@ ament_target_dependencies(grade_detector
   Eigen3
 )
 
+# ============================================================
+# Target 3: lidar_line_detector  (SICK RSSI/intensity line detector)
+# Pipeline: subscribe to /cloud_all_fields_fullframe (PointCloud2),
+# classify high-RSSI ground tape marks, publish /lidar_line_points
+# (LinePoints) for a separate Nav2 line_layer instance.
+# ============================================================
+add_executable(lidar_line_detector
+  src/lidar_line/node.cpp
+)
+
+target_compile_features(lidar_line_detector PUBLIC cxx_std_17)
+set_target_properties(lidar_line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_compile_options(lidar_line_detector PRIVATE
+  -O3
+  -DNDEBUG
+)
+
+target_include_directories(lidar_line_detector
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(lidar_line_detector
+  rclcpp
+  sensor_msgs
+  std_msgs
+  geometry_msgs
+  autonav_interfaces
+  tf2_ros
+  Eigen3
+)
+
 # ---- Install ----
-install(TARGETS line_detector grade_detector
+install(TARGETS line_detector grade_detector lidar_line_detector
   DESTINATION lib/${PROJECT_NAME}
 )
 

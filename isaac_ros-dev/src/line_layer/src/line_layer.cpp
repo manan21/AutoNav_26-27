@@ -98,6 +98,7 @@ LineLayer::LineLayer()
   cost_scaling_factor_(5.0),
   inscribed_radius_(0.30),
   inflation_kernel_resolution_(0.0),
+  costmap_topic_("/line_costmap"),
   clear_topic_("/local_mirror_layer/clear"),
   clear_radius_(3.0),
   latest_robot_x_(0.0),
@@ -116,6 +117,7 @@ LineLayer::onInitialize()
   auto node = node_.lock(); 
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
+  declareParameter("costmap_topic", rclcpp::ParameterValue("/line_costmap"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
   declareParameter("publish_costmap", rclcpp::ParameterValue(false));
   declareParameter("clearing", rclcpp::ParameterValue(true));
@@ -136,6 +138,7 @@ LineLayer::onInitialize()
   declareParameter("clear_radius", rclcpp::ParameterValue(3.0));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
+  node->get_parameter(name_ + "." + "costmap_topic", costmap_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
   node->get_parameter(name_ + "." + "clearing", clearing_);
@@ -188,7 +191,7 @@ LineLayer::onInitialize()
     clear_sub_options);
 
   if (publish_costmap_) {
-    costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>("/line_costmap", 1);
+    costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>(costmap_topic_, 1);
   }
 
   
@@ -576,8 +579,10 @@ void LineLayer::publishCostmap() {
   msg->header.stamp = node_.lock()->now();
   msg->info.width = size_x_;
   msg->info.height = size_y_;
+  msg->info.resolution = resolution_;
   msg->info.origin.position.x = origin_x_;
   msg->info.origin.position.y = origin_y_;
+  msg->info.origin.orientation.w = 1.0;
   msg->data.resize(size_x_ * size_y_);
   for (unsigned int i = 0; i < size_x_ * size_y_; ++i) {
     unsigned char cost = costmap_[i];

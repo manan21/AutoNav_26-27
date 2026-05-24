@@ -1,6 +1,7 @@
-# Brings up both detectors in this package:
+# Brings up detectors in this package:
 #   - line_detector  (CUDA, ZED RGB+depth → painted-line points)
 #   - grade_detector (Eigen, SICK PointCloud2 → PCA-filtered obstacle cloud)
+#   - lidar_line_detector (SICK PointCloud2 RSSI → painted-line points)
 #
 # Single Ctrl-C brings them both down. Parameters are loaded from the
 # package's own config/ directory (NOT nav2_paramsv2.yaml — algorithm
@@ -29,6 +30,11 @@ def generate_launch_description():
         default_value=os.path.join(pkg_share, 'config', 'grade_detector.yaml'),
         description='YAML for the LiDAR PCA grade detector.',
     )
+    lidar_line_yaml_arg = DeclareLaunchArgument(
+        'lidar_line_detector_params',
+        default_value=os.path.join(pkg_share, 'config', 'lidar_line_detector.yaml'),
+        description='YAML for the LiDAR RSSI line detector.',
+    )
     enable_line = DeclareLaunchArgument(
         'enable_line', default_value='true',
         description='Set false to skip the CUDA line detector (e.g. dev box without ZED).',
@@ -36,6 +42,10 @@ def generate_launch_description():
     enable_grade = DeclareLaunchArgument(
         'enable_grade', default_value='true',
         description='Set false to skip the PCA grade detector.',
+    )
+    enable_lidar_line = DeclareLaunchArgument(
+        'enable_lidar_line', default_value='false',
+        description='Set true to start the parallel LiDAR RSSI line detector.',
     )
 
     line_detector = Node(
@@ -56,12 +66,23 @@ def generate_launch_description():
         parameters=[LaunchConfiguration('grade_detector_params')],
         condition=IfCondition(LaunchConfiguration('enable_grade')),
     )
+    lidar_line_detector = Node(
+        package='autonav_detection',
+        executable='lidar_line_detector',
+        name='lidar_line_detector',
+        output='screen',
+        parameters=[LaunchConfiguration('lidar_line_detector_params')],
+        condition=IfCondition(LaunchConfiguration('enable_lidar_line')),
+    )
 
     return LaunchDescription([
         line_yaml_arg,
         grade_yaml_arg,
+        lidar_line_yaml_arg,
         enable_line,
         enable_grade,
+        enable_lidar_line,
         line_detector,
         grade_detector,
+        lidar_line_detector,
     ])
