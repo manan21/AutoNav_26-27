@@ -1941,12 +1941,12 @@ class HudWindow(QMainWindow):
         self._dev_branch_grid.setSpacing(4)
         branch_holder = QWidget()
         branch_holder.setLayout(self._dev_branch_grid)
-        branch_scroll = QScrollArea()
-        branch_scroll.setWidgetResizable(True)
-        branch_scroll.setWidget(branch_holder)
-        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
-        branch_scroll.setMinimumHeight(280)
-        branches_layout.addWidget(branch_scroll, stretch=1)
+        self._branch_scroll = QScrollArea()
+        self._branch_scroll.setWidgetResizable(True)
+        self._branch_scroll.setWidget(branch_holder)
+        self._branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._branch_scroll.setMinimumHeight(280)
+        branches_layout.addWidget(self._branch_scroll, stretch=1)
 
         # Back to Developer
         exit_branches_style = (
@@ -4939,18 +4939,19 @@ class HudWindow(QMainWindow):
         if self._launch_queue:
             q_str = " > ".join(self._launch_queue)
             parts.append(f"Queued: {q_str}")
+        T = self._translate_to_theme
         if parts:
             self._queue_label.setText(" | ".join(parts))
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #ff0; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
         else:
             self._queue_label.setText("Queue: idle")
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #888; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
 
     def _toggle_device(self, label):
         """Toggle a device on/off. Uses a queue so only one starts at a time."""
@@ -5011,7 +5012,7 @@ class HudWindow(QMainWindow):
                 for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
                     if blabel == label:
                         btn.setText("Waiting")
-                        btn.setStyleSheet(self._launch_wait_style)
+                        btn.setStyleSheet(self._translate_to_theme(self._launch_wait_style))
                         self._launch_nav_buttons[i] = (btn, blabel, self._launch_wait_style)
                         break
                 self._update_selection()
@@ -6100,6 +6101,33 @@ class HudWindow(QMainWindow):
                             widget.setStyleSheet(T(base_style))
         # Position floating directional indicators around the selected widget
         self._position_indicators()
+        # Auto-scroll the branches sub-page so arrow-key nav keeps the
+        # selected branch visible. The list often overflows the 280 px
+        # min-height scroll area once a repo accumulates branches.
+        self._ensure_branch_visible()
+
+    def _ensure_branch_visible(self):
+        """If the operator is navigating the Switch Branch sub-page,
+        scroll the branch list so the currently selected widget is in
+        view. No-op on every other page."""
+        if not hasattr(self, '_branch_scroll'):
+            return
+        if not hasattr(self, '_options_stack'):
+            return
+        if self._options_stack.currentIndex() != 5:
+            return
+        if self._nav_col != 0:
+            return
+        try:
+            widget, _, _ = self._cur_btn()
+        except Exception:
+            return
+        if widget is None:
+            return
+        # ensureWidgetVisible no-ops if `widget` isn't a descendant of
+        # the scroll area's viewport — that's the desired behavior for
+        # the Refresh / Back nav rows that live outside the scroller.
+        self._branch_scroll.ensureWidgetVisible(widget, 0, 40)
 
     def _position_indicators(self):
         """Show << and >> around the slider knob only when in scrub mode."""
