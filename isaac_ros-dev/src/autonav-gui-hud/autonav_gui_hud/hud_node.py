@@ -2603,6 +2603,17 @@ class HudWindow(QMainWindow):
             "  border-radius: 3px;"
             "}"
         )
+        # Goal-pick border for the ODOM / GPS cell while the operator is
+        # placing a crosshair. Cyan to match the crosshair color and
+        # thicker than the nav-selection border so it's unmistakable
+        # even when the cell also happens to be the nav-selected one.
+        self._sensor_goal_style = (
+            "QFrame#sensorCell {"
+            "  border: 3px solid #0ff;"
+            "  background-color: #1a2a2a;"
+            "  border-radius: 3px;"
+            "}"
+        )
 
         # Nav columns for sensor cells — split into left/right columns
         self._status_nav_buttons.append((power_cell, "Power PCB", frame_style))
@@ -3385,9 +3396,12 @@ class HudWindow(QMainWindow):
     # Two operator-facing modes that hijack arrow keys to position a
     # crosshair on a data-column plot. Each is entered by clicking a
     # launch-page button; arrows nudge the target, Enter fires the
-    # corresponding script, Esc cancels. Step size is 1 meter for both
-    # (lat/lon converted from meters using the WGS84 small-step approx).
-    _GOAL_STEP_M = 1.0
+    # corresponding script, Esc cancels. Local picks use 0.1 m so the
+    # operator can park within wheelbase tolerance; GPS picks use 1.0 m
+    # (lat/lon converted via the WGS84 small-step approx) since the
+    # waypoint radius soaks up sub-meter precision anyway.
+    _LOCAL_GOAL_STEP_M = 0.1
+    _GPS_GOAL_STEP_M = 1.0
 
     def _enter_local_goal_mode(self):
         """Show the local-goal crosshair on the ODOM plot and seed the
@@ -3412,6 +3426,7 @@ class HudWindow(QMainWindow):
             f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
         )
         self._odom_canvas.draw_idle()
+        self._update_selection()
 
     def _exit_local_goal_mode(self, send):
         """Hide the crosshair. If `send`, fire send_goal.sh with the
@@ -3423,6 +3438,7 @@ class HudWindow(QMainWindow):
         self._odom_goal_banner.set_visible(False)
         self._odom_goal_readout.set_visible(False)
         self._odom_canvas.draw_idle()
+        self._update_selection()
         if send:
             args = f"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"
             self._run_one_shot_script(
@@ -3433,13 +3449,32 @@ class HudWindow(QMainWindow):
 
     def _move_local_goal(self, dx, dy):
         """Nudge the local-goal crosshair by (dx, dy) meters in the map
-        frame and refresh the readout."""
+        frame and refresh the readout. If the new position falls outside
+        the current ODOM viewport, expand the limits immediately so the
+        crosshair stays visible without waiting for the next live tick."""
         self._local_goal_x += dx
         self._local_goal_y += dy
         self._odom_goal_cross.set_data([self._local_goal_x], [self._local_goal_y])
         self._odom_goal_readout.set_text(
             f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
         )
+        # Auto-pan/zoom so the crosshair is never off-screen between
+        # arrow presses. Margin sized for visible breathing room — the
+        # crosshair should clearly sit *inside* the viewport, not on
+        # the edge. The next live-tick redraw re-derives the bounds
+        # (also including the goal — see _redraw_plots) so any pad here
+        # gets normalized within ~100-200 ms.
+        x0, x1 = self._odom_ax.get_xlim()
+        y0, y1 = self._odom_ax.get_ylim()
+        margin = 2.0
+        gx, gy = self._local_goal_x, self._local_goal_y
+        new_x0 = min(x0, gx - margin)
+        new_x1 = max(x1, gx + margin)
+        new_y0 = min(y0, gy - margin)
+        new_y1 = max(y1, gy + margin)
+        if (new_x0, new_x1, new_y0, new_y1) != (x0, x1, y0, y1):
+            self._odom_ax.set_xlim(new_x0, new_x1)
+            self._odom_ax.set_ylim(new_y0, new_y1)
         self._odom_canvas.draw_idle()
 
     def _enter_gps_goal_mode(self):
@@ -3465,6 +3500,7 @@ class HudWindow(QMainWindow):
             f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
         )
         self._gps_canvas.draw_idle()
+        self._update_selection()
 
     def _exit_gps_goal_mode(self, send):
         """Hide the crosshair. If `send`, fire send_GPS_waypoint.sh with
@@ -3476,6 +3512,7 @@ class HudWindow(QMainWindow):
         self._gps_goal_banner.set_visible(False)
         self._gps_goal_readout.set_visible(False)
         self._gps_canvas.draw_idle()
+        self._update_selection()
         if send:
             args = f"{self._gps_goal_lat:.7f} {self._gps_goal_lon:.7f}"
             self._run_one_shot_script(
@@ -3486,7 +3523,10 @@ class HudWindow(QMainWindow):
 
     def _move_gps_goal(self, d_north_m, d_east_m):
         """Nudge the GPS-goal crosshair by (north, east) meters and
-        refresh the readout. Uses a WGS84 small-step approximation."""
+        refresh the readout. Uses a WGS84 small-step approximation.
+        If the new position falls outside the current GPS viewport,
+        expand the limits immediately so the crosshair stays visible
+        without waiting for the next live tick."""
         dlat = d_north_m / 111320.0
         dlon = d_east_m / (
             111320.0 * max(0.1, math.cos(math.radians(self._gps_goal_lat)))
@@ -3497,6 +3537,25 @@ class HudWindow(QMainWindow):
         self._gps_goal_readout.set_text(
             f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
         )
+        # Auto-pan/zoom so the crosshair is never off-screen between
+        # arrow presses. Margin sized for visible breathing room — the
+        # crosshair should clearly sit *inside* the viewport, not on
+        # the edge.
+        x0, x1 = self._gps_ax.get_xlim()
+        y0, y1 = self._gps_ax.get_ylim()
+        margin_m = 5.0
+        margin_lat = margin_m / 111320.0
+        margin_lon = margin_m / (
+            111320.0 * max(0.1, math.cos(math.radians(self._gps_goal_lat)))
+        )
+        gx, gy = self._gps_goal_lon, self._gps_goal_lat
+        new_x0 = min(x0, gx - margin_lon)
+        new_x1 = max(x1, gx + margin_lon)
+        new_y0 = min(y0, gy - margin_lat)
+        new_y1 = max(y1, gy + margin_lat)
+        if (new_x0, new_x1, new_y0, new_y1) != (x0, x1, y0, y1):
+            self._gps_ax.set_xlim(new_x0, new_x1)
+            self._gps_ax.set_ylim(new_y0, new_y1)
         self._gps_canvas.draw_idle()
 
     def _run_one_shot_script(self, label, script, args):
@@ -5841,7 +5900,7 @@ class HudWindow(QMainWindow):
 
         # --- Local goal-pick mode: arrows nudge map-frame target, Enter sends, Esc cancels ---
         if self._local_goal_mode:
-            step = self._GOAL_STEP_M
+            step = self._LOCAL_GOAL_STEP_M
             if key == Qt.Key_Up:
                 self._move_local_goal(0.0, step)
             elif key == Qt.Key_Down:
@@ -5858,7 +5917,7 @@ class HudWindow(QMainWindow):
 
         # --- GPS goal-pick mode: arrows nudge lat/lon, Enter sends, Esc cancels ---
         if self._gps_goal_mode:
-            step = self._GOAL_STEP_M
+            step = self._GPS_GOAL_STEP_M
             if key == Qt.Key_Up:
                 self._move_gps_goal(step, 0.0)
             elif key == Qt.Key_Down:
@@ -5999,7 +6058,18 @@ class HudWindow(QMainWindow):
                         .replace("color: #dcdcdc", "color: #0f0")
                     ))
                 elif widget in self._sensor_cells or widget is self._power_cell:
-                    if is_selected:
+                    # Goal-pick mode wins over nav selection — the cyan
+                    # border tells the operator which plot the crosshair
+                    # is being placed on.
+                    goal_active = (
+                        (self._local_goal_mode
+                         and widget is self._canvas_to_cell.get(self._odom_canvas))
+                        or (self._gps_goal_mode
+                            and widget is self._canvas_to_cell.get(self._gps_canvas))
+                    )
+                    if goal_active:
+                        widget.setStyleSheet(T(self._sensor_goal_style))
+                    elif is_selected:
                         widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
                         widget.setStyleSheet(T(self._sensor_frame_style))
@@ -7099,8 +7169,25 @@ class HudWindow(QMainWindow):
             cur_lat, cur_lon = lats[-1], lons[-1]
             dlat = _GPS_VIEW_RADIUS_M / 111320.0
             dlon = _GPS_VIEW_RADIUS_M / (111320.0 * math.cos(math.radians(cur_lat)))
-            self._gps_ax.set_xlim(cur_lon - dlon, cur_lon + dlon)
-            self._gps_ax.set_ylim(cur_lat - dlat, cur_lat + dlat)
+            x0, x1 = cur_lon - dlon, cur_lon + dlon
+            y0, y1 = cur_lat - dlat, cur_lat + dlat
+            # If the operator is placing a GPS goal and has arrowed past
+            # the default 100 ft window, extend the view to include the
+            # crosshair plus a 5 m breathing-room buffer so it doesn't
+            # sit on the edge. The next redraw after _exit_gps_goal_mode
+            # skips this branch, so the view snaps back on send/cancel.
+            if self._gps_goal_mode:
+                buf_m = 5.0
+                buf_lat = buf_m / 111320.0
+                buf_lon = buf_m / (
+                    111320.0 * max(0.1, math.cos(math.radians(self._gps_goal_lat)))
+                )
+                x0 = min(x0, self._gps_goal_lon - buf_lon)
+                x1 = max(x1, self._gps_goal_lon + buf_lon)
+                y0 = min(y0, self._gps_goal_lat - buf_lat)
+                y1 = max(y1, self._gps_goal_lat + buf_lat)
+            self._gps_ax.set_xlim(x0, x1)
+            self._gps_ax.set_ylim(y0, y1)
             # Show lat/lon truncated to 4 decimals
             self._gps_coord_label.set_text(
                 f"Lat: {cur_lat:.4f}\nLon: {cur_lon:.4f}"
@@ -7179,6 +7266,18 @@ class HudWindow(QMainWindow):
                 max_x = max(max_x, cm_x1)
                 min_y = min(min_y, cm_y0)
                 max_y = max(max_y, cm_y1)
+            # If the operator is currently placing a local goal, include
+            # the crosshair (plus a buffer) in the bounds so arrowing
+            # past the visible area auto-zooms with breathing room
+            # instead of pinning the crosshair to the edge. The next
+            # redraw after _exit_local_goal_mode skips this branch, so
+            # the view snaps back to the normal bounds on send/cancel.
+            if self._local_goal_mode:
+                buf = 2.0
+                min_x = min(min_x, self._local_goal_x - buf)
+                max_x = max(max_x, self._local_goal_x + buf)
+                min_y = min(min_y, self._local_goal_y - buf)
+                max_y = max(max_y, self._local_goal_y + buf)
             dx = max_x - min_x
             dy = max_y - min_y
             span = max(dx, dy) * 1.3
