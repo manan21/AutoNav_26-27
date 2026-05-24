@@ -471,8 +471,8 @@ velocity_smoother:
     # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
     # GPS-waypoint runs; drop to 0.25 m/s for in-house lab tests near
     # people / equipment.
-    max_velocity: [0.50, 0.0, 1.0]
-    min_velocity: [-0.50, 0.0, -1.0]
+    max_velocity: [0.25, 0.0, 1.0]
+    min_velocity: [-0.25, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
     # /local_ekf/odom is the EKF-fused output. Only matters if feedback
