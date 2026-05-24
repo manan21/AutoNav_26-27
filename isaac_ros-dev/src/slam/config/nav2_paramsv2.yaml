@@ -115,23 +115,12 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # DWB Local Planner — mirrors the fix/lines_again critic tuning.
-    # Speed capped at 0.25 m/s (matches fix/lines_again), ObstacleFootprint
-    # added on top of the GPS-branch critic set.
-    #
-    # CAVEAT specific to path_following: this branch keeps
-    # robot_base_frame = nav_center (body geometric center), unlike
-    # fix/lines_again which uses base_link (rear axle). The PathAlign
-    # forward_point_distance of 0.29 m below was sized on fix/lines_again
-    # so the alignment probe lands AT the body center (0.29 m forward of
-    # the axle). On nav_center the same 0.29 m places the probe 29 cm
-    # AHEAD of the body center — i.e. into a "lookahead" position, not
-    # at the body center itself. Kept as 0.29 here to honor the "same
-    # changes" request; if you want the alignment probe at the body
-    # center on this branch instead, set FPD to 0.0 (and consider
-    # re-adding PathDist, which scores robot_base_frame directly — when
-    # the frame IS the body center, PathDist becomes the right
-    # position-lock critic).
+    # DWB Local Planner - tuned for nav_center path tracking without
+    # over-penalizing valid narrow gaps. ObstacleFootprint remains active
+    # as the footprint-aware safety critic, but at a lower scale so
+    # inflated cells do not dominate every feasible trajectory between
+    # nearby obstacles. PathDist scores nav_center directly against the
+    # global plan; PathAlign/GoalAlign use only a short heading lookahead.
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: False
@@ -160,7 +149,7 @@ controller_server:
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 24
-      sim_time: 1.2            # short horizon reduces turn overcommit when camera-visible line evidence drops out
+      sim_time: 0.8            # shorter horizon reduces over-rejection of tight near-field maneuvers
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -169,17 +158,18 @@ controller_server:
       short_circuit_trajectory_evaluation: True
       stateful: True
       # ObstacleFootprint walks the full footprint polygon along each
-      # candidate trajectory and scores the worst cell touched —
-      # complements BaseObstacle (which only scores trajectory
-      # endpoints) for line-following where painted lines become lethal
-      # cells very close to the body.
-      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign"]
-      ObstacleFootprint.scale: 1.0
+      # candidate trajectory. PathDist/GoalDist keep the nav_center
+      # frame committed to the planned corridor while lower alignment
+      # scales leave DWB room to pick a valid trajectory in tight gaps.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.10
       BaseObstacle.scale: 0.08
-      PathAlign.scale: 64.0
-      PathAlign.forward_point_distance: 0.29
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.29
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.10
+      GoalAlign.scale: 16.0
+      GoalAlign.forward_point_distance: 0.10
+      PathDist.scale: 48.0
+      GoalDist.scale: 16.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
@@ -199,11 +189,11 @@ local_costmap:
       # Footprint expressed in nav_center frame (was base_link with
       # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      # 0.0 → 0.10: gives DWB's ObstacleFootprint critic 10 cm of extra
-      # clearance by enlarging the polygon it walks along each candidate
-      # trajectory. Local-only — global footprint stays unpadded so the
-      # planner can still thread tight gates.
-      footprint_padding: 0.10
+      # Local-only padding for DWB footprint scoring. Keep a small margin
+      # without making visually feasible gates disappear at controller
+      # time; global footprint stays unpadded so the planner can still
+      # thread tight gates.
+      footprint_padding: 0.03
       plugins: ["obstacle_layer", "inflation_layer", "line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
