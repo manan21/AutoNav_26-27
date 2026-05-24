@@ -133,15 +133,16 @@
                    {path} next cycle, FollowPath's action client
                    re-issues the goal with the new path automatically —
                    no explicit invalidation check needed. -->
-              <!-- PHASEB: PathSignificantlyChanged decorator suppresses
-                   cancel-restart of the FollowPath action when a fresh
-                   /plan is essentially identical to the previous one.
+              <!-- PHASEB: PathSignificantlyChanged feeds FollowPath a
+                   stable filtered path when a fresh /plan is essentially
+                   identical to the previous one, while still ticking
+                   FollowPath so its action result callbacks are serviced.
                    Tuning lives in nav2_paramsv2.yaml bt_navigator params
                    (path_significantly_changed.rms_threshold_m and
                    path_significantly_changed.compare_n_poses) — live
                    tweak with `ros2 param set /bt_navigator …`. -->
-              <PathSignificantlyChanged path="{path}">
-                <FollowPath path="{path}" controller_id="FollowPath"/>
+              <PathSignificantlyChanged path="{path}" filtered_path="{filtered_path}">
+                <FollowPath path="{filtered_path}" controller_id="FollowPath"/>
               </PathSignificantlyChanged>
               <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
                 service_name="local_costmap/clear_around_local_costmap"

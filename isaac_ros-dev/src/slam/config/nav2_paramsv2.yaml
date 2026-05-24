@@ -288,6 +288,12 @@ local_costmap:
         line_clear_range_min_m: 0.2
         line_clear_range_max_m: 6.0
         max_persisted_points: 0
+        # LiDAR line detections are already obstacle-filtered points. Keep
+        # their local halo tight so a detected line remains a hard boundary
+        # without painting most of a visually passable gap as high cost.
+        inflation_radius: 0.55
+        inscribed_radius: 0.12
+        cost_scaling_factor: 8.0
         clearing: True
         rolling_window: True
         publish_costmap: True

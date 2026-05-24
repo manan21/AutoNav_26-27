@@ -31,6 +31,7 @@ public:
   static BT::PortsList providedPorts() {
     return {
       BT::InputPort<nav_msgs::msg::Path>("path"),
+      BT::OutputPort<nav_msgs::msg::Path>("filtered_path"),
     };
   }
 
@@ -47,44 +48,24 @@ public:
       "path_significantly_changed.compare_n_poses").as_int();
 
     const bool significantly_changed = pathDiffers(
-      new_path, last_path_, rms_threshold, n_compare);
+      new_path, filtered_path_, rms_threshold, n_compare);
 
     const auto last_status = child_node_->status();
 
-    if (significantly_changed || !child_started_ ||
+    if (significantly_changed || !child_started_ || !has_filtered_path_ ||
         last_status == BT::NodeStatus::IDLE) {
-      // Path changed enough OR child hasn't run yet — tick the child
-      // (FollowPath), which on a fresh path will cancel-restart its
-      // action goal. This is the ONLY place we let cancel-restart fire.
-      //
-      // A halted/aborted FollowPath can leave the child IDLE while this
-      // decorator still remembers a same-looking path. In that state,
-      // returning RUNNING would make Nav2 keep replanning forever with
-      // no active FollowPath action and no cmd_vel output.
-      last_path_ = new_path;
+      // Only publish a new child-visible path when the raw planner path
+      // changed enough to justify a FollowPath goal update. The child is
+      // still ticked every BT cycle below so Nav2's action node can spin
+      // feedback/result callbacks; it just sees this stable filtered path
+      // while same-looking replans arrive.
+      filtered_path_ = new_path;
+      has_filtered_path_ = true;
       child_started_ = true;
-      return child_node_->executeTick();
     }
 
-    // Path didn't materially change — don't cancel-restart the
-    // FollowPath action. But DO propagate the child's last-known
-    // terminal status (SUCCESS / FAILURE) if it has one. Returning
-    // RUNNING here unconditionally would hide a completed or aborted
-    // FollowPath from the parent BT: the goal-reached SUCCESS would
-    // never propagate to NavigateRecovery, and a controller-side abort
-    // would never trigger the FollowPathRecovery fallback. Status only
-    // updates when executeTick was called, so this catches "child
-    // terminated on a previous tick we DID run, then path stayed the
-    // same so we stopped ticking it" — not "child terminated
-    // silently while we were skipping ticks" (BT.CPP can't observe
-    // that). For the latter the only protection is the 1 Hz replan:
-    // the next significantly-changed path will tick the child and
-    // surface its actual status.
-    if (last_status == BT::NodeStatus::SUCCESS ||
-        last_status == BT::NodeStatus::FAILURE) {
-      return last_status;
-    }
-    return BT::NodeStatus::RUNNING;
+    setOutput("filtered_path", filtered_path_);
+    return child_node_->executeTick();
   }
 
   // CRITICAL: override halt() so a recovery-triggered halt clears the
@@ -95,14 +76,16 @@ public:
   // goal and the robot would stop.
   void halt() override {
     child_started_ = false;
-    last_path_ = nav_msgs::msg::Path{};
+    has_filtered_path_ = false;
+    filtered_path_ = nav_msgs::msg::Path{};
     BT::DecoratorNode::halt();
   }
 
 private:
   rclcpp::Node::SharedPtr node_;
-  nav_msgs::msg::Path last_path_;
+  nav_msgs::msg::Path filtered_path_;
   bool child_started_ = false;
+  bool has_filtered_path_ = false;
 
   static bool pathDiffers(const nav_msgs::msg::Path & a,
                           const nav_msgs::msg::Path & b,
