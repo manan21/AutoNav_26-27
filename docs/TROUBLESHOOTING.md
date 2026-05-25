@@ -112,6 +112,17 @@ Verify `/autonomous_mode` is being published by the control node. The BT now gat
 
 **Keywords**: behavior-tree, bt, /autonomous_mode, autonomous_mode, manual-mode, gradient_escape, goal_bender, recovery, nav2, bt_nav.xml, control-node, mode-switch, custom_behavior_tree_plugins
 
+## "Power PCB silent — no `/electrical/*` readings"
+
+**Current state (as of 2026-05-25):** the Power PCB is physically disconnected — I²C is broken on the Jetson and a recent fix attempt left the Jetson unbootable. Until I²C is restored and the PCB is reattached, no `/electrical/voltage`, `/electrical/current`, `/electrical/power`, or `/electrical/soc` topic will publish. The GUI's Power PCB launch button will start `electrical_publisher_node`, but the node will fail to initialize the INA226 over I²C and emit a retry log instead of readings.
+
+Triage:
+1. Check `/dev/i2c-1` exists (`ls /dev/i2c-*` inside the container). If missing, the bus is down at the kernel/device-tree level — see the [2026-04-17 Jetson incident](#2026-04-17--jetson-orin-nano-bricked-by-manual-device-tree-overlay-incident) and the brick-recovery row above.
+2. If `/dev/i2c-1` exists but readings still silent, check the node's terminal in the GUI — INA226 init will retry on a timer and log `[INA226] init failed, retrying...`.
+3. Don't add new code dependencies on `/electrical/*` until the PCB is back. Treat power readings as currently unavailable.
+
+**Keywords**: power-pcb, electrical, ina226, i2c, /dev/i2c-1, readings-missing, silent, autonav_electrical_publisher, /electrical/voltage, /electrical/current, /electrical/power, /electrical/soc, jetson-i2c, broken, disconnected, 2026-05
+
 ## "`docker exec` says user not found right after start"
 
 Race between container init and shell attach. The script now waits for `getent passwd` to return — see [2026-04-06 container user race](#2026-04-06--container-user-initialization-race).
@@ -921,13 +932,14 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Fix**: Restructured with submodule-pin policy front and center.
 - **Keywords**: zed, zed.md, doc, submodule-pin, v5.2.0, 506e047, modernize
 
-## 2026-05-11 — SICK IMU yaw inverted (upside-down LiDAR mount)
+## 2026-05-11 — SICK IMU yaw / covariance handling (historical; mechanism since superseded)
 
-- **Commit**: `7acefa48` — 2026-05-11 — *"Fixing IMU transform"*
-- **Cause**: The SICK MultiScan is mounted with a π-roll (180° around X), defined in the URDF as the fixed `base_link → lidar_footprint` joint. The driver publishes its onboard IMU directly in `lidar_footprint`, so the Z angular velocity (yaw rate) and Y angular velocity (pitch rate) are negated relative to `base_link`. The original `ekf_local.yaml` was fusing `/sick_scansegment_xd/imu` directly — feeding the EKF an inverted yaw rate. Wheel-derived yaw fought IMU-derived yaw at every tick; `odom → base_link` drifted in yaw; slam_toolbox kept scan-match-correcting `map → odom` against a moving target, producing map-snap and stall behavior.
-- **Fix**: Added `imu_frame_transformer.py` (under `isaac_ros-dev/src/slam/slam_toolbox/`) — a Python node that subscribes to the raw IMU in `lidar_footprint`, applies the 180° X-axis rotation (`vz_base = -vz_lidar`, `vy_base = -vy_lidar`, transforms the covariance), and republishes on `/sick_scansegment_xd/imu_base_link` in `base_link`. Updated `ekf_local.yaml` to consume the corrected topic. Added the node to `slam.launch.py` so it starts before the EKF.
-- **Triage tip**: If the EKF tracks robot yaw backwards (heading goes the wrong way during in-place rotation), confirm `ekf_local.yaml` is consuming `/sick_scansegment_xd/imu_base_link` and **not** the raw `/sick_scansegment_xd/imu`. Sanity-check with `ros2 topic echo /sick_scansegment_xd/imu_base_link --field angular_velocity` — Z should match the actual rotation direction. If the LiDAR is ever remounted in a different orientation, update the URDF `rpy` and the transformer's axis-inversion logic in lockstep (or switch to a dynamic TF-based transform).
-- **Keywords**: imu, sick-imu, yaw, yaw-inverted, frame-transformer, imu_frame_transformer.py, ekf_local, ekf_local.yaml, lidar_footprint, base_link, sick_scansegment_xd, upside-down, lidar-mount, urdf, π-roll, scan-match-snap, map→odom-drift
+- **Original commit**: `7acefa48` — 2026-05-11 — *"Fixing IMU transform"*
+- **Original cause (historical)**: The SICK MultiScan is mounted with a π-roll (180° around X), defined in the URDF as the fixed `base_link → lidar_footprint` joint. The driver publishes its onboard IMU directly in `lidar_footprint`, so the Z angular velocity (yaw rate) and Y angular velocity (pitch rate are negated relative to `base_link`. The original `ekf_local.yaml` fused `/sick_scansegment_xd/imu` directly — feeding the EKF an inverted yaw rate. Wheel-derived yaw fought IMU-derived yaw at every tick; `odom → base_link` drifted in yaw; slam_toolbox kept scan-match-correcting `map → odom` against a moving target, producing map-snap and stall behavior.
+- **Original fix (now removed)**: A `imu_frame_transformer.py` node republished the IMU in `base_link` on `/sick_scansegment_xd/imu_base_link`.
+- **Current mechanism (superseded)**: The frame-transformer was later replaced by the `imu_cov_inflator` package (Python, lives at `isaac_ros-dev/src/imu_cov_inflator/`). It republishes the SICK IMU as `/sick_scansegment_xd/imu_inflated` with inflated covariance so the EKF treats the rotated readings as a high-uncertainty input rather than relying on a pre-rotation. `ekf_local.yaml` consumes `imu0: /sick_scansegment_xd/imu_inflated` and disables the orientation/translation components it can't trust from the rotated mount (see the `imu0_config` row in that file). The net behavioral fix is the same — yaw is no longer fought between sensors — but the mechanism is covariance-based, not frame-rotation-based.
+- **Triage tip**: If yaw tracking misbehaves, first confirm `imu_cov_inflator` is running and publishing on `/sick_scansegment_xd/imu_inflated` (`ros2 topic hz`). Then confirm `ekf_local.yaml`'s `imu0` is pointed at the inflated topic, **not** the raw one. The `imu_frame_transformer.py` no longer exists — do not re-add it without coordinating, since the inflator-based design assumes the frame mismatch is handled by trust-weighting rather than transformation.
+- **Keywords**: imu, sick-imu, yaw, yaw-inverted, imu_cov_inflator, imu_inflated, ekf_local, ekf_local.yaml, lidar_footprint, base_link, sick_scansegment_xd, upside-down, lidar-mount, urdf, π-roll, covariance-inflation, superseded
 
 ---
 

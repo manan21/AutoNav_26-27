@@ -1,6 +1,8 @@
 # PACKAGES
 
-A briefing on each of the 22 ROS2 packages under `isaac_ros-dev/src/`. Bigger packages are split into multiple boxes so each section stays scannable.
+A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are split into multiple boxes so each section stays scannable.
+
+> Heads up: a few entries in the source tree aren't load-bearing. `autonav_supervisor/` is an empty stub (no `package.xml`). `autonav_sim/` is a legacy sibling of `sim/` — the active simulation is `sim` (per `./config/run-sim.sh`); `autonav_sim` is kept around but not in active use. `pointcloud_to_laserscan/` is a vendored upstream package documented for reference only. See [`docs/LAUNCH_STACK.md`](./LAUNCH_STACK.md) for what actually runs.
 
 ## Table of contents
 
@@ -23,7 +25,9 @@ A briefing on each of the 22 ROS2 packages under `isaac_ros-dev/src/`. Bigger pa
 - [custom_behavior_tree_plugins](#custom_behavior_tree_plugins)
 - [gps_handler](#gps_handler)
 - [gps_waypoint_handler](#gps_waypoint_handler)
+- [imu_cov_inflator](#imu_cov_inflator)
 - [line_layer](#line_layer)
+- [local_mirror_layer](#local_mirror_layer)
 - [map_padder](#map_padder)
 - [odom_handler](#odom_handler)
 - [pointcloud_to_laserscan](#pointcloud_to_laserscan)
@@ -99,6 +103,8 @@ LiDAR PCA pipeline that classifies traversable ground vs. ramps/slopes and publi
 
 ## autonav_electrical_publisher
 
+> ⚠️ **Currently non-functional.** I²C is broken on the Jetson — a recent fix attempt left the Jetson unbootable, and the Power PCB is physically disconnected pending recovery. The driver below still describes the design, but **no `/electrical/*` topics are publishing right now**. See the [TROUBLESHOOTING entry](./TROUBLESHOOTING.md#power-pcb-silent--no-electrical-readings) and [`docs/SENSORS.md`](./SENSORS.md#power-monitoring-pcb).
+
 Talks to the on-board Power Monitor PCB (INA226 over I²C) and publishes battery voltage, current, and power.
 
 | | |
@@ -137,16 +143,16 @@ Custom ROS2 message and service definitions used across the project. Pure interf
 
 ## autonav_sim
 
-Gazebo simulation assets for the IGVC course — robot URDFs, custom Gazebo models, world files, RViz configs. No nodes; everything is launched from `launch_sim.launch.py` or `rsp.launch.py`.
+**Legacy** Gazebo simulation assets — predecessor of the active [`sim`](#sim) package. Same shape (robot URDFs, custom Gazebo models, world files), but nothing in the live launch path references it: `./config/run-sim.sh` calls `ros2 launch sim launch_sim.launch.py`, not `autonav_sim`.
 
 | | |
 |---|---|
-| **Robot descriptions** | `description/custom_robot/` (mesh-based full robot, STL baseframe) and `description/tester_robot/` (simplified box geometry for fast tests) |
+| **Robot descriptions** | `description/custom_robot/`, `description/tester_robot/` |
 | **Worlds** | `worlds/autonav_igvc_course.world`, `worlds/empty.world` |
-| **Models** | IGVC road sections (`igvc_asphalt`, `igvc_straightroad`, `igvc_curvedroad`, `igvc_bendedroad`, `igvc_mirrorbendedroad`, `igvc_potholeroad`) plus a resized `construction_barrel` |
+| **Models** | IGVC road sections + a resized `construction_barrel` |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** Successor to the older `sim` package. The `package.xml` is half-stubbed (`TODO: Package description`, `MY NAME` maintainer) — needs filling in.
+> **Heads up:** Kept around for reference / rollback, not in active use. Safe to delete in a future cleanup branch — verified no inbound references from active launch scripts or build configs.
 
 ---
 
@@ -170,7 +176,7 @@ The launchers source ROS2, set `ROS_DOMAIN_ID`, point Qt5 at the system plugin p
 
 ### Launch panel + readiness handshake
 
-Eight buttons in queue order: **Pre-SLAM, Camera, Lidar, SLAM, DETECT, NAV2, GPS, Power PCB**. Each toggles a script (e.g. `./config/run-zed.sh`); the queue advances when a script prints `[GUI_READY] <Label>` on stdout. Default per-device timeout is 60 s; longer ones are listed in `_ready_timeouts` (Camera/Lidar 45 s, SLAM 120 s, GPS 300 s).
+Ten buttons in queue order on the production branch: **Pre-SLAM, Camera, Lidar, GPS, PCA DETECT, CAMERA LINE DETECT, LIDAR LINE DETECT (opt-in — excluded from Run All), SLAM, NAV2, Power PCB**. Each toggles a script (e.g. `./config/run-zed.sh`); the queue advances when a script prints `[GUI_READY] <Label>` on stdout. Default per-device timeout is 60 s; longer ones are listed in `_ready_timeouts` (Camera/Lidar 45 s, SLAM 120 s, GPS 300 s). See [`docs/LAUNCH_STACK.md`](./LAUNCH_STACK.md) for the full table with dependency reasoning.
 
 > **Heads up:** Status dots — gray = off, yellow = starting, green = ready. After ~5 s the GUI starts polling stdout for the sentinel; if it never arrives within the device's deadline, the dot turns red but the process is left running so you can read the logs.
 
@@ -305,6 +311,22 @@ Python modules:
 
 ---
 
+## imu_cov_inflator
+
+Python (`ament_python`) node that republishes an IMU topic with inflated covariance so `robot_localization`'s EKF can fuse it without being overrun by an unrealistically confident zero-covariance source. Used for the SICK MultiScan's onboard IMU, which is mounted under a π-roll relative to `base_link`.
+
+| | |
+|---|---|
+| **Source** | `imu_cov_inflator/imu_inflator_node.py` |
+| **Subscribes** | `/sick_scansegment_xd/imu` (raw, in `lidar_footprint` frame) |
+| **Publishes** | `/sick_scansegment_xd/imu_inflated` (republished with bumped covariance) |
+| **Build** | `ament_python` |
+| **Consumed by** | Local EKF — `ekf_local.yaml` sets `imu0: /sick_scansegment_xd/imu_inflated` |
+
+See the [2026-05-11 TROUBLESHOOTING entry](./TROUBLESHOOTING.md#2026-05-11--sick-imu-yaw--covariance-handling-historical-mechanism-since-superseded) for the historical context — this package supersedes an earlier `imu_frame_transformer.py` that did a hard frame rotation instead of trust-weighting.
+
+---
+
 ## line_layer
 
 Nav2 costmap plugin (not a node) that paints detected line points into the costmap as lethal obstacles.
@@ -319,6 +341,22 @@ Nav2 costmap plugin (not a node) that paints detected line points into the costm
 | **Build** | `ament_cmake` |
 
 > **Heads up:** Plugin, not node. Uses a thread-safe `LineBuffer<T>` template; the mutex is named `the_great_line_guardian_`.
+
+---
+
+## local_mirror_layer
+
+Nav2 `costmap_2d` plugin that subscribes to a source `OccupancyGrid` (typically the local costmap) and accumulates its cells into the host costmap via **max-merge**. Cells persist across host-costmap resizes — this is what lets the global costmap retain line/obstacle paste-ins as the robot drives the local rolling window past them.
+
+| | |
+|---|---|
+| **Source** | `src/`, header in `include/local_mirror_layer/local_mirror_layer.hpp` |
+| **Plugin class** | `local_mirror_layer::LocalMirrorLayer` (base `nav2_costmap_2d::Layer`) |
+| **Plugin descriptor** | `local_mirror_layer.xml` (loaded by `nav2_costmap_2d` via `pluginlib`) |
+| **Build** | `ament_cmake` |
+| **Loaded by** | `nav2_paramsv2.yaml` — listed in the global costmap's `plugins:` array |
+
+> **Heads up:** Plugin, not node. The accumulate-on-resize behavior is the load-bearing part — competition runs depend on the global costmap not losing line obstacles as the local rolling window scrolls.
 
 ---
 
@@ -388,16 +426,19 @@ Vendored upstream SICK driver for the MultiScan-100 LiDAR. Talks UDP over Ethern
 
 ## sim
 
-Older Gazebo simulation package — distinct from `autonav_sim`, broader in scope.
+Gazebo simulation package — robot URDFs, custom Gazebo models, world files, RViz configs. Invoked by `./isaac_ros-dev/config/run-sim.sh` (`ros2 launch sim launch_sim.launch.py world:="src/sim/worlds/autonav_igvc_course.world"`).
 
 | | |
 |---|---|
-| **Has that `autonav_sim` lacks** | Full sensor xacros (`depth_camera.xacro`, `gps.xacro`, `ground_truth.xacro`, `lidar.xacro`), additional `config/ekf.yaml`, `config/nav2_params.yaml`, `config/view_bot.rviz` |
+| **Robot descriptions** | `description/custom_robot/` (mesh-based full robot, STL baseframe) and `description/tester_robot/` (simplified box geometry for fast tests) |
+| **Sensor xacros** | `depth_camera.xacro`, `gps.xacro`, `ground_truth.xacro`, `lidar.xacro` |
+| **Configs** | `config/ekf.yaml`, `config/nav2_params.yaml`, `config/view_bot.rviz` |
 | **Launch** | `launch_sim.launch.py`, `rsp.launch.py`, plus a stray `launch/opencv_node.cpp` (misplaced source) |
-| **Worlds + models** | Same IGVC course assets as `autonav_sim` |
+| **Worlds** | `worlds/autonav_igvc_course.world`, `worlds/empty.world` |
+| **Models** | IGVC road sections (`igvc_asphalt`, `igvc_straightroad`, `igvc_curvedroad`, `igvc_bendedroad`, `igvc_mirrorbendedroad`, `igvc_potholeroad`) plus a resized `construction_barrel` |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** Heavy overlap with `autonav_sim`. `package.xml` is also half-stubbed. Consolidate at some point.
+> **Heads up:** `package.xml` is half-stubbed (`TODO: Package description`, `MY NAME` maintainer) — needs filling in. There's a legacy sibling, [`autonav_sim`](#autonav_sim), with overlapping content but no inbound references; this `sim` package is the one that actually launches.
 
 ---
 
@@ -456,7 +497,7 @@ The actual ROS2 component library — wraps the Stereolabs ZED SDK into composab
 |---|---|
 | **Build** | `ament_cmake` (vendored) |
 
-> **Heads up:** Vendored via submodule, pinned to v5.2.0 / SHA `506e047`. **Do not edit.** **Do not run `git submodule update --remote`** — see `docs/zed.md` for the lock procedure.
+> **Heads up:** Vendored via submodule, pinned to v5.2.0 / SHA `506e047`. **Do not edit.** **Do not run `git submodule update --remote`** — see [`docs/SENSORS.md`](./SENSORS.md#zed-submodule-pin) for the lock procedure.
 
 ---
 

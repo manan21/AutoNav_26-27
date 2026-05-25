@@ -66,7 +66,7 @@ The HUD launches and monitors every device on the robot. The container does the 
 - Press `X` on the Xbox controller to enter autonomous mode.
 
 # Debugging the LiDAR
-It's on `eno1`. The topic is `/scan_fullframe` (some legacy code still uses `/scan` — likely needs unifying).
+It's on `eno1`. The topic is `/scan_fullframe` — the active pipeline uses only this topic; the vendored SICK driver references `/scan` internally but nothing in our production code subscribes to it.
 
 If the robot can't bind to the UDP port, bring the interface up:
 ```bash

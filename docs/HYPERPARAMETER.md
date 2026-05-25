@@ -148,12 +148,12 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 | `local_costmap.obstacle_layer.mark_scan.obstacle_max_range` | 🟡 | `2.5` m | Lidar marking range | Short — line obstacles only mark when close |
 | `local_costmap.obstacle_layer.clear_scan.raytrace_max_range` | 🟡 | `25.0` m | Lidar clearing raytrace range | Long — clears all the way to SICK reach |
 | `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.0` | Exponential decay of inflation cost | Lower → wider effective stay-away. Pair with global |
-| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `1.10` m | Max distance from obstacle for inflation | Pair with global |
+| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `1.40` m | Max distance from obstacle for inflation | Currently differs from global (1.30 m) — pair-tune intentionally or unify |
 | `global_costmap.global_costmap.update_frequency` | 🟡 | `3.0` Hz | Global regenerate rate | Conservative — global is mostly the paste from local |
 | `global_costmap.global_costmap.resolution` | 🟡 | `0.10` m | Global cell size | Matches SLAM output resolution |
 | `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.0` | Same as local | **Must equal local** — controller and planner must agree on clearance |
-| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `1.10` m | Same as local | **Must equal local** |
-| `global_costmap.line_layer.observation_persistence_ms` | 🟡 | `0` (indefinite) | How long line cells persist in global | `0` = never expire. Lower for forgetting old lines |
+| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `1.30` m | Slightly tighter than local (1.40 m) | Verify whether the local/global gap is intentional before re-unifying |
+| `global_costmap.line_layer.observation_persistence_ms` | 🟡 | `1500` ms | How long line cells persist in global | Set to 1500 ms — line cells expire after 1.5 s of silence. `0` would mean indefinite |
 
 ---
 
@@ -294,11 +294,11 @@ All 10 params are live-tunable. Phase D applies in **both manual and autonomous*
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
-| `grade_comp_enabled` | 🟢 | `true` | Master gate. Set false to disable Phase D | |
+| `grade_comp_enabled` | 🟢 | `false` | Master gate. Set true to enable Phase D | Currently disabled by default — bench-tested 2026-05-18 |
 | `imu_topic` | 🟢 | `/sick_scansegment_xd/imu_inflated` | IMU source | Switch to `/zed/zed_node/imu/data` if SICK path is unavailable |
 | `imu_a_fwd_sign` | 🟢 | `+1.0` | Sign convention for accel.x (nose-up = positive) | Flip to `-1.0` if directionality is inverted on a swapped mount |
 | `grade_comp_max_deg` | 🟢 | `10.0`° | Pitch angle at which max effect is reached | Beyond ±max_deg, multiplier holds at the bound |
-| `grade_comp_max_uphill_pct` | 🟢 | `2.0` | Max boost — multiplier cap is `1 + this` (= 3.0×) | Raise to 3.0 if 15 % grade with 20 lb still stalls |
+| `grade_comp_max_uphill_pct` | 🟢 | `1.0` | Max boost — multiplier cap is `1 + this` (= 2.0×) | Raise to 2.0 (3.0× cap) if 15 % grade with 20 lb still stalls |
 | `grade_comp_max_downhill_pct` | 🟢 | `0.30` | Max damping — multiplier floor is `1 - this` (= 0.70×) | Raise toward 0.65 if robot accelerates past smoother cap on descent |
 | `grade_comp_deadband_deg` | 🟢 | `0.5`° | Level-ground noise filter | Raise to 0.75-1.0 if level-ground vibration causes chatter |
 | `grade_comp_ramp_max_velocity_mps` | 🟢 | `0.30` m/s | **Autonomous-only.** Caps base linear velocity *before* boost when on an incline | Lower for tighter ramp safety; raise once outdoor tests prove the ramp can be taken faster |

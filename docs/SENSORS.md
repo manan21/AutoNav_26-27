@@ -23,7 +23,7 @@ Two equivalent paths:
 - **GUI** — click the **Lidar** button in the launch panel.
 - **Manual** — `./config/run-lidar.sh` inside the container.
 
-Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lidar` after a 5 s pacing delay. The GUI flips the dot green when it sees that sentinel; if it doesn't arrive within 45 s the device is marked failed but kept running so you can read its logs (see `_ready_timeouts['Lidar']` in `hud_node.py`).
+Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lidar` 0.5 s after the launch starts (the `sleep 0.5` in `run-lidar.sh`). The GUI flips the dot green when it sees that sentinel; the actual time-to-green is dominated by driver init (UDP handshake, scan grab) and typically lands a few seconds in. If the sentinel doesn't arrive within 45 s the device is marked failed but kept running so you can read its logs (see `_ready_timeouts['Lidar']` in `hud_node.py`).
 
 ### Topics
 
@@ -32,7 +32,8 @@ Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lid
 | `/scan_fullframe` | `sensor_msgs/msg/LaserScan` | `lidar_footprint` | SLAM Toolbox, HUD |
 | `/cloud_all_fields_fullframe` | `sensor_msgs/msg/PointCloud2` | `lidar_footprint` | PCA grade detector (`autonav_detection`) |
 | `/scan_pca_filtered_points` | `sensor_msgs/msg/PointCloud2` | (transformed) | Nav2 `ObstacleLayer` (local + global costmaps) |
-| `/sick_scansegment_xd/imu` | `sensor_msgs/msg/Imu` | `lidar_footprint` | `imu_frame_transformer` → `imu_base_link` (see below) |
+| `/sick_scansegment_xd/imu` | `sensor_msgs/msg/Imu` | `lidar_footprint` | `imu_cov_inflator` → `/sick_scansegment_xd/imu_inflated` (see below) |
+| `/sick_scansegment_xd/imu_inflated` | `sensor_msgs/msg/Imu` | `lidar_footprint` (republished) | Local EKF (`ekf_local.yaml` `imu0`) |
 
 `/scan_pca_filtered_points` is **not** raw LiDAR — it's the grade detector's output after PCA-filtering against ground/ramp slopes. Nav2 sees obstacles, not raw points. SLAM gets the raw 2D scan directly.
 
@@ -42,7 +43,7 @@ The `/scan` vs `/scan_fullframe` historical inconsistency is **resolved** — `s
 
 The LiDAR is mounted **upside-down** on the chassis. The URDF (`isaac_ros-dev/src/bringup/description/`) defines a fixed `base_link → lidar_footprint` joint with a π roll, and the SICK driver publishes directly in `lidar_footprint` (no separate `lidar_link`).
 
-Because of the π roll, the SICK's onboard IMU reports inverted yaw and pitch rates relative to `base_link`. An `imu_frame_transformer` node (in `isaac_ros-dev/src/slam/slam_toolbox/`) republishes a corrected IMU on `/sick_scansegment_xd/imu_base_link`; `ekf_local.yaml` consumes the corrected topic. See the [2026-05-11 TROUBLESHOOTING entry](./TROUBLESHOOTING.md#2026-05-11--sick-imu-yaw-inverted-upside-down-lidar-mount) for the full diagnosis.
+The raw `/sick_scansegment_xd/imu` is republished by the `imu_cov_inflator` package as `/sick_scansegment_xd/imu_inflated` — with inflated covariance so the EKF can fuse it without being overrun by an unrealistically confident IMU prior. `ekf_local.yaml` consumes the inflated topic (`imu0: /sick_scansegment_xd/imu_inflated`). See the [2026-05-11 TROUBLESHOOTING entry](./TROUBLESHOOTING.md#2026-05-11--sick-imu-yaw-inverted-upside-down-lidar-mount) for the historical yaw-inversion diagnosis that motivated the original frame-correction work.
 
 ### What's automated (don't worry about it)
 
@@ -95,7 +96,7 @@ Two equivalent paths:
 - **GUI** — click the **Camera** button in the launch panel.
 - **Manual** — `./config/run-zed.sh` inside the container.
 
-Both paths invoke `ros2 launch zed_wrapper zed_camera.launch.py` with our overrides, then `sleep 5 && echo "[GUI_READY] Camera"` so the queue advances after a fixed pacing window. The GUI flips the dot green when it sees that sentinel; deadline is 45 s (see `_ready_timeouts['Camera']` in `hud_node.py`) before the device is marked failed but kept running.
+Both paths invoke `ros2 launch zed_wrapper zed_camera.launch.py` with our overrides, then `sleep 0.5 && echo "[GUI_READY] Camera"` (the half-second pacing every `run-*.sh` uses). The GUI flips the dot green when it sees that sentinel; the actual time-to-green is dominated by ZED SDK initialization (camera open, intrinsics load, first depth frame). Deadline is 45 s (see `_ready_timeouts['Camera']` in `hud_node.py`) before the device is marked failed but kept running.
 
 ### Launch arguments (run-zed.sh)
 
@@ -264,7 +265,7 @@ Two equivalent paths:
 - **GUI** — click the **GPS** button in the launch panel.
 - **Manual** — `./config/run-gps.sh` inside the container.
 
-Both spawn **two** nodes back-to-back, then emit `[GUI_READY] GPS` after the 5 s pacing delay:
+Both spawn **two** nodes back-to-back, then emit `[GUI_READY] GPS` 0.5 s after the launches start (same `sleep 0.5` pacing as the other run scripts):
 
 | Node | Package | Purpose |
 |---|---|---|
@@ -354,6 +355,13 @@ These are build constants — change them in source and `colcon build --packages
 ---
 
 ## Power Monitoring PCB
+
+> ⚠️ **Currently offline.** I²C is broken on the Jetson — a recent
+> attempt to fix it resulted in the Jetson failing to boot, so the
+> PCB is physically disconnected pending a Jetson recovery. The
+> driver code below still describes the *design*, but no `/electrical/*`
+> topics are publishing right now. Don't expect live readings or wire
+> anything new to depend on the PCB until I²C is restored.
 
 A custom Texas-Instruments-based PCB that sits **in series between the battery and the rest of the robot**, measures voltage / current / power across a shunt, and reports State of Charge to the Jetson over I²C. Designed and maintained as a separate project (link at the bottom); this section only covers how it hooks into AutoNav.
 

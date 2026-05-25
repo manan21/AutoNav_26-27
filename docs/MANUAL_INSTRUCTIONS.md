@@ -140,7 +140,7 @@ Where `PORT` is the serial port for the Bluetooth line.
 On the **robot-side** computer (sitting on the robot, talking to the motor):
 
 ```bash
-python3 bowser_receiver.py BLUETOOTH_PORT MOTOR_PORT
+python3 bowser_reciever.py BLUETOOTH_PORT MOTOR_PORT
 ```
 
 With the Bluetooth serial port and the motor serial port, in that order.

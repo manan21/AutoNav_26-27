@@ -53,17 +53,20 @@ the dependency notes after the table).
 
 ## Pacing
 
-Each GUI button takes roughly **5 seconds** to flip green — the
-scripts deliberately wait that long before emitting `[GUI_READY]` so
-the queue advances on a fixed cadence and one device's startup
-doesn't crowd out the next. **Run All** queues 9 of the 10
-subsystems (LIDAR LINE DETECT is excluded), so expect **~45 seconds**
-for the panel to come up. If you launch LIDAR LINE DETECT manually
-it adds another ~5 s.
+The `run-*.sh` scripts emit `[GUI_READY] <Label>` **0.5 s** after
+launching the underlying `ros2 launch` (a `sleep 0.5` hard-coded in
+each script). The GUI flips the dot green as soon as it sees that
+sentinel — so the script-side pacing is half a second.
 
-If a button stays yellow past its readiness timeout, the GUI marks
-it failed but keeps the underlying process running so you can read
-its logs in the terminal viewer.
+What you actually *see* between clicking a button and the dot turning
+green is dominated by ROS process startup (sensor driver init, node
+graph wiring, first-message latency) — typically 2-10 s depending on
+the device. **Run All** queues 9 of the 10 subsystems (LIDAR LINE
+DETECT is excluded), so expect roughly **30-60 seconds** for the
+panel to come up, hardware-dependent. If a device blows past its
+deadline in `_ready_timeouts` (45 s for camera/lidar, 30 s for power
+PCB, etc.) the GUI marks it failed but keeps the underlying process
+running so you can read its logs in the terminal viewer.
 
 ## RViz
 
