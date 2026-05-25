@@ -29,7 +29,9 @@ lidar_line_detector:
     base_max_x_m: 5.0
     base_max_abs_y_m: 3.0
     ground_z_m: -0.11
-    ground_z_tolerance_m: 0.18
+    # Tight enough to reject near-lidar robot-body reflections seen at
+    # z≈+0.02 m while keeping measured floor tape at z≈-0.09 m.
+    ground_z_tolerance_m: 0.08
     layer_min: -1
     layer_max: -1
     echo_filter: -1
