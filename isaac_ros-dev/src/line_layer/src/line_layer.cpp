@@ -166,7 +166,6 @@ LineLayer::onInitialize()
   if (inscribed_radius_ > inflation_radius_) {
     inscribed_radius_ = inflation_radius_;
   }
-  observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
   line_clear_range_min_m_ = std::max(0.0, line_clear_range_min_m_);
   line_clear_range_max_m_ = std::max(line_clear_range_min_m_, line_clear_range_max_m_);
@@ -222,7 +221,7 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
 
       buffer_.buffer(line);
 
-      if (message->points.empty() && hasObservationPersistence() &&
+      if (message->points.empty() && clearing_ && observation_persistence_ms_ > 0 &&
         !clear_lines_only_in_view_)
       {
         auto node = node_.lock();
@@ -337,7 +336,7 @@ bool LineLayer::hasObservationPersistence() const
   if (max_persisted_points_ == 0) {
     return false;
   }
-  return !clearing_ || observation_persistence_ms_ > 0;
+  return !clearing_ || observation_persistence_ms_ != 0;
 }
 
 std::uint64_t LineLayer::persistenceKey(double x, double y) const
@@ -442,10 +441,13 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
   std::lock_guard<std::mutex> lock(persisted_points_mutex_);
 
   const rclcpp::Duration max_age =
-    rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
+    observation_persistence_ms_ > 0
+    ? rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL)
+    : rclcpp::Duration::from_nanoseconds(0);
   points.reserve(persisted_points_.size());
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
-    const bool expired = (now - it->second.stamp) > max_age;
+    const bool expired =
+      observation_persistence_ms_ > 0 && (now - it->second.stamp) > max_age;
     const bool can_clear =
       !clear_lines_only_in_view_ ||
       linePointInClearView(it->second.point, robot_x, robot_y, robot_yaw, have_pose);

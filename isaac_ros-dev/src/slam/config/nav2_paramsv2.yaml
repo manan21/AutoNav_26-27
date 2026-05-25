@@ -272,19 +272,17 @@ local_costmap:
         costmap_topic: "/lidar_line_costmap"
         transform_tolerance: 0.2
         max_message_age_ms: 750
-        # The LiDAR detector publishes the current confirmed obstacle set
-        # at sensor rate, but retroreflective tape can drop out as it enters
-        # the near-field blind spot or during brief RSSI/ground-fit gaps.
-        # Keep a short local memory so the robot cannot drive through a line
-        # just because one empty detector message cleared the layer. The
-        # global mirror is still allowed to decrease, so these marks clear
-        # on their own well under the old "stuck after 10 s" failure mode.
-        observation_persistence_ms: 7000
+        # TEMPORARY tape-test behavior: remember LiDAR-detected lines until
+        # the operator manually clears costmaps. The current robot can sit
+        # near tape long enough for sparse RSSI points to age out, then drive
+        # over the forgotten line. Ideally this should become view-gated
+        # clearing in the LiDAR's actual frame of vision so lines clear only
+        # after the sensor has positively re-observed free space.
+        observation_persistence_ms: -1
         observation_persistence_resolution_m: 0.10
-        # LiDAR RSSI line points should be temporary hazards. Unlike the
-        # camera layer, do not require stale points to still be inside a
-        # narrow clearing cone before aging out; otherwise a line that the
-        # robot has turned past can remain in /lidar_line_costmap forever.
+        # Keep automatic clearing off for now; the unlimited persistence
+        # above means this parameter only matters once the temporary behavior
+        # is replaced with LiDAR-view-gated clearing.
         clear_lines_only_in_view: false
         line_clear_angle_min_rad: -0.95
         line_clear_angle_max_rad: 0.95
@@ -389,11 +387,11 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /lidar_line_costmap
-        # LiDAR line detections are intentionally time-limited by the
-        # detector/local line layer. Mirror those clears into global so
-        # a stale retroreflective-line outcropping does not permanently
-        # block later runs until the operator manually clears costmaps.
-        allow_decrease: true
+        # TEMPORARY tape-test behavior: local LiDAR-line memory is now
+        # manual-clear-only, so the global mirror must not accept automatic
+        # lower-cost clears from the rolling local line costmap. The operator
+        # clear topic still wipes nearby accumulated mirror cells.
+        allow_decrease: false
         track_unknown_space: true
 
       inflation_layer:
