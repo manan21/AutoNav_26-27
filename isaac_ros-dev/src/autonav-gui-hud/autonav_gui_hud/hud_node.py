@@ -5899,6 +5899,19 @@ class HudWindow(QMainWindow):
         widget, _, _ = self._cur_btn()
         return widget in self._sensor_cells or widget is self._power_cell
 
+    # Placeholder stubs for half-built features: entry points (timer,
+    # button, key handler) are wired in __init__ but the bodies were
+    # never written. No-ops keep the GUI from crashing at construction
+    # time; fill these in when the features are actually implemented.
+    def _sample_perf_stats(self):
+        pass
+
+    def _on_performance_clicked(self):
+        pass
+
+    def _request_record_toggle(self):
+        pass
+
     def keyPressEvent(self, event):
         key = event.key()
 
