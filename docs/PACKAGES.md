@@ -382,7 +382,7 @@ Vendored upstream SICK driver for the MultiScan-100 LiDAR. Talks UDP over Ethern
 | **Resilience** | Driver declares `required="true"` so ROS2 respawns it if it dies |
 | **Build** | `ament_cmake` (vendored) |
 
-> **Heads up:** Don't edit upstream code. See `docs/sick.md` for the full bringup story (network auto-config, recovery, troubleshooting).
+> **Heads up:** Don't edit upstream code. See [`docs/SENSORS.md`](./SENSORS.md#sick-multiscan-100-lidar) for the full bringup story (network auto-config, recovery, troubleshooting).
 
 ---
 
@@ -495,4 +495,4 @@ Standard runtime entry point for the ZED — loads `zed_components` in a single 
 | **Default configs** | `config/common_stereo.yaml`, `config/zed2i.yaml` (overridden by `bringup/config/zed_override.yaml`) |
 | **Build** | `ament_cmake` (vendored) |
 
-> **Heads up:** Tied to the pinned `zed_components`. Respect the submodule lock — see `docs/zed.md`.
+> **Heads up:** Tied to the pinned `zed_components`. Respect the submodule lock — see [`docs/SENSORS.md`](./SENSORS.md#zed-submodule-pin).

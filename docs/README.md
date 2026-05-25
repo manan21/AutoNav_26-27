@@ -120,6 +120,16 @@ scp vtcro@192.168.55.1:AutoNav_25-26/isaac_ros-dev/frames.pdf /home/vtcro/Docume
 ```
 First address = source on the Jetson. Second = destination. Trailing slash matters.
 
+# Other docs in this folder
+
+- [`HUMAN-WRITTEN-README.md`](./HUMAN-WRITTEN-README.md) — high-level human-written tour of the robot and the repo.
+- [`LAUNCH_STACK.md`](./LAUNCH_STACK.md) — order, dependencies, and pacing of the GUI launch panel buttons.
+- [`MANUAL_INSTRUCTIONS.md`](./MANUAL_INSTRUCTIONS.md) — three tiers of manual control (GUI → manual ROS2 launch → laptop-direct fallback) in order of preference.
+- [`SENSORS.md`](./SENSORS.md) — hardware, topics, frames, and gotchas for the SICK LiDAR, ZED camera, GPS, wheel encoders, and Power PCB.
+- [`PACKAGES.md`](./PACKAGES.md) — per-package reference for every ROS2 package under `isaac_ros-dev/src/`.
+- [`HYPERPARAMETER.md`](./HYPERPARAMETER.md) — tunable knobs across the autonomy stack, with safety legend and YAML inventory.
+- [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) — quick triage + full chronological fix log + keyword index for past bugs.
+
 # Helpful Background Documentation
 - [TF transforms](https://docs.nav2.org/setup_guides/transformation/setup_transforms.html) — `map → odom → base_link → sensor` is the canonical chain.
 - [URDF + Robot State Publisher](https://docs.nav2.org/setup_guides/urdf/setup_urdf.html) — our `robot_state_publisher` is configured in `core_bringup.launch.py`.

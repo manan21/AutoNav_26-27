@@ -74,7 +74,7 @@ cd ../../..
 git submodule update --init isaac_ros-dev/src/zed-ros2-wrapper   # never --remote
 ```
 
-See [2026-05-04 wrapper pin saga](#2026-05-04--zed-wrapper-pin-saga-3-commits) and `docs/zed.md`.
+See [2026-05-04 wrapper pin saga](#2026-05-04--zed-wrapper-pin-saga-3-commits) and [`docs/SENSORS.md` (ZED section)](./SENSORS.md#zed-2i-camera).
 
 **Keywords**: zed, zed-ros2-wrapper, submodule, pin, sdk, sdk-5.1, sdk-5.2, object_tracking_parameters, customobjectdetectionproperties, colcon, build-error, v5.2.0, 506e047, git-submodule, --remote, .gitmodules, abi-mismatch, stereolabs
 
@@ -528,7 +528,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 
 - **Commit**: `8863842a` — 2026-04-17 — *"Added yaml overwrite to increase IMU publish rate"*
 - **Fix**: Override loads after the wrapper defaults so we win the merge.
-- **Triage tip**: See the full ZED launch breakdown in `docs/zed.md` and `PACKAGES.md`.
+- **Triage tip**: See the full ZED launch breakdown in [`docs/SENSORS.md`](./SENSORS.md#zed-2i-camera) and `PACKAGES.md`.
 - **Keywords**: zed, zed_override.yaml, imu, sensors_pub_rate, override, ros_params_override_path, run-zed.sh, common_stereo.yaml, zed2i.yaml
 
 ## 2026-04-17 — NovAtel to u-blox parser mismatch
@@ -921,6 +921,14 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Fix**: Restructured with submodule-pin policy front and center.
 - **Keywords**: zed, zed.md, doc, submodule-pin, v5.2.0, 506e047, modernize
 
+## 2026-05-11 — SICK IMU yaw inverted (upside-down LiDAR mount)
+
+- **Commit**: `7acefa48` — 2026-05-11 — *"Fixing IMU transform"*
+- **Cause**: The SICK MultiScan is mounted with a π-roll (180° around X), defined in the URDF as the fixed `base_link → lidar_footprint` joint. The driver publishes its onboard IMU directly in `lidar_footprint`, so the Z angular velocity (yaw rate) and Y angular velocity (pitch rate) are negated relative to `base_link`. The original `ekf_local.yaml` was fusing `/sick_scansegment_xd/imu` directly — feeding the EKF an inverted yaw rate. Wheel-derived yaw fought IMU-derived yaw at every tick; `odom → base_link` drifted in yaw; slam_toolbox kept scan-match-correcting `map → odom` against a moving target, producing map-snap and stall behavior.
+- **Fix**: Added `imu_frame_transformer.py` (under `isaac_ros-dev/src/slam/slam_toolbox/`) — a Python node that subscribes to the raw IMU in `lidar_footprint`, applies the 180° X-axis rotation (`vz_base = -vz_lidar`, `vy_base = -vy_lidar`, transforms the covariance), and republishes on `/sick_scansegment_xd/imu_base_link` in `base_link`. Updated `ekf_local.yaml` to consume the corrected topic. Added the node to `slam.launch.py` so it starts before the EKF.
+- **Triage tip**: If the EKF tracks robot yaw backwards (heading goes the wrong way during in-place rotation), confirm `ekf_local.yaml` is consuming `/sick_scansegment_xd/imu_base_link` and **not** the raw `/sick_scansegment_xd/imu`. Sanity-check with `ros2 topic echo /sick_scansegment_xd/imu_base_link --field angular_velocity` — Z should match the actual rotation direction. If the LiDAR is ever remounted in a different orientation, update the URDF `rpy` and the transformer's axis-inversion logic in lockstep (or switch to a dynamic TF-based transform).
+- **Keywords**: imu, sick-imu, yaw, yaw-inverted, frame-transformer, imu_frame_transformer.py, ekf_local, ekf_local.yaml, lidar_footprint, base_link, sick_scansegment_xd, upside-down, lidar-mount, urdf, π-roll, scan-match-snap, map→odom-drift
+
 ---
 
 # Keyword index
@@ -947,6 +955,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `/map`, `/map_padded` → 2026-04-30 map padder dyn-res, 2026-04-30 seed-and-flood, 2026-05-06 startup race
 - `/odom`, `/wheel_odom` → 2025-05-05 odom string, 2025-05-07 odom rename, 2026-04-15 wheel radius, 2026-04-28 odom jumps, 2026-04-29 left encoder
 - `/scan`, `/scan_fullframe`, `/scan_pca_filtered_points` → 2025-05-07 odom rename, 2026-03-04 driver respawn, 2026-03-24 max_laserscan_range, 2026-04-25 obstacle layer, 2026-05-05 PCA scheduler, 2026-05-06 startup race
+- `/sick_scansegment_xd/imu`, `/sick_scansegment_xd/imu_base_link` → 2026-05-11 IMU yaw inverted
 
 **Subsystems / concepts**
 - `behavior-tree`, `bt`, `bt_nav.xml` → 2026-03-24 hardcoded BT, 2026-04-29 BT gating, 2026-04-30 retries, 2026-04-30 BT plugin, 2026-04-30 goal-bender, 2026-04-30 gradient-escape
@@ -954,7 +963,8 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `cuda`, `nvcc`, `-Wpedantic`, `kernel`, `line-detection` → 2026-04-22 thresholds, 2026-04-22 window size, 2026-05-05 -Wpedantic
 - `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch
 - `docker`, `container`, `koopa-kingdom`, `entrypoint` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind
-- `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous
+- `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous, 2026-05-11 IMU yaw inverted
+- `imu`, `imu-frame`, `imu_frame_transformer`, `yaw-inverted`, `upside-down`, `π-roll`, `lidar_footprint` → 2026-04-16 ZED IMU rate, 2026-05-11 SICK IMU yaw inverted
 - `gui`, `hud`, `hud_node.py`, `[GUI_READY]`, `dot`, `live-mode` → 2026-04-24 live-mode, 2026-04-24 playback, 2026-04-24 QoS, 2026-04-24 terminal, 2026-04-24 buttons, 2026-04-28 (5 entries), 2026-05-06 startup race, 2026-05-06 5s pacing, 2026-05-06 run-detect
 - `map_padder` → 2026-04-30 dynamic-res, 2026-04-30 seed-and-flood
 - `nav2`, `planner`, `dwb`, `dijkstra`, `astar`, `tolerance` → 2026-04-15 footprint, 2026-04-15 critic, 2026-04-22 rolling, 2026-04-30 retries, 2026-04-30 dijkstra, 2026-05-04 dijkstra revert
