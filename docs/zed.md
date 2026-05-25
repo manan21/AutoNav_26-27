@@ -9,7 +9,7 @@ Two equivalent paths:
 - **GUI** — click the **Camera** button in the launch panel.
 - **Manual** — `./config/run-zed.sh` inside the container.
 
-Both paths invoke `ros2 launch zed_wrapper zed_camera.launch.py` with our overrides, then `sleep 5 && echo "[GUI_READY] Camera"` so the queue advances after a fixed pacing window. The GUI flips the dot green when it sees that sentinel; deadline is 45 s (`hud_node.py:513`) before the device is marked failed but kept running.
+Both paths invoke `ros2 launch zed_wrapper zed_camera.launch.py` with our overrides, then `sleep 5 && echo "[GUI_READY] Camera"` so the queue advances after a fixed pacing window. The GUI flips the dot green when it sees that sentinel; deadline is 45 s (see `_ready_timeouts['Camera']` in `hud_node.py`) before the device is marked failed but kept running.
 
 ## Launch arguments (run-zed.sh)
 

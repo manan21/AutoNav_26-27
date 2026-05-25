@@ -9,7 +9,7 @@ Two equivalent paths:
 - **GUI** — click the **Lidar** button in the launch panel.
 - **Manual** — `./config/run-lidar.sh` inside the container.
 
-Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lidar` after a 5 s pacing delay. The GUI flips the dot green when it sees that sentinel; if it doesn't arrive within 45 s the device is marked failed but kept running so you can read its logs (`hud_node.py:514`).
+Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lidar` after a 5 s pacing delay. The GUI flips the dot green when it sees that sentinel; if it doesn't arrive within 45 s the device is marked failed but kept running so you can read its logs (see `_ready_timeouts['Lidar']` in `hud_node.py`).
 
 ## Topics
 

@@ -46,7 +46,7 @@ The GUI is the recommended way to bring up the full sensor stack and run the rob
 
 #### Using the GUI:
 * **Connect to Container** — When a container is up, click this so the GUI can `docker exec` ROS2 commands inside it. Without this, the launch buttons can't fire.
-* **Launch panel** — toggle subsystems on/off in queue order: Pre-SLAM, Camera, Lidar, SLAM, DETECT, NAV2, GPS, Power PCB.
+* **Launch panel** — toggle subsystems on/off in queue order: Pre-SLAM, Camera, Lidar, GPS, PCA DETECT, CAMERA LINE DETECT, LIDAR LINE DETECT (opt-in), SLAM, NAV2, Power PCB. See `docs/LAUNCH_STACK.md` for the full order and dependency notes.
 * **Status dots** — gray = off, yellow = starting, green = ready.
 * **Terminal viewer** — click any device to stream its live stdout/stderr.
 * **Sensor plots** — live odom, IMU, GPS, and costmap previews.

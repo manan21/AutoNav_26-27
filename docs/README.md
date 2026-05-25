@@ -55,7 +55,7 @@ From here, everything is point-and-click — no manual `ros2 launch` needed.
 ## The GUI
 The HUD launches and monitors every device on the robot. The container does the ROS2 work; the GUI runs natively on the Jetson and talks to the container over DDS + `docker exec`.
 
-- **Launch buttons** — toggle each subsystem in queue order: Pre-SLAM, Camera, Lidar, SLAM, DETECT (line + PCA grade), NAV2, GPS, Power PCB.
+- **Launch buttons** — toggle each subsystem in queue order: Pre-SLAM, Camera, Lidar, GPS, PCA DETECT, CAMERA LINE DETECT, LIDAR LINE DETECT (opt-in), SLAM, NAV2, Power PCB. See `docs/LAUNCH_STACK.md` for the full order and dependency notes.
 - **Status dots** — red = off, yellow = starting, green = ready (each script emits `[GUI_READY] <Label>` after a fixed 5 s pacing timer).
 - **Terminal viewer** — click any device to stream its live stdout/stderr.
 - **Sensor plots** — live odom, IMU, GPS, costmap previews.
