@@ -68,6 +68,27 @@ The robot must pass through the `1.19 m` gap between the right end of the perpen
 
 Send a relative goal `2.0 m` forward from the robot's marked start. Use the nav-center-relative goal convention when available so commanded travel and measured travel are consistent.
 
+Before sending the relative goal, confirm `/autonomous_mode` is publishing `data: true`. The control node ignores Nav2 drive commands while the robot is still in manual mode, so do not send the goal until autonomous mode is confirmed on.
+
+Autonomous mode is toggled by an X-button rising edge on `/joy` (`buttons[3]`). Do not blindly publish X if `/autonomous_mode` is already true, because that would switch the robot back to manual mode.
+
+Check the current mode:
+
+```bash
+timeout 5 ros2 topic echo --once /autonomous_mode
+```
+
+If the latest mode is missing or `data: false`, enable autonomous mode, then confirm it turned on:
+
+```bash
+ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 1, 0, 0, 0, 0]}"
+sleep 0.2
+ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 0, 0, 0, 0, 0]}"
+timeout 5 ros2 topic echo --once /autonomous_mode
+```
+
+Only continue once `/autonomous_mode` reports `data: true`.
+
 Preferred command from inside the robot ROS environment:
 
 ```bash
