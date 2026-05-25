@@ -8802,6 +8802,9 @@ if _HAS_ROS:
             # rather than what we last published.
             self.latest_autonomous_mode = bool(msg.data)
 
+        def _cb_recording_toggle(self, msg):
+            self.latest_recording_active = bool(msg.data)
+
 
 def main(args=None):
     signal.signal(signal.SIGINT, signal.SIG_DFL)
