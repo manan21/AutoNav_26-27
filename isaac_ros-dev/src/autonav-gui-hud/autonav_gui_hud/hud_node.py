@@ -1606,6 +1606,12 @@ class HudWindow(QMainWindow):
                         .replace("#3a3a3a", "#6a2a2a")
                         .replace("#1a1a1a", "#300a0a")
         )
+        # closeEvent rejects every close attempt unless this flag is
+        # True. _confirm_exit_password flips it just before self.close()
+        # so the PAM-gated Quit GUI button stays the only way out —
+        # blocks ALT+F4, the WM close button, and similar operator
+        # escapes that would otherwise tear the GUI down without auth.
+        self._authorized_close = False
         btn_quit = QPushButton("Quit GUI")
         btn_quit.setStyleSheet(quit_style)
         btn_quit.setFocusPolicy(Qt.NoFocus)
@@ -5555,6 +5561,7 @@ class HudWindow(QMainWindow):
             authed = False
 
         if authed:
+            self._authorized_close = True
             self.close()
         else:
             QMessageBox.warning(self, "Incorrect password",
@@ -5826,6 +5833,15 @@ class HudWindow(QMainWindow):
         binaries reparented to PID 1 in the container and showing as
         "external" processes in the next GUI session.
         """
+        # Bandaid: reject ALT+F4, the WM close button, and any other
+        # un-gated close. Only the Quit GUI button's PAM-confirmed
+        # path sets _authorized_close. Out of reach here: WM-level
+        # shortcuts (Super, Alt+Tab), touchpad gestures, TTY switch,
+        # SIGTERM from outside — those need the OS kiosk layers.
+        if not getattr(self, '_authorized_close', False):
+            event.ignore()
+            return
+
         # Shut down the GPS tile fetcher worker thread.
         try:
             if hasattr(self, '_tile_fetcher') and self._tile_fetcher is not None:
