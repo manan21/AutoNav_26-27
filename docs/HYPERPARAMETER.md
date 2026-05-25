@@ -227,6 +227,16 @@ Design invariants (not tunables — described for context):
 
 `stepSize = 10` and `speed = 10` are deliberately matched so manual full-stick equals the 0.25 m/s autonomous cap — calibration parity.
 
+Autonomous deadband compensation is applied after `cmd_vel` is converted to per-wheel motor arguments and after grade compensation. Exact zero remains zero; small nonzero wheel commands are lifted so Nav2's valid low-speed turn requests do not sit below static friction. With defaults, `auto_deadband_min_motor_arg = 6.5`, so `6.5 × stepSize(10) = 65` per-mille RoboteQ throttle.
+
+### Control node motor tunables (`node_params.yaml`)
+
+| Parameter | Status | Default | Effect | Notes |
+|---|---|---|---|---|
+| `auto_deadband_comp_enabled` | ⚠️ | `true` | Enables autonomous-only minimum effective motor command | Does not affect manual joystick or exact zero stop commands |
+| `auto_deadband_min_motor_arg` | ⚠️ | `6.5` | Minimum `motors.move()` argument for each nonzero wheel command | Raise toward `7.5` if the robot still twitches; lower toward `5.5` if turns become too abrupt |
+| `auto_deadband_apply_below_motor_arg` | ⚠️ | `6.5` | Only commands below this magnitude are lifted | Keep equal to `auto_deadband_min_motor_arg` unless deliberately shaping the transition |
+
 ### Motor controller build-time constants (`motor_controller.hpp`)
 
 | Constant | Status | Default | Effect |

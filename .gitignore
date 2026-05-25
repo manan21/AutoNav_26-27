@@ -6,6 +6,7 @@ logs
 __pycache__
 .claude/
 tile_cache/
+isaac_ros-dev/lidar_line_bags/
 .codex
 *.png
 *.venv*

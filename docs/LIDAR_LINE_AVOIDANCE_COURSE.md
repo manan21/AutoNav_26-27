@@ -68,6 +68,14 @@ The robot must pass through the `1.19 m` gap between the right end of the perpen
 
 Send a relative goal `2.0 m` forward from the robot's marked start. Use the nav-center-relative goal convention when available so commanded travel and measured travel are consistent.
 
+Preferred command from inside the robot ROS environment:
+
+```bash
+isaac_ros-dev/config/send_goal.sh -r 2.0 0 0
+```
+
+Do not publish the same test goal through both `/goal_pose` and a direct `/navigate_to_pose` action client. `/goal_pose` already triggers Nav2's `NavigateToPose` path and also seeds `map_padder`; sending both creates overlapping NavigateToPose goals and can make the status stream show simultaneous `ABORTED` and `EXECUTING` goals.
+
 Expected high-level behavior:
 
 - The robot detects the perpendicular tape before reaching it.
@@ -91,6 +99,8 @@ Before sending the goal:
 
 Record a rosbag for each run. Include at least:
 
+Use `ros2 bag record --include-hidden-topics` so Nav2 action status topics are actually captured. For live controller tests, do not record `/cloud_all_fields_fullframe` unless raw lidar debugging is required; it can add enough load to affect Nav2 timing.
+
 - `/tf`
 - `/tf_static`
 - `/local_ekf/odom`
@@ -100,7 +110,6 @@ Record a rosbag for each run. Include at least:
 - `/encoders`
 - `/motor_speed`
 - `/autonomous_mode`
-- `/cloud_all_fields_fullframe`
 - `/lidar_line_points`
 - `/lidar_line_costmap`
 - `/lidar_line_detection/diagnostics`
@@ -119,7 +128,15 @@ Record a rosbag for each run. Include at least:
 
 ## Analysis Checklist
 
-After the run, analyze:
+After every run, stop the rosbag cleanly with SIGINT, confirm `ros2 bag info` shows the expected topics and duration, and analyze both the live monitor output and bagged telemetry before reporting a pass/fail result.
+
+When analyzing the bag in the robot ROS environment, use:
+
+```bash
+python3 scripts/analyze_lidar_line_bag.py /path/to/bag
+```
+
+The analyzer reports the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, and `/lidar_line_costmap` clearing behavior.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
 - Whether `/lidar_line_costmap` marks the perpendicular and parallel tape lines before the robot reaches them.
@@ -128,7 +145,16 @@ After the run, analyze:
 - Whether the local plan stays outside the measured tape and cone boundaries.
 - Whether the robot footprint overlaps the perpendicular tape, left-side tape, or cone at any point.
 - Whether the robot reaches `2.0 m` forward travel from the marked start.
-- Whether any `No valid trajectories`, `Failed to make progress`, missed controller loops, or stale transform warnings coincide with stalls.
+- Whether nonzero `/cmd_vel` commands produce matching encoder, RPM, and `/local_ekf/odom` motion.
+- Whether any `No valid trajectories`, `Failed to make progress`, missed controller loops, stale transform warnings, or Nav2 action aborts coincide with stalls.
+
+The test report should include:
+
+- Bag path and `ros2 bag info` summary.
+- Goal result status and final relative `nav_center` displacement.
+- Maximum right/left lateral deviation while avoiding the tape.
+- Closest observed tape points in robot frame near the footprint.
+- A short conclusion: pass, fail due to line overlap, fail due to controller stall, or inconclusive due to operator/runtime setup.
 
 ## Pass Criteria
 
