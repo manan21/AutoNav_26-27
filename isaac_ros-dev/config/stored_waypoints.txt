@@ -5,9 +5,9 @@
 #
 # Format:  <KIND> <a>, <b>
 # Kinds:
-#   ER  Euclidean Relative — (dx, dy) in meters, relative to the
-#       robot's pose at the moment the leg starts. Dispatched to
-#       send_goal.sh -r dx dy
+#   ER  Euclidean Relative — desired nav_center travel (dx, dy) in meters,
+#       relative to the robot's pose at the moment the leg starts.
+#       Dispatched to send_goal.sh -r dx dy
 #   EA  Euclidean Absolute — (x, y) in meters, in the robot's
 #       initial map frame. Dispatched to send_goal.sh x y
 #   GA  GPS Absolute — (latitude, longitude) in decimal degrees;

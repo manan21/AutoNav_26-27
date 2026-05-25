@@ -134,12 +134,13 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.25
       # ──────────────────────────────────────────────────────────────
-      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.15 prevents
-      # DWB from sampling near-zero angular trajectories that, paired
-      # with a jittering goal, produce yaw chatter in place. Lowering
-      # it has reintroduced in-place wobble.
+      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.45 keeps
+      # DWB's pure-rotation samples above the drivetrain deadband
+      # observed in tape-avoidance tests. At ~0.25 rad/s Nav2 was
+      # commanding valid turns, but encoders/RPM stayed at zero and
+      # progress checking eventually aborted FollowPath.
       # ──────────────────────────────────────────────────────────────
-      min_speed_theta: 0.15
+      min_speed_theta: 0.45
       acc_lim_x: 2.5
       acc_lim_y: 0.0
       acc_lim_theta: 0.9
@@ -271,12 +272,14 @@ local_costmap:
         costmap_topic: "/lidar_line_costmap"
         transform_tolerance: 0.2
         max_message_age_ms: 750
-        # The LiDAR detector publishes the current confirmed obstacle
-        # set at sensor rate. Do not add a second persistence cache in
-        # the costmap layer; stale cached points were leaving a broad
-        # low-cost field in /lidar_line_costmap even after the detector
-        # had returned to empty messages.
-        observation_persistence_ms: 0
+        # The LiDAR detector publishes the current confirmed obstacle set
+        # at sensor rate, but retroreflective tape can drop out as it enters
+        # the near-field blind spot or during brief RSSI/ground-fit gaps.
+        # Keep a short local memory so the robot cannot drive through a line
+        # just because one empty detector message cleared the layer. The
+        # global mirror is still allowed to decrease, so these marks clear
+        # on their own well under the old "stuck after 10 s" failure mode.
+        observation_persistence_ms: 7000
         observation_persistence_resolution_m: 0.10
         # LiDAR RSSI line points should be temporary hazards. Unlike the
         # camera layer, do not require stale points to still be inside a
@@ -287,13 +290,14 @@ local_costmap:
         line_clear_angle_max_rad: 0.95
         line_clear_range_min_m: 0.2
         line_clear_range_max_m: 6.0
-        max_persisted_points: 0
-        # LiDAR line detections are already obstacle-filtered points. Keep
-        # their local halo tight so a detected line remains a hard boundary
-        # without painting most of a visually passable gap as high cost.
-        inflation_radius: 0.55
-        inscribed_radius: 0.12
-        cost_scaling_factor: 8.0
+        max_persisted_points: 2000
+        # LiDAR line detections are sparse obstacle-filtered points, not a
+        # continuous wall. The higher-cost inner band makes footprint overlap
+        # with tape decisively worse while the outer radius still leaves
+        # visually passable gates available to the planner/controller.
+        inflation_radius: 0.90
+        inscribed_radius: 0.36
+        cost_scaling_factor: 4.0
         clearing: True
         rolling_window: True
         publish_costmap: True

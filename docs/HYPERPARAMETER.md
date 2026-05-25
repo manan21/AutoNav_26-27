@@ -49,7 +49,7 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 | `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
 | `controller_server.controller_frequency` | 🟡 | `20.0` Hz | DWB tick rate | Higher → more responsive, more CPU |
 | `controller_server.FollowPath.max_vel_x` | 🟡 | `1.5` m/s | DWB's own upstream forward cap | Effective if you raise the smoother past this |
-| `controller_server.FollowPath.min_speed_theta` | ⚠️ | `0.15` rad/s | Min DWB yaw-rate sample | Lowering past 0.10 reintroduces in-place yaw wobble |
+| `controller_server.FollowPath.min_speed_theta` | ⚠️ | `0.45` rad/s | Min DWB yaw-rate sample | Keeps pure turns above observed drivetrain deadband; lowering can reintroduce zero-RPM twitching |
 | `controller_server.FollowPath.max_vel_theta` | 🟡 | `0.65` rad/s | Max yaw rate | Raised from 0.40 — lower starves GPS heading bootstrap |
 | `controller_server.FollowPath.acc_lim_x` | 🟡 | `2.5` m/s² | DWB linear accel for trajectory sampling | **Must match `velocity_smoother.max_accel`** — DWB chatters at every accel ramp if they disagree |
 | `controller_server.FollowPath.acc_lim_theta` | 🟡 | `0.9` rad/s² | DWB angular accel for trajectory sampling | Higher → snappier turns, overshoot risk |
@@ -108,6 +108,9 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 | `local_costmap.local_costmap.width` / `height` | 🟡 | `6` m × `6` m | Rolling window size | **Must equal 2× `map_padder.local_window_radius_m`** so global mirrors local cleanly |
 | `local_costmap.obstacle_layer.mark_scan.obstacle_max_range` | 🟡 | `2.5` m | Lidar marking range | Short — line obstacles only mark when close |
 | `local_costmap.obstacle_layer.clear_scan.raytrace_max_range` | 🟡 | `25.0` m | Lidar clearing raytrace range | Long — clears all the way to SICK reach |
+| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `7000` ms | Short LiDAR-line memory | Bridges detector dropouts / near-field blind spot, then clears under 10 s |
+| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.36` m | High-cost band around LiDAR line points | Makes footprint overlap with tape costly without making the full halo lethal |
+| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.90` m | Outer LiDAR-line halo | Keeps visible gates passable while discouraging close line approaches |
 | `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.0` | Exponential decay of inflation cost | Lower → wider effective stay-away. Pair with global |
 | `local_costmap.inflation_layer.inflation_radius` | 🟡 | `1.10` m | Max distance from obstacle for inflation | Pair with global |
 | `global_costmap.global_costmap.update_frequency` | 🟡 | `3.0` Hz | Global regenerate rate | Conservative — global is mostly the paste from local |
