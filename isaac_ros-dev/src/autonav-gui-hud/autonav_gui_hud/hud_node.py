@@ -8805,6 +8805,10 @@ if _HAS_ROS:
         def _cb_recording_toggle(self, msg):
             self.latest_recording_active = bool(msg.data)
 
+        def _cb_joy_nav(self, msg):
+            if self.joy_nav_bus is None:
+                return
+
 
 def main(args=None):
     signal.signal(signal.SIGINT, signal.SIG_DFL)
