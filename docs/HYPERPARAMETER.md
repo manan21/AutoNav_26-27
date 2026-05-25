@@ -18,6 +18,45 @@ When a row carries 🔴 or ⚠️, the comment block adjacent to the parameter i
 
 ---
 
+## YAML configuration inventory
+
+Every YAML file under `isaac_ros-dev/src/` that we own (vendored YAMLs
+in `sick_scan_xd/` and `zed-ros2-wrapper/` are out of scope). Status
+column shows whether the file is loaded by the live GUI launch path.
+
+**Legend**
+- ✅ **active** — loaded somewhere on the GUI launch path or by a node the GUI starts.
+- 🧪 **sim-only** — only loaded by the simulation launch files; ignored on the real robot.
+- 📦 **legacy / unused** — file is present in the tree but no current launch loads it. Candidate for deletion.
+
+| File | Status | Purpose | Loaded by |
+|---|---|---|---|
+| `slam/config/nav2_paramsv2.yaml` | ✅ active | Nav2 params (DWB, costmap, planner_server, bt_navigator, smoother, velocity_smoother) — the big one | `run-nav2.sh`, `slam.launch.py`, `nav.launch.py` |
+| `slam/config/slam.yaml` | ✅ active | SLAM Toolbox node params + IMU yaw frame transformer | `slam.launch.py` |
+| `slam/config/ekf_local.yaml` | ✅ active | Local EKF — wheel odom + IMU fusion, owns `odom → base_link` | `slam.launch.py` |
+| `slam/config/ekf_global.yaml` | ✅ active | Global EKF — adds GPS fusion, owns `map → odom` | `slam.launch.py` |
+| `slam/config/mapper_params_online_async.yaml` | ✅ active | slam_toolbox mapper params (resolution, loop closure, scan matcher) | `slam.launch.py` |
+| `autonav_detection/config/line_detector.yaml` | ✅ active | Camera line detector thresholds, ROI, morphology | `detection.launch.py` (via `run-lines.sh`) |
+| `autonav_detection/config/grade_detector.yaml` | ✅ active | PCA grade detector params (window, slope thresholds, PCA dims) | `detection.launch.py` (via `run-pca.sh`) |
+| `control/config/node_params.yaml` | ✅ active | Control node — Phase D grade comp, manual speed gear, motor mapping | `control_dev.launch.py` (via `run-pre-slam.sh`) |
+| `control/config/config_params.yaml` | ✅ active | Control node — additional param overlay | `control_dev.launch.py` |
+| `bringup/config/zed_override.yaml` | ✅ active | ZED wrapper parameter overrides (resolution, TF suppression, depth mode) | `run-zed.sh` |
+| `autonav-gui-hud/config/watched_topics.yaml` | ✅ active | GUI's live topic watchlist for status dots and live tick | `hud_node.py` |
+| `autonav_automated_testing/config/testing_data_collection_setter.yaml` | ✅ active (testing) | t000_* automated test runner config | `t000_DAQ_MODE.launch.py`, `t000_AUTO_DAQ_MODE.launch.py` |
+| `sim/config/ekf.yaml` | 🧪 sim-only | EKF params for Gazebo simulation | sim launch files |
+| `sim/config/nav2_params.yaml` | 🧪 sim-only | Nav2 params for simulation (sim_time enabled, different costmap layers) | sim launch files |
+| `slam/config/ekf_local_sim.yaml` | 📦 legacy / unused | Predecessor sim variant of `ekf_local.yaml`. No active loader. Delete candidate. | — |
+| `slam/config/nav.yaml` | 📦 legacy / unused | Predecessor Nav2 config. No active loader. Delete candidate. | — |
+| `slam/config/nav_minimal.yaml` | 📦 legacy / unused | Stripped-down Nav2 variant. No active loader. Delete candidate. | — |
+| `slam/config/nav_defaults.yaml` | 📦 legacy / unused | Default Nav2 variant. No active loader. Delete candidate. | — |
+| `slam/config/nav2_params.yaml` | 📦 legacy / unused | Predecessor to `nav2_paramsv2.yaml`. Only referenced by `run-nav.sh` (also unused — GUI uses `run-nav2.sh`). Delete candidate. | `run-nav.sh` only |
+| `slam/config/dual_ekf_navsat_params.yaml` | 📦 legacy / unused | navsat_transform_node params. `dual_ekf_navsat.launch.py` exists but is not included by any GUI-path launch file. Delete candidate (or wire up the launch if the GPS handler's heading bootstrap should use it). | `dual_ekf_navsat.launch.py` (not invoked from GUI path) |
+| `autonav_automated_testing/config/calibration_constants.yaml` | 📦 legacy / unused | No active loader. Delete candidate. | — |
+
+If you delete any of the 📦 files, also delete the launch file or script that's its only caller (e.g. `run-nav.sh` ↔ `nav2_params.yaml`), or you leave a dangling reference behind.
+
+---
+
 ## Quick index
 
 | System | File | What it controls |
