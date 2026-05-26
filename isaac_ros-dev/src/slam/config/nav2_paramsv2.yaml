@@ -120,11 +120,11 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # DWB Local Planner - tuned for nav_center path tracking without
-    # over-penalizing valid narrow gaps. ObstacleFootprint is deliberately
-    # omitted: in the measured tape/cone gate, inflated local cost cells
-    # under the footprint edge caused all sampled trajectories to be hard
-    # rejected even though raw obstacle points still had physical clearance.
+    # DWB Local Planner - tuned for nav_center path tracking while keeping
+    # lethal-zone contact as a hard safety constraint. ObstacleFootprint
+    # is active so the controller may not choose a trajectory whose full
+    # rectangular footprint crosses tape/cone lethal cells. BaseObstacle
+    # remains the soft preference for inflated near-obstacle costs.
     # PathDist scores nav_center directly against the global plan;
     # PathAlign/GoalAlign use only a short heading lookahead.
     FollowPath:
@@ -164,14 +164,14 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      # ObstacleFootprint treats inflated/inscribed cells on the footprint
-      # border as hard collision. In the measured tape/cone gate, raw PCA
-      # obstacle points were still ~0.39 m outside the footprint, but the
-      # inflated local costmap put cost-99 cells under the footprint edge and
-      # DWB rejected all 499 samples. Let BaseObstacle make this a strong
-      # soft preference instead of a hard reject so the controller can choose
-      # the least-risk valid trajectory through physically passable gaps.
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      # ObstacleFootprint is intentionally back in the critic set after
+      # tape-test evidence showed BaseObstacle alone could still choose a
+      # least-cost trajectory that physically crossed the perpendicular
+      # lidar line. Its scale stays low because the important behavior is
+      # the hard invalidation of lethal footprint contact; BaseObstacle
+      # carries the soft cost tradeoff for inflated non-lethal cells.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      ObstacleFootprint.scale: 0.10
       BaseObstacle.scale: 0.22
       PathAlign.scale: 20.0
       PathAlign.forward_point_distance: 0.10
