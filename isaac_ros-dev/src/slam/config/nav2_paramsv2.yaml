@@ -121,11 +121,12 @@ controller_server:
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
     # DWB Local Planner - tuned for nav_center path tracking without
-    # over-penalizing valid narrow gaps. ObstacleFootprint remains active
-    # as the footprint-aware safety critic, but at a lower scale so
-    # inflated cells do not dominate every feasible trajectory between
-    # nearby obstacles. PathDist scores nav_center directly against the
-    # global plan; PathAlign/GoalAlign use only a short heading lookahead.
+    # over-penalizing valid narrow gaps. ObstacleFootprint is deliberately
+    # omitted: in the measured tape/cone gate, inflated local cost cells
+    # under the footprint edge caused all sampled trajectories to be hard
+    # rejected even though raw obstacle points still had physical clearance.
+    # PathDist scores nav_center directly against the global plan;
+    # PathAlign/GoalAlign use only a short heading lookahead.
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: False
@@ -316,9 +317,9 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         # 5.0 → 3.0 (post-cone-strike tune): widens the effective
         # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full 1.10 m inflation_radius, so tight
-        # IGVC gates still plan. Both local_costmap and global_costmap
-        # share the same value by intent (see global_costmap comment).
+        # without consuming the full configured inflation radius, so tight
+        # IGVC gates still plan. The global costmap uses the same decay
+        # with a slightly smaller radius at its coarser resolution.
         cost_scaling_factor: 3.0
         inflation_radius: 1.40
 
@@ -350,13 +351,15 @@ global_costmap:
       # No detector topic is consumed directly by the global costmap.
       # The contributors are:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer      → /local_costmap/costmap → persistent obstacle memory. FREE cells may clear stored obstacles only inside the current forward lidar-clearing sector.
+      #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells so tape/painted lines do not seed the global obstacle inflation layer.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
-      # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
+      # Obstacle inflation runs before line memory so PCA obstacle memory
+      # still gets the broad obstacle halo, while line memory keeps its
+      # narrower line-specific inflation.
       # line_memory_mirror_layer is intentionally placed AFTER
       # inflation_layer so the already-inflated local line costs from
-      # /line_costmap are copied into global without being inflated a
-      # second time.
+      # /line_costmap and /lidar_line_costmap are copied into global
+      # without being inflated a second time.
       plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
@@ -372,11 +375,16 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
+        exclude_topics: ["/line_costmap", "/lidar_line_costmap"]
+        exclude_threshold: 1
         # Accumulate obstacle marks globally, but accept FREE/lower-cost
         # clears only where the robot is currently looking. The local
         # rolling costmap publishes FREE cells across its whole 6x6 m
         # window; without this gate, those unobserved rear/side cells erase
         # global memory just because they are inside the rolling window.
+        # Line-layer masks keep the combined local costmap from copying
+        # tape/painted line cells into this pre-inflation obstacle layer;
+        # line memory is mirrored separately after inflation below.
         allow_decrease: true
         decrease_only_in_front: true
         decrease_angle_min_rad: -1.2217
@@ -410,9 +418,9 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         # 5.0 → 3.0 (post-cone-strike tune): widens the effective
         # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full 1.10 m inflation_radius, so tight
-        # IGVC gates still plan. Both local_costmap and global_costmap
-        # share the same value by intent (see global_costmap comment).
+        # without consuming the full configured inflation radius, so tight
+        # IGVC gates still plan. Keep the decay matched to local_costmap;
+        # radius is slightly smaller here because global runs at 0.10 m.
         cost_scaling_factor: 3.0
         inflation_radius: 1.30
       always_send_full_costmap: True

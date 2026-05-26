@@ -27,6 +27,7 @@ LocalMirrorLayer::LocalMirrorLayer()
   decrease_angle_max_rad_(1.2217),
   decrease_range_min_m_(0.0),
   decrease_range_max_m_(25.0),
+  exclude_threshold_(1),
   has_new_msg_(false),
   pending_clear_(false),
   touched_min_x_(0.0),
@@ -60,6 +61,10 @@ void LocalMirrorLayer::onInitialize()
   declareParameter("decrease_angle_max_rad", rclcpp::ParameterValue(1.2217));
   declareParameter("decrease_range_min_m", rclcpp::ParameterValue(0.0));
   declareParameter("decrease_range_max_m", rclcpp::ParameterValue(25.0));
+  declareParameter(
+    "exclude_topics",
+    rclcpp::ParameterValue(std::vector<std::string>()));
+  declareParameter("exclude_threshold", rclcpp::ParameterValue(1));
 
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "source_topic", source_topic_);
@@ -73,8 +78,18 @@ void LocalMirrorLayer::onInitialize()
   node->get_parameter(name_ + "." + "decrease_angle_max_rad", decrease_angle_max_rad_);
   node->get_parameter(name_ + "." + "decrease_range_min_m", decrease_range_min_m_);
   node->get_parameter(name_ + "." + "decrease_range_max_m", decrease_range_max_m_);
+  std::vector<std::string> configured_exclude_topics;
+  node->get_parameter(name_ + "." + "exclude_topics", configured_exclude_topics);
+  node->get_parameter(name_ + "." + "exclude_threshold", exclude_threshold_);
   decrease_range_min_m_ = std::max(0.0, decrease_range_min_m_);
   decrease_range_max_m_ = std::max(decrease_range_min_m_, decrease_range_max_m_);
+  exclude_threshold_ = std::min(100, std::max(1, exclude_threshold_));
+  exclude_topics_.clear();
+  for (const auto & topic : configured_exclude_topics) {
+    if (!topic.empty()) {
+      exclude_topics_.push_back(topic);
+    }
+  }
 
   // Volatile QoS — the local costmap publishes continuously, no need
   // for transient-local replay of stale messages.
@@ -83,6 +98,20 @@ void LocalMirrorLayer::onInitialize()
   sub_ = node->create_subscription<nav_msgs::msg::OccupancyGrid>(
     source_topic_, qos,
     std::bind(&LocalMirrorLayer::mapCallback, this, std::placeholders::_1));
+
+  latest_exclude_msgs_.resize(exclude_topics_.size());
+  exclude_subs_.reserve(exclude_topics_.size());
+  rclcpp::SubscriptionOptions exclude_sub_options;
+  exclude_sub_options.callback_group = callback_group_;
+  for (std::size_t i = 0; i < exclude_topics_.size(); ++i) {
+    exclude_subs_.push_back(
+      node->create_subscription<nav_msgs::msg::OccupancyGrid>(
+        exclude_topics_[i], qos,
+        [this, i](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+          exclusionCallback(i, msg);
+        },
+        exclude_sub_options));
+  }
 
   // Clear-request topic: pressing Y on the controller publishes an
   // Empty message here. updateCosts() consumes the flag on its next
@@ -124,11 +153,13 @@ void LocalMirrorLayer::onInitialize()
 
   RCLCPP_INFO(
     rclcpp::get_logger("nav2_costmap_2d"),
-    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s)",
+    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s, exclude_topics=%zu, exclude_threshold=%d)",
     source_topic_.c_str(),
     layered_costmap_->getGlobalFrameID().c_str(),
     allow_decrease_ ? "true" : "false",
-    decrease_only_in_front_ ? "true" : "false");
+    decrease_only_in_front_ ? "true" : "false",
+    exclude_topics_.size(),
+    exclude_threshold_);
 }
 
 unsigned char LocalMirrorLayer::interpretCost(int8_t occ_val)
@@ -180,12 +211,56 @@ bool LocalMirrorLayer::decreaseAllowedAt(
   return angle >= decrease_angle_min_rad_ || angle <= decrease_angle_max_rad_;
 }
 
+bool LocalMirrorLayer::excludedByMask(
+  double wx,
+  double wy,
+  const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> & masks) const
+{
+  for (const auto & mask : masks) {
+    if (!mask || mask->info.resolution <= 0.0 ||
+      mask->info.width == 0 || mask->info.height == 0)
+    {
+      continue;
+    }
+
+    const double mx_f =
+      (wx - mask->info.origin.position.x) / mask->info.resolution;
+    const double my_f =
+      (wy - mask->info.origin.position.y) / mask->info.resolution;
+    if (mx_f < 0.0 || my_f < 0.0) {
+      continue;
+    }
+
+    const unsigned int mx = static_cast<unsigned int>(mx_f);
+    const unsigned int my = static_cast<unsigned int>(my_f);
+    if (mx >= mask->info.width || my >= mask->info.height) {
+      continue;
+    }
+
+    const int8_t value = mask->data[my * mask->info.width + mx];
+    if (value >= exclude_threshold_) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void LocalMirrorLayer::mapCallback(
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(msg_mtx_);
   latest_msg_ = msg;
   has_new_msg_ = true;
+}
+
+void LocalMirrorLayer::exclusionCallback(
+  std::size_t index,
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(msg_mtx_);
+  if (index < latest_exclude_msgs_.size()) {
+    latest_exclude_msgs_[index] = msg;
+  }
 }
 
 void LocalMirrorLayer::clearCallback(
@@ -264,7 +339,9 @@ void LocalMirrorLayer::updateCosts(
     return;
   }
 
+  auto node = node_.lock();
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg;
+  std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> exclude_msgs;
   bool have_new;
   bool do_clear;
   double robot_x = 0.0, robot_y = 0.0, robot_yaw = 0.0;
@@ -272,6 +349,7 @@ void LocalMirrorLayer::updateCosts(
   {
     std::lock_guard<std::mutex> lock(msg_mtx_);
     msg = latest_msg_;
+    exclude_msgs = latest_exclude_msgs_;
     have_new = has_new_msg_;
     has_new_msg_ = false;
     do_clear = pending_clear_;
@@ -336,6 +414,27 @@ void LocalMirrorLayer::updateCosts(
     const std::string source_frame = msg->header.frame_id.empty()
       ? target_frame : msg->header.frame_id;
 
+    std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> active_masks;
+    active_masks.reserve(exclude_msgs.size());
+    for (const auto & mask : exclude_msgs) {
+      if (!mask) {
+        continue;
+      }
+      const std::string mask_frame = mask->header.frame_id.empty()
+        ? source_frame : mask->header.frame_id;
+      if (mask_frame != source_frame) {
+        if (node) {
+          RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("nav2_costmap_2d"),
+            *node->get_clock(), 3000,
+            "LocalMirrorLayer exclusion mask frame mismatch (%s vs source %s); skipping mask",
+            mask_frame.c_str(), source_frame.c_str());
+        }
+        continue;
+      }
+      active_masks.push_back(mask);
+    }
+
     double dx = 0.0;
     double dy = 0.0;
     double cos_t = 1.0;
@@ -356,11 +455,13 @@ void LocalMirrorLayer::updateCosts(
         cos_t = std::cos(yaw);
         sin_t = std::sin(yaw);
       } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN_THROTTLE(
-          rclcpp::get_logger("nav2_costmap_2d"),
-          *node_.lock()->get_clock(), 3000,
-          "LocalMirrorLayer TF unavailable (%s ← %s): %s — skipping mirror this cycle",
-          target_frame.c_str(), source_frame.c_str(), ex.what());
+        if (node) {
+          RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("nav2_costmap_2d"),
+            *node->get_clock(), 3000,
+            "LocalMirrorLayer TF unavailable (%s ← %s): %s — skipping mirror this cycle",
+            target_frame.c_str(), source_frame.c_str(), ex.what());
+        }
         // Don't return: still apply the persistent layer to master.
         msg.reset();
       }
@@ -390,6 +491,11 @@ void LocalMirrorLayer::updateCosts(
             continue;
           }
           const unsigned int idx = my * size_x_ + mx;
+
+          if (excludedByMask(wx_src, wy_src, active_masks)) {
+            costmap_[idx] = NO_INFORMATION;
+            continue;
+          }
 
           const unsigned char existing = costmap_[idx];
           if (existing == NO_INFORMATION) {
