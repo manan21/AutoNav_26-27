@@ -1,19 +1,55 @@
 #!/bin/bash
 # Send a Nav2 goal pose from the command line.
-# Usage: ./send_goal.sh [-r] <x> <y> [yaw_degrees]
-#   -r            relative mode: x/y are desired nav_center travel in meters,
-#                 yaw is relative to the current nav_center heading
-#   yaw_degrees   defaults to 0 (facing +x)
+# Usage: ./send_goal.sh [--ensure-auto] [-r] <x> <y> [yaw_degrees]
+#   --ensure-auto  enable autonomous mode first if needed, then verify it
+#   -r             relative mode: x/y are desired nav_center travel in meters,
+#                  yaw is relative to the current nav_center heading
+#   yaw_degrees    defaults to 0 (facing +x)
 
 RELATIVE=false
-if [ "$1" = "-r" ]; then
-  RELATIVE=true
-  shift
-fi
+ENSURE_AUTO="${SEND_GOAL_ENSURE_AUTO:-0}"
+
+usage() {
+  echo "Usage: $0 [--ensure-auto] [-r] <x> <y> [yaw_degrees]"
+  echo "  --ensure-auto  enable autonomous mode first if needed, then verify it"
+  echo "  -r             goal is relative to the robot's current pose"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -r|--relative)
+      RELATIVE=true
+      shift
+      ;;
+    --ensure-auto)
+      ENSURE_AUTO=1
+      shift
+      ;;
+    --no-ensure-auto)
+      ENSURE_AUTO=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ $# -lt 2 ]; then
-  echo "Usage: $0 [-r] <x> <y> [yaw_degrees]"
-  echo "  -r  goal is relative to the robot's current pose"
+  usage
   exit 1
 fi
 
@@ -114,6 +150,14 @@ PYEOF
 fi
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}°"
+
+if [ "$ENSURE_AUTO" = "1" ] || [ "$ENSURE_AUTO" = "true" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if ! python3 "$SCRIPT_DIR/ensure_autonomous_mode.py"; then
+    echo "Failed to enable autonomous mode; refusing to send Nav2 goal." >&2
+    exit 1
+  fi
+fi
 
 # Publish to /goal_pose with a long-lived publisher. Both bt_navigator
 # (which translates the topic into a NavigateToPose action) and

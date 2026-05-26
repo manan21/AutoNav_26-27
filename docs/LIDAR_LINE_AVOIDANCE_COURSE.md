@@ -68,30 +68,38 @@ The robot must pass through the `1.19 m` gap between the right end of the perpen
 
 Send a relative goal `2.0 m` forward from the robot's marked start. Use the nav-center-relative goal convention when available so commanded travel and measured travel are consistent.
 
-Before sending the relative goal, confirm `/autonomous_mode` is publishing `data: true`. The control node ignores Nav2 drive commands while the robot is still in manual mode, so do not send the goal until autonomous mode is confirmed on.
+Before sending the relative goal, the test runner must put the robot into autonomous mode and verify `/autonomous_mode` reports `data: true`. The control node ignores Nav2 drive commands while the robot is still in manual mode, so this is part of the test start procedure, not an operator precondition.
 
-Autonomous mode is toggled by an X-button rising edge on `/joy` (`buttons[3]`). Do not blindly publish X if `/autonomous_mode` is already true, because that would switch the robot back to manual mode.
+Autonomous mode is toggled by an X-button rising edge on `/joy` (`buttons[3]`). `/autonomous_mode` is not latched, so late subscribers may initially see no state. The helper below handles that by checking the state, publishing exactly one synthetic X press only as needed, and re-checking until AUTO is confirmed.
 
-Check the current mode:
+Do not publish repeated synthetic X presses and do not publish a synthetic release. The physical joystick stream publishes the release/zero state. Repeated synthetic X messages can interleave with joystick zero messages and create multiple rising edges, toggling AUTO back off.
+
+Mandatory autonomous-mode preflight:
 
 ```bash
-timeout 5 ros2 topic echo --once /autonomous_mode
+python3 isaac_ros-dev/config/ensure_autonomous_mode.py
 ```
 
-If the latest mode is missing or `data: false`, enable autonomous mode, then confirm it turned on:
+The lidar-line test must stop here if this command fails.
+
+Manual equivalent when `/autonomous_mode` is confirmed false:
 
 ```bash
 ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 1, 0, 0, 0, 0]}"
-sleep 0.2
-ros2 topic pub --once /joy sensor_msgs/msg/Joy "{axes: [0.0, 0.0, 0.0, 0.0], buttons: [0, 0, 0, 0, 0, 0, 0, 0]}"
-timeout 5 ros2 topic echo --once /autonomous_mode
 ```
 
-Only continue once `/autonomous_mode` reports `data: true`.
+Then wait for `/autonomous_mode` to report `data: true`. Do not send a synthetic release message.
 
 Preferred command from inside the robot ROS environment:
 
 ```bash
+isaac_ros-dev/config/send_goal.sh --ensure-auto -r 2.0 0 0
+```
+
+Equivalent explicit sequence:
+
+```bash
+python3 isaac_ros-dev/config/ensure_autonomous_mode.py
 isaac_ros-dev/config/send_goal.sh -r 2.0 0 0
 ```
 
@@ -113,7 +121,7 @@ Before sending the goal:
 - Lidar line detection is running.
 - PCA obstacle detection is running.
 - SLAM/localization is running.
-- The robot is in autonomous mode.
+- `python3 isaac_ros-dev/config/ensure_autonomous_mode.py` has confirmed autonomous mode.
 - The local and global costmaps are not carrying stale obstacles from a previous run.
 
 ## Data To Record

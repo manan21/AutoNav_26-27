@@ -14,7 +14,12 @@ bt_navigator:
     # about smoothed velocity/pose, not raw wheel encoder readings.
     odom_topic: /local_ekf/odom
     bt_loop_duration: 10
-    default_server_timeout: 60
+    # Action goal acknowledgements can exceed 60 ms on the Jetson while
+    # costmaps are resizing/publishing dense line layers. A too-small
+    # timeout makes the BT abort ComputePath/BackUp/Wait before those
+    # servers have actually rejected anything, so the robot enters
+    # recovery without ever reaching DWB.
+    default_server_timeout: 1000
     wait_for_service_timeout: 1000
     default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
     default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
@@ -158,18 +163,20 @@ controller_server:
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: True
       stateful: True
-      # ObstacleFootprint walks the full footprint polygon along each
-      # candidate trajectory. PathDist/GoalDist keep the nav_center
-      # frame committed to the planned corridor while lower alignment
-      # scales leave DWB room to pick a valid trajectory in tight gaps.
-      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.10
-      BaseObstacle.scale: 0.08
-      PathAlign.scale: 32.0
+      # ObstacleFootprint treats inflated/inscribed cells on the footprint
+      # border as hard collision. In the measured tape/cone gate, raw PCA
+      # obstacle points were still ~0.39 m outside the footprint, but the
+      # inflated local costmap put cost-99 cells under the footprint edge and
+      # DWB rejected all 499 samples. Let BaseObstacle make this a strong
+      # soft preference instead of a hard reject so the controller can choose
+      # the least-risk valid trajectory through physically passable gaps.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.22
+      PathAlign.scale: 20.0
       PathAlign.forward_point_distance: 0.10
       GoalAlign.scale: 16.0
       GoalAlign.forward_point_distance: 0.10
-      PathDist.scale: 48.0
+      PathDist.scale: 32.0
       GoalDist.scale: 16.0
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
@@ -294,7 +301,12 @@ local_costmap:
         # with tape decisively worse while the outer radius still leaves
         # visually passable gates available to the planner/controller.
         inflation_radius: 0.90
-        inscribed_radius: 0.36
+        # Keep the hard collision band tight for tape. The measured lidar-line
+        # course starts with the left tape about 0.50 m from nav_center while
+        # the robot footprint extends to ~0.41 m plus padding; a 0.36 m
+        # inscribed band makes DWB think the robot is already colliding.
+        # The 0.90 m inflation radius below remains as a soft stay-away cost.
+        inscribed_radius: 0.05
         cost_scaling_factor: 4.0
         clearing: True
         rolling_window: True
