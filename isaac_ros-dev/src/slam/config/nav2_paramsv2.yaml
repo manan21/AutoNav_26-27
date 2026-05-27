@@ -315,13 +315,12 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
-        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full configured inflation radius, so tight
-        # IGVC gates still plan. The global costmap uses the same decay
-        # with a slightly smaller radius at its coarser resolution.
-        cost_scaling_factor: 3.0
-        inflation_radius: 1.40
+        # Match the lidar_line_layer soft halo so PCA obstacles and
+        # retroreflective tape exert comparable path-planning pressure.
+        # ObstacleFootprint still enforces hard footprint rejection on
+        # lethal cells; this radius/decay is only the soft stay-away cost.
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.90
 
       always_send_full_costmap: True
 
@@ -416,13 +415,12 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
-        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full configured inflation radius, so tight
-        # IGVC gates still plan. Keep the decay matched to local_costmap;
-        # radius is slightly smaller here because global runs at 0.10 m.
-        cost_scaling_factor: 3.0
-        inflation_radius: 1.30
+        # Match local obstacle inflation and the lidar-line soft halo so
+        # global planning is not biased away from cones and into tape.
+        # Line memory is mirrored after this layer, so line-specific costs
+        # still enter global without being obstacle-inflated a second time.
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.90
       always_send_full_costmap: True
 
 map_server:
@@ -495,11 +493,10 @@ behavior_server:
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
     # GradientEscape parameters.
-    # sample_radius 0.15 → 0.80: must reach beyond the inflation_layer's
-    # high-cost region (inflation_radius 1.40 m with cost_scaling_factor
-    # 3.0 → effective stay-away ~0.75 m). At 0.15 m every sample was
-    # inside the inflation field with nearly identical cost, so the
-    # gradient was indistinguishable and escape direction was arbitrary.
+    # sample_radius 0.15 → 0.80: must reach across the obstacle/line
+    # soft-cost halo. At 0.15 m every sample was inside the inflation
+    # field with nearly identical cost, so the gradient was
+    # indistinguishable and escape direction was arbitrary.
     # cost_threshold 127 → 200: a robot stuck near a wall typically reads
     # cost in the 150-250 range (inflated but not lethal). 127 was below
     # the steady-state cost the robot lives in during normal driving, so
