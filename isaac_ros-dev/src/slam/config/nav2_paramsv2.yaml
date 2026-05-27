@@ -168,11 +168,12 @@ controller_server:
       # tape-test evidence showed BaseObstacle alone could still choose a
       # least-cost trajectory that physically crossed the perpendicular
       # lidar line. Its scale stays low because the important behavior is
-      # the hard invalidation of lethal footprint contact; BaseObstacle
-      # carries the soft cost tradeoff for inflated non-lethal cells.
+      # the hard invalidation of lethal footprint contact. BaseObstacle
+      # stays moderate so inflated tape/cone cost does not dominate every
+      # sample and tie-break DWB into zero-motion commands.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       ObstacleFootprint.scale: 0.10
-      BaseObstacle.scale: 0.30
+      BaseObstacle.scale: 0.15
       PathAlign.scale: 20.0
       PathAlign.forward_point_distance: 0.10
       GoalAlign.scale: 16.0
@@ -203,12 +204,12 @@ local_costmap:
       # time; global footprint stays unpadded so the planner can still
       # thread tight gates.
       footprint_padding: 0.03
-      # Obstacle and line layers all seed lethal cells before stock Nav2
-      # inflation. This keeps DWB's local cost field symmetric: cones and
-      # tape both get footprint-aware inflation from the same layer instead
-      # of cones getting stock inflation while tape uses only the custom
-      # line-layer halo.
-      plugins: ["obstacle_layer", "line_layer", "lidar_line_layer", "inflation_layer"]
+      # Keep stock Nav2 inflation local to PCA obstacle cells. Line layers
+      # run after it so tape uses the custom line halo instead of receiving
+      # the full 1.10 m obstacle inflation locally. The global costmap still
+      # mirrors line memory before its inflation layer so Smac keeps planning
+      # around tape with a conservative footprint-wide barrier.
+      plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -303,29 +304,26 @@ local_costmap:
         line_clear_range_max_m: 6.0
         max_persisted_points: 2000
         # LiDAR line detections are sparse obstacle-filtered points, not a
-        # continuous wall. The higher-cost inner band makes footprint overlap
-        # with tape decisively worse while the outer radius still leaves
-        # visually passable gates available to the planner/controller.
-        inflation_radius: 1.10
+        # continuous wall. Keep the local controller halo narrower than the
+        # global planner halo so DWB can drive out of a soft tape cost field
+        # instead of tie-breaking into zero-motion while a valid path exists.
+        inflation_radius: 0.65
         # Keep the hard collision band tight for tape. The measured lidar-line
         # course starts with the left tape about 0.50 m from nav_center while
         # the robot footprint extends to ~0.41 m plus padding; a 0.36 m
         # inscribed band makes DWB think the robot is already colliding.
-        # The 1.10 m inflation radius below remains as a soft stay-away cost.
+        # The 0.65 m inflation radius below remains as a soft stay-away cost.
         inscribed_radius: 0.05
-        cost_scaling_factor: 4.0
+        cost_scaling_factor: 5.0
         clearing: True
         rolling_window: True
         publish_costmap: True
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Match the lidar_line_layer soft halo so PCA obstacles and
-        # retroreflective tape exert comparable path-planning pressure.
-        # 1.10 m biases both planner and DWB toward the center of the
-        # 5 ft measured gap without changing lethal footprint rejection.
-        # ObstacleFootprint still enforces hard footprint rejection on
-        # lethal cells; this radius/decay is only the soft stay-away cost.
+        # Strong PCA/cone stay-away cost. Line layers run after this layer
+        # and use their own narrower local halo; global planning remains
+        # conservative because line memory is inflated in the global costmap.
         cost_scaling_factor: 4.0
         inflation_radius: 1.10
 
