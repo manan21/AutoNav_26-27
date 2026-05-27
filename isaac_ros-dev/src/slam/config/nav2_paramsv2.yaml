@@ -342,7 +342,10 @@ global_costmap:
       # ±0.41 y) — see local_costmap footprint note.
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
       footprint_padding: 0.0
-      resolution: 0.10
+      # Match the Smac Lattice primitive grid. The installed differential
+      # drive primitive set below is generated for 5 cm cells; using a
+      # different global resolution invalidates its discrete state graph.
+      resolution: 0.05
       # static_layer drives the global costmap geometry from /map_padded, which is a dynamic bounding box covering robot footprint + goal + plan. The width/height/origin below are only the pre-first-/map_padded fallback.
       width: 6
       height: 6
@@ -448,16 +451,19 @@ planner_server:
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_smac_planner/SmacPlanner2D"
+      # Use a footprint-aware SE2 lattice for the rectangular differential
+      # drive robot. SmacPlanner2D produced centerline paths that were too
+      # close to lethal lidar-line cells and left DWB to reject them later.
+      plugin: "nav2_smac_planner/SmacPlannerLattice"
       tolerance: 2.0
-      downsample_costmap: false
-      downsampling_factor: 1
       allow_unknown: true
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
-      cost_travel_multiplier: 3.0
-      use_final_approach_orientation: false
+      lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
+      cost_penalty: 3.0
+      rotation_penalty: 5.0
+      allow_reverse_expansion: false
 
 smoother_server:
   ros__parameters:
