@@ -83,10 +83,18 @@ Before sending the relative goal, the human operator must ensure the robot is al
 Preferred command from inside the robot ROS environment:
 
 ```bash
-isaac_ros-dev/config/send_goal.sh -r 2.0 0 0
+isaac_ros-dev/config/run_lidar_line_test.sh
 ```
 
-Do not publish the same test goal through both `/goal_pose` and a direct `/navigate_to_pose` action client. `/goal_pose` already triggers Nav2's `NavigateToPose` path and also seeds `map_padder`; sending both creates overlapping NavigateToPose goals and can make the status stream show simultaneous `ABORTED` and `EXECUTING` goals.
+The runner records a rosbag, clears stale local/global costmaps, sends one direct `/navigate_to_pose` action goal for `2.0 m` relative forward travel, and prints the analysis commands. It does not toggle autonomous mode.
+
+For manual goal dispatch without the runner, use direct action mode:
+
+```bash
+isaac_ros-dev/config/send_goal.sh --action -r 2.0 0 0
+```
+
+Do not publish the same test goal through both `/goal_pose` and a direct `/navigate_to_pose` action client. The direct action path is preferred for this test because it gives an immediate accepted/result stream; the behavior tree publishes `/nav_goal` before planning, so `map_padder` still receives the active planning target without a separate `/goal_pose` publish. Publishing both creates overlapping NavigateToPose goals and can make the status stream show simultaneous `ABORTED` and `EXECUTING` goals.
 
 Expected high-level behavior:
 
@@ -122,6 +130,9 @@ Use `ros2 bag record --include-hidden-topics` so Nav2 action status topics are a
 - `/encoders`
 - `/motor_speed`
 - `/autonomous_mode`
+- `/scan_fullframe`
+- `/scan_pca_filtered`
+- `/scan_pca_filtered_clear`
 - `/lidar_line_points`
 - `/lidar_line_costmap`
 - `/lidar_line_detection/diagnostics`
@@ -146,6 +157,8 @@ When analyzing the bag in the robot ROS environment, use:
 
 ```bash
 python3 scripts/analyze_lidar_line_bag.py /path/to/bag
+python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
+python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
 ```
 
 The analyzer reports the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, and `/lidar_line_costmap` clearing behavior.

@@ -172,7 +172,7 @@ controller_server:
       # carries the soft cost tradeoff for inflated non-lethal cells.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       ObstacleFootprint.scale: 0.10
-      BaseObstacle.scale: 0.22
+      BaseObstacle.scale: 0.30
       PathAlign.scale: 20.0
       PathAlign.forward_point_distance: 0.10
       GoalAlign.scale: 16.0
@@ -301,7 +301,7 @@ local_costmap:
         # continuous wall. The higher-cost inner band makes footprint overlap
         # with tape decisively worse while the outer radius still leaves
         # visually passable gates available to the planner/controller.
-        inflation_radius: 0.90
+        inflation_radius: 1.10
         # Keep the hard collision band tight for tape. The measured lidar-line
         # course starts with the left tape about 0.50 m from nav_center while
         # the robot footprint extends to ~0.41 m plus padding; a 0.36 m
@@ -317,10 +317,12 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         # Match the lidar_line_layer soft halo so PCA obstacles and
         # retroreflective tape exert comparable path-planning pressure.
+        # 1.10 m biases both planner and DWB toward the center of the
+        # 5 ft measured gap without changing lethal footprint rejection.
         # ObstacleFootprint still enforces hard footprint rejection on
         # lethal cells; this radius/decay is only the soft stay-away cost.
         cost_scaling_factor: 4.0
-        inflation_radius: 0.90
+        inflation_radius: 1.10
 
       always_send_full_costmap: True
 
@@ -353,8 +355,8 @@ global_costmap:
       #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells so tape/painted lines do not seed the global obstacle inflation layer.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
       # Obstacle inflation runs before line memory so PCA obstacle memory
-      # still gets the broad obstacle halo, while line memory keeps its
-      # narrower line-specific inflation.
+      # still gets the obstacle halo, while line memory keeps its
+      # line-layer-generated inflation instead of being inflated twice.
       # line_memory_mirror_layer is intentionally placed AFTER
       # inflation_layer so the already-inflated local line costs from
       # /line_costmap and /lidar_line_costmap are copied into global
@@ -417,10 +419,12 @@ global_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         # Match local obstacle inflation and the lidar-line soft halo so
         # global planning is not biased away from cones and into tape.
+        # The wider 1.10 m halo gives the global planner enough gradient to
+        # prefer the center of the 5 ft gap instead of clipping tape ends.
         # Line memory is mirrored after this layer, so line-specific costs
         # still enter global without being obstacle-inflated a second time.
         cost_scaling_factor: 4.0
-        inflation_radius: 0.90
+        inflation_radius: 1.10
       always_send_full_costmap: True
 
 map_server:
@@ -444,10 +448,16 @@ planner_server:
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_smac_planner/SmacPlanner2D"
       tolerance: 2.0
-      use_astar: true
+      downsample_costmap: false
+      downsampling_factor: 1
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 3.0
+      use_final_approach_orientation: false
 
 smoother_server:
   ros__parameters:

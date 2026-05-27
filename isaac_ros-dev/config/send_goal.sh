@@ -1,19 +1,39 @@
 #!/bin/bash
 # Send a Nav2 goal pose from the command line.
-# Usage: ./send_goal.sh [-r] <x> <y> [yaw_degrees]
+# Usage: ./send_goal.sh [--topic|--action] [--feedback] [-r] <x> <y> [yaw_degrees]
+#   --topic        publish /goal_pose (default; RViz/HUD-compatible)
+#   --action       send a direct /navigate_to_pose action goal
+#   --feedback     show action feedback when using --action
 #   -r             relative mode: x/y are desired nav_center travel in meters,
 #                  yaw is relative to the current nav_center heading
 #   yaw_degrees    defaults to 0 (facing +x)
 
 RELATIVE=false
+TRANSPORT=topic
+ACTION_FEEDBACK=false
 
 usage() {
-  echo "Usage: $0 [-r] <x> <y> [yaw_degrees]"
+  echo "Usage: $0 [--topic|--action] [--feedback] [-r] <x> <y> [yaw_degrees]"
+  echo "  --topic        publish /goal_pose (default)"
+  echo "  --action       send direct /navigate_to_pose action goal"
+  echo "  --feedback     show action feedback when using --action"
   echo "  -r             goal is relative to the robot's current pose"
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --topic)
+      TRANSPORT=topic
+      shift
+      ;;
+    --action|--direct-action)
+      TRANSPORT=action
+      shift
+      ;;
+    --feedback)
+      ACTION_FEEDBACK=true
+      shift
+      ;;
     -r|--relative)
       RELATIVE=true
       shift
@@ -139,6 +159,39 @@ PYEOF
 fi
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}°"
+
+if [ "$TRANSPORT" = "action" ]; then
+  # Direct action mode is preferred for scripted lidar-line tests because
+  # it gives an immediate accept/result stream. The behavior tree publishes
+  # /nav_goal before ComputePathToPose, so map_padder still receives the
+  # active planning target without also publishing /goal_pose and creating
+  # overlapping NavigateToPose goals.
+  ORIENTATION=$(python3 - "$YAW_DEG" <<'PYEOF'
+import math
+import sys
+
+yaw_deg = float(sys.argv[1])
+print(
+    f"{math.sin(math.radians(yaw_deg) / 2.0)} "
+    f"{math.cos(math.radians(yaw_deg) / 2.0)}"
+)
+PYEOF
+)
+  if [ $? -ne 0 ] || [ -z "$ORIENTATION" ]; then
+    echo "Failed to compute goal orientation." >&2
+    exit 1
+  fi
+
+  read QZ QW <<< "$ORIENTATION"
+  ACTION_ARGS=()
+  if $ACTION_FEEDBACK; then
+    ACTION_ARGS+=(--feedback)
+  fi
+
+  ros2 action send_goal "${ACTION_ARGS[@]}" /navigate_to_pose nav2_msgs/action/NavigateToPose \
+    "{pose: {header: {frame_id: map}, pose: {position: {x: $X, y: $Y, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: $QZ, w: $QW}}}}"
+  exit $?
+fi
 
 # Publish to /goal_pose with a long-lived publisher. Both bt_navigator
 # (which translates the topic into a NavigateToPose action) and
