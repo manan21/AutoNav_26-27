@@ -61,7 +61,7 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 
 | Parameter | Line | Status | Default | Effect |
 |---|---|---|---|---|
-| `RateController hz` | 33 | 🟡 | `1.0` | Replan cadence | Phase A.1: lowered 2 → 1 Hz to reduce cancel-restart count; Phase B decorator absorbs leftover same-path replans |
+| `RateController hz` | 41 | 🟡 | `3.0` | Replan cadence | Matches 3 Hz global costmap updates so newly detected tape reaches the global plan within ~8 cm at 0.25 m/s; Phase B decorator absorbs same-path replans |
 | `GoalBender bend_distance` | 59 | 🟡 | `0.8` m | Forward-bend intermediate distance | Only fires when `goal+path both behind robot` |
 | `GoalBender angle_threshold` | 59 | 🟡 | `1.57` rad (90°) | Behind-robot trigger angle | Loose default |
 | `GoalBender bend_angle` | 59 | 🟡 | `1.05` rad (60°) | Forward-bend offset | |

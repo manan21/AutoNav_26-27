@@ -541,9 +541,9 @@ behavior_server:
     #     BT's ReactiveFallback loop. Once hit the plugin returns FAILED
     #     and the BT falls through to Wait → next RateController tick →
     #     GoalBender (bend away from the costmap).
-    #   session_reset_s: idle gap before the count resets. The BT's
-    #     1 Hz RateController calls us in ~1 s bursts, so 2 s is enough
-    #     to distinguish "still in the same dead-end" from "fresh trap".
+    #   session_reset_s: idle gap before the count resets. Keep this above
+    #     the 3 Hz RateController tick so separate breadcrumb attempts in
+    #     the same dead-end are counted as one session.
     #   bonus_crumb_after_forward: after a successful pop, peek at /plan;
     #     if its first useful waypoint is solidly forward (err <
     #     forward_threshold_deg), pop ONE MORE crumb to give the

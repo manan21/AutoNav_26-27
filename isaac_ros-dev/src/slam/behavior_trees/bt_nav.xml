@@ -9,7 +9,7 @@
            buffer is empty (breadcrumb-reverse has nothing left to spend
            so we must turn the robot around).
        Otherwise pass the goal through.
-    2. Compute path to the (possibly bent) goal (replan at 1 Hz).
+    2. Compute path to the (possibly bent) goal (replan at 3 Hz).
     3. Forward/reverse dispatch:
          - If the path leads forward → FollowPath.
          - Else if path leads behind and goal is in front → spend one
@@ -27,17 +27,18 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="999" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <!-- Replan at 2 Hz. The standard Nav2 approach to "what if the
+        <!-- Replan at 3 Hz. The standard Nav2 approach to "what if the
              path becomes invalid?" is just to replan often enough that
              a fresh path naturally replaces a stale one within one
-             cycle. 1 Hz gives a 1000 ms worst-case staleness window
+             cycle. 3 Hz matches the global costmap update cadence and
+             gives a ~333 ms worst-case staleness window at the planner,
              without the false-positive issues of an explicit
              IsPathValid check (which can fail-cascade into recovery on
              a transient one-tick costmap blip). PHASEB's
              PathSignificantlyChanged decorator absorbs same-path
-             replans so this slower cadence does not regress cmd_vel
+             replans so this cadence does not regress cmd_vel
              continuity. -->
-        <RateController hz="1.0">
+        <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
             gps_handler_node. It subscribes to /goal_update; each tick
@@ -52,7 +53,7 @@
             in-flight FollowPath, briefly halting the robot until the
             new global path was ready (the stop/go observed during
             mission runs). With GoalUpdater, in-mission corrections
-            flow through {live_goal}, the planner re-runs at 2 Hz on
+            flow through {live_goal}, the planner re-runs at 3 Hz on
             the new goal, and FollowPath keeps emitting cmd_vel
             uninterrupted as it consumes the next {path} the planner
             writes.
@@ -153,14 +154,14 @@
                crumbs — spend one. Each invocation reverses to the most
                recent breadcrumb (~10 cm of travel). If FAILED (buffer
                empty / lethal rear cell / timeout), fall through to
-               Wait, which lets the next 1 Hz RateController tick run
+               Wait, which lets the next 3 Hz RateController tick run
                GoalBender — which fires on (path_behind && buffer_empty)
                to bend the goal and turn the robot around. -->
           <DriveOnHeading server_name="breadcrumb_reverse"
             dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
           <!-- Sim-tuned: 0.1 s wait between failed breadcrumb_reverse
                attempts. The original 1.1 s gated each retry on a fresh
-               RateController tick (1 Hz), but the sim showed the BT can
+               RateController tick, but the sim showed the BT can
                re-evaluate as fast as the planner publishes — every
                crumb pop the planner runs and we re-check the path's
                first-segment bearing. Shorter wait → recovery clears
