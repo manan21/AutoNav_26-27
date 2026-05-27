@@ -104,6 +104,8 @@ Expected high-level behavior:
 - The robot does not overlap the long left barrier, perpendicular tape, or cone.
 - The robot reaches the forward goal without requiring manual costmap clearing.
 
+The lidar-line detector publishes ground-gated completed local segments on `/lidar_line_points`, not only the individual raw reflector hits. Segment completion is intentionally conservative: it runs after the base-link ground-height gate, only within each accepted cluster, and uses only a small endpoint pad. It should make sparse floor tape visible to Nav2 earlier without bridging separated obstacles or completing raised cone-side reflectors.
+
 ## Required Runtime State
 
 Before sending the goal:
@@ -172,9 +174,10 @@ python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
 python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
 ```
 
-The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows, whether global plans route through the measured gap, and whether the measured rectangular footprint overlaps the perpendicular tape.
+The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows, whether global plans route through the measured gap, and whether the measured rectangular footprint overlaps the perpendicular tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
+- Whether the first likely perpendicular/rightward `/lidar_line_points` detection occurs before measured physical footprint contact.
 - Whether `/lidar_line_costmap` marks the perpendicular and parallel tape lines before the robot reaches them.
 - Whether `/scan_pca_filtered_points` marks the cone.
 - Whether the global plan routes through the `5 ft` (`1.524 m`) gap.

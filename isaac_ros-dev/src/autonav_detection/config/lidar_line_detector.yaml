@@ -54,9 +54,20 @@ lidar_line_detector:
 
     # Shape filter for tape-like marks in the local ground plane.
     cluster_link_distance_m: 0.20
-    cluster_min_points: 4
-    cluster_min_length_m: 0.34
+    cluster_min_points: 3
+    cluster_min_length_m: 0.20
     cluster_max_width_m: 0.22
     cluster_min_aspect_ratio: 2.5
-    output_voxel_size_m: 0.08
+    output_voxel_size_m: 0.05
     max_line_points: 8000
+
+    # Complete sparse ground-only reflector clusters into dense local line
+    # segments before sending them to Nav2. This runs only after the
+    # base_link ground-z gate and only inside each accepted cluster, so raised
+    # cone-side reflectors and 5 ft separated obstacles are not bridged. The
+    # endpoint pad is capped in code at 0.05 m to avoid projecting unseen tape.
+    segment_completion_enabled: true
+    segment_point_spacing_m: 0.05
+    segment_endpoint_padding_m: 0.05
+    segment_max_points_per_cluster: 80
+    segment_min_completion_length_m: 0.20

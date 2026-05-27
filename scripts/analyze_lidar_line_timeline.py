@@ -71,6 +71,56 @@ def rel_pose(start, pose):
     return x, y, dyaw
 
 
+def rel_pose_rad(start, pose):
+    x, y = to_frame(start, pose[0], pose[1])
+    dyaw = math.atan2(math.sin(pose[2] - start[2]), math.cos(pose[2] - start[2]))
+    return x, y, dyaw
+
+
+def signed_box_clearance(x, y, half_x, half_y):
+    dx = abs(x) - half_x
+    dy = abs(y) - half_y
+    outside = math.hypot(max(dx, 0.0), max(dy, 0.0))
+    if dx <= 0.0 and dy <= 0.0:
+        return max(dx, dy)
+    return outside
+
+
+def tape_points(perp_x, perp_y_min, perp_y_max, sample_step):
+    n = max(1, int(math.ceil((perp_y_max - perp_y_min) / sample_step)))
+    return [
+        (perp_x, perp_y_min + (perp_y_max - perp_y_min) * i / n)
+        for i in range(n + 1)
+    ]
+
+
+def first_contact(start_pose, odom_samples, action_start, args, padded):
+    half_length = args.half_length + (args.padding if padded else 0.0)
+    half_width = args.half_width + (args.padding if padded else 0.0)
+    best = None
+    first = None
+    points = tape_points(args.perp_x, args.perp_y_min, args.perp_y_max, args.sample_step)
+
+    for stamp, pose in odom_samples:
+        if stamp < action_start:
+            continue
+        rx, ry, ryaw = rel_pose_rad(start_pose, pose)
+        c = math.cos(ryaw)
+        s = math.sin(ryaw)
+        for px, py in points:
+            dx = px - rx
+            dy = py - ry
+            robot_x = c * dx + s * dy
+            robot_y = -s * dx + c * dy
+            clearance = signed_box_clearance(robot_x, robot_y, half_length, half_width)
+            sample = (clearance, stamp, rx, ry, math.degrees(ryaw), px, py)
+            if best is None or clearance < best[0]:
+                best = sample
+            if first is None and clearance < 0.0:
+                first = sample
+    return first, best
+
+
 def finite(value):
     return math.isfinite(float(value))
 
@@ -136,6 +186,12 @@ def main():
     parser.add_argument("bag")
     parser.add_argument("--perp-x", type=float, default=1.34)
     parser.add_argument("--perp-y-threshold", type=float, default=0.35)
+    parser.add_argument("--perp-y-min", type=float, default=-0.13)
+    parser.add_argument("--perp-y-max", type=float, default=0.50)
+    parser.add_argument("--half-length", type=float, default=0.545)
+    parser.add_argument("--half-width", type=float, default=0.41)
+    parser.add_argument("--padding", type=float, default=0.03)
+    parser.add_argument("--sample-step", type=float, default=0.005)
     args = parser.parse_args()
 
     reader = rosbag2_py.SequentialReader()
@@ -195,13 +251,47 @@ def main():
             action_start = min(exec_times)
     if action_start is None:
         plan_times = [stamp for topic, _, stamp in raw if topic == "/plan"]
-        action_start = plan_times[0] if plan_times else odom_t[0]
+        if plan_times:
+            action_start = plan_times[0]
+        elif odom_t:
+            action_start = odom_t[0]
+        else:
+            action_start = bag_start
     start_pose = nearest(odom_t, odom, action_start)
     print(f"\naction_start_used={action_start - bag_start:.2f}s")
 
     if start_pose and odom:
         end_rel = rel_pose(start_pose, odom[-1])
         print(f"final odom from action_start: fwd={end_rel[0]:+.3f} left={end_rel[1]:+.3f} yaw={end_rel[2]:+.1f}deg")
+
+    physical_contact = best_physical = None
+    padded_contact = best_padded = None
+    if start_pose and odom:
+        odom_samples = list(zip(odom_t, odom))
+        physical_contact, best_physical = first_contact(
+            start_pose, odom_samples, action_start, args, padded=False)
+        padded_contact, best_padded = first_contact(
+            start_pose, odom_samples, action_start, args, padded=True)
+
+    print("\nmeasured course contact")
+    for label, contact, best in (
+        ("physical", physical_contact, best_physical),
+        ("padded", padded_contact, best_padded),
+    ):
+        if contact:
+            print(
+                f"  {label} first_contact={contact[1] - bag_start:.2f}s "
+                f"action_t={contact[1] - action_start:.2f}s clearance={contact[0]:+.3f} "
+                f"pose=({contact[2]:+.3f},{contact[3]:+.3f},{contact[4]:+.1f}deg) "
+                f"tape=({contact[5]:+.3f},{contact[6]:+.3f})"
+            )
+        else:
+            print(f"  {label} first_contact=none")
+        if best:
+            print(
+                f"  {label} best_clearance={best[0]:+.3f} "
+                f"at {best[1] - bag_start:.2f}s tape=({best[5]:+.3f},{best[6]:+.3f})"
+            )
 
     nz_cmd = [(t, vx, wz) for t, vx, wz in cmd if nonzero(vx, wz)]
     nz_nav = [(t, vx, wz) for t, vx, wz in cmd_nav if nonzero(vx, wz)]
@@ -225,7 +315,8 @@ def main():
         pts = []
         for point in msg.points:
             if msg.header.frame_id in ("odom", "map"):
-                pts.append(to_frame(start_pose, point.x, point.y))
+                if start_pose:
+                    pts.append(to_frame(start_pose, point.x, point.y))
             else:
                 pts.append((point.x, point.y))
         if pts:
@@ -248,6 +339,13 @@ def main():
             f"  first likely perpendicular/rightward point={first_perp_point[0] - bag_start:.2f}s "
             f"point=({first_perp_point[1]:+.3f},{first_perp_point[2]:+.3f}) n={first_perp_point[3]}"
         )
+        if physical_contact:
+            delta = first_perp_point[0] - physical_contact[1]
+            verdict = "before" if delta < 0.0 else "after"
+            print(
+                f"  first perpendicular detection was {abs(delta):.2f}s {verdict} "
+                "physical footprint contact"
+            )
     else:
         print("  first likely perpendicular/rightward point=none")
     if latest_line:
@@ -261,6 +359,8 @@ def main():
     plans = []
     for topic, msg, stamp in raw:
         if topic != "/plan" or stamp < action_start:
+            continue
+        if not start_pose:
             continue
         pts = [to_frame(start_pose, pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
         if pts:

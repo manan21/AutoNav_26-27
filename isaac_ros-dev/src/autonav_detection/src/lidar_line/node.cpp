@@ -216,6 +216,16 @@ public:
     output_voxel_size_m_ = declare_parameter<double>(
       "output_voxel_size_m", 0.08);
     max_line_points_ = declare_parameter<int>("max_line_points", 8000);
+    segment_completion_enabled_ = declare_parameter<bool>(
+      "segment_completion_enabled", true);
+    segment_point_spacing_m_ = declare_parameter<double>(
+      "segment_point_spacing_m", 0.05);
+    segment_endpoint_padding_m_ = declare_parameter<double>(
+      "segment_endpoint_padding_m", 0.05);
+    segment_max_points_per_cluster_ = declare_parameter<int>(
+      "segment_max_points_per_cluster", 80);
+    segment_min_completion_length_m_ = declare_parameter<double>(
+      "segment_min_completion_length_m", 0.20);
 
     range_min_m_ = std::max(0.0, range_min_m_);
     range_max_m_ = std::max(range_min_m_, range_max_m_);
@@ -230,6 +240,10 @@ public:
     cluster_min_aspect_ratio_ = std::max(1.0, cluster_min_aspect_ratio_);
     output_voxel_size_m_ = std::max(0.01, output_voxel_size_m_);
     max_line_points_ = std::max(1, max_line_points_);
+    segment_point_spacing_m_ = std::max(0.01, segment_point_spacing_m_);
+    segment_endpoint_padding_m_ = std::max(0.0, segment_endpoint_padding_m_);
+    segment_max_points_per_cluster_ = std::max(2, segment_max_points_per_cluster_);
+    segment_min_completion_length_m_ = std::max(0.0, segment_min_completion_length_m_);
     candidate_mode_ = parseCandidateMode(candidate_mode_name_);
 
     rclcpp::QoS qos(rclcpp::KeepLast(5));
@@ -279,6 +293,21 @@ private:
     std::size_t reflector_candidates = 0;
     std::size_t intensity_candidates = 0;
     int adaptive_bins_used = 0;
+  };
+
+  struct ClusterGeometry
+  {
+    Eigen::Vector2f centroid = Eigen::Vector2f::Zero();
+    Eigen::Vector2f major = Eigen::Vector2f::UnitX();
+    Eigen::Vector2f minor = Eigen::Vector2f::UnitY();
+    float major_min = 0.0f;
+    float major_max = 0.0f;
+    float minor_min = 0.0f;
+    float minor_max = 0.0f;
+    float mean_base_z = 0.0f;
+    double length = 0.0;
+    double width = 0.0;
+    double aspect = 0.0;
   };
 
   CandidateMode parseCandidateMode(std::string mode)
@@ -604,25 +633,24 @@ private:
     return clusters;
   }
 
-  bool clusterLooksLikeLine(
+  bool fitLineCluster(
     const std::vector<Sample> & candidates,
     const std::vector<int> & cluster,
-    double & length,
-    double & width,
-    double & aspect)
+    ClusterGeometry & geometry)
   {
-    length = 0.0;
-    width = 0.0;
-    aspect = 0.0;
+    geometry = ClusterGeometry{};
     if (static_cast<int>(cluster.size()) < cluster_min_points_) {
       return false;
     }
 
     Eigen::Vector2f centroid = Eigen::Vector2f::Zero();
+    float mean_base_z = 0.0f;
     for (const int idx : cluster) {
       centroid += candidates[idx].base.head<2>();
+      mean_base_z += candidates[idx].base.z();
     }
     centroid /= static_cast<float>(cluster.size());
+    mean_base_z /= static_cast<float>(cluster.size());
 
     Eigen::Matrix2f cov = Eigen::Matrix2f::Zero();
     for (const int idx : cluster) {
@@ -655,50 +683,132 @@ private:
       minor_max = std::max(minor_max, v);
     }
 
-    length = static_cast<double>(major_max - major_min);
-    width = static_cast<double>(minor_max - minor_min);
-    aspect = length / std::max(width, 0.01);
-    return length >= cluster_min_length_m_ &&
-           width <= cluster_max_width_m_ &&
-           aspect >= cluster_min_aspect_ratio_;
+    geometry.centroid = centroid;
+    geometry.major = major;
+    geometry.minor = minor;
+    geometry.major_min = major_min;
+    geometry.major_max = major_max;
+    geometry.minor_min = minor_min;
+    geometry.minor_max = minor_max;
+    geometry.mean_base_z = mean_base_z;
+    geometry.length = static_cast<double>(major_max - major_min);
+    geometry.width = static_cast<double>(minor_max - minor_min);
+    geometry.aspect = geometry.length / std::max(geometry.width, 0.01);
+    return geometry.length >= cluster_min_length_m_ &&
+           geometry.width <= cluster_max_width_m_ &&
+           geometry.aspect >= cluster_min_aspect_ratio_;
+  }
+
+  bool appendOutputPoint(
+    const Eigen::Vector3f & point,
+    std::vector<geometry_msgs::msg::Vector3> & points,
+    std::unordered_set<std::uint64_t> & seen)
+  {
+    if (static_cast<int>(points.size()) >= max_line_points_) {
+      return false;
+    }
+    const int qx = static_cast<int>(std::llround(point.x() / output_voxel_size_m_));
+    const int qy = static_cast<int>(std::llround(point.y() / output_voxel_size_m_));
+    const auto key = gridKey(qx, qy);
+    if (!seen.insert(key).second) {
+      return true;
+    }
+    geometry_msgs::msg::Vector3 out;
+    out.x = point.x();
+    out.y = point.y();
+    out.z = point.z();
+    points.push_back(out);
+    return static_cast<int>(points.size()) < max_line_points_;
+  }
+
+  std::size_t appendCompletedSegment(
+    const ClusterGeometry & geometry,
+    const Eigen::Affine3f & base_to_target,
+    std::vector<geometry_msgs::msg::Vector3> & points,
+    std::unordered_set<std::uint64_t> & seen)
+  {
+    // Clusters have already passed the base-link ground-z gate; only interpolate
+    // within the observed endpoints, with a tiny capped pad for sparse hits.
+    if (!segment_completion_enabled_ ||
+        geometry.length < segment_min_completion_length_m_)
+    {
+      return 0;
+    }
+
+    const double capped_endpoint_padding = std::min(segment_endpoint_padding_m_, 0.05);
+    const float padding = static_cast<float>(
+      std::min(capped_endpoint_padding, geometry.length * 0.25));
+    const float start_u = geometry.major_min - padding;
+    const float end_u = geometry.major_max + padding;
+    const double completed_length = std::max(0.0, static_cast<double>(end_u - start_u));
+    const int requested_points = static_cast<int>(
+      std::ceil(completed_length / segment_point_spacing_m_)) + 1;
+    const int point_count = std::clamp(
+      requested_points, 2, segment_max_points_per_cluster_);
+
+    std::size_t appended = 0;
+    for (int i = 0; i < point_count; ++i) {
+      const float t = point_count == 1
+        ? 0.0f
+        : static_cast<float>(i) / static_cast<float>(point_count - 1);
+      const float u = start_u + t * (end_u - start_u);
+      const Eigen::Vector2f xy = geometry.centroid + geometry.major * u;
+      Eigen::Vector3f base_point;
+      base_point << xy.x(), xy.y(), geometry.mean_base_z;
+      const Eigen::Vector3f target_point = base_to_target * base_point;
+      const std::size_t before = points.size();
+      if (!appendOutputPoint(target_point, points, seen)) {
+        return appended + (points.size() > before ? 1 : 0);
+      }
+      if (points.size() > before) {
+        ++appended;
+      }
+    }
+    return appended;
   }
 
   std::vector<geometry_msgs::msg::Vector3> acceptedLinePoints(
     const std::vector<Sample> & candidates,
     const std::vector<std::vector<int>> & clusters,
+    const Eigen::Affine3f & base_to_target,
     int & accepted_clusters,
-    int & rejected_clusters)
+    int & rejected_clusters,
+    int & completed_segments,
+    std::size_t & completed_points,
+    std::size_t & raw_output_points)
   {
     std::vector<geometry_msgs::msg::Vector3> points;
     std::unordered_set<std::uint64_t> seen;
     accepted_clusters = 0;
     rejected_clusters = 0;
+    completed_segments = 0;
+    completed_points = 0;
+    raw_output_points = 0;
 
     for (const auto & cluster : clusters) {
-      double length = 0.0;
-      double width = 0.0;
-      double aspect = 0.0;
-      if (!clusterLooksLikeLine(candidates, cluster, length, width, aspect)) {
+      ClusterGeometry geometry;
+      if (!fitLineCluster(candidates, cluster, geometry)) {
         ++rejected_clusters;
         continue;
       }
       ++accepted_clusters;
-      for (const int idx : cluster) {
-        const auto & p = candidates[idx].target;
-        const int qx = static_cast<int>(std::llround(p.x() / output_voxel_size_m_));
-        const int qy = static_cast<int>(std::llround(p.y() / output_voxel_size_m_));
-        const auto key = gridKey(qx, qy);
-        if (!seen.insert(key).second) {
-          continue;
+      raw_output_points += cluster.size();
+
+      const std::size_t appended = appendCompletedSegment(
+        geometry, base_to_target, points, seen);
+      if (appended > 0) {
+        ++completed_segments;
+        completed_points += appended;
+      } else {
+        for (const int idx : cluster) {
+          if (!appendOutputPoint(candidates[idx].target, points, seen)) {
+            return points;
+          }
         }
-        geometry_msgs::msg::Vector3 out;
-        out.x = p.x();
-        out.y = p.y();
-        out.z = p.z();
-        points.push_back(out);
-        if (static_cast<int>(points.size()) >= max_line_points_) {
-          return points;
-        }
+      }
+
+      if (static_cast<int>(points.size()) >= max_line_points_) {
+        return points;
       }
     }
 
@@ -747,6 +857,9 @@ private:
     std::size_t clusters,
     int accepted_clusters,
     int rejected_clusters,
+    std::size_t raw_output_points,
+    int completed_segments,
+    std::size_t completed_points,
     std::size_t output_points,
     double elapsed_ms)
   {
@@ -762,6 +875,9 @@ private:
        << " clusters=" << clusters
        << " accepted_clusters=" << accepted_clusters
        << " rejected_clusters=" << rejected_clusters
+       << " raw_output_points=" << raw_output_points
+       << " completed_segments=" << completed_segments
+       << " completed_points=" << completed_points
        << " output_points=" << output_points
        << " elapsed_ms=" << elapsed_ms;
     msg.data = ss.str();
@@ -801,8 +917,14 @@ private:
     const auto clusters = clusterCandidates(selection.candidates);
     int accepted_clusters = 0;
     int rejected_clusters = 0;
+    int completed_segments = 0;
+    std::size_t completed_points = 0;
+    std::size_t raw_output_points = 0;
+    const Eigen::Affine3f base_to_target = lidar_to_target * lidar_to_base.inverse();
     auto points = acceptedLinePoints(
-      selection.candidates, clusters, accepted_clusters, rejected_clusters);
+      selection.candidates, clusters, base_to_target,
+      accepted_clusters, rejected_clusters,
+      completed_segments, completed_points, raw_output_points);
 
     std_msgs::msg::Header out_header = msg->header;
     out_header.frame_id = target_frame_;
@@ -819,14 +941,16 @@ private:
       *msg, samples.size(), selection.candidates.size(),
       selection.reflector_candidates, selection.intensity_candidates,
       clusters.size(),
-      accepted_clusters, rejected_clusters, points.size(), elapsed_ms);
+      accepted_clusters, rejected_clusters,
+      raw_output_points, completed_segments, completed_points,
+      points.size(), elapsed_ms);
 
     RCLCPP_DEBUG(
       get_logger(),
-      "lidar lines: samples=%zu candidates=%zu bins=%d clusters=%zu accepted=%d points=%zu %.1fms",
+      "lidar lines: samples=%zu candidates=%zu bins=%d clusters=%zu accepted=%d completed=%d points=%zu %.1fms",
       samples.size(), selection.candidates.size(),
       selection.adaptive_bins_used, clusters.size(), accepted_clusters,
-      points.size(), elapsed_ms);
+      completed_segments, points.size(), elapsed_ms);
   }
 
   std::string cloud_topic_;
@@ -872,6 +996,11 @@ private:
   double cluster_min_aspect_ratio_;
   double output_voxel_size_m_;
   int max_line_points_;
+  bool segment_completion_enabled_;
+  double segment_point_spacing_m_;
+  double segment_endpoint_padding_m_;
+  int segment_max_points_per_cluster_;
+  double segment_min_completion_length_m_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
