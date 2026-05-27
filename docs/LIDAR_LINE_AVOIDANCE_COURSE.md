@@ -86,7 +86,7 @@ Preferred command from inside the robot ROS environment:
 isaac_ros-dev/config/run_lidar_line_test.sh
 ```
 
-The runner records a rosbag, clears stale local/global costmaps, sends one direct `/navigate_to_pose` action goal for `2.0 m` relative forward travel, and prints the analysis commands. It does not toggle autonomous mode.
+The runner records a rosbag, clears stale local/global costmaps, sends one direct `/navigate_to_pose` action goal for `2.0 m` relative forward travel, stops the bag, and runs the standard versioned analysis suite. It does not toggle autonomous mode. The analysis output is also saved as `analysis.log` in the run directory. Set `LIDAR_LINE_TEST_SKIP_ANALYSIS=1` only when you intentionally want to defer analysis.
 
 For manual goal dispatch without the runner, use direct action mode:
 
@@ -153,15 +153,26 @@ Use `ros2 bag record --include-hidden-topics` so Nav2 action status topics are a
 
 After every run, stop the rosbag cleanly with SIGINT, confirm `ros2 bag info` shows the expected topics and duration, and analyze both the live monitor output and bagged telemetry before reporting a pass/fail result.
 
-When analyzing the bag in the robot ROS environment, use:
+Do not depend on `/tmp` helper scripts for analysis. The persistent lidar-line bag analysis suite lives in the repo under `scripts/` and is documented in `docs/ROS_BAG_ANALYSIS.md`.
+
+When analyzing the bag in the robot ROS environment, prefer the full suite:
+
+```bash
+scripts/run_lidar_line_bag_analysis.sh /path/to/bag
+```
+
+The suite runs:
 
 ```bash
 python3 scripts/analyze_lidar_line_bag.py /path/to/bag
+python3 scripts/analyze_lidar_line_timeline.py /path/to/bag
+python3 scripts/analyze_lidar_line_plan_gap.py /path/to/bag --perp-x 1.34 --tape-right-y -0.13
+python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50
 python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
 python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
 ```
 
-The analyzer reports the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, and `/lidar_line_costmap` clearing behavior.
+The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows, whether global plans route through the measured gap, and whether the measured rectangular footprint overlaps the perpendicular tape.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
 - Whether `/lidar_line_costmap` marks the perpendicular and parallel tape lines before the robot reaches them.

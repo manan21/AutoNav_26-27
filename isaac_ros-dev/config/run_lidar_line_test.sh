@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ISAAC_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$ISAAC_ROOT/.." && pwd)"
 
 source_setup() {
   local setup_file=$1
@@ -32,6 +33,7 @@ RUN_DIR="$LOG_ROOT/$RUN_NAME"
 BAG_PATH="$RUN_DIR/bag"
 GOAL_LOG="$RUN_DIR/navigate_to_pose.log"
 BAG_LOG="$RUN_DIR/rosbag_record.log"
+ANALYSIS_LOG="$RUN_DIR/analysis.log"
 
 TOPICS=(
   /tf
@@ -111,9 +113,25 @@ echo "Action log: $GOAL_LOG"
 echo "Bag log: $BAG_LOG"
 echo "Bag path: $BAG_PATH"
 echo
-echo "Recommended analysis:"
-echo "  python3 scripts/analyze_lidar_line_bag.py $BAG_PATH"
-echo "  python3 scripts/analyze_dwb_evaluation.py $BAG_PATH --window 0.1"
-echo "  python3 scripts/analyze_costmap_footprint.py $BAG_PATH --hard-threshold 100"
+
+ANALYSIS_SCRIPT="$REPO_ROOT/scripts/run_lidar_line_bag_analysis.sh"
+if [ "${LIDAR_LINE_TEST_SKIP_ANALYSIS:-0}" = "1" ]; then
+  echo "Skipping standard bag analysis because LIDAR_LINE_TEST_SKIP_ANALYSIS=1."
+  echo "Run later with:"
+  echo "  $ANALYSIS_SCRIPT $BAG_PATH"
+elif [ -x "$ANALYSIS_SCRIPT" ]; then
+  echo "Running standard bag analysis..."
+  set +e
+  "$ANALYSIS_SCRIPT" "$BAG_PATH" 2>&1 | tee "$ANALYSIS_LOG"
+  ANALYSIS_STATUS=${PIPESTATUS[0]}
+  set -e
+  echo
+  echo "Analysis log: $ANALYSIS_LOG"
+  echo "Analysis exit status: $ANALYSIS_STATUS"
+else
+  echo "Standard analysis script is not executable: $ANALYSIS_SCRIPT"
+  echo "Run individual analyzers from the repo root, for example:"
+  echo "  python3 scripts/analyze_lidar_line_bag.py $BAG_PATH"
+fi
 
 exit "$GOAL_STATUS"
