@@ -462,7 +462,10 @@ planner_server:
       max_planning_time: 2.0
       lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
       cost_penalty: 3.0
-      rotation_penalty: 5.0
+      # Lower than the 5.0 default so the rectangular diff-drive footprint can
+      # reorient through lidar-line gaps instead of preferring marginally
+      # straighter paths that leave DWB to reject footprint contact.
+      rotation_penalty: 3.0
       allow_reverse_expansion: false
 
 smoother_server:
