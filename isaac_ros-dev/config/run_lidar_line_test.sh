@@ -59,6 +59,7 @@ TOPICS=(
   /global_costmap/costmap
   /global_costmap/costmap_raw
   /plan
+  /unsmoothed_plan
   /local_plan
   /goal_pose
   /evaluation

@@ -306,7 +306,7 @@ local_costmap:
         # course starts with the left tape about 0.50 m from nav_center while
         # the robot footprint extends to ~0.41 m plus padding; a 0.36 m
         # inscribed band makes DWB think the robot is already colliding.
-        # The 0.90 m inflation radius below remains as a soft stay-away cost.
+        # The 1.10 m inflation radius below remains as a soft stay-away cost.
         inscribed_radius: 0.05
         cost_scaling_factor: 4.0
         clearing: True
@@ -357,14 +357,14 @@ global_costmap:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
       #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells so tape/painted lines do not seed the global obstacle inflation layer.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
-      # Obstacle inflation runs before line memory so PCA obstacle memory
-      # still gets the obstacle halo, while line memory keeps its
-      # line-layer-generated inflation instead of being inflated twice.
-      # line_memory_mirror_layer is intentionally placed AFTER
-      # inflation_layer so the already-inflated local line costs from
-      # /line_costmap and /lidar_line_costmap are copied into global
-      # without being inflated a second time.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
+      # Line memory is intentionally mirrored BEFORE inflation. Smac Lattice
+      # first checks the center-cell cost before doing the expensive full
+      # footprint collision check, so tape/line lethal cells must seed the
+      # global inflation layer. Otherwise a rectangular-footprint path can
+      # be planned with the centerline beside the tape while the footprint
+      # still crosses it. local_mirror_layer still masks line topics so PCA
+      # obstacles and line memory remain separate sources.
+      plugins: ["static_layer", "local_mirror_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -424,8 +424,9 @@ global_costmap:
         # global planning is not biased away from cones and into tape.
         # The wider 1.10 m halo gives the global planner enough gradient to
         # prefer the center of the 5 ft gap instead of clipping tape ends.
-        # Line memory is mirrored after this layer, so line-specific costs
-        # still enter global without being obstacle-inflated a second time.
+        # Line memory is now mirrored before this layer so Smac Lattice sees
+        # a footprint-wide inflated field around tape lethal cells instead
+        # of only the exact line cells and their local display halo.
         cost_scaling_factor: 4.0
         inflation_radius: 1.10
       always_send_full_costmap: True
