@@ -9,15 +9,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ISAAC_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-if [ -f /opt/ros/humble/setup.bash ]; then
-  # shellcheck disable=SC1091
-  source /opt/ros/humble/setup.bash
-fi
+source_setup() {
+  local setup_file=$1
 
-if [ -f "$ISAAC_ROOT/install/setup.bash" ]; then
-  # shellcheck disable=SC1091
-  source "$ISAAC_ROOT/install/setup.bash"
-fi
+  if [ -f "$setup_file" ]; then
+    # ROS setup files can reference unset tracing variables.
+    set +u
+    # shellcheck disable=SC1090
+    source "$setup_file"
+    local source_status=$?
+    set -u
+    return "$source_status"
+  fi
+}
+
+source_setup /opt/ros/humble/setup.bash
+source_setup "$ISAAC_ROOT/install/setup.bash"
 
 RUN_NAME="${1:-lidar_line_test_$(date +%Y%m%d_%H%M%S)}"
 LOG_ROOT="${LIDAR_LINE_TEST_LOG_ROOT:-/autonav/logs}"
