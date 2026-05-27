@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)  # 3.18+ recommended for CUDA language
-project(autonav_detection LANGUAGES CXX CUDA)
+project(autonav_detection LANGUAGES CXX)
 
 # Warnings for host code only. -Wpedantic chokes on the auto-generated
 # stub.c / cudafe1.cpp files NVCC produces for CUDA targets ("style of
@@ -29,82 +29,91 @@ find_package(image_geometry REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
-# ---- CUDA Toolchain (modern; line_detector only) ----
-enable_language(CUDA)
-find_package(CUDAToolkit REQUIRED)
-
-# Jetson Orin Nano is Ampere (SM 87)
-set(CMAKE_CUDA_ARCHITECTURES 87)
+# ---- CUDA Toolchain (line_detector only) ----
+# The lidar-line/PCA simulation harness runs the CPU-only lidar_line_detector
+# and grade_detector. Keep CUDA optional so non-Jetson Ubuntu dev VMs can build
+# those targets without an NVIDIA toolkit; Jetson builds still get the CUDA
+# camera line detector when CUDAToolkit is available.
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+  enable_language(CUDA)
+  # Jetson Orin Nano is Ampere (SM 87)
+  set(CMAKE_CUDA_ARCHITECTURES 87)
+else()
+  message(WARNING "CUDAToolkit not found; skipping CUDA line_detector target.")
+endif()
 
 # ============================================================
 # Target 1: line_detector  (existing, CUDA-accelerated)
 # ============================================================
-add_executable(line_detector
-  src/line/node.cpp
-  src/line/detection.cpp
-  src/line/cuda.cu
-)
+if(CUDAToolkit_FOUND)
+  add_executable(line_detector
+    src/line/node.cpp
+    src/line/detection.cpp
+    src/line/cuda.cu
+  )
 
-target_compile_features(line_detector PUBLIC cxx_std_17)
-set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_compile_features(line_detector PUBLIC cxx_std_17)
+  set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# Force -O3 + -DNDEBUG for the host-side host code regardless of the
-# workspace's CMAKE_BUILD_TYPE. Same reasoning as grade_detector below
-# (see its block): colcon's default build type is empty → GCC defaults
-# to -O0, which strangles the per-frame CUDA/OpenCV wrapper here
-# (cv_bridge copies, integral image setup, post-processing). The .cu
-# compilation pass uses CMake's CUDA flags so we scope this to CXX only.
-target_compile_options(line_detector PRIVATE
-  $<$<COMPILE_LANGUAGE:CXX>:-O3>
-  $<$<COMPILE_LANGUAGE:CXX>:-DNDEBUG>
-)
+  # Force -O3 + -DNDEBUG for the host-side host code regardless of the
+  # workspace's CMAKE_BUILD_TYPE. Same reasoning as grade_detector below
+  # (see its block): colcon's default build type is empty -> GCC defaults
+  # to -O0, which strangles the per-frame CUDA/OpenCV wrapper here
+  # (cv_bridge copies, integral image setup, post-processing). The .cu
+  # compilation pass uses CMake's CUDA flags so we scope this to CXX only.
+  target_compile_options(line_detector PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O3>
+    $<$<COMPILE_LANGUAGE:CXX>:-DNDEBUG>
+  )
 
-target_include_directories(line_detector
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${image_geometry_INCLUDE_DIRS}
-    ${tf2_geometry_msgs_INCLUDE_DIRS}
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
+  target_include_directories(line_detector
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${image_geometry_INCLUDE_DIRS}
+      ${tf2_geometry_msgs_INCLUDE_DIRS}
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:include>
+  )
 
-ament_target_dependencies(line_detector
-  rclcpp
-  autonav_interfaces
-  nav_msgs
-  std_msgs
-  cv_bridge
-  tf2_ros
-  tf2_eigen
-  Eigen3
-  image_geometry
-  std_srvs
-  tf2_geometry_msgs
-)
+  ament_target_dependencies(line_detector
+    rclcpp
+    autonav_interfaces
+    nav_msgs
+    std_msgs
+    cv_bridge
+    tf2_ros
+    tf2_eigen
+    Eigen3
+    image_geometry
+    std_srvs
+    tf2_geometry_msgs
+  )
 
-# ---- Link CUDA & NPP (modern imported targets) ----
-set(_cuda_npp_targets CUDA::cudart CUDA::nppist CUDA::nppc)
+  # ---- Link CUDA & NPP (modern imported targets) ----
+  set(_cuda_npp_targets CUDA::cudart CUDA::nppist CUDA::nppc)
 
-# Fallback if CUDAToolkit imported targets don't define nppist on this CMake/Toolkit combo.
-foreach(tgt IN LISTS _cuda_npp_targets)
-  if(NOT TARGET ${tgt})
-    list(APPEND _cuda_fallback_libs
-      /usr/local/cuda/targets/aarch64-linux/lib/libcudart.so
-      /usr/local/cuda/targets/aarch64-linux/lib/libnppist.so
-      /usr/local/cuda/targets/aarch64-linux/lib/libnppc.so
-    )
-    set(_use_fallback_libs TRUE)
-    break()
+  # Fallback if CUDAToolkit imported targets don't define nppist on this CMake/Toolkit combo.
+  foreach(tgt IN LISTS _cuda_npp_targets)
+    if(NOT TARGET ${tgt})
+      list(APPEND _cuda_fallback_libs
+        /usr/local/cuda/targets/aarch64-linux/lib/libcudart.so
+        /usr/local/cuda/targets/aarch64-linux/lib/libnppist.so
+        /usr/local/cuda/targets/aarch64-linux/lib/libnppc.so
+      )
+      set(_use_fallback_libs TRUE)
+      break()
+    endif()
+  endforeach()
+
+  if(_use_fallback_libs)
+    target_link_libraries(line_detector ${_cuda_fallback_libs})
+    target_link_options(line_detector PRIVATE -Wl,-rpath,/usr/local/cuda/targets/aarch64-linux/lib)
+  else()
+    target_link_libraries(line_detector ${_cuda_npp_targets})
+    target_link_options(line_detector PRIVATE -Wl,-rpath,$<TARGET_FILE_DIR:CUDA::cudart>)
   endif()
-endforeach()
-
-if(_use_fallback_libs)
-  target_link_libraries(line_detector ${_cuda_fallback_libs})
-  target_link_options(line_detector PRIVATE -Wl,-rpath,/usr/local/cuda/targets/aarch64-linux/lib)
-else()
-  target_link_libraries(line_detector ${_cuda_npp_targets})
-  target_link_options(line_detector PRIVATE -Wl,-rpath,$<TARGET_FILE_DIR:CUDA::cudart>)
 endif()
 
 # ============================================================
@@ -195,9 +204,15 @@ ament_target_dependencies(lidar_line_detector
 )
 
 # ---- Install ----
-install(TARGETS line_detector grade_detector lidar_line_detector
+install(TARGETS grade_detector lidar_line_detector
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(CUDAToolkit_FOUND)
+  install(TARGETS line_detector
+    DESTINATION lib/${PROJECT_NAME}
+  )
+endif()
 
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
