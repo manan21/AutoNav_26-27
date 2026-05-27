@@ -28,6 +28,7 @@ LocalMirrorLayer::LocalMirrorLayer()
   decrease_range_min_m_(0.0),
   decrease_range_max_m_(25.0),
   exclude_threshold_(1),
+  min_occupied_value_to_mirror_(1),
   has_new_msg_(false),
   pending_clear_(false),
   touched_min_x_(0.0),
@@ -65,6 +66,7 @@ void LocalMirrorLayer::onInitialize()
     "exclude_topics",
     rclcpp::ParameterValue(std::vector<std::string>()));
   declareParameter("exclude_threshold", rclcpp::ParameterValue(1));
+  declareParameter("min_occupied_value_to_mirror", rclcpp::ParameterValue(1));
 
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "source_topic", source_topic_);
@@ -81,9 +83,14 @@ void LocalMirrorLayer::onInitialize()
   std::vector<std::string> configured_exclude_topics;
   node->get_parameter(name_ + "." + "exclude_topics", configured_exclude_topics);
   node->get_parameter(name_ + "." + "exclude_threshold", exclude_threshold_);
+  node->get_parameter(
+    name_ + "." + "min_occupied_value_to_mirror",
+    min_occupied_value_to_mirror_);
   decrease_range_min_m_ = std::max(0.0, decrease_range_min_m_);
   decrease_range_max_m_ = std::max(decrease_range_min_m_, decrease_range_max_m_);
   exclude_threshold_ = std::min(100, std::max(1, exclude_threshold_));
+  min_occupied_value_to_mirror_ = std::min(
+    100, std::max(1, min_occupied_value_to_mirror_));
   exclude_topics_.clear();
   for (const auto & topic : configured_exclude_topics) {
     if (!topic.empty()) {
@@ -153,13 +160,14 @@ void LocalMirrorLayer::onInitialize()
 
   RCLCPP_INFO(
     rclcpp::get_logger("nav2_costmap_2d"),
-    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s, exclude_topics=%zu, exclude_threshold=%d)",
+    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s, exclude_topics=%zu, exclude_threshold=%d, min_occupied_value_to_mirror=%d)",
     source_topic_.c_str(),
     layered_costmap_->getGlobalFrameID().c_str(),
     allow_decrease_ ? "true" : "false",
     decrease_only_in_front_ ? "true" : "false",
     exclude_topics_.size(),
-    exclude_threshold_);
+    exclude_threshold_,
+    min_occupied_value_to_mirror_);
 }
 
 unsigned char LocalMirrorLayer::interpretCost(int8_t occ_val)
@@ -475,11 +483,7 @@ void LocalMirrorLayer::updateCosts(
         const double wy_src = src_oy + (sy + 0.5) * src_res;
         for (unsigned int sx = 0; sx < src_w; ++sx) {
           const int8_t src_val = msg->data[sy * src_w + sx];
-          const unsigned char incoming = interpretCost(src_val);
-
-          // NO_INFORMATION input never overrides — "no opinion" from
-          // source means we keep whatever we already had.
-          if (incoming == NO_INFORMATION) {
+          if (src_val < 0) {
             continue;
           }
           const double wx_src = src_ox + (sx + 0.5) * src_res;
@@ -496,6 +500,10 @@ void LocalMirrorLayer::updateCosts(
             costmap_[idx] = NO_INFORMATION;
             continue;
           }
+          if (src_val > 0 && src_val < min_occupied_value_to_mirror_) {
+            continue;
+          }
+          const unsigned char incoming = interpretCost(src_val);
 
           const unsigned char existing = costmap_[idx];
           if (existing == NO_INFORMATION) {

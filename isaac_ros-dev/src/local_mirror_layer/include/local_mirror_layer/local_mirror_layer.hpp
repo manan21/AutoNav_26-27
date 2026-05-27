@@ -88,6 +88,9 @@ private:
   double decrease_range_max_m_;
   std::vector<std::string> exclude_topics_;
   int exclude_threshold_;
+  // Ignore occupied source cells below this OccupancyGrid value. FREE cells
+  // still flow through allow_decrease clearing; UNKNOWN still means no opinion.
+  int min_occupied_value_to_mirror_;
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_;
   std::vector<rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr> exclude_subs_;

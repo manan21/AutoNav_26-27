@@ -134,10 +134,10 @@ private:
   double line_clear_range_max_m_;
   int max_persisted_points_;
   // Line-specific inflation, baked into stampPoints so this layer can
-  // produce a different inflation radius than the global obstacle
-  // inflation_layer. The plugin order in nav2_paramsv2.yaml puts
-  // line_layer AFTER inflation_layer so the inflation_layer's larger
-  // obstacle radius doesn't re-inflate line cells.
+  // produce a line-only costmap topic for memory mirrors. In Nav2's
+  // active config, line_layer also runs before the stock inflation_layer
+  // so line lethal cells seed the same footprint-aware inflation as PCA
+  // obstacle cells.
   double inflation_radius_;
   double cost_scaling_factor_;
   // Cells within this distance of a line are pinned to

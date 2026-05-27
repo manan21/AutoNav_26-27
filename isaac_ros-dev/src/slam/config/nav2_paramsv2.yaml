@@ -203,7 +203,12 @@ local_costmap:
       # time; global footprint stays unpadded so the planner can still
       # thread tight gates.
       footprint_padding: 0.03
-      plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
+      # Obstacle and line layers all seed lethal cells before stock Nav2
+      # inflation. This keeps DWB's local cost field symmetric: cones and
+      # tape both get footprint-aware inflation from the same layer instead
+      # of cones getting stock inflation while tape uses only the custom
+      # line-layer halo.
+      plugins: ["obstacle_layer", "line_layer", "lidar_line_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -355,7 +360,7 @@ global_costmap:
       # No detector topic is consumed directly by the global costmap.
       # The contributors are:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells so tape/painted lines do not seed the global obstacle inflation layer.
+      #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells, then mirrors only local lethal obstacle marks so local inflation is not copied into global and inflated again.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
       # Line memory is intentionally mirrored BEFORE inflation. Smac Lattice
       # first checks the center-cell cost before doing the expensive full
@@ -381,14 +386,20 @@ global_costmap:
         source_topic: /local_costmap/costmap
         exclude_topics: ["/line_costmap", "/lidar_line_costmap"]
         exclude_threshold: 1
+        # Mirror only true lethal obstacle cells from the combined local
+        # costmap. Non-lethal local inflation around cones is deliberately
+        # ignored so PCA obstacles and tape/lines both seed the global
+        # inflation_layer once, instead of cones receiving an extra
+        # mirrored local inflation component.
+        min_occupied_value_to_mirror: 100
         # Accumulate obstacle marks globally, but accept FREE/lower-cost
         # clears only where the robot is currently looking. The local
         # rolling costmap publishes FREE cells across its whole 6x6 m
         # window; without this gate, those unobserved rear/side cells erase
         # global memory just because they are inside the rolling window.
-        # Line-layer masks keep the combined local costmap from copying
-        # tape/painted line cells into this pre-inflation obstacle layer;
-        # line memory is mirrored separately after inflation below.
+        # Line-layer masks keep the combined local costmap from copying tape
+        # cells through the PCA obstacle memory path; line memory is mirrored
+        # separately below.
         allow_decrease: true
         decrease_only_in_front: true
         decrease_angle_min_rad: -1.2217

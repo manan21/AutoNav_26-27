@@ -474,9 +474,9 @@ void LineLayer::buildInflationKernel(double resolution)
   // Match nav2_costmap_2d::InflationLayer's exact formula so line
   // inflation visually matches obstacle inflation. Cells within
   // `inscribed_radius_` of the center are pinned to
-  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL —
-  // LETHAL is reserved for the exact line cell so this layer doesn't
-  // re-trigger the global inflation_layer below it in plugin order).
+  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL).
+  // LETHAL is reserved for the exact line cell so stock Nav2 inflation
+  // can expand the true line obstacle footprint exactly once.
   // Past that radius, exponential decay from INSCRIBED toward zero.
   // Without this, a raw exp(-k*dist) from the center fell off so
   // sharply that the visible halo was ~0.30 m, not the configured
