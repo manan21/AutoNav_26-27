@@ -1120,12 +1120,15 @@ class HudWindow(QMainWindow):
         super().__init__()
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
-        # Mutter sometimes drops showFullScreen() when it fires before the
-        # window is mapped, leaving the GNOME top bar visible over the HUD
-        # and pushing the bottom row off-screen. Pre-size to the screen's
-        # strut-adjusted area so we still fit if fullscreen never lands,
-        # then re-arm it through the event loop.
-        self.setGeometry(QApplication.primaryScreen().availableGeometry())
+        # Small initial seed so Qt's layout pass computes minimums against
+        # a compact canvas — seeding to availableGeometry() (screen minus
+        # GNOME strut) locks fixed-size widgets in at sizes that then clip
+        # at the bottom once fullscreen lands. Fire showFullScreen()
+        # synchronously, then re-arm through the event loop as a safety
+        # net because Mutter has been observed to drop the first call
+        # when it lands before the window is mapped.
+        self.resize(1920, 720)
+        self.showFullScreen()
         QTimer.singleShot(0, self.showFullScreen)
         self.setCursor(Qt.BlankCursor)
 
@@ -4128,12 +4131,44 @@ class HudWindow(QMainWindow):
                 return True
         return False
 
+    def _dev_reclaim_repo_ownership(self, log=None):
+        """Best-effort passwordless-sudo chown of the host repo back to
+        the GUI's user. The Docker container (koopa-kingdom) runs as
+        root, so build artifacts and any files it touches end up
+        root-owned; the subsequent `git reset --hard` and `git clean
+        -fd` then fail with Permission denied for the non-root GUI
+        user. Returns True on success, False if sudo wasn't passwordless
+        or the chown errored — callers should continue either way and
+        let the real git error surface."""
+        try:
+            uid = os.geteuid()
+            gid = os.getegid()
+            r = subprocess.run(
+                ['sudo', '-n', 'chown', '-R', f'{uid}:{gid}',
+                 self._dev_host_repo],
+                capture_output=True, text=True, timeout=30,
+            )
+            if log is not None:
+                log(f"$ sudo -n chown -R {uid}:{gid} {self._dev_host_repo}")
+                if r.stderr.strip():
+                    log(r.stderr.strip())
+            return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            if log is not None:
+                log("[chown skipped] sudo chown timed out")
+            return False
+        except Exception as e:
+            if log is not None:
+                log(f"[chown skipped] {e}")
+            return False
+
     def _dev_git_hard_sync(self, log=None):
         """Force the host repo to match origin/<current-branch>.
 
-        Sequence: fetch → reset --hard origin/<branch> → clean -fd →
-        submodule update --init --recursive. Untracked files in the
-        working tree are deleted; gitignored build artifacts are kept.
+        Sequence: reclaim ownership (best-effort sudo chown) → fetch →
+        reset --hard origin/<branch> → clean -fd → submodule update
+        --init --recursive. Untracked files in the working tree are
+        deleted; gitignored build artifacts are kept.
 
         Returns (ok: bool, summary: str). When `log` is provided, every
         sub-step's stdout/stderr is passed to it.
@@ -4147,6 +4182,11 @@ class HudWindow(QMainWindow):
         if rc_b != 0 or not branch:
             return False, f"branch lookup failed: {err_b or 'detached HEAD'}"
 
+        # Reclaim ownership before the destructive steps. Failure here is
+        # silent — if passwordless sudo isn't configured, the git step
+        # below will surface the real Permission denied with a hint.
+        self._dev_reclaim_repo_ownership(log=log)
+
         for step_args, step_timeout in (
             (['fetch', 'origin', '--prune'], 60),
             (['reset', '--hard', f'origin/{branch}'], 30),
@@ -4158,7 +4198,15 @@ class HudWindow(QMainWindow):
             _emit(out)
             _emit(err)
             if rc != 0:
+                combined = f"{err}\n{out}"
                 msg = (err or out or 'unknown').splitlines()[-1]
+                if 'Permission denied' in combined:
+                    msg = (
+                        f"{msg}  (root-owned files in tree — run "
+                        f"`sudo chown -R $(id -u):$(id -g) "
+                        f"{self._dev_host_repo}` on the Jetson, or "
+                        f"enable passwordless sudo for chown)"
+                    )
                 return False, f"git {step_args[0]} failed: {msg}"
 
         return True, f"synced to origin/{branch}"
