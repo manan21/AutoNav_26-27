@@ -27,7 +27,7 @@ The runner writes the combined output to:
 - `scripts/analyze_lidar_line_bag.py`: high-level test summary, nav-center travel, commands, odometry, line detections, costmap persistence, action statuses, and PCA point-cloud presence.
 - `scripts/analyze_lidar_line_timeline.py`: compact event timeline for goals, commands, first line detections, measured-course footprint contact, early plans, and first DWB all-invalid sample.
 - `scripts/analyze_lidar_line_plan_gap.py`: checks whether `/plan` routes through the measured tape/cone gap and reports plan clearance to lidar-line/global hard cells.
-- `scripts/analyze_global_plan_costmap_collision.py`: time-aligns `/plan` and `/unsmoothed_plan` with `/global_costmap/costmap_raw` and checks whether the rectangular nav-center footprint overlaps raw lethal or inscribed global costmap cells. In the standard suite this is a hard acceptance gate using the globally padded footprint.
+- `scripts/analyze_global_plan_costmap_collision.py`: time-aligns `/plan` and `/unsmoothed_plan` with `/global_costmap/costmap_raw` and checks whether the rectangular nav-center footprint overlaps raw lethal global costmap cells. It still reports inscribed-cell clearance, but the standard suite treats inscribed overlap as a diagnostic because global inflation already encodes tape/obstacle clearance.
 - `scripts/analyze_lidar_line_course_clearance.py`: compares odometry against the measured course geometry and reports physical and padded rectangular-footprint clearance to the perpendicular tape. In the standard suite any physical or padded overlap fails the analysis.
 - `scripts/analyze_costmap_footprint.py`: checks hard local/lidar-line costmap cells against the configured nav-center footprint over time.
 - `scripts/analyze_dwb_evaluation.py`: summarizes DWB valid trajectory counts, all-invalid spans, rejection reasons, and dominant critic costs.
@@ -45,11 +45,11 @@ python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.3
 
 If the measured course changes, update both the course document and the defaults in `scripts/run_lidar_line_bag_analysis.sh` so future runs stay consistent.
 
-The DWB evaluation analyzer is optional in the standard suite because the active lidar-line branch may use Regulated Pure Pursuit instead of DWB. Missing `/evaluation` should not mask the hard acceptance gates: unsafe global-plan geometry or measured tape overlap still exits nonzero.
+The DWB evaluation analyzer is optional in the standard suite because the active lidar-line branch may use another controller. Missing `/evaluation` should not mask the hard acceptance gates: lethal global-plan footprint overlap or measured tape overlap still exits nonzero. For conservative experiments, add `--fail-on-inscribed-overlap` to the global plan analyzer.
 
 The detector publishes completed ground-only line segments on `/lidar_line_points`, so the timeline analyzer's first perpendicular/rightward detection should appear before the measured-course footprint contact. If it appears at or after contact, the robot is probably not seeing enough floor-tape geometry early enough for Nav2 to route around it.
 
-If the robot crosses tape after `/lidar_line_points` and `/lidar_line_costmap` saw it, use `analyze_global_plan_costmap_collision.py` first. If `/unsmoothed_plan` is safe but `/plan` is not, the smoother is clipping the path. If both plans overlap raw global lethal or inscribed cells, the planner/costmap representation is still unsafe. If raw global cells are missing, debug line memory mirroring or costmap timing before tuning DWB.
+If the robot crosses tape after `/lidar_line_points` and `/lidar_line_costmap` saw it, use `analyze_global_plan_costmap_collision.py` first. If `/unsmoothed_plan` is safe but `/plan` is not, the smoother is clipping the path. If either plan overlaps raw global lethal cells, the planner/costmap representation is still unsafe. If raw global cells are missing, debug line memory mirroring or costmap timing before tuning the controller.
 
 ## Adding New Helpers
 

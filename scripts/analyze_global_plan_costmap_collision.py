@@ -4,8 +4,9 @@
 This analyzer is for the lidar-line avoidance test. It time-aligns each
 published global path with the nearest preceding /global_costmap/costmap_raw
 sample and reports whether the rectangular nav_center footprint would overlap
-raw lethal or inscribed cells. That catches the failure mode where a path
-centerline looks clear but the full robot body still crosses tape.
+raw lethal cells. It also reports inscribed-cell clearance as a diagnostic so
+we can see how close the plan is to the global inflation field without
+double-counting inflation as a footprint collision.
 """
 
 from __future__ import annotations
@@ -320,13 +321,18 @@ def main():
     parser.add_argument(
         "--fail-on-overlap",
         action="store_true",
-        help="Exit nonzero if any analyzed plan footprint overlaps lethal or inscribed raw global cells.",
+        help="Exit nonzero if any analyzed plan footprint overlaps lethal raw global cells.",
+    )
+    parser.add_argument(
+        "--fail-on-inscribed-overlap",
+        action="store_true",
+        help="Also exit nonzero if any analyzed plan footprint overlaps inscribed raw global cells.",
     )
     parser.add_argument(
         "--clearance-margin",
         type=float,
         default=0.0,
-        help="Minimum acceptable signed footprint clearance when --fail-on-overlap is set.",
+        help="Minimum acceptable signed footprint clearance for enabled overlap failures.",
     )
     parser.add_argument(
         "--fail-on-gap-center",
@@ -442,18 +448,26 @@ def main():
             if not summaries[topic]:
                 failures.append(f"{topic}: no plans after action start")
 
-    if args.fail_on_overlap:
+    if args.fail_on_overlap or args.fail_on_inscribed_overlap:
         for topic in ("/unsmoothed_plan", "/plan"):
             for summary in summaries[topic]:
                 rel_t = summary["stamp"] - bag_start
                 lethal_clear = summary["lethal_clear"]
                 inscribed_clear = summary["inscribed_clear"]
-                if lethal_clear is not None and lethal_clear <= args.clearance_margin:
+                if (
+                    args.fail_on_overlap and
+                    lethal_clear is not None and
+                    lethal_clear <= args.clearance_margin
+                ):
                     failures.append(
                         f"{topic} t={rel_t:.2f}s lethal clearance {lethal_clear:+.3f} "
                         f"<= margin {args.clearance_margin:+.3f}"
                     )
-                if inscribed_clear is not None and inscribed_clear <= args.clearance_margin:
+                if (
+                    args.fail_on_inscribed_overlap and
+                    inscribed_clear is not None and
+                    inscribed_clear <= args.clearance_margin
+                ):
                     failures.append(
                         f"{topic} t={rel_t:.2f}s inscribed clearance {inscribed_clear:+.3f} "
                         f"<= margin {args.clearance_margin:+.3f}"

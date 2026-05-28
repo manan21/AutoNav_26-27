@@ -437,7 +437,12 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /lidar_line_costmap
-        # TEMPORARY tape-test behavior: local LiDAR-line memory is now
+        # Mirror only exact lethal tape cells from the line-only costmap.
+        # The local line layer already contains its own soft halo; copying
+        # that halo here would mix local tape policy into global planning.
+        # Global inflation below expands these lethal tape seeds once.
+        min_occupied_value_to_mirror: 100
+        # TEMPORARY tape-test behavior: local LiDAR-line memory is
         # manual-clear-only, so the global mirror must not accept automatic
         # lower-cost clears from the rolling local line costmap. The operator
         # clear topic still wipes nearby accumulated mirror cells.
