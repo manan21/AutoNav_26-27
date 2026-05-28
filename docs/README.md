@@ -132,6 +132,7 @@ First address = source on the Jetson. Second = destination. Trailing slash matte
 # Other docs in this folder
 
 - [`HUMAN-WRITTEN-README.md`](./HUMAN-WRITTEN-README.md) — high-level human-written tour of the robot and the repo.
+- [`AUTONOMY_DECISION_LOG.md`](./AUTONOMY_DECISION_LOG.md) — durable record of autonomy design decisions, experiment results, failed approaches, and reversals.
 - [`LAUNCH_STACK.md`](./LAUNCH_STACK.md) — order, dependencies, and pacing of the GUI launch panel buttons.
 - [`MANUAL_INSTRUCTIONS.md`](./MANUAL_INSTRUCTIONS.md) — three tiers of manual control (GUI → manual ROS2 launch → laptop-direct fallback) in order of preference.
 - [`SENSORS.md`](./SENSORS.md) — hardware, topics, frames, and gotchas for the SICK LiDAR, ZED camera, GPS, wheel encoders, and Power PCB.
