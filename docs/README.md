@@ -128,6 +128,7 @@ First address = source on the Jetson. Second = destination. Trailing slash matte
 - [`SENSORS.md`](./SENSORS.md) — hardware, topics, frames, and gotchas for the SICK LiDAR, ZED camera, GPS, wheel encoders, and Power PCB.
 - [`PACKAGES.md`](./PACKAGES.md) — per-package reference for every ROS2 package under `isaac_ros-dev/src/`.
 - [`HYPERPARAMETER.md`](./HYPERPARAMETER.md) — tunable knobs across the autonomy stack, with safety legend and YAML inventory.
+- [`IGVC_COMPETITION_RULES.md`](./IGVC_COMPETITION_RULES.md) — competition rules that should constrain robot, Nav2, perception, and simulation changes.
 - [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) — quick triage + full chronological fix log + keyword index for past bugs.
 
 # Helpful Background Documentation
