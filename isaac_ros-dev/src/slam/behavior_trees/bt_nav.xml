@@ -34,10 +34,12 @@
              gives a ~333 ms worst-case staleness window at the planner,
              without the false-positive issues of an explicit
              IsPathValid check (which can fail-cascade into recovery on
-             a transient one-tick costmap blip). PHASEB's
-             PathSignificantlyChanged decorator absorbs same-path
-             replans so this cadence does not regress cmd_vel
-             continuity. -->
+             a transient one-tick costmap blip). PathFootprintSafe below
+             rejects planner outputs whose rectangular nav_center footprint
+             overlaps lethal global cells before FollowPath can execute them.
+             Inscribed inflated cells are not footprint-overlap gated here
+             because global inflation already encodes robot-radius clearance
+             around lidar tape for Smac/MPPI. -->
         <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
@@ -84,7 +86,19 @@
                    case the previous PHASEA tuning targeted; this just
                    widens the budget for both. -->
               <RecoveryNode number_of_retries="8" name="ComputePathRecovery">
-                <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
+                <Sequence name="ComputeAndValidatePath">
+                  <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
+                  <PathFootprintSafe path="{path}"
+                    costmap_topic="global_costmap/costmap_raw"
+                    global_frame="map"
+                    robot_base_frame="nav_center"
+                    footprint="[[0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41]]"
+                    footprint_padding="0.05"
+                    lethal_threshold="254"
+                    inscribed_threshold="254"
+                    ignore_unknown="true"
+                    pose_stride="1"/>
+                </Sequence>
                 <Sequence name="PlanRecovery">
                   <!-- LOCAL clear only (sim spec): wiping the entire
                        global costmap erases distant lidar marks the
@@ -104,8 +118,9 @@
         </RateController>
         <!-- Forward/reverse dispatch.
              When the planner's path leads behind the robot but the
-             actual goal is in front (IsForwardBlocked = SUCCESS), DWB
-             can't follow it (min_vel_x: 0.0). Take the BreadcrumbReverse
+             actual goal is in front (IsForwardBlocked = SUCCESS), the
+             forward-only controller should not be asked to solve a reverse
+             path. Take the BreadcrumbReverse
              branch — drive backward to the most recent breadcrumb the
              robot dropped on its way in. The next RateController tick
              replans from the new pose; if that path is forward-leading,
@@ -121,7 +136,7 @@
                 angle_threshold="1.57" path_lookahead_index="5"
                 min_lookahead_m="0.6"/>
             </Inverter>
-            <!-- 2 retries for FollowPath. If DWB's progress_checker
+            <!-- 2 retries for FollowPath. If the progress_checker
                  fires (no 10cm of motion in 15s — PHASEA A.2), we clear
                  a 1 m radius around the robot (PHASEA A.5) and try the
                  SAME path again before escalating. The around-robot
@@ -129,22 +144,11 @@
                  inflation without wiping the line obstacles it was
                  successfully avoiding. -->
             <RecoveryNode number_of_retries="2" name="FollowPathRecovery">
-              <!-- FollowPath consumes whatever {path} is currently on
-                   the blackboard. When the RateController writes a new
-                   {path} next cycle, FollowPath's action client
-                   re-issues the goal with the new path automatically —
-                   no explicit invalidation check needed. -->
-              <!-- PHASEB: PathSignificantlyChanged feeds FollowPath a
-                   stable filtered path when a fresh /plan is essentially
-                   identical to the previous one, while still ticking
-                   FollowPath so its action result callbacks are serviced.
-                   Tuning lives in nav2_paramsv2.yaml bt_navigator params
-                   (path_significantly_changed.rms_threshold_m and
-                   path_significantly_changed.compare_n_poses) — live
-                   tweak with `ros2 param set /bt_navigator …`. -->
-              <PathSignificantlyChanged path="{path}" filtered_path="{filtered_path}">
-                <FollowPath path="{filtered_path}" controller_id="FollowPath"/>
-              </PathSignificantlyChanged>
+              <!-- MPPI should see each fresh safe path directly. The old
+                   PathSignificantlyChanged decorator could hold a stale path
+                   whose first poses matched while the later path diverged
+                   around tape. -->
+              <FollowPath path="{path}" controller_id="FollowPath"/>
               <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
                 service_name="local_costmap/clear_around_local_costmap"
                 reset_distance="1.0"/>

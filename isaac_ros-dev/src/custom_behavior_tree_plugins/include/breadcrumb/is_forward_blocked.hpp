@@ -11,8 +11,8 @@ namespace breadcrumb
 {
 
 // BT condition: SUCCESS when the planned {path} loops behind the robot
-// while the actual {goal} is in front. This is the case DWB's
-// forward-only controller cannot follow — the breadcrumb-reverse
+// while the actual {goal} is in front. This is the case a forward-only
+// controller should not try to follow — the breadcrumb-reverse
 // behavior should take over.
 //
 // Returns FAILURE in every other configuration (path in front, no path

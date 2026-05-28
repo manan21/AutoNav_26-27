@@ -44,8 +44,8 @@ def generate_launch_description():
         description='Set false to skip the PCA grade detector.',
     )
     enable_lidar_line = DeclareLaunchArgument(
-        'enable_lidar_line', default_value='false',
-        description='Set true to start the parallel LiDAR RSSI line detector.',
+        'enable_lidar_line', default_value='true',
+        description='Set false to skip the LiDAR RSSI line detector.',
     )
 
     line_detector = Node(

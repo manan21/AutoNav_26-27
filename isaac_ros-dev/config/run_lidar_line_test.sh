@@ -61,6 +61,8 @@ TOPICS=(
   /plan
   /unsmoothed_plan
   /local_plan
+  /transformed_global_plan
+  /trajectories
   /goal_pose
   /evaluation
   /navigate_to_pose/_action/status

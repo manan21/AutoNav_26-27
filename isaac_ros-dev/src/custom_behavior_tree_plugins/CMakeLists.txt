@@ -113,6 +113,21 @@ target_include_directories(autonav_is_forward_blocked_bt_node
 
 ament_target_dependencies(autonav_is_forward_blocked_bt_node ${dep_pkgs})
 
+# === BT node plugin: PathFootprintSafe ===
+
+add_library(autonav_path_footprint_safe_bt_node SHARED
+            src/path_footprint_safe_condition.cpp)
+
+target_compile_definitions(autonav_path_footprint_safe_bt_node
+  PRIVATE BT_PLUGIN_EXPORT)
+
+target_include_directories(autonav_path_footprint_safe_bt_node
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+ament_target_dependencies(autonav_path_footprint_safe_bt_node ${dep_pkgs})
+
 # === Standalone node: breadcrumb_buffer ===
 
 add_executable(breadcrumb_buffer src/breadcrumb_buffer.cpp)
@@ -131,6 +146,7 @@ install(TARGETS ${grad_lib}
                 autonav_goal_bender_bt_node
                 autonav_path_significantly_changed_bt_node
                 autonav_is_forward_blocked_bt_node
+                autonav_path_footprint_safe_bt_node
         DESTINATION lib)
 
 install(TARGETS breadcrumb_buffer

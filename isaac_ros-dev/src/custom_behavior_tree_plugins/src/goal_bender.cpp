@@ -59,7 +59,7 @@ BT::NodeStatus GoalBender::tick()
   geometry_msgs::msg::TransformStamped tf;
   try {
     tf = tf_buffer->lookupTransform(
-      "map", "base_link", tf2::TimePointZero);
+      "map", "nav_center", tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
     setOutput("output_goal", goal);
     if (nav_goal_pub_) nav_goal_pub_->publish(goal);
@@ -105,8 +105,7 @@ BT::NodeStatus GoalBender::tick()
   // Forward-bend: place an intermediate goal bend_distance metres away,
   // offset by bend_angle from the robot heading toward the side the real
   // goal is on. Yields a forward-only plan that turns toward the real
-  // goal incrementally — exactly what DWB in forward-only mode
-  // (min_vel_x: 0.0) can follow.
+  // goal incrementally so the forward-only controller can follow it.
   const double offset = (fb.rel_goal >= 0.0) ? bend_angle : -bend_angle;
   const double heading = ryaw + offset;
 

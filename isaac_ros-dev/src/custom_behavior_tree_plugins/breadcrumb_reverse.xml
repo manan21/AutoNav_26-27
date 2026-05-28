@@ -1,5 +1,5 @@
 <library path="breadcrumb_reverse_core">
   <class type="breadcrumb::BreadcrumbReverse" base_class_type="nav2_core::Behavior">
-    <description>Reverses the robot toward the most recent breadcrumb on /breadcrumb_tail. Used when DWB cannot follow a path that loops behind the robot.</description>
+    <description>Reverses the robot toward the most recent breadcrumb on /breadcrumb_tail. Used when the controller should not follow a path that loops behind the robot.</description>
   </class>
 </library>

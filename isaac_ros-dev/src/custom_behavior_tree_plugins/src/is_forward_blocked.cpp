@@ -42,7 +42,7 @@ BT::NodeStatus IsForwardBlocked::tick()
   geometry_msgs::msg::TransformStamped tf;
   try {
     tf = tf_buffer->lookupTransform(
-      "map", "base_link", tf2::TimePointZero);
+      "map", "nav_center", tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
     return BT::NodeStatus::FAILURE;
   }
