@@ -74,7 +74,7 @@ cd ../../..
 git submodule update --init isaac_ros-dev/src/zed-ros2-wrapper   # never --remote
 ```
 
-See [2026-05-04 wrapper pin saga](#2026-05-04--zed-wrapper-pin-saga-3-commits) and `docs/zed.md`.
+See [2026-05-04 wrapper pin saga](#2026-05-04--zed-wrapper-pin-saga-3-commits) and [`docs/SENSORS.md` (ZED section)](./SENSORS.md#zed-2i-camera).
 
 **Keywords**: zed, zed-ros2-wrapper, submodule, pin, sdk, sdk-5.1, sdk-5.2, object_tracking_parameters, customobjectdetectionproperties, colcon, build-error, v5.2.0, 506e047, git-submodule, --remote, .gitmodules, abi-mismatch, stereolabs
 
@@ -111,6 +111,17 @@ Check `line_hold_timeout_ms` in `line_detector.yaml` — when the detector goes 
 Verify `/autonomous_mode` is being published by the control node. The BT now gates on it. See [2026-04-29 BT gating](#2026-04-29--behavior-tree-triggering-when-not-autonomous).
 
 **Keywords**: behavior-tree, bt, /autonomous_mode, autonomous_mode, manual-mode, gradient_escape, goal_bender, recovery, nav2, bt_nav.xml, control-node, mode-switch, custom_behavior_tree_plugins
+
+## "Power PCB silent — no `/electrical/*` readings"
+
+**Current state (as of 2026-05-25):** the Power PCB is physically disconnected — I²C is broken on the Jetson and a recent fix attempt left the Jetson unbootable. Until I²C is restored and the PCB is reattached, no `/electrical/voltage`, `/electrical/current`, `/electrical/power`, or `/electrical/soc` topic will publish. The GUI's Power PCB launch button will start `electrical_publisher_node`, but the node will fail to initialize the INA226 over I²C and emit a retry log instead of readings.
+
+Triage:
+1. Check `/dev/i2c-1` exists (`ls /dev/i2c-*` inside the container). If missing, the bus is down at the kernel/device-tree level — see the [2026-04-17 Jetson incident](#2026-04-17--jetson-orin-nano-bricked-by-manual-device-tree-overlay-incident) and the brick-recovery row above.
+2. If `/dev/i2c-1` exists but readings still silent, check the node's terminal in the GUI — INA226 init will retry on a timer and log `[INA226] init failed, retrying...`.
+3. Don't add new code dependencies on `/electrical/*` until the PCB is back. Treat power readings as currently unavailable.
+
+**Keywords**: power-pcb, electrical, ina226, i2c, /dev/i2c-1, readings-missing, silent, autonav_electrical_publisher, /electrical/voltage, /electrical/current, /electrical/power, /electrical/soc, jetson-i2c, broken, disconnected, 2026-05
 
 ## "`docker exec` says user not found right after start"
 
@@ -212,6 +223,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: Python scripts hardcoded `/home/vtuser/...` paths that didn't exist on the deploy Jetson.
 - **Fix**: Updated to `/home/vtcro/AutoNav/...` to match the actual deploy structure.
 - **Triage tip**: Waypoint commander reports "file not found" → check `stored_waypoints.txt` path in `gps_waypoint_handler/setup.py` console_scripts.
+- **Superseded (2026)**: `waypoint_commander` and `stored_waypoints.txt` no longer exist. GPS goals arrive over the `/navigate_to_waypoint` action (`autonav_interfaces`), not a file. Entry kept for historical context.
 - **Keywords**: gps, waypoint, gps_waypoint_handler, stored_waypoints.txt, hardcoded-path, /home/vtuser, /home/vtcro, file-not-found, deploy-path, console_scripts, setup.py
 
 ## 2025-11-12 — Stale TF used for line projection
@@ -527,7 +539,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 
 - **Commit**: `8863842a` — 2026-04-17 — *"Added yaml overwrite to increase IMU publish rate"*
 - **Fix**: Override loads after the wrapper defaults so we win the merge.
-- **Triage tip**: See the full ZED launch breakdown in `docs/zed.md` and `PACKAGES.md`.
+- **Triage tip**: See the full ZED launch breakdown in [`docs/SENSORS.md`](./SENSORS.md#zed-2i-camera) and `PACKAGES.md`.
 - **Keywords**: zed, zed_override.yaml, imu, sensors_pub_rate, override, ros_params_override_path, run-zed.sh, common_stereo.yaml, zed2i.yaml
 
 ## 2026-04-17 — NovAtel to u-blox parser mismatch
@@ -920,6 +932,15 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Fix**: Restructured with submodule-pin policy front and center.
 - **Keywords**: zed, zed.md, doc, submodule-pin, v5.2.0, 506e047, modernize
 
+## 2026-05-11 — SICK IMU yaw / covariance handling (historical; mechanism since superseded)
+
+- **Original commit**: `7acefa48` — 2026-05-11 — *"Fixing IMU transform"*
+- **Original cause (historical)**: The SICK MultiScan is mounted with a π-roll (180° around X), defined in the URDF as the fixed `base_link → lidar_footprint` joint. The driver publishes its onboard IMU directly in `lidar_footprint`, so the Z angular velocity (yaw rate) and Y angular velocity (pitch rate are negated relative to `base_link`. The original `ekf_local.yaml` fused `/sick_scansegment_xd/imu` directly — feeding the EKF an inverted yaw rate. Wheel-derived yaw fought IMU-derived yaw at every tick; `odom → base_link` drifted in yaw; slam_toolbox kept scan-match-correcting `map → odom` against a moving target, producing map-snap and stall behavior.
+- **Original fix (now removed)**: A `imu_frame_transformer.py` node republished the IMU in `base_link` on `/sick_scansegment_xd/imu_base_link`.
+- **Current mechanism (superseded)**: The frame-transformer was later replaced by the `imu_cov_inflator` package (Python, lives at `isaac_ros-dev/src/imu_cov_inflator/`). It republishes the SICK IMU as `/sick_scansegment_xd/imu_inflated` with inflated covariance so the EKF treats the rotated readings as a high-uncertainty input rather than relying on a pre-rotation. `ekf_local.yaml` consumes `imu0: /sick_scansegment_xd/imu_inflated` and disables the orientation/translation components it can't trust from the rotated mount (see the `imu0_config` row in that file). The net behavioral fix is the same — yaw is no longer fought between sensors — but the mechanism is covariance-based, not frame-rotation-based.
+- **Triage tip**: If yaw tracking misbehaves, first confirm `imu_cov_inflator` is running and publishing on `/sick_scansegment_xd/imu_inflated` (`ros2 topic hz`). Then confirm `ekf_local.yaml`'s `imu0` is pointed at the inflated topic, **not** the raw one. The `imu_frame_transformer.py` no longer exists — do not re-add it without coordinating, since the inflator-based design assumes the frame mismatch is handled by trust-weighting rather than transformation.
+- **Keywords**: imu, sick-imu, yaw, yaw-inverted, imu_cov_inflator, imu_inflated, ekf_local, ekf_local.yaml, lidar_footprint, base_link, sick_scansegment_xd, upside-down, lidar-mount, urdf, π-roll, covariance-inflation, superseded
+
 ---
 
 # Keyword index
@@ -946,6 +967,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `/map`, `/map_padded` → 2026-04-30 map padder dyn-res, 2026-04-30 seed-and-flood, 2026-05-06 startup race
 - `/odom`, `/wheel_odom` → 2025-05-05 odom string, 2025-05-07 odom rename, 2026-04-15 wheel radius, 2026-04-28 odom jumps, 2026-04-29 left encoder
 - `/scan`, `/scan_fullframe`, `/scan_pca_filtered_points` → 2025-05-07 odom rename, 2026-03-04 driver respawn, 2026-03-24 max_laserscan_range, 2026-04-25 obstacle layer, 2026-05-05 PCA scheduler, 2026-05-06 startup race
+- `/sick_scansegment_xd/imu`, `/sick_scansegment_xd/imu_base_link` → 2026-05-11 IMU yaw inverted
 
 **Subsystems / concepts**
 - `behavior-tree`, `bt`, `bt_nav.xml` → 2026-03-24 hardcoded BT, 2026-04-29 BT gating, 2026-04-30 retries, 2026-04-30 BT plugin, 2026-04-30 goal-bender, 2026-04-30 gradient-escape
@@ -953,7 +975,8 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `cuda`, `nvcc`, `-Wpedantic`, `kernel`, `line-detection` → 2026-04-22 thresholds, 2026-04-22 window size, 2026-05-05 -Wpedantic
 - `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch
 - `docker`, `container`, `koopa-kingdom`, `entrypoint` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind
-- `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous
+- `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous, 2026-05-11 IMU yaw inverted
+- `imu`, `imu-frame`, `imu_frame_transformer`, `yaw-inverted`, `upside-down`, `π-roll`, `lidar_footprint` → 2026-04-16 ZED IMU rate, 2026-05-11 SICK IMU yaw inverted
 - `gui`, `hud`, `hud_node.py`, `[GUI_READY]`, `dot`, `live-mode` → 2026-04-24 live-mode, 2026-04-24 playback, 2026-04-24 QoS, 2026-04-24 terminal, 2026-04-24 buttons, 2026-04-28 (5 entries), 2026-05-06 startup race, 2026-05-06 5s pacing, 2026-05-06 run-detect
 - `map_padder` → 2026-04-30 dynamic-res, 2026-04-30 seed-and-flood
 - `nav2`, `planner`, `dwb`, `dijkstra`, `astar`, `tolerance` → 2026-04-15 footprint, 2026-04-15 critic, 2026-04-22 rolling, 2026-04-30 retries, 2026-04-30 dijkstra, 2026-05-04 dijkstra revert

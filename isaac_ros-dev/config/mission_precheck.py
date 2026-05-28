@@ -6,7 +6,8 @@ GA leg is live:
 
   * /autonomous_mode      == True   (joystick won't fight nav2)
   * /gps_fix              status >= 0 and arriving
-  * /global_ekf/odom      arriving (global EKF up)
+  * /local_ekf/odom       arriving (local EKF up — owns odom→base_link
+                          TF, is the predict source gps_handler reads)
   * /gps_waypoint/debug   arriving (gps_handler_node up)
   * TF map -> base_link   resolvable (robot is localized)
   * /navigate_to_waypoint action server reachable
@@ -16,6 +17,15 @@ Exits 1 on timeout, 2 on import / argparse error.
 Mirrors the topic set that /tmp/autonav_monitor.py watched during
 outdoor Phase C tests — that monitor is how we noticed which signals
 have to be green before the first GA leg should be dispatched.
+
+Note: previously gated on /global_ekf/odom. That topic is published by
+ekf_global (a parallel state estimator) and consumed only by HUD/test
+logging and the closed navsat_transform↔ekf_global fusion loop — no
+NAV2 component or gps_handler subscriber. The launch stack supports
+enable_gps_fusion:=false which disables ekf_global entirely while
+keeping the mission fully functional. Gating on it created a startup
+hang whenever ekf_global was disabled or slow to come up, with no
+operational reason. /local_ekf/odom is the load-bearing odom source.
 """
 
 from __future__ import annotations
@@ -73,7 +83,7 @@ class PreCheck(Node):
 
         self.create_subscription(Bool, "/autonomous_mode", self._on_auto, RELIABLE_QOS)
         self.create_subscription(NavSatFix, "/gps_fix", self._on_gps, SENSOR_QOS)
-        self.create_subscription(Odometry, "/global_ekf/odom", self._on_odom, RELIABLE_QOS)
+        self.create_subscription(Odometry, "/local_ekf/odom", self._on_odom, RELIABLE_QOS)
         self.create_subscription(String, "/gps_waypoint/debug", self._on_debug, RELIABLE_QOS)
 
     def _on_auto(self, msg: Bool) -> None:
@@ -167,7 +177,7 @@ def main() -> int:
                  gps_ok,
                  "no fix yet" if not node.gps_seen
                  else f"status={node.gps_status}"),
-                ("/global_ekf/odom",
+                ("/local_ekf/odom",
                  odom_ok,
                  "" if odom_ok else "no message yet"),
                 ("/gps_waypoint/debug (gps_handler up)",

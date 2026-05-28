@@ -643,11 +643,9 @@ velocity_smoother:
     #   yaw drifts, slam_toolbox has to scan-match-correct map→odom
     #   against a moving target → map-catching-up snap → stall.
     # ────────────────────────────────────────────────────────────────
-    # PHASE C.1 outdoor-validated at 0.50 m/s. Dropped back to 0.25 m/s
-    # for in-house lab tests after outdoor validation — lab tests run
-    # near people / equipment, the lower cap is purely a safety bound.
-    # Bump back to 0.50 (or onward to 0.80 per PHASEC.md C.2) before
-    # the next outdoor mission.
+    # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
+    # GPS-waypoint runs; drop to 0.25 m/s for in-house lab tests near
+    # people / equipment.
     max_velocity: [0.25, 0.0, 1.0]
     min_velocity: [-0.25, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
