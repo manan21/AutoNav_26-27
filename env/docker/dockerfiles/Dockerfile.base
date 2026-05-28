@@ -83,7 +83,6 @@ RUN add-apt-repository -y universe \
       ros-humble-ros2-control ros-humble-ros2-controllers ros-humble-joy \
       # navigation
       ros-humble-navigation2 ros-humble-nav2-bringup \
-      ros-humble-nav2-mppi-controller \
       # SLAM
       ros-humble-slam-toolbox \
       # GPS/GNSS messages

@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     nano \
     iproute2 \
+    ros-humble-nav2-mppi-controller \
  && rm -rf /var/lib/apt/lists/*
 
 # Pin numpy<2 so pip doesn't upgrade past the 1.x ABI that
