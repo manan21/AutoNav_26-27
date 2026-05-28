@@ -1120,8 +1120,13 @@ class HudWindow(QMainWindow):
         super().__init__()
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
-        self.resize(1920, 720)
-        self.showFullScreen()
+        # Mutter sometimes drops showFullScreen() when it fires before the
+        # window is mapped, leaving the GNOME top bar visible over the HUD
+        # and pushing the bottom row off-screen. Pre-size to the screen's
+        # strut-adjusted area so we still fit if fullscreen never lands,
+        # then re-arm it through the event loop.
+        self.setGeometry(QApplication.primaryScreen().availableGeometry())
+        QTimer.singleShot(0, self.showFullScreen)
         self.setCursor(Qt.BlankCursor)
 
         # GUI defaults to light theme. The widget tree is built in dark
