@@ -55,6 +55,7 @@ template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 using nav2_costmap_2d::NO_INFORMATION;
+using nav2_costmap_2d::FREE_SPACE;
 
 //#define DEBUG_
 //#define DEBUG_2
@@ -198,6 +199,7 @@ LineLayer::onInitialize()
   }
 
   
+  setDefaultValue(FREE_SPACE);
 
   matchSize();
 
@@ -515,6 +517,8 @@ void LineLayer::matchSize()
   // geometry. After this call, costmap_ is freshly zeroed -- every
   // line cell we previously stamped is gone.
   nav2_costmap_2d::CostmapLayer::matchSize();
+  setDefaultValue(FREE_SPACE);
+  resetMaps();
 
   // persisted_points_ stores every observed line in world (map-frame)
   // coordinates, keyed by quantized world position. We re-stamp every

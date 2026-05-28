@@ -633,7 +633,7 @@ private:
     return clusters;
   }
 
-  bool fitLineCluster(
+  bool computeClusterGeometry(
     const std::vector<Sample> & candidates,
     const std::vector<int> & cluster,
     ClusterGeometry & geometry)
@@ -694,9 +694,72 @@ private:
     geometry.length = static_cast<double>(major_max - major_min);
     geometry.width = static_cast<double>(minor_max - minor_min);
     geometry.aspect = geometry.length / std::max(geometry.width, 0.01);
+    return true;
+  }
+
+  bool acceptsLineGeometry(const ClusterGeometry & geometry) const
+  {
     return geometry.length >= cluster_min_length_m_ &&
            geometry.width <= cluster_max_width_m_ &&
            geometry.aspect >= cluster_min_aspect_ratio_;
+  }
+
+  bool fitLineCluster(
+    const std::vector<Sample> & candidates,
+    const std::vector<int> & cluster,
+    ClusterGeometry & geometry)
+  {
+    return computeClusterGeometry(candidates, cluster, geometry) &&
+           acceptsLineGeometry(geometry);
+  }
+
+  std::vector<std::vector<int>> splitWideClusterIntoLines(
+    const std::vector<Sample> & candidates,
+    const std::vector<int> & cluster)
+  {
+    std::vector<std::vector<int>> segments;
+    std::vector<int> remaining = cluster;
+    const double inlier_half_width =
+      std::max(0.03, cluster_max_width_m_ * 0.5);
+    constexpr int kMaxSegmentsPerCluster = 4;
+
+    for (int segment = 0; segment < kMaxSegmentsPerCluster; ++segment) {
+      if (static_cast<int>(remaining.size()) < cluster_min_points_) {
+        break;
+      }
+
+      ClusterGeometry geometry;
+      if (!computeClusterGeometry(candidates, remaining, geometry) ||
+          geometry.length < cluster_min_length_m_)
+      {
+        break;
+      }
+
+      std::vector<int> inliers;
+      std::vector<int> outliers;
+      inliers.reserve(remaining.size());
+      outliers.reserve(remaining.size());
+      for (const int idx : remaining) {
+        const Eigen::Vector2f d =
+          candidates[idx].base.head<2>() - geometry.centroid;
+        const double lateral_error = std::abs(
+          static_cast<double>(d.dot(geometry.minor)));
+        if (lateral_error <= inlier_half_width) {
+          inliers.push_back(idx);
+        } else {
+          outliers.push_back(idx);
+        }
+      }
+
+      ClusterGeometry inlier_geometry;
+      if (!fitLineCluster(candidates, inliers, inlier_geometry)) {
+        break;
+      }
+      segments.push_back(std::move(inliers));
+      remaining = std::move(outliers);
+    }
+
+    return segments;
   }
 
   bool appendOutputPoint(
@@ -788,7 +851,35 @@ private:
     for (const auto & cluster : clusters) {
       ClusterGeometry geometry;
       if (!fitLineCluster(candidates, cluster, geometry)) {
-        ++rejected_clusters;
+        const auto split_segments = splitWideClusterIntoLines(candidates, cluster);
+        if (split_segments.empty()) {
+          ++rejected_clusters;
+          continue;
+        }
+        for (const auto & segment : split_segments) {
+          if (!fitLineCluster(candidates, segment, geometry)) {
+            continue;
+          }
+          ++accepted_clusters;
+          raw_output_points += segment.size();
+
+          const std::size_t appended = appendCompletedSegment(
+            geometry, base_to_target, points, seen);
+          if (appended > 0) {
+            ++completed_segments;
+            completed_points += appended;
+          } else {
+            for (const int idx : segment) {
+              if (!appendOutputPoint(candidates[idx].target, points, seen)) {
+                return points;
+              }
+            }
+          }
+
+          if (static_cast<int>(points.size()) >= max_line_points_) {
+            return points;
+          }
+        }
         continue;
       }
       ++accepted_clusters;

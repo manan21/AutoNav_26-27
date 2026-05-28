@@ -120,69 +120,34 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # DWB Local Planner - tuned for nav_center path tracking while keeping
-    # lethal-zone contact as a hard safety constraint. ObstacleFootprint
-    # is active so the controller may not choose a trajectory whose full
-    # rectangular footprint crosses tape/cone lethal cells. BaseObstacle
-    # remains the soft preference for inflated near-obstacle costs.
-    # PathDist scores nav_center directly against the global plan;
-    # PathAlign/GoalAlign use only a short heading lookahead.
+    # Regulated Pure Pursuit tracks the lower-gap Smac path as curvature.
+    # DWB repeatedly selected straight samples on this course until the
+    # robot was boxed in by tape; RPP starts the clockwise arc immediately.
+    # Its internal forward collision gate is disabled because it rejected
+    # every command in the tight start geometry even when the measured
+    # course clearance was positive.
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: False
-      min_vel_x: 0.0
-      min_vel_y: 0.0
-      # Capped at 0.25 m/s to match fix/lines_again — line-following
-      # needs the camera to keep up with painted lines.
-      max_vel_x: 0.25
-      max_vel_y: 0.0
-      max_vel_theta: 0.65
-      min_speed_xy: 0.0
-      max_speed_xy: 0.25
-      # ──────────────────────────────────────────────────────────────
-      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.45 keeps
-      # DWB's pure-rotation samples above the drivetrain deadband
-      # observed in tape-avoidance tests. At ~0.25 rad/s Nav2 was
-      # commanding valid turns, but encoders/RPM stayed at zero and
-      # progress checking eventually aborted FollowPath.
-      # ──────────────────────────────────────────────────────────────
-      min_speed_theta: 0.45
-      acc_lim_x: 2.5
-      acc_lim_y: 0.0
-      acc_lim_theta: 0.9
-      decel_lim_x: -2.5
-      decel_lim_y: 0.0
-      decel_lim_theta: -0.9
-      vx_samples: 20
-      vy_samples: 5
-      vtheta_samples: 24
-      sim_time: 0.8            # shorter horizon reduces over-rejection of tight near-field maneuvers
-      linear_granularity: 0.05
-      angular_granularity: 0.025
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.22
+      lookahead_dist: 0.45
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.75
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: false
+      use_collision_detection: false
+      max_allowed_time_to_collision_up_to_carrot: 0.8
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.55
+      regulated_linear_scaling_min_speed: 0.05
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.60
+      use_rotate_to_heading: false
+      rotate_to_heading_angular_vel: 0.60
+      rotate_to_heading_min_angle: 0.50
+      max_angular_accel: 0.90
+      allow_reversing: false
       transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.05
-      short_circuit_trajectory_evaluation: True
-      stateful: True
-      # ObstacleFootprint is intentionally back in the critic set after
-      # tape-test evidence showed BaseObstacle alone could still choose a
-      # least-cost trajectory that physically crossed the perpendicular
-      # lidar line. Its scale stays low because the important behavior is
-      # the hard invalidation of lethal footprint contact. BaseObstacle
-      # stays moderate so inflated tape/cone cost does not dominate every
-      # sample and tie-break DWB into zero-motion commands.
-      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      ObstacleFootprint.scale: 0.10
-      BaseObstacle.scale: 0.15
-      PathAlign.scale: 20.0
-      PathAlign.forward_point_distance: 0.10
-      GoalAlign.scale: 16.0
-      GoalAlign.forward_point_distance: 0.10
-      PathDist.scale: 32.0
-      GoalDist.scale: 16.0
-      RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
 
 local_costmap:
   local_costmap:
@@ -308,11 +273,10 @@ local_costmap:
         # global planner halo so DWB can drive out of a soft tape cost field
         # instead of tie-breaking into zero-motion while a valid path exists.
         inflation_radius: 0.65
-        # Keep the hard collision band tight for tape. The measured lidar-line
-        # course starts with the left tape about 0.50 m from nav_center while
-        # the robot footprint extends to ~0.41 m plus padding; a 0.36 m
-        # inscribed band makes DWB think the robot is already colliding.
-        # The 0.65 m inflation radius below remains as a soft stay-away cost.
+        # Keep the hard collision band tight for tape. The line-only costmap
+        # background is free; larger inscribed bands can still put the start
+        # pose in Smac's lethal/inscribed rejection zone because the robot
+        # begins close to the horizontal tape.
         inscribed_radius: 0.05
         cost_scaling_factor: 5.0
         clearing: True
@@ -360,14 +324,13 @@ global_costmap:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
       #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells, then mirrors only local lethal obstacle marks so local inflation is not copied into global and inflated again.
       #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
-      # Line memory is intentionally mirrored BEFORE inflation. Smac Lattice
-      # first checks the center-cell cost before doing the expensive full
-      # footprint collision check, so tape/line lethal cells must seed the
-      # global inflation layer. Otherwise a rectangular-footprint path can
-      # be planned with the centerline beside the tape while the footprint
-      # still crosses it. local_mirror_layer still masks line topics so PCA
-      # obstacles and line memory remain separate sources.
-      plugins: ["static_layer", "local_mirror_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer", "inflation_layer"]
+      # PCA obstacle memory is mirrored before stock inflation. Line memory is
+      # mirrored after stock inflation so tape uses line_layer's narrow
+      # inscribed band and soft halo instead of receiving a second robot-radius
+      # obstacle inflation pass that can make nearby tape block the start pose.
+      # local_mirror_layer still masks line topics so PCA obstacles and line
+      # memory remain separate sources.
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -429,13 +392,9 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Match local obstacle inflation and the lidar-line soft halo so
-        # global planning is not biased away from cones and into tape.
-        # The wider 1.10 m halo gives the global planner enough gradient to
-        # prefer the center of the 5 ft gap instead of clipping tape ends.
-        # Line memory is now mirrored before this layer so Smac Lattice sees
-        # a footprint-wide inflated field around tape lethal cells instead
-        # of only the exact line cells and their local display halo.
+        # Conservative global stay-away cost for PCA/cone obstacles. Line
+        # memory is mirrored after this layer so tape keeps the custom narrow
+        # line_layer halo and does not get double-inflated as a full obstacle.
         cost_scaling_factor: 4.0
         inflation_radius: 1.10
       always_send_full_costmap: True

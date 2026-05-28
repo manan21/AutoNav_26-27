@@ -134,10 +134,9 @@ private:
   double line_clear_range_max_m_;
   int max_persisted_points_;
   // Line-specific inflation, baked into stampPoints so this layer can
-  // produce a line-only costmap topic for memory mirrors. In Nav2's
-  // active config, line_layer also runs before the stock inflation_layer
-  // so line lethal cells seed the same footprint-aware inflation as PCA
-  // obstacle cells.
+  // produce a line-only costmap topic for memory mirrors. The global
+  // mirror consumes this already-inflated line-only topic after stock
+  // obstacle inflation so tape keeps a narrower halo than PCA obstacles.
   double inflation_radius_;
   double cost_scaling_factor_;
   // Cells within this distance of a line are pinned to
