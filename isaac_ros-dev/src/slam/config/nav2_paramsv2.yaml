@@ -322,19 +322,18 @@ local_costmap:
         line_clear_range_max_m: 6.0
         max_persisted_points: 2000
         # LiDAR line detections are sparse obstacle-filtered points, not a
-        # continuous wall. With the 5 ft competition-style gap, give Smac a
-        # stronger soft cost field so the centerline is pushed deep enough
-        # into the gap for the rectangular footprint to clear tape.
+        # continuous wall. Keep the lethal geometry exact, then publish a
+        # non-lethal preference field that encourages clearance without
+        # closing the IGVC-required 5 ft passage beside obstacles.
         inflation_radius: 0.80
-        # Keep the hard collision band narrow enough that the starting pose
-        # near the left-side tape is not boxed in, but wider than an exact
-        # point cell so near-line lattice paths are no longer attractive.
-        inscribed_radius: 0.10
-        # Slow decay keeps tape costs high enough within the robot's
-        # circumscribed radius for Smac Lattice to run full footprint
-        # collision checks, while the cells remain below lethal so a legal
-        # 5 ft passage is still traversable when it is the only route.
-        cost_scaling_factor: 1.5
+        # The 253 band is intentionally small. A wide inscribed band consumes
+        # too much of the narrow legal gap before the planner ever considers
+        # soft costs.
+        inscribed_radius: 0.05
+        # Intermediate decay keeps near-line angled lattice states expensive
+        # enough to trigger footprint checks, but is not as globally
+        # prohibitive as the 1.5 test in the canonical 5 ft course.
+        cost_scaling_factor: 2.5
         clearing: True
         rolling_window: True
         publish_costmap: True
@@ -502,7 +501,10 @@ planner_server:
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
       lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
-      cost_penalty: 5.0
+      # The line/cone fields carry clearance preferences. Keep the penalty
+      # moderate so Smac still uses the guaranteed 5 ft passage when that is
+      # the only legal route.
+      cost_penalty: 2.0
       # Keep the default penalty so in-place rotations are used only when the
       # lattice needs them for obstacle avoidance, not as cheap shortcuts.
       rotation_penalty: 5.0
