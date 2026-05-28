@@ -24,10 +24,17 @@ bt_navigator:
     default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
     default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
 
-    # PHASEB — PathSignificantlyChanged decorator tuning. Tweak live with:
-    #   ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15
-    path_significantly_changed.rms_threshold_m: 0.10   # First-N-pose RMS (m) above which child re-fires.
-    path_significantly_changed.compare_n_poses: 10     # Number of leading poses to RMS-compare.
+    # FollowPath churn gate. The planner can replan at 3 Hz, but
+    # FollowPath only needs a fresh action goal when the route geometry
+    # materially changes or the bounded TTL expires. This preserves fast
+    # global replanning while avoiding controller action replacement on
+    # every same-corridor path refresh.
+    path_significantly_changed.rms_threshold_m: 0.15
+    path_significantly_changed.compare_n_poses: 20
+    path_significantly_changed.max_point_delta_m: 0.30
+    path_significantly_changed.start_delta_threshold_m: 0.25
+    path_significantly_changed.length_delta_threshold_m: 0.50
+    path_significantly_changed.force_update_period_s: 0.5
 
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node

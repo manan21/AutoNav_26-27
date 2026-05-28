@@ -139,6 +139,7 @@ First address = source on the Jetson. Second = destination. Trailing slash matte
 - [`PACKAGES.md`](./PACKAGES.md) — per-package reference for every ROS2 package under `isaac_ros-dev/src/`.
 - [`HYPERPARAMETER.md`](./HYPERPARAMETER.md) — tunable knobs across the autonomy stack, with safety legend and YAML inventory.
 - [`IGVC_COMPETITION_RULES.md`](./IGVC_COMPETITION_RULES.md) — competition rules that should constrain robot, Nav2, perception, and simulation changes.
+- [`IGVC_FORTRESS_SIM.md`](./IGVC_FORTRESS_SIM.md) — active ROS Humble + Gazebo Fortress competition simulation and runner.
 - [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) — quick triage + full chronological fix log + keyword index for past bugs.
 
 # Helpful Background Documentation

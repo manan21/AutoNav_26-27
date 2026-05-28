@@ -240,10 +240,71 @@ Do not repeat:
 Next check:
 - Consider adding a helper command that sends the canonical goal into an already running live stack.
 
+### 2026-05-28 - Multi-Scenario Regression Prevents Lidar-Course Overfitting
+
+Status: Accepted
+Area: simulation, analysis, operations
+Related commits: pending
+Evidence: `lidar_line_sim/config/scenarios/*.yaml`, `Run_LIDAR_LINE_ROS_COURSE_SUITE.command`
+
+Decision:
+- Use a deterministic scenario suite before accepting future planner, costmap, perception, or BT tuning as a net improvement.
+- Include canonical 5 ft gap, open 10 ft lane, center obstacle, edge obstacle, narrow decoy gap plus legal route, internal no-cross line, minimum-turn-radius curve, and canonical pose-offset scenarios.
+- Exclude no-route/bad-goal and dashed-line scenarios for now.
+
+Why:
+- A change can improve the canonical tape-to-cone case while degrading open-lane centering, route choice around obstacles, internal-line avoidance, or pose robustness.
+- The competition guarantees a valid route, so the standard suite should focus on finding and driving valid routes rather than proving no-route behavior.
+
+Observed result:
+- The suite and scenario metadata were added for ROS simulation. Universal safety/action checks are hard gates; padded clearance and station bands are diagnostics unless strict mode is enabled.
+- A VM suite run produced bags for all eight scenarios; reanalysis passed all standard hard gates after keeping padded overlap diagnostic by default.
+- FollowPath abort churn appeared across the suite even when NavigateToPose succeeded, so treat abort counts as a remaining controller/BT stability signal rather than as proof of collision.
+
+Do not repeat:
+- Do not tune only against `canonical_5ft_gap` and call the stack improved.
+- Do not add a no-route scenario to the standard suite without revisiting the competition assumption and this decision.
+
+Next check:
+- Investigate repeated FollowPath aborts without changing the hard/soft clearance gates.
+- Promote calibrated station diagnostics to strict gates after baselines are accepted.
+
+### 2026-05-28 - FollowPath Abort Churn Is Mostly Path Replacement, But Still Needs A Gate
+
+Status: Accepted
+Area: Nav2 behavior tree, MPPI control, analysis
+Related commits: pending
+Evidence:
+- `/home/cole.guest/autonav-work/lidar_line_runs/scenario_suite_20260528_155444`
+- `/home/cole.guest/autonav-work/lidar_line_runs/churn_confirm_20260528_172601`
+- `/home/cole.guest/autonav-work/lidar_line_runs/path_gate_ttl05_full_20260528_180753`
+
+Decision:
+- Keep the planner branch at 3 Hz so lidar-line and obstacle discoveries are incorporated quickly.
+- Do not feed every same-corridor 3 Hz replan directly into `FollowPath`.
+- Wrap `FollowPath` with `PathSignificantlyChanged`, but compare full route geometry rather than only the first few poses.
+- Force a bounded same-corridor refresh every 0.5 s so MPPI does not hold stale paths through tight tape/cone gaps.
+- Add `analyze_bt_control_churn.py` to classify replacement-like aborts separately from disruptive aborts, planner aborts, recovery waits, safety rejects, and final `/cmd_vel` gaps.
+
+Why:
+- Pre-fix bags showed many `FollowPath` ABORTED statuses even in clean successful runs. Diagnostics proved most were action replacement caused by fresh plans, not MPPI failing.
+- Some runs also showed real command gaps or planner abort bursts. Those should be tracked directly instead of using raw FollowPath abort count as a proxy.
+- The old dormant decorator could miss later route divergence around tape because it compared only early path poses. The active version compares normalized samples across the full path, route length, endpoint, large start jumps, and a TTL.
+
+Observed result:
+- Final 0.5 s TTL suite passed all 8 standard scenarios.
+- Final suite diagnostic summary: zero disruptive `FollowPath` aborts, zero `ComputePathToPose` aborts, and no final `/cmd_vel` gaps over 0.5 s across all scenarios.
+- Raw `FollowPath` ABORTED statuses still appear because the controller path is intentionally refreshed, but the analyzer now classifies those as replacement-like.
+
+Do not repeat:
+- Do not remove `PathFootprintSafe` to reduce recoveries.
+- Do not fail tests on raw `FollowPath` ABORTED count alone.
+- Do not restore the old first-N-pose-only path-change decorator.
+
+Next check:
+- The 5 ft tape/cone gap can still produce low physical cone clearance in some runs while passing hard overlap gates. Treat that as a separate clearance/cost tuning problem, not as FollowPath abort churn.
+
 ## Open Items To Track
 
-- Add open-lane centering regression: verify soft costs keep the robot away from tape when the lane is wide.
-- Add narrow-decoy-gap regression: verify the robot rejects sub-5 ft gaps when a legal route exists.
-- Add bad-goal regression: verify the BT safety gate blocks unsafe execution through tape or cone.
 - Add randomized obstacle course variants while preserving the fixed 5 ft canonical course.
 - Run the same hard/soft clearance design on the physical robot course and record comparable bag metrics.

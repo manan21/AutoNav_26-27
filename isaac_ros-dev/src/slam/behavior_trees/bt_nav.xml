@@ -145,11 +145,15 @@
                  inflation without wiping the line obstacles it was
                  successfully avoiding. -->
             <RecoveryNode number_of_retries="2" name="FollowPathRecovery">
-              <!-- MPPI should see each fresh safe path directly. The old
-                   PathSignificantlyChanged decorator could hold a stale path
-                   whose first poses matched while the later path diverged
-                   around tape. -->
-              <FollowPath path="{path}" controller_id="FollowPath"/>
+              <!-- Keep planner updates fast, but do not replace the
+                   FollowPath action for every same-corridor 3 Hz replan.
+                   PathSignificantlyChanged compares route geometry across
+                   the full path and also forces a bounded periodic refresh,
+                   so real tape/cone route changes still reach MPPI while
+                   identical path refreshes do not churn the action server. -->
+              <PathSignificantlyChanged path="{path}" filtered_path="{controller_path}">
+                <FollowPath path="{controller_path}" controller_id="FollowPath"/>
+              </PathSignificantlyChanged>
               <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
                 service_name="local_costmap/clear_around_local_costmap"
                 reset_distance="1.0"/>

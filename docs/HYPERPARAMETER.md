@@ -109,8 +109,9 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 | `ComputePathRecovery number_of_retries` | 88 | 🟡 | `8` | Planner retries inside the rate-controlled subtree | Gives SLAM/TF/costmap warm-up up to ~4 s before heavy recovery |
 | `PathFootprintSafe footprint_padding` | 96 | 🟡 | `0.05` m | Runtime global-plan footprint gate | Rejects paths whose rectangular `nav_center` footprint overlaps lethal raw global cells |
 | `ComputePathRecovery Wait wait_duration` | 113 | 🟡 | `0.5` s | Planner inter-retry wait | Paired with 8 retries for warm-up patience |
-| `FollowPathRecovery number_of_retries` | 146 | 🟡 | `2` | MPPI retries before escalating | |
-| `ClearCostmapAroundRobot reset_distance` | 152 | 🟡 | `1.0` m | FollowPath recovery clear radius | Local-only clear; preserves global line/obstacle memory |
+| `PathSignificantlyChanged force_update_period_s` | 27 | 🟡 | `0.5` s | Maximum age for the active controller path | Keeps MPPI path updates fresh without replacing the FollowPath action on every 3 Hz same-corridor replan |
+| `FollowPathRecovery number_of_retries` | 151 | 🟡 | `2` | MPPI retries before escalating | |
+| `ClearCostmapAroundRobot reset_distance` | 157 | 🟡 | `1.0` m | FollowPath recovery clear radius | Local-only clear; preserves global line/obstacle memory |
 | `BackUp backup_dist` | 179 | 🟡 | `0.10` m | Distance reversed during BackUp recovery | Shortened so a mid-flight recovery drains in ~2 s |
 | `BackUp backup_speed` | 179 | 🟡 | `0.05` m/s | BackUp speed | Slow by design — blind reverse |
 | `DriveOnHeading speed` | 180 | 🟡 | `0.1` m/s | `gradient_escape` forward speed | |
@@ -120,14 +121,18 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 ---
 
-## Dormant Phase B decorator params (`nav2_paramsv2.yaml` under `bt_navigator.ros__parameters`)
+## Active FollowPath Churn Gate Params (`nav2_paramsv2.yaml` under `bt_navigator.ros__parameters`)
 
-These parameters still exist because the `PathSignificantlyChanged` BT plugin is built and loaded, but the active `bt_nav.xml` no longer wraps `FollowPath` with that decorator. MPPI now receives each fresh safe path directly; the old decorator could hold a stale path whose early poses matched while the later route diverged around tape.
+`PathSignificantlyChanged` is active in `bt_nav.xml`. It filters 3 Hz global replans before `FollowPath`: route-geometry changes pass through immediately, and same-corridor refreshes are forwarded at least every bounded TTL. This avoids action-server churn while preserving fresh MPPI paths through lidar-line route changes.
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
-| `path_significantly_changed.rms_threshold_m` | 📦 dormant | `0.10` m | Would be the first-N-pose RMS threshold if the decorator is reinserted | Not active in the current BT |
-| `path_significantly_changed.compare_n_poses` | 📦 dormant | `10` | Would be the comparison horizon if the decorator is reinserted | Not active in the current BT |
+| `path_significantly_changed.rms_threshold_m` | 🟡 | `0.15` m | RMS route-shape delta that triggers a fresh FollowPath action |
+| `path_significantly_changed.compare_n_poses` | 🟡 | `20` | Number of normalized path samples used for route comparison |
+| `path_significantly_changed.max_point_delta_m` | 🟡 | `0.30` m | Single-sample route-shape delta that triggers a fresh FollowPath action |
+| `path_significantly_changed.start_delta_threshold_m` | 🟡 | `0.25` m | Large start jump threshold; ordinary progress along the same path should not churn FollowPath |
+| `path_significantly_changed.length_delta_threshold_m` | 🟡 | `0.50` m | Route-length delta that triggers a fresh FollowPath action |
+| `path_significantly_changed.force_update_period_s` | 🟡 | `0.5` s | Bounded same-corridor refresh interval for MPPI |
 
 ---
 
@@ -393,13 +398,12 @@ Bumper indexes are OR'd across two layouts ({6,7} normal / {9,10} wrong-containe
 #   velocity_smoother.max_accel/max_decel
 ```
 
-### Re-enable or tune the dormant Phase B decorator
+### Tune the FollowPath churn gate
 
 ```bash
-# The active bt_nav.xml does not currently wrap FollowPath with this decorator.
-# If you intentionally reinsert PathSignificantlyChanged, these params apply:
 ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15
 ros2 param set /bt_navigator path_significantly_changed.compare_n_poses 20
+ros2 param set /bt_navigator path_significantly_changed.force_update_period_s 0.5
 ```
 
 ### Calibrate Phase D on a tilt block

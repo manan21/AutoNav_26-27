@@ -4,6 +4,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <utility>
+#include <vector>
 
 namespace autonav_bt {
 
@@ -26,6 +29,18 @@ public:
     if (!node_->has_parameter("path_significantly_changed.compare_n_poses")) {
       node_->declare_parameter("path_significantly_changed.compare_n_poses", 10);
     }
+    if (!node_->has_parameter("path_significantly_changed.max_point_delta_m")) {
+      node_->declare_parameter("path_significantly_changed.max_point_delta_m", 0.30);
+    }
+    if (!node_->has_parameter("path_significantly_changed.start_delta_threshold_m")) {
+      node_->declare_parameter("path_significantly_changed.start_delta_threshold_m", 0.25);
+    }
+    if (!node_->has_parameter("path_significantly_changed.length_delta_threshold_m")) {
+      node_->declare_parameter("path_significantly_changed.length_delta_threshold_m", 0.50);
+    }
+    if (!node_->has_parameter("path_significantly_changed.force_update_period_s")) {
+      node_->declare_parameter("path_significantly_changed.force_update_period_s", 0.5);
+    }
   }
 
   static BT::PortsList providedPorts() {
@@ -46,9 +61,22 @@ public:
       "path_significantly_changed.rms_threshold_m").as_double();
     const int n_compare = node_->get_parameter(
       "path_significantly_changed.compare_n_poses").as_int();
+    const double max_point_delta = node_->get_parameter(
+      "path_significantly_changed.max_point_delta_m").as_double();
+    const double start_delta_threshold = node_->get_parameter(
+      "path_significantly_changed.start_delta_threshold_m").as_double();
+    const double length_delta_threshold = node_->get_parameter(
+      "path_significantly_changed.length_delta_threshold_m").as_double();
+    const double force_update_period = node_->get_parameter(
+      "path_significantly_changed.force_update_period_s").as_double();
 
-    const bool significantly_changed = pathDiffers(
-      new_path, filtered_path_, rms_threshold, n_compare);
+    const bool force_update =
+      has_last_update_time_ && force_update_period > 0.0 &&
+      (node_->now() - last_update_time_).seconds() >= force_update_period;
+
+    const bool significantly_changed = force_update || pathDiffers(
+      new_path, filtered_path_, rms_threshold, max_point_delta,
+      start_delta_threshold, length_delta_threshold, n_compare);
 
     const auto last_status = child_node_->status();
 
@@ -62,6 +90,8 @@ public:
       filtered_path_ = new_path;
       has_filtered_path_ = true;
       child_started_ = true;
+      last_update_time_ = node_->now();
+      has_last_update_time_ = true;
     }
 
     setOutput("filtered_path", filtered_path_);
@@ -77,6 +107,7 @@ public:
   void halt() override {
     child_started_ = false;
     has_filtered_path_ = false;
+    has_last_update_time_ = false;
     filtered_path_ = nav_msgs::msg::Path{};
     BT::DecoratorNode::halt();
   }
@@ -86,10 +117,15 @@ private:
   nav_msgs::msg::Path filtered_path_;
   bool child_started_ = false;
   bool has_filtered_path_ = false;
+  rclcpp::Time last_update_time_{0, 0, RCL_ROS_TIME};
+  bool has_last_update_time_ = false;
 
   static bool pathDiffers(const nav_msgs::msg::Path & a,
                           const nav_msgs::msg::Path & b,
                           double rms_threshold_m,
+                          double max_point_delta_m,
+                          double start_delta_threshold_m,
+                          double length_delta_threshold_m,
                           int n_compare) {
     if (a.poses.empty() || b.poses.empty()) return true;
 
@@ -114,28 +150,87 @@ private:
       return true;
     }
 
-    // Float-tolerant start-pose displacement check. Was exact-equality,
-    // which never fired when the planner cached the start pose between
-    // ticks. 1 cm tolerance: smaller than any meaningful robot motion,
-    // larger than float-roundtrip noise on a TF lookup.
+    // Start-pose displacement should not fire on every planner tick. The
+    // controller can prune progress along the same path; this is only for
+    // large jumps such as a relocalization, recovery, or route reset.
     const double sdx =
       a.poses.front().pose.position.x - b.poses.front().pose.position.x;
     const double sdy =
       a.poses.front().pose.position.y - b.poses.front().pose.position.y;
-    if (std::sqrt(sdx*sdx + sdy*sdy) > 0.01) {
+    if (std::sqrt(sdx*sdx + sdy*sdy) > start_delta_threshold_m) {
       return true;
     }
 
-    const size_t n = std::min({static_cast<size_t>(n_compare),
-                               a.poses.size(), b.poses.size()});
+    const double len_a = pathLength(a);
+    const double len_b = pathLength(b);
+    if (std::abs(len_a - len_b) > length_delta_threshold_m) {
+      return true;
+    }
+
+    const size_t n = std::max<size_t>(2, static_cast<size_t>(n_compare));
     double sum_sq = 0.0;
+    double max_delta = 0.0;
     for (size_t i = 0; i < n; ++i) {
-      const double dx = a.poses[i].pose.position.x - b.poses[i].pose.position.x;
-      const double dy = a.poses[i].pose.position.y - b.poses[i].pose.position.y;
-      sum_sq += dx*dx + dy*dy;
+      const double fraction = static_cast<double>(i) / static_cast<double>(n - 1);
+      const auto pa = pointAtFraction(a, len_a, fraction);
+      const auto pb = pointAtFraction(b, len_b, fraction);
+      if (!std::isfinite(pa.first) || !std::isfinite(pb.first)) {
+        return true;
+      }
+      const double dx = pa.first - pb.first;
+      const double dy = pa.second - pb.second;
+      const double d2 = dx * dx + dy * dy;
+      sum_sq += d2;
+      max_delta = std::max(max_delta, std::sqrt(d2));
     }
     const double rms = std::sqrt(sum_sq / static_cast<double>(n));
-    return rms > rms_threshold_m;
+    return rms > rms_threshold_m || max_delta > max_point_delta_m;
+  }
+
+  static double pathLength(const nav_msgs::msg::Path & path) {
+    double length = 0.0;
+    for (size_t i = 1; i < path.poses.size(); ++i) {
+      const auto & a = path.poses[i - 1].pose.position;
+      const auto & b = path.poses[i].pose.position;
+      length += std::hypot(b.x - a.x, b.y - a.y);
+    }
+    return length;
+  }
+
+  static std::pair<double, double> pointAtFraction(
+    const nav_msgs::msg::Path & path,
+    double path_length,
+    double fraction)
+  {
+    if (path.poses.empty()) {
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      return {nan, nan};
+    }
+    if (path.poses.size() == 1 || path_length <= 1e-6) {
+      const auto & p = path.poses.front().pose.position;
+      return {p.x, p.y};
+    }
+
+    const double target = std::clamp(fraction, 0.0, 1.0) * path_length;
+    double traversed = 0.0;
+    for (size_t i = 1; i < path.poses.size(); ++i) {
+      const auto & a = path.poses[i - 1].pose.position;
+      const auto & b = path.poses[i].pose.position;
+      const double segment = std::hypot(b.x - a.x, b.y - a.y);
+      if (segment <= 1e-6) {
+        continue;
+      }
+      if (traversed + segment >= target) {
+        const double ratio = (target - traversed) / segment;
+        return {
+          a.x + ratio * (b.x - a.x),
+          a.y + ratio * (b.y - a.y),
+        };
+      }
+      traversed += segment;
+    }
+    const auto & p = path.poses.back().pose.position;
+    return {p.x, p.y};
   }
 };
 
