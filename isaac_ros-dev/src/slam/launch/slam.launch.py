@@ -215,7 +215,7 @@ def generate_launch_description():
     # for any AutoNav obstacle. angle_increment 0.0087 rad ≈ 0.5°.
     # Asymmetric marking vs clearing FOV: mark anything the lidar sees
     # in the full 180° forward view, but only clear (raytrace-free) the
-    # central 160° (±80°). The outer 10° wedge on each side is "trust
+    # central 140° (±70°). The outer 20° wedge on each side is "trust
     # the sensor's hits, don't trust its claim that a cell is free" —
     # the lidar's beam density / angular accuracy is worst at the
     # extremes, so we don't let those rays raytrace-clear stored marks.

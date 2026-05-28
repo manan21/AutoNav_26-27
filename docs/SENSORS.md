@@ -31,13 +31,17 @@ Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lid
 |---|---|---|---|
 | `/scan_fullframe` | `sensor_msgs/msg/LaserScan` | `lidar_footprint` | SLAM Toolbox, HUD |
 | `/cloud_all_fields_fullframe` | `sensor_msgs/msg/PointCloud2` | `lidar_footprint` | PCA grade detector (`autonav_detection`) |
-| `/scan_pca_filtered_points` | `sensor_msgs/msg/PointCloud2` | (transformed) | Nav2 `ObstacleLayer` (local + global costmaps) |
+| `/scan_pca_filtered_points` | `sensor_msgs/msg/PointCloud2` | `lidar_footprint` | `pointcloud_to_laserscan` converters in `slam.launch.py` |
+| `/scan_pca_filtered` | `sensor_msgs/msg/LaserScan` | `base_link` | Nav2 local `ObstacleLayer` marking source |
+| `/scan_pca_filtered_clear` | `sensor_msgs/msg/LaserScan` | `base_link` | Nav2 local `ObstacleLayer` clearing source |
+| `/lidar_line_points` | `autonav_interfaces/msg/LinePoints` | `odom` | Nav2 lidar line layer when **LIDAR LINE DETECT** is running |
+| `/lidar_line_costmap` | `nav_msgs/msg/OccupancyGrid` | `odom` | Local lidar-line costmap and global line-memory mirror |
 | `/sick_scansegment_xd/imu` | `sensor_msgs/msg/Imu` | `lidar_footprint` | `imu_cov_inflator` → `/sick_scansegment_xd/imu_inflated` (see below) |
 | `/sick_scansegment_xd/imu_inflated` | `sensor_msgs/msg/Imu` | `lidar_footprint` (republished) | Local EKF (`ekf_local.yaml` `imu0`) |
 
-`/scan_pca_filtered_points` is **not** raw LiDAR — it's the grade detector's output after PCA-filtering against ground/ramp slopes. Nav2 sees obstacles, not raw points. SLAM gets the raw 2D scan directly.
+`/scan_pca_filtered_points` is **not** raw LiDAR — it is the grade detector's output after PCA-filtering against ground/ramp slopes. The point cloud is collapsed to two LaserScans: a 180° marking scan and a narrower 140° clearing scan. Nav2 sees those obstacle scans, not raw points. SLAM gets the raw 2D scan directly.
 
-The `/scan` vs `/scan_fullframe` historical inconsistency is **resolved** — `slam.yaml`, the active Nav2 params (`nav2_paramsv2.yaml`), and the HUD all reference `/scan_fullframe` consistently. Some dead-code legacy YAMLs (`nav_defaults.yaml`, `nav.yaml`) still mention `/scan` but aren't loaded. `pointcloud_to_laserscan` is also not in the active pipeline — SLAM consumes the SICK driver's native LaserScan output.
+The `/scan` vs `/scan_fullframe` historical inconsistency is **resolved** — `slam.yaml`, the active Nav2 params (`nav2_paramsv2.yaml`), and the HUD all reference `/scan_fullframe` consistently for raw LiDAR. Some dead-code legacy YAMLs (`nav_defaults.yaml`, `nav.yaml`) still mention `/scan` but are not loaded. `pointcloud_to_laserscan` is active only for the PCA obstacle path, not for SLAM's raw scan input.
 
 ### TF
 

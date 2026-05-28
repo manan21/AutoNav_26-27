@@ -17,7 +17,7 @@ A flat **[Keyword index](#keyword-index)** at the very bottom maps topical keywo
 
 | First check | Why |
 |---|---|
-| Click the button to open its terminal viewer | The script's stdout is right there. Look for `[GUI_READY] <Label>` — every script emits it after a 5 s pacing delay. |
+| Click the button to open its terminal viewer | The script's stdout is right there. Look for `[GUI_READY] <Label>` — most scripts emit it after a 0.5 s pacing delay; SLAM intentionally waits longer. |
 | If you see the script text but no sentinel | The script crashed before printing it. Look up at the actual error in the terminal. |
 | If you see no terminal output at all | **Connect to Container** likely wasn't clicked first. Without it, `docker exec` can't fire — see [2026-04-22 DDS fix](#2026-04-22--dds-udp-discovery-forced) and the GUI section in `PACKAGES.md`. |
 
@@ -96,9 +96,40 @@ The left encoder over-samples physically. There's a calibration factor (~1.016) 
 
 ## "Stale line obstacles linger in costmap, blocking the path"
 
-Check `line_hold_timeout_ms` in `line_detector.yaml` — when the detector goes silent, the layer must clear. See [2026-03-26 line layer staleness](#2026-03-26--line-layer-stale-obstacles-block-nav2).
+For the active lidar-line profile, this is currently intentional during tape testing: `local_costmap.lidar_line_layer.observation_persistence_ms: -1` and `global_costmap.lidar_line_memory_mirror_layer.allow_decrease: false` keep detected tape until an operator clears costmaps. This prevents the robot from pausing near tape, forgetting it, and driving over it.
 
-**Keywords**: line-layer, costmap, stale, line_hold_timeout_ms, line_detector.yaml, ghost-obstacle, blocked-path, nav2, planner, line-detection, white-line, /line_points, autonav_detection
+If stale cells are from a previous run, clear both local/global costmaps or publish the mirror clear topic used by the test runner:
+
+```bash
+ros2 topic pub --once /local_mirror_layer/clear std_msgs/msg/Empty "{}"
+ros2 service call /local_costmap/clear_entirely_local_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
+ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
+```
+
+Camera-line staleness is a separate legacy path: `line_hold_timeout_ms` in `line_detector.yaml` affects camera detections, but the camera `line_layer` is disabled in the active lidar-line Nav2 profile.
+
+**Keywords**: line-layer, lidar-line, costmap, stale, observation_persistence_ms, allow_decrease, local_mirror_layer, clear-costmap, ghost-obstacle, blocked-path, nav2, planner, line-detection, tape, /lidar_line_points, /lidar_line_costmap, autonav_detection
+
+## "Nav2 fails to start: MPPI controller plugin not found"
+
+The active branch uses `nav2_mppi_controller::MPPIController`. The runtime image must include `ros-humble-nav2-mppi-controller`.
+
+Check inside the container:
+
+```bash
+docker exec koopa-kingdom bash -lc 'source /opt/ros/humble/setup.bash && ros2 pkg prefix nav2_mppi_controller'
+```
+
+If that fails, rebuild only the dev image:
+
+```bash
+cd ~/AutoNav_25-26
+./env/docker/build_koopa-dev.sh
+```
+
+Do not rebuild the slow base image just for this package; the dependency belongs in `env/docker/dockerfiles/Dockerfile`.
+
+**Keywords**: nav2, mppi, nav2_mppi_controller, plugin-not-found, controller-server, FollowPath, docker, dev-image, build_koopa-dev, ros-humble-nav2-mppi-controller
 
 ## "E-stop doesn't kill the motors"
 
@@ -963,7 +994,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `/cloud_all_fields_fullframe` → 2026-04-25 obstacle layer
 - `/encoders` → 2025-11-16 dup guard, 2026-04-04 null deref
 - `/gps_fix` → 2026-04-17 NovAtel→u-blox, 2026-04-28 stoi crash
-- `/line_points`, `LinePoints`, `line-layer` → 2025-11-12 stale TF, 2026-03-21 ghost traces, 2026-03-24 line-hold, 2026-03-26 line-layer staleness
+- `/line_points`, `/lidar_line_points`, `LinePoints`, `line-layer` → 2025-11-12 stale TF, 2026-03-21 ghost traces, 2026-03-24 line-hold, 2026-03-26 line-layer staleness, quick triage lidar-line stale cells
 - `/map`, `/map_padded` → 2026-04-30 map padder dyn-res, 2026-04-30 seed-and-flood, 2026-05-06 startup race
 - `/odom`, `/wheel_odom` → 2025-05-05 odom string, 2025-05-07 odom rename, 2026-04-15 wheel radius, 2026-04-28 odom jumps, 2026-04-29 left encoder
 - `/scan`, `/scan_fullframe`, `/scan_pca_filtered_points` → 2025-05-07 odom rename, 2026-03-04 driver respawn, 2026-03-24 max_laserscan_range, 2026-04-25 obstacle layer, 2026-05-05 PCA scheduler, 2026-05-06 startup race
@@ -974,12 +1005,12 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `costmap`, `local-costmap`, `global-costmap`, `inflation`, `footprint`, `static-layer`, `rolling_window` → 2026-03-20 tilt, 2026-03-21 dimensions, 2026-03-21 ghost traces, 2026-04-15 footprint+inflation, 2026-04-22 rolling, 2026-04-22 geometry, 2026-04-25 PointCloud2 obstacles
 - `cuda`, `nvcc`, `-Wpedantic`, `kernel`, `line-detection` → 2026-04-22 thresholds, 2026-04-22 window size, 2026-05-05 -Wpedantic
 - `dds`, `fastdds`, `rmw`, `qos`, `discovery` → 2026-04-22 DDS fix, 2026-04-22 headless, 2026-04-24 QoS mismatch
-- `docker`, `container`, `koopa-kingdom`, `entrypoint` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind
+- `docker`, `container`, `koopa-kingdom`, `entrypoint`, `dev-image`, `mppi` → 2026-04-06 user race, 2025-12-03 USB order, 2026-04-22 headless, 2026-04-22 NumPy, 2026-04-17 INA226 unbind, quick triage MPPI dependency
 - `ekf`, `slam`, `slam_toolbox`, `tf`, `frame`, `urdf` → 2025-04-16 SLAM TF, 2025-11-12 stale TF, 2026-02-02 PUBLISH_TRANSFORM, 2026-03-24 double TF, 2026-05-06 frame rotations, 2026-05-07 wheel-joint continuous, 2026-05-11 IMU yaw inverted
 - `imu`, `imu-frame`, `imu_frame_transformer`, `yaw-inverted`, `upside-down`, `π-roll`, `lidar_footprint` → 2026-04-16 ZED IMU rate, 2026-05-11 SICK IMU yaw inverted
 - `gui`, `hud`, `hud_node.py`, `[GUI_READY]`, `dot`, `live-mode` → 2026-04-24 live-mode, 2026-04-24 playback, 2026-04-24 QoS, 2026-04-24 terminal, 2026-04-24 buttons, 2026-04-28 (5 entries), 2026-05-06 startup race, 2026-05-06 5s pacing, 2026-05-06 run-detect
 - `map_padder` → 2026-04-30 dynamic-res, 2026-04-30 seed-and-flood
-- `nav2`, `planner`, `dwb`, `dijkstra`, `astar`, `tolerance` → 2026-04-15 footprint, 2026-04-15 critic, 2026-04-22 rolling, 2026-04-30 retries, 2026-04-30 dijkstra, 2026-05-04 dijkstra revert
+- `nav2`, `planner`, `dwb`, `mppi`, `smac`, `lattice`, `dijkstra`, `astar`, `tolerance` → 2026-04-15 footprint, 2026-04-15 critic, 2026-04-22 rolling, 2026-04-30 retries, 2026-04-30 dijkstra, 2026-05-04 dijkstra revert, quick triage MPPI dependency
 - `pca`, `grade-detector`, `dbscan`, `eigen`, `planarity` → 2026-05-05 (8 entries)
 - `x11`, `display`, `rviz`, `xauth`, `mit-shm` → 2026-04-08 MIT-SHM, 2026-04-15 xauth, 2026-04-15 SSH→GL, 2026-04-22 headless
 

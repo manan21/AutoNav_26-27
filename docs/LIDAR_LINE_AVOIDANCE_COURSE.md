@@ -72,7 +72,7 @@ For bag analysis, the right end of the perpendicular tape is approximately `y = 
 - Cone-side clearance: `nav_center_y > -1.21 m`.
 - Preferred nominal corridor center: around `nav_center_y = -0.89 m`.
 
-These are analysis targets, not hard controller commands. Yaw, localization error, costmap resolution, and obstacle thickness reduce the usable clearance, so a global plan that only clips around the tape end near `y = -0.3 m` to `-0.5 m` is still likely to be infeasible for DWB's footprint critic.
+These are analysis targets, not hard controller commands. Yaw, localization error, costmap resolution, and obstacle thickness reduce the usable clearance, so a global plan that only clips around the tape end near `y = -0.3 m` to `-0.5 m` is still likely to be infeasible for the active Smac Lattice + MPPI stack. The behavior tree also runs `PathFootprintSafe` before `FollowPath`, so paths whose padded rectangular `nav_center` footprint overlaps raw lethal global cells should be rejected before the controller executes them.
 
 ## Test Command
 
@@ -173,10 +173,10 @@ python3 scripts/analyze_lidar_line_plan_gap.py /path/to/bag --perp-x 1.34 --tape
 python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46 --require-plan --fail-on-overlap
 python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --padding 0.05 --fail-on-overlap
 python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
-python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
+python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1  # optional; only useful when /evaluation exists
 ```
 
-The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows when DWB is active, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal cells, the diagnostic clearance to inscribed inflated cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The standard suite exits nonzero when the global plan footprint overlaps lethal cells or the measured trajectory overlaps the tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
+The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows only when DWB `/evaluation` data exists, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal cells, the diagnostic clearance to inscribed inflated cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The standard suite exits nonzero when the global plan footprint overlaps lethal cells or the measured trajectory overlaps the tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
 - Whether the first likely perpendicular/rightward `/lidar_line_points` detection occurs before measured physical footprint contact.

@@ -56,7 +56,7 @@ From here, everything is point-and-click — no manual `ros2 launch` needed.
 The HUD launches and monitors every device on the robot. The container does the ROS2 work; the GUI runs natively on the Jetson and talks to the container over DDS + `docker exec`.
 
 - **Launch buttons** — toggle each subsystem in queue order: Pre-SLAM, Camera, Lidar, GPS, PCA DETECT, CAMERA LINE DETECT, LIDAR LINE DETECT (opt-in), SLAM, NAV2, Power PCB. See `docs/LAUNCH_STACK.md` for the full order and dependency notes.
-- **Status dots** — red = off, yellow = starting, green = ready (each script emits `[GUI_READY] <Label>` after a fixed 5 s pacing timer).
+- **Status dots** — red = off, yellow = starting, green = ready (most `run-*.sh` scripts emit `[GUI_READY] <Label>` after a fixed 0.5 s pacing timer; SLAM waits longer so `map_padder` can receive the first map before NAV2 starts).
 - **Terminal viewer** — click any device to stream its live stdout/stderr.
 - **Sensor plots** — live odom, IMU, GPS, costmap previews.
 
@@ -99,6 +99,15 @@ cd AutoNav_25-26
 colcon build --symlink-install
 source install/setup.bash       # only needed when adding a new package
 ```
+
+If the active branch uses MPPI (`nav2_mppi_controller::MPPIController`) and the container cannot find `nav2_mppi_controller`, rebuild the dev image only:
+
+```bash
+cd ~/AutoNav_25-26
+./env/docker/build_koopa-dev.sh
+```
+
+`ros-humble-nav2-mppi-controller` belongs in the higher-level dev Dockerfile so this does not require rebuilding the slow `autonav:koopa-kingdom` base image.
 
 If fewer than 22 packages build, your submodules are likely empty — commonly `pointcloud_to_laserscan` and `zed-ros2-wrapper`. Run:
 ```bash

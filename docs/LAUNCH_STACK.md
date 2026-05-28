@@ -34,18 +34,23 @@ the dependency notes after the table).
 
 - **Pre-SLAM** brings up the encoders + control stack first so wheel
   odometry is publishing before anything that needs it (EKF, SLAM).
-- **PCA DETECT and CAMERA LINE DETECT come before SLAM.**
-  `slam_toolbox` is configured to subscribe to `/scan_pca_filtered`
-  (the grade detector's obstacle cloud, collapsed to 2D via
-  `pca_pc2_to_scan` in `slam.launch.py`). If SLAM starts first it
-  starves of scans, never produces `/pose` or the `map→odom` TF,
-  and the Nav2 lifecycle stalls at "Activating planner_server."
-  Same reasoning for CAMERA LINE — the `line_layer` plugin in Nav2
-  needs the line-pixel stream live by the time the costmap comes up.
+- **PCA DETECT comes before SLAM.**
+  `slam_toolbox` itself subscribes to the raw `/scan_fullframe`, but
+  `slam.launch.py` also starts the PCA PointCloud2-to-LaserScan
+  converters that publish `/scan_pca_filtered` and
+  `/scan_pca_filtered_clear` for Nav2's obstacle layer. Starting PCA
+  before SLAM means those converter outputs are live before Nav2
+  starts.
+- **CAMERA LINE DETECT is still in Run All, but it is not consumed by
+  the active lidar-line Nav2 profile.** The camera `line_layer` entry is
+  disabled in `nav2_paramsv2.yaml`; lidar tape avoidance uses
+  `/lidar_line_points` through the separate lidar line layer.
 - **LIDAR LINE DETECT is opt-in.** It's an alternate / supplementary
   line-detection source running off the LiDAR. Clicking **Run All**
   skips it (`_launch_all_excluded`); click it directly when you want
-  the LiDAR line stream in addition to (or instead of) the camera one.
+  the LiDAR line stream. It is required for the measured lidar-line
+  avoidance test and any run that expects retroreflective tape to appear
+  in Nav2.
 - **NAV2 last among nav components** because it depends on SLAM
   producing the `map→odom` TF.
 - **Power PCB** can technically come up at any time; it's last only

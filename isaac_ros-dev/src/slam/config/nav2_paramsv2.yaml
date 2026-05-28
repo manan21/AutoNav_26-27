@@ -233,13 +233,14 @@ local_costmap:
         # Source = PCA-filtered 2-D LaserScan (autonav_detection::
         # grade_detector → pointcloud_to_laserscan in slam.launch.py).
         # The 3-D /scan_pca_filtered_points is collapsed once, upstream,
-        # into /scan_pca_filtered so SLAM and this layer see the same
-        # 2-D representation. Every return in this scan is an obstacle
+        # into /scan_pca_filtered for local obstacle marking. SLAM itself
+        # still consumes the raw /scan_fullframe LaserScan. Every return
+        # in the PCA-filtered scan is an obstacle
         # (ground / ramp already filtered by PCA grade classification).
         # Two observation sources to split marking and clearing FOVs:
         #   mark_scan  → /scan_pca_filtered       (180°, marking only)
-        #   clear_scan → /scan_pca_filtered_clear (160°, clearing only)
-        # The outer 10° wedge on each side marks obstacles but doesn't
+        #   clear_scan → /scan_pca_filtered_clear (140°, clearing only)
+        # The outer 20° wedge on each side marks obstacles but doesn't
         # raytrace-clear them — the lidar's beam density / accuracy
         # falls off at the FOV edges, so we don't let those edge rays
         # claim "this cell is free." Stored marks in that wedge persist
@@ -329,7 +330,11 @@ local_costmap:
         # near the left-side tape is not boxed in, but wider than an exact
         # point cell so near-line lattice paths are no longer attractive.
         inscribed_radius: 0.10
-        cost_scaling_factor: 5.0
+        # Slow decay keeps tape costs high enough within the robot's
+        # circumscribed radius for Smac Lattice to run full footprint
+        # collision checks, while the cells remain below lethal so a legal
+        # 5 ft passage is still traversable when it is the only route.
+        cost_scaling_factor: 1.5
         clearing: True
         rolling_window: True
         publish_costmap: True
@@ -379,19 +384,24 @@ global_costmap:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
       #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells, then mirrors only local lethal obstacle marks so local inflation is not copied into global and inflated again.
       #   lidar_line_memory_mirror_layer → /lidar_line_costmap → persistent
-      #     lidar tape memory. It is applied before global inflation so Smac
-      #     sees tape as a footprint-blocking physical obstacle.
-      # PCA obstacle memory and lidar tape memory are mirrored before stock
-      # inflation. The camera line mirror is intentionally disabled in this
-      # lidar-only profile.
-      plugins: ["static_layer", "local_mirror_layer", "lidar_line_memory_mirror_layer", "inflation_layer"]
+      #     lidar tape memory. It runs after stock global inflation and mirrors
+      #     the line layer's exact lethal tape cells plus non-lethal soft halo
+      #     directly, instead of letting stock inflation create a footprint-wide
+      #     hard centerline band around tape. This preserves the IGVC 5 ft legal
+      #     passage while still preferring clearance in wider lanes.
+      # PCA obstacle memory is inflated by the stock global inflation layer.
+      # The camera line mirror is intentionally disabled in this lidar-only
+      # profile.
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
         first_map_only: false
-        # Treat UNKNOWN cells in /map_padded as FREE_SPACE for the planner — Dijkstra can route through. (Default Nav2 maps -1 to NO_INFORMATION; with allow_unknown:true the planner still works, but FREE keeps the cost surface cleaner.)
+        # Treat UNKNOWN cells in /map_padded as FREE_SPACE for Smac. Default
+        # Nav2 maps -1 to NO_INFORMATION; with allow_unknown:true the planner
+        # still works, but FREE keeps the cost surface cleaner.
         trinary_costmap: false
         unknown_cost_value: -1
 
@@ -437,11 +447,13 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /lidar_line_costmap
-        # Mirror only exact lethal tape cells from the line-only costmap.
-        # The local line layer already contains its own soft halo; copying
-        # that halo here would mix local tape policy into global planning.
-        # Global inflation below expands these lethal tape seeds once.
-        min_occupied_value_to_mirror: 100
+        # Mirror the line-only costmap's full hard/soft field. Exact tape
+        # cells remain lethal, the line layer's small inscribed band remains
+        # near-hard, and its wider halo stays traversable soft cost. Because
+        # this layer runs after stock global inflation, tape does not receive
+        # a second footprint-radius hard centerline band that can close a
+        # legal 5 ft passage.
+        min_occupied_value_to_mirror: 1
         # TEMPORARY tape-test behavior: local LiDAR-line memory is
         # manual-clear-only, so the global mirror must not accept automatic
         # lower-cost clears from the rolling local line costmap. The operator
@@ -451,9 +463,9 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Shared global inflation for PCA/cone obstacles and lidar tape. The
-        # lidar mirror runs before this layer so global planning rejects
-        # centerlines whose rectangular footprint would clip tape.
+        # Stock global inflation for PCA/cone obstacles. Lidar tape is mirrored
+        # after this layer using the line layer's own hard/soft field so the
+        # planner can still use IGVC-minimum 5 ft passages.
         cost_scaling_factor: 4.0
         inflation_radius: 0.85
       always_send_full_costmap: True

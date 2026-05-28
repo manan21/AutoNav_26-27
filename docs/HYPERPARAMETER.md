@@ -26,18 +26,19 @@ column shows whether the file is loaded by the live GUI launch path.
 
 **Legend**
 - ✅ **active** — loaded somewhere on the GUI launch path or by a node the GUI starts.
+- ⚙️ **gated** — available from an active launch file, but disabled by default behind a launch argument.
 - 🧪 **sim-only** — only loaded by the simulation launch files; ignored on the real robot.
 - 📦 **legacy / unused** — file is present in the tree but no current launch loads it. Candidate for deletion.
 
 | File | Status | Purpose | Loaded by |
 |---|---|---|---|
-| `slam/config/nav2_paramsv2.yaml` | ✅ active | Nav2 params (DWB, costmap, planner_server, bt_navigator, smoother, velocity_smoother) — the big one | `run-nav2.sh`, `slam.launch.py`, `nav.launch.py` |
-| `slam/config/slam.yaml` | ✅ active | SLAM Toolbox node params + IMU yaw frame transformer | `slam.launch.py` |
+| `slam/config/nav2_paramsv2.yaml` | ✅ active | Nav2 params (Smac Lattice, MPPI, costmaps, planner_server, bt_navigator, smoother, velocity_smoother) — the big one | `run-nav2.sh`, `slam.launch.py`, `nav.launch.py` |
+| `slam/config/slam.yaml` | ✅ active | SLAM Toolbox node params: raw LiDAR scan, scan matching, map→odom publication | `slam.launch.py` |
 | `slam/config/ekf_local.yaml` | ✅ active | Local EKF — wheel odom + IMU fusion, owns `odom → base_link` | `slam.launch.py` |
-| `slam/config/ekf_global.yaml` | ✅ active | Global EKF — adds GPS fusion, owns `map → odom` | `slam.launch.py` |
-| `slam/config/mapper_params_online_async.yaml` | ✅ active | slam_toolbox mapper params (resolution, loop closure, scan matcher) | `slam.launch.py` |
+| `slam/config/ekf_global.yaml` | ⚙️ gated off by default | Global EKF — adds GPS XY fusion when `enable_gps_fusion:=true`; does not publish `map → odom` | `slam.launch.py` only when `enable_gps_fusion:=true` |
 | `autonav_detection/config/line_detector.yaml` | ✅ active | Camera line detector thresholds, ROI, morphology | `detection.launch.py` (via `run-lines.sh`) |
 | `autonav_detection/config/grade_detector.yaml` | ✅ active | PCA grade detector params (window, slope thresholds, PCA dims) | `detection.launch.py` (via `run-pca.sh`) |
+| `autonav_detection/config/lidar_line_detector.yaml` | ✅ active when LiDAR line detect is launched | SICK RSSI/reflector tape detector, ground gate, clustering, segment completion | `detection.launch.py` (via `run-lidar-lines.sh`) |
 | `control/config/node_params.yaml` | ✅ active | Control node — Phase D grade comp, manual speed gear, motor mapping | `control_dev.launch.py` (via `run-pre-slam.sh`) |
 | `control/config/config_params.yaml` | ✅ active | Control node — additional param overlay | `control_dev.launch.py` |
 | `bringup/config/zed_override.yaml` | ✅ active | ZED wrapper parameter overrides (resolution, TF suppression, depth mode) | `run-zed.sh` |
@@ -50,6 +51,7 @@ column shows whether the file is loaded by the live GUI launch path.
 | `slam/config/nav_minimal.yaml` | 📦 legacy / unused | Stripped-down Nav2 variant. No active loader. Delete candidate. | — |
 | `slam/config/nav_defaults.yaml` | 📦 legacy / unused | Default Nav2 variant. No active loader. Delete candidate. | — |
 | `slam/config/nav2_params.yaml` | 📦 legacy / unused | Predecessor to `nav2_paramsv2.yaml`. Only referenced by `run-nav.sh` (also unused — GUI uses `run-nav2.sh`). Delete candidate. | `run-nav.sh` only |
+| `slam/config/mapper_params_online_async.yaml` | 📦 legacy / unused | Older slam_toolbox mapper params; `slam.launch.py` explicitly uses `slam.yaml` instead. | — |
 | `slam/config/dual_ekf_navsat_params.yaml` | 📦 legacy / unused | navsat_transform_node params. `dual_ekf_navsat.launch.py` exists but is not included by any GUI-path launch file. Delete candidate (or wire up the launch if the GPS handler's heading bootstrap should use it). | `dual_ekf_navsat.launch.py` (not invoked from GUI path) |
 | `autonav_automated_testing/config/calibration_constants.yaml` | 📦 legacy / unused | No active loader. Delete candidate. | — |
 
@@ -61,10 +63,10 @@ If you delete any of the 📦 files, also delete the launch file or script that'
 
 | System | File | What it controls |
 |---|---|---|
-| Velocity envelope | `nav2_paramsv2.yaml` (velocity_smoother, FollowPath) | Robot speed cap, accel limits |
+| Velocity envelope | `nav2_paramsv2.yaml` (velocity_smoother, MPPI `FollowPath`) | Robot speed cap, accel limits |
 | Behavior Tree | `bt_nav.xml` | Replan cadence, recovery durations, retries |
-| Phase B decorator | `nav2_paramsv2.yaml` (bt_navigator) | Cancel-restart suppression on same-path replans |
-| Path planning | `nav2_paramsv2.yaml` (controller_server) | Progress checker, goal tolerance |
+| Global planning | `nav2_paramsv2.yaml` (planner_server) | Smac Lattice primitive file, lattice penalties, planning budget |
+| Local control | `nav2_paramsv2.yaml` (controller_server `FollowPath`) | MPPI sampling, critics, goal tolerance |
 | Costmap / inflation | `nav2_paramsv2.yaml` (local_costmap, global_costmap) | Obstacle inflation, line layer persistence |
 | SLAM | `slam.yaml` | Scan rate, match confidence, keyframes |
 | EKF (local + global) | `ekf_local.yaml`, `ekf_global.yaml` | Sensor fusion config, TF ownership |
@@ -78,21 +80,21 @@ If you delete any of the 📦 files, also delete the launch file or script that'
 
 ## Robot velocity envelope (`nav2_paramsv2.yaml`)
 
-The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[0])`. Raising one without the other doesn't change behavior — raise both together.
+The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_velocity[0])`. Raising one without the other does not change the robot's top speed, and raising both without retuning the MPPI critics can reintroduce start-stop chatter around frequent replans.
 
 | Parameter | Status | Default | Effect | Tune direction |
 |---|---|---|---|---|
-| `velocity_smoother.max_velocity[0]` | ⚠️ | `0.25` m/s (lab) / `0.50` (outdoor C.1) | Hard cap on forward `/cmd_vel.linear.x` | Higher → faster, watch for chatter past ~0.50 outdoors before EKF tuning |
-| `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` / `-0.50` | Hard cap on reverse | Pair with max_velocity |
-| `velocity_smoother.max_accel[0]` | 🟡 | `2.5` m/s² | Smoother linear accel cap | Higher → snappier ramp-up. Must equal `acc_lim_x` below. |
+| `velocity_smoother.max_velocity[0]` | ⚠️ | `0.25` m/s | Hard cap on forward `/cmd_vel.linear.x` | Higher → faster, watch for chatter past ~0.50 outdoors before EKF tuning |
+| `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` m/s | Hard cap on reverse | Pair with max_velocity |
+| `velocity_smoother.max_accel[0]` | 🟡 | `2.5` m/s² | Smoother linear accel cap | Higher → snappier ramp-up; retune with MPPI samples and chatter checks. |
 | `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
-| `controller_server.controller_frequency` | 🟡 | `20.0` Hz | DWB tick rate | Higher → more responsive, more CPU |
-| `controller_server.FollowPath.max_vel_x` | 🟡 | `1.5` m/s | DWB's own upstream forward cap | Effective if you raise the smoother past this |
-| `controller_server.FollowPath.min_speed_theta` | ⚠️ | `0.45` rad/s | Min DWB yaw-rate sample | Keeps pure turns above observed drivetrain deadband; lowering can reintroduce zero-RPM twitching |
-| `controller_server.FollowPath.max_vel_theta` | 🟡 | `0.65` rad/s | Max yaw rate | Raised from 0.40 — lower starves GPS heading bootstrap |
-| `controller_server.FollowPath.acc_lim_x` | 🟡 | `2.5` m/s² | DWB linear accel for trajectory sampling | **Must match `velocity_smoother.max_accel`** — DWB chatters at every accel ramp if they disagree |
-| `controller_server.FollowPath.acc_lim_theta` | 🟡 | `0.9` rad/s² | DWB angular accel for trajectory sampling | Higher → snappier turns, overshoot risk |
-| `controller_server.FollowPath.sim_time` | 🟡 | `1.2` s | DWB trajectory horizon | Lower (`0.8`) reduces over-commit when paired with cap raise (PHASEC.5) |
+| `controller_server.controller_frequency` | 🟡 | `20.0` Hz | MPPI control tick rate | Higher → more responsive, more CPU |
+| `controller_server.FollowPath.vx_max` | ⚠️ | `0.25` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
+| `controller_server.FollowPath.vx_min` | 🟡 | `0.0` m/s | MPPI reverse sampling cap | Current local controller is forward-only; reverse is handled by `breadcrumb_reverse` |
+| `controller_server.FollowPath.vy_max` | 🔴 | `0.0` m/s | Lateral sampling cap | Must remain zero for differential drive |
+| `controller_server.FollowPath.wz_max` | 🟡 | `1.0` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |
+| `controller_server.FollowPath.time_steps × model_dt` | 🟡 | `56 × 0.05 = 2.8` s | MPPI rollout horizon | Longer sees farther but costs CPU and can over-commit |
+| `controller_server.FollowPath.batch_size` | 🟡 | `1200` | Samples per MPPI tick | Higher → better local search, more CPU |
 
 ---
 
@@ -100,36 +102,48 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 
 | Parameter | Line | Status | Default | Effect |
 |---|---|---|---|---|
-| `RateController hz` | 41 | 🟡 | `3.0` | Replan cadence | Matches 3 Hz global costmap updates so newly detected tape reaches the global plan within ~8 cm at 0.25 m/s; Phase B decorator absorbs same-path replans |
-| `GoalBender bend_distance` | 59 | 🟡 | `0.8` m | Forward-bend intermediate distance | Only fires when `goal+path both behind robot` |
-| `GoalBender angle_threshold` | 59 | 🟡 | `1.57` rad (90°) | Behind-robot trigger angle | Loose default |
-| `GoalBender bend_angle` | 59 | 🟡 | `1.05` rad (60°) | Forward-bend offset | |
-| `ComputePathRecovery number_of_retries` | 67 | 🟡 | `3` | Planner retries inside the rate-controlled subtree | |
-| `ComputePathRecovery Wait wait_duration` | 81 | 🟡 | `0.1` s | Planner inter-retry wait | Phase A.4: lowered 0.3 → 0.1 |
-| `FollowPathRecovery number_of_retries` | 94 | 🟡 | `2` | DWB retries before escalating | |
-| `ClearCostmapAroundRobot reset_distance` | 112 | 🟡 | `1.0` m | FollowPath recovery clear radius | Phase A.5: replaces full local wipe — preserves line obstacles |
-| `BackUp backup_dist` | 118 | 🟡 | `0.10` m | Distance reversed during BackUp recovery | Shortened so a mid-flight recovery drains in ~2 s |
-| `BackUp backup_speed` | 118 | 🟡 | `0.05` m/s | BackUp speed | Slow by design — blind reverse |
-| `DriveOnHeading speed` | 120 | 🟡 | `0.1` m/s | gradient_escape forward speed | |
-| `DriveOnHeading time_allowance` | 120 | 🟡 | `15.0` s | gradient_escape budget | |
-| `Wait wait_duration` (RoundRobin) | 127 | 🟡 | `1.0` s | Wait between recovery rounds | Phase A: lowered 5 → 1 so behavior_server drains fast |
-| `NavigateRecovery number_of_retries` | (outer) | 🟡 | `999` | Outer recovery loop budget | Effectively infinite — by design (pure Phase A baseline). Re-cap if a watchdog is added |
+| `RateController hz` | 43 | 🟡 | `3.0` | Replan cadence | Matches 3 Hz global costmap updates so newly detected tape reaches the global plan within ~8 cm at 0.25 m/s |
+| `GoalBender bend_distance` | 67 | 🟡 | `0.8` m | Forward-bend intermediate distance | Fires when the path leads behind the robot and the goal/path context requires a turnaround |
+| `GoalBender angle_threshold` | 69 | 🟡 | `1.57` rad (90°) | Behind-robot trigger angle | Loose default |
+| `GoalBender bend_angle` | 69 | 🟡 | `1.05` rad (60°) | Forward-bend offset | |
+| `ComputePathRecovery number_of_retries` | 88 | 🟡 | `8` | Planner retries inside the rate-controlled subtree | Gives SLAM/TF/costmap warm-up up to ~4 s before heavy recovery |
+| `PathFootprintSafe footprint_padding` | 96 | 🟡 | `0.05` m | Runtime global-plan footprint gate | Rejects paths whose rectangular `nav_center` footprint overlaps lethal raw global cells |
+| `ComputePathRecovery Wait wait_duration` | 113 | 🟡 | `0.5` s | Planner inter-retry wait | Paired with 8 retries for warm-up patience |
+| `FollowPathRecovery number_of_retries` | 146 | 🟡 | `2` | MPPI retries before escalating | |
+| `ClearCostmapAroundRobot reset_distance` | 152 | 🟡 | `1.0` m | FollowPath recovery clear radius | Local-only clear; preserves global line/obstacle memory |
+| `BackUp backup_dist` | 179 | 🟡 | `0.10` m | Distance reversed during BackUp recovery | Shortened so a mid-flight recovery drains in ~2 s |
+| `BackUp backup_speed` | 179 | 🟡 | `0.05` m/s | BackUp speed | Slow by design — blind reverse |
+| `DriveOnHeading speed` | 180 | 🟡 | `0.1` m/s | `gradient_escape` forward speed | |
+| `DriveOnHeading time_allowance` | 181 | 🟡 | `15.0` s | `gradient_escape` budget | |
+| `Wait wait_duration` (RoundRobin) | 190 | 🟡 | `1.0` s | Wait between recovery rounds | Short enough to keep recovery responsive |
+| `NavigateRecovery number_of_retries` | 28 | 🟡 | `999` | Outer recovery loop budget | Effectively infinite — by design. Re-cap if a watchdog is added |
 
 ---
 
-## Phase B decorator (`nav2_paramsv2.yaml` under `bt_navigator.ros__parameters`)
+## Dormant Phase B decorator params (`nav2_paramsv2.yaml` under `bt_navigator.ros__parameters`)
+
+These parameters still exist because the `PathSignificantlyChanged` BT plugin is built and loaded, but the active `bt_nav.xml` no longer wraps `FollowPath` with that decorator. MPPI now receives each fresh safe path directly; the old decorator could hold a stale path whose early poses matched while the later route diverged around tape.
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
-| `path_significantly_changed.rms_threshold_m` | 🟢 | `0.10` m | First-N-pose RMS delta below which FollowPath cancel-restart is suppressed | Higher = less replanning chatter, but may delay reaction to genuine path changes. Live-tune: `ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15` |
-| `path_significantly_changed.compare_n_poses` | 🟢 | `10` | How many leading poses contribute to the RMS check | Higher = longer horizon for change detection (~0.5 m at 5 cm planner pose spacing). Raise to 20-30 if distant-obstacle reroutes look too slow |
+| `path_significantly_changed.rms_threshold_m` | 📦 dormant | `0.10` m | Would be the first-N-pose RMS threshold if the decorator is reinserted | Not active in the current BT |
+| `path_significantly_changed.compare_n_poses` | 📦 dormant | `10` | Would be the comparison horizon if the decorator is reinserted | Not active in the current BT |
 
 ---
 
-## Path planning + goal checker (`nav2_paramsv2.yaml`)
+## Planning, control, and goal checker (`nav2_paramsv2.yaml`)
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
+| `planner_server.expected_planner_frequency` | 🟡 | `20.0` Hz | Planner-server expected rate | BT still gates global replans at 3 Hz |
+| `planner_server.GridBased.plugin` | 🔴 | `nav2_smac_planner/SmacPlannerLattice` | Footprint-aware SE2 lattice planner | Replaced SmacPlanner2D so global paths account for rectangular footprint geometry |
+| `planner_server.GridBased.lattice_filepath` | 🔴 | `/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json` | Differential-drive lattice primitive set | Must match global costmap `resolution: 0.05` |
+| `planner_server.GridBased.cost_penalty` | 🟡 | `5.0` | Cost sensitivity during lattice search | Higher avoids soft costs more aggressively |
+| `planner_server.GridBased.rotation_penalty` | 🟡 | `5.0` | Penalty for rotation-heavy lattice paths | Lower if the robot needs more precise maneuvers; too low made rotation shortcuts attractive |
+| `controller_server.FollowPath.plugin` | 🔴 | `nav2_mppi_controller::MPPIController` | Active local controller | Requires `ros-humble-nav2-mppi-controller` in the runtime image |
+| `controller_server.FollowPath.CostCritic.consider_footprint` | 🔴 | `true` | MPPI collision scoring uses full footprint | Must stay true for tape/cone clearance |
+| `controller_server.FollowPath.CostCritic.collision_cost` | 🟡 | `1000000.0` | Cost assigned to colliding trajectories | High by design so MPPI does not choose line/cone overlap |
+| `controller_server.FollowPath.PathAlignCritic.max_path_occupancy_ratio` | 🟡 | `0.12` | How much path occupancy the align critic tolerates | Tune only with bags; too strict can reject useful local deviations |
 | `controller_server.progress_checker.movement_time_allowance` | 🟡 | `15.0` s | Stuck-declare timeout when robot moves < `required_movement_radius` | Phase A.2: raised 8 → 15 to cover transient line-cross inflation |
 | `controller_server.progress_checker.required_movement_radius` | 🟡 | `0.1` m | Minimum motion to count as "not stuck" within timeout | |
 | `controller_server.general_goal_checker.xy_goal_tolerance` | 🟡 | `0.25` m | XY tolerance for goal-reached | Tightened from default 0.5 m |
@@ -142,21 +156,25 @@ The effective cmd_vel cap is `min(DWB max_vel_x, velocity_smoother.max_velocity[
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
 | `local_costmap.local_costmap.update_frequency` | 🟡 | `15.0` Hz | Local costmap regeneration rate | |
-| `local_costmap.local_costmap.publish_frequency` | 🟡 | `10.0` Hz | Local costmap broadcast rate | |
-| `local_costmap.local_costmap.resolution` | 🟡 | `0.05` m | Local cell size | DWB uses this for narrow-gap precision; coarsening reduces fidelity |
+| `local_costmap.local_costmap.publish_frequency` | 🟡 | `15.0` Hz | Local costmap broadcast rate | |
+| `local_costmap.local_costmap.resolution` | 🟡 | `0.05` m | Local cell size | MPPI and line-layer clearance depend on this; coarsening reduces narrow-gap fidelity |
 | `local_costmap.local_costmap.width` / `height` | 🟡 | `6` m × `6` m | Rolling window size | **Must equal 2× `map_padder.local_window_radius_m`** so global mirrors local cleanly |
+| `local_costmap.local_costmap.footprint_padding` | 🟡 | `0.03` m | Local controller footprint margin | Global padding is intentionally larger (`0.05` m) so unsafe paths are rejected before MPPI |
 | `local_costmap.obstacle_layer.mark_scan.obstacle_max_range` | 🟡 | `2.5` m | Lidar marking range | Short — line obstacles only mark when close |
 | `local_costmap.obstacle_layer.clear_scan.raytrace_max_range` | 🟡 | `25.0` m | Lidar clearing raytrace range | Long — clears all the way to SICK reach |
-| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `7000` ms | Short LiDAR-line memory | Bridges detector dropouts / near-field blind spot, then clears under 10 s |
-| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.36` m | High-cost band around LiDAR line points | Makes footprint overlap with tape costly without making the full halo lethal |
-| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.90` m | Outer LiDAR-line halo | Keeps visible gates passable while discouraging close line approaches |
-| `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.0` | Exponential decay of inflation cost | Lower → wider effective stay-away. Pair with global |
-| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `1.40` m | Max distance from obstacle for inflation | Currently differs from global (1.30 m) — pair-tune intentionally or unify |
+| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `-1` | Manual-clear-only LiDAR-line memory | Temporary tape-test behavior so the robot cannot forget a detected line while paused |
+| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.10` m | High-cost band around LiDAR line points | Wider than exact point cells, narrow enough not to box in the start pose |
+| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.80` m | Outer LiDAR-line halo | Softly pushes MPPI/Smac away from sparse tape detections |
+| `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Exponential decay of PCA obstacle inflation cost | Pair with global |
+| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Max distance from PCA obstacle for stock inflation | Matched to global so cones and tape are not artificially imbalanced |
 | `global_costmap.global_costmap.update_frequency` | 🟡 | `3.0` Hz | Global regenerate rate | Conservative — global is mostly the paste from local |
-| `global_costmap.global_costmap.resolution` | 🟡 | `0.10` m | Global cell size | Matches SLAM output resolution |
-| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.0` | Same as local | **Must equal local** — controller and planner must agree on clearance |
-| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `1.30` m | Slightly tighter than local (1.40 m) | Verify whether the local/global gap is intentional before re-unifying |
-| `global_costmap.line_layer.observation_persistence_ms` | 🟡 | `1500` ms | How long line cells persist in global | Set to 1500 ms — line cells expire after 1.5 s of silence. `0` would mean indefinite |
+| `global_costmap.global_costmap.resolution` | 🔴 | `0.05` m | Global cell size | Must match the 5 cm Smac Lattice primitive file |
+| `global_costmap.global_costmap.footprint_padding` | 🟡 | `0.05` m | Planner/path gate footprint margin | Rejects paths that are centerline-clear but unsafe for the real body |
+| `global_costmap.local_mirror_layer.min_occupied_value_to_mirror` | 🟡 | `100` | Mirrors only lethal PCA obstacle seeds from local costmap | Prevents local soft inflation from being copied into global and inflated again |
+| `global_costmap.local_mirror_layer.exclude_topics` | 🟡 | `["/line_costmap", "/lidar_line_costmap"]` | Masks line-layer cells from obstacle memory mirroring | Prevents lidar lines from entering global through the wrong layer |
+| `global_costmap.lidar_line_memory_mirror_layer.allow_decrease` | 🟡 | `false` | Global LiDAR-line memory clearing policy | Manual-clear-only for the current tape-test behavior |
+| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Shared decay for PCA/cone and lidar tape seeds | **Must equal local** unless intentionally testing a planner/controller mismatch |
+| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Shared global inflation radius | Applied once after PCA obstacle seeds and exact lidar tape seeds enter global |
 
 ---
 
@@ -333,7 +351,7 @@ This handles the backing-down-a-hill case correctly — gravity helps reverse mo
 
 ### Bench-test calibration
 
-1. `ros2 param set /control_node grade_comp_enabled true` (default is true after the YAML flip; this is for re-enabling after disabling)
+1. `ros2 param set /control_node grade_comp_enabled true` (default is currently `false`; enable only for a deliberate tilt/ramp test)
 2. Note level-ground wheel RPM at full-stick forward in manual mode (call it 100 %).
 3. Tilt nose-up ~10° → wheels at ~300 % of level RPM (boost).
 4. Tilt nose-down ~10° → wheels at ~70 % of level RPM (damping).
@@ -368,27 +386,27 @@ Bumper indexes are OR'd across two layouts ({6,7} normal / {9,10} wrong-containe
 # YAML edit (preferred — survives relaunch):
 #   nav2_paramsv2.yaml: max_velocity[0]: 0.50 -> 0.80
 #                       min_velocity[0]: -0.50 -> -0.80
-# Pair-edit if accel ramps look sluggish:
-#   max_accel[0]: 2.5 -> 3.5 (smoother)
-#   acc_lim_x:    2.5 -> 3.5 (DWB — must match smoother)
-#   sim_time:     1.2 -> 0.8 (DWB — reduces over-commit)
+# Pair-edit the MPPI cap or the smoother will still clamp at 0.25:
+#   FollowPath.vx_max: 0.25 -> 0.50 or 0.80
+# Then retune in bags if chatter returns:
+#   FollowPath.vx_std, time_steps/model_dt, PathAlignCritic/PathFollowCritic weights
+#   velocity_smoother.max_accel/max_decel
 ```
 
-### Tune Phase B decorator live
+### Re-enable or tune the dormant Phase B decorator
 
 ```bash
-# Make the decorator more tolerant of GPS-driven goal jitter:
+# The active bt_nav.xml does not currently wrap FollowPath with this decorator.
+# If you intentionally reinsert PathSignificantlyChanged, these params apply:
 ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15
-
-# Or extend the comparison horizon to catch farther-out reroutes:
 ros2 param set /bt_navigator path_significantly_changed.compare_n_poses 20
 ```
 
 ### Calibrate Phase D on a tilt block
 
 ```bash
-# Already enabled by default. To raise the uphill boost cap if a payload
-# test on the ramp still slows the robot:
+# Phase D is disabled by default. Enable it for a deliberate ramp test, then
+# raise the uphill boost cap if a payload test still slows the robot:
 ros2 param set /control_node grade_comp_max_uphill_pct 3.0    # cap = 4.0x
 
 # To increase downhill damping if the robot still accelerates past cap:
@@ -412,5 +430,5 @@ ros2 param set /control_node grade_comp_ramp_max_velocity_mps 0.10  # caps auton
 
 - 🔴 / ⚠️ parameters have inline comments at the source location. Read those before changing.
 - The OSCILLATION-SENSITIVE three-part SLAM invariant must remain intact: `use_scan_matching: true`, EKF local using `imu_inflated`, and `imu_cov_inflator` running. Breaking any one reintroduces the canonical "map catching up" snap.
-- Per-pair tuning: smoother and DWB share `max_accel` ↔ `acc_lim_x` and `max_velocity` ↔ `max_vel_x`. Local and global costmaps share `cost_scaling_factor` ↔ `inflation_radius`. Always pair-edit these.
+- Per-pair tuning: smoother and MPPI share the effective forward cap (`max_velocity[0]` ↔ `FollowPath.vx_max`). Local and global costmaps share `cost_scaling_factor` ↔ `inflation_radius`. Always pair-edit these unless you are deliberately testing a planner/controller mismatch.
 - Phase D is bounded by construction — the worst case is `[1 - max_downhill_pct, 1 + max_uphill_pct]` × baseline throttle, NaN-guarded, IMU-timeout-fallback to `1.0`. Comfort range is in the YAML defaults; widen the bounds only after a tilt-block bench test confirms motor current is in spec at the new bounds.

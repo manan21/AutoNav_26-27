@@ -97,7 +97,7 @@ What are all our packages? Here is a list of them:
 - **custom_behavior_tree_plugins** — A place for creating custom behavior trees that activate when the robot is stuck.
 - **gps_handler** — Talks to the GPS to get GPS data to the robot.
 - **gps_waypoint_handler** — Allows the robot to navigate to GPS waypoints by translating them into local coordinates.
-- **line_layer** — Adds lines to a costmap so the robot will avoid them like obstacles.
+- **line_layer** — Adds camera or LiDAR-detected line points to a costmap so the robot will avoid them like obstacles. The active lidar-line profile uses `/lidar_line_points`.
 - **map_padder** — Pads the costmap whenever the robot, path, goal, or obstacles are placed outside the current map.
 - **odom_handler** — Helps build odometry values, positions, and heading from raw encoder readings.
 - **pointcloud_to_laserscan** — Helps smush 3D scans of point clouds to a 2D surface for a costmap.
@@ -185,8 +185,8 @@ Additionally, you might be wondering how we are calculating voltage, current, po
 The robot uses both obstacles and waypoints inside a costmap, and it will attempt to plan a path. To ensure we stay away from obstacles, we inflate the costmap around each obstacle point (whether from lines or LiDAR).
 
 - SLAM creates the map for all things.
-- NAV2 uses Dijkstra to create an optimized path (updates in real time).
-- A controller server commands the robot to follow that path.
+- NAV2 uses Smac Lattice to create a footprint-aware path for the rectangular differential-drive robot.
+- The controller server currently uses MPPI to sample local controls against the footprint-aware costmap and command the robot along that path.
 - A behavior tree triggers when the robot is stuck or has made insignificant progress.
 - A ROS2 action server monitors until the robot reaches that goal, and can add another goal in a sequence.
 
