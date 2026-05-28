@@ -2,10 +2,10 @@
 #include "behaviortree_cpp_v3/condition_node.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
-#include "nav2_costmap_2d/costmap_2d.hpp"
-#include "nav2_costmap_2d/costmap_subscriber.hpp"
+#include "nav2_msgs/msg/costmap.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/executors/single_threaded_executor.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
@@ -14,6 +14,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <regex>
 #include <string>
 #include <vector>
@@ -109,9 +110,10 @@ public:
       std::clamp(std::min(lethal_threshold, inscribed_threshold), 0, 255));
 
     if (!costmap_sub_ || costmap_topic != costmap_topic_) {
-      costmap_topic_ = costmap_topic;
-      costmap_sub_ = std::make_shared<nav2_costmap_2d::CostmapSubscriber>(
-        node_, costmap_topic_);
+      resetCostmapSubscription(costmap_topic);
+    }
+    if (costmap_executor_) {
+      costmap_executor_->spin_some();
     }
 
     auto footprint = parseFootprint(footprint_spec);
@@ -124,15 +126,10 @@ public:
     }
     applyAxisPadding(footprint, footprint_padding);
 
-    std::shared_ptr<nav2_costmap_2d::Costmap2D> costmap;
-    try {
-      costmap = costmap_sub_->getCostmap();
-    } catch (const std::exception & e) {
-      RCLCPP_WARN_THROTTLE(
-        node_->get_logger(), *node_->get_clock(), 2000,
-        "PathFootprintSafe: costmap unavailable on '%s' (%s)",
-        costmap_topic_.c_str(), e.what());
-      return BT::NodeStatus::FAILURE;
+    nav2_msgs::msg::Costmap::SharedPtr costmap;
+    {
+      std::lock_guard<std::mutex> lock(costmap_mutex_);
+      costmap = latest_costmap_;
     }
     if (!costmap) {
       RCLCPP_WARN_THROTTLE(
@@ -175,8 +172,34 @@ public:
 private:
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
-  std::shared_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_sub_;
+  rclcpp::CallbackGroup::SharedPtr costmap_callback_group_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> costmap_executor_;
+  rclcpp::Subscription<nav2_msgs::msg::Costmap>::SharedPtr costmap_sub_;
+  nav2_msgs::msg::Costmap::SharedPtr latest_costmap_;
+  std::mutex costmap_mutex_;
   std::string costmap_topic_;
+
+  void resetCostmapSubscription(const std::string & costmap_topic)
+  {
+    costmap_topic_ = costmap_topic;
+    latest_costmap_.reset();
+    costmap_callback_group_ = node_->create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    costmap_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    costmap_executor_->add_callback_group(
+      costmap_callback_group_, node_->get_node_base_interface());
+
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = costmap_callback_group_;
+    costmap_sub_ = node_->create_subscription<nav2_msgs::msg::Costmap>(
+      costmap_topic_,
+      rclcpp::QoS(1).transient_local().reliable(),
+      [this](nav2_msgs::msg::Costmap::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(costmap_mutex_);
+        latest_costmap_ = msg;
+      },
+      options);
+  }
 
   static std::vector<Point2D> parseFootprint(const std::string & spec)
   {
@@ -266,7 +289,7 @@ private:
 
   static bool footprintIsSafe(
     const std::vector<Point2D> & footprint,
-    const nav2_costmap_2d::Costmap2D & costmap,
+    const nav2_msgs::msg::Costmap & costmap,
     unsigned char collision_threshold,
     bool ignore_unknown)
   {
@@ -281,11 +304,11 @@ private:
       max_y = std::max(max_y, p.y);
     }
 
-    const double resolution = costmap.getResolution();
-    const double origin_x = costmap.getOriginX();
-    const double origin_y = costmap.getOriginY();
-    const int size_x = static_cast<int>(costmap.getSizeInCellsX());
-    const int size_y = static_cast<int>(costmap.getSizeInCellsY());
+    const double resolution = costmap.metadata.resolution;
+    const double origin_x = costmap.metadata.origin.position.x;
+    const double origin_y = costmap.metadata.origin.position.y;
+    const int size_x = static_cast<int>(costmap.metadata.size_x);
+    const int size_y = static_cast<int>(costmap.metadata.size_y);
 
     const int min_mx = static_cast<int>(std::floor((min_x - origin_x) / resolution));
     const int max_mx = static_cast<int>(std::floor((max_x - origin_x) / resolution));
@@ -304,8 +327,12 @@ private:
           continue;
         }
 
-        const unsigned char cost = costmap.getCost(
-          static_cast<unsigned int>(mx), static_cast<unsigned int>(my));
+        const auto index = static_cast<size_t>(my) * static_cast<size_t>(size_x) +
+          static_cast<size_t>(mx);
+        if (index >= costmap.data.size()) {
+          return false;
+        }
+        const unsigned char cost = costmap.data[index];
         if (ignore_unknown && cost == nav2_costmap_2d::NO_INFORMATION) {
           continue;
         }

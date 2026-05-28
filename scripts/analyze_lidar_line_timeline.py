@@ -187,7 +187,7 @@ def main():
     parser.add_argument("--perp-x", type=float, default=1.34)
     parser.add_argument("--perp-y-threshold", type=float, default=0.35)
     parser.add_argument("--perp-y-min", type=float, default=-0.13)
-    parser.add_argument("--perp-y-max", type=float, default=0.50)
+    parser.add_argument("--perp-y-max", type=float, default=1.524)
     parser.add_argument("--half-length", type=float, default=0.545)
     parser.add_argument("--half-width", type=float, default=0.41)
     parser.add_argument("--padding", type=float, default=0.03)

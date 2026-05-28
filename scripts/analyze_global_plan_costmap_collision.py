@@ -311,7 +311,7 @@ def main():
     parser.add_argument("--unknown-value", type=int, default=255)
     parser.add_argument("--perp-x", type=float, default=1.34)
     parser.add_argument("--perp-y-min", type=float, default=-0.13)
-    parser.add_argument("--perp-y-max", type=float, default=0.50)
+    parser.add_argument("--perp-y-max", type=float, default=1.524)
     parser.add_argument("--tape-right-y", type=float, default=-0.13)
     parser.add_argument(
         "--require-plan",

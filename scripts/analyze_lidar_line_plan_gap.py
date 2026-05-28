@@ -126,7 +126,24 @@ def main():
     parser.add_argument("--hard-threshold", type=int, default=99)
     parser.add_argument("--perp-x", type=float, default=1.34)
     parser.add_argument("--tape-right-y", type=float, default=-0.13)
+    parser.add_argument("--half-width", type=float, default=0.46)
+    parser.add_argument(
+        "--gap-center-y-max",
+        type=float,
+        default=None,
+        help="Maximum y_at_perp accepted as a through-gap centerline. Defaults to tape_right_y - half_width.",
+    )
+    parser.add_argument(
+        "--fail-without-gap-plan",
+        action="store_true",
+        help="Exit nonzero unless at least one /plan crosses through the configured gap.",
+    )
     args = parser.parse_args()
+    gap_center_y_max = (
+        args.gap_center_y_max
+        if args.gap_center_y_max is not None
+        else args.tape_right_y - args.half_width
+    )
 
     reader = rosbag2_py.SequentialReader()
     reader.open(
@@ -276,6 +293,7 @@ def main():
         ]
         min_to_line = [dist for dist in min_to_line if dist is not None]
         if y_at_perps:
+            through_gap = [y for y in y_at_perps if y <= gap_center_y_max]
             print(
                 f"plan y at measured perpendicular x={args.perp_x:.2f}m: "
                 f"median={statistics.median(y_at_perps):+.3f} "
@@ -283,7 +301,8 @@ def main():
             )
             print(
                 f"measured tape right end y={args.tape_right_y:+.3f}m; "
-                "a route through the right-side gap should be below that end with footprint clearance"
+                f"through-gap centerline target y<={gap_center_y_max:+.3f}; "
+                f"through-gap plan count={len(through_gap)}"
             )
         print(
             f"plan max |lateral| median/range="
@@ -294,6 +313,23 @@ def main():
                 f"plan min distance to lidar-line hard cells median/range="
                 f"{statistics.median(min_to_line):.3f}/[{min(min_to_line):.3f},{max(min_to_line):.3f}]"
             )
+
+    if args.fail_without_gap_plan:
+        y_at_perps = []
+        for _, pts in plans:
+            y = y_at_x(pts, args.perp_x)
+            if y is not None:
+                y_at_perps.append(y)
+        if not any(y <= gap_center_y_max for y in y_at_perps):
+            print("\nFAIL: no global plan crossed through the configured 5 ft gap")
+            if y_at_perps:
+                print(
+                    f"  y_at_perp range=[{min(y_at_perps):+.3f},{max(y_at_perps):+.3f}], "
+                    f"required y<={gap_center_y_max:+.3f}"
+                )
+            else:
+                print("  no /plan crossed the perpendicular tape x coordinate")
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

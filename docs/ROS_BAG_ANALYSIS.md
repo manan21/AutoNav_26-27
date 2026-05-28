@@ -39,13 +39,13 @@ The lidar-line course geometry defaults match `docs/LIDAR_LINE_AVOIDANCE_COURSE.
 
 ```bash
 python3 scripts/analyze_lidar_line_plan_gap.py /path/to/bag --perp-x 1.34 --tape-right-y -0.13
-python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46 --require-plan --fail-on-overlap
-python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --padding 0.05 --fail-on-overlap
+python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 1.524 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46
+python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 1.524 --padding 0.05 --fail-on-overlap
 ```
 
 If the measured course changes, update both the course document and the defaults in `scripts/run_lidar_line_bag_analysis.sh` so future runs stay consistent.
 
-The DWB evaluation analyzer is optional in the standard suite because the active lidar-line branch uses MPPI. Missing `/evaluation` should not mask the hard acceptance gates: lethal global-plan footprint overlap or measured tape overlap still exits nonzero. For conservative experiments, add `--fail-on-inscribed-overlap` to the global plan analyzer.
+The DWB evaluation analyzer is optional in the standard suite because the active lidar-line branch uses MPPI. Missing `/evaluation` should not mask the hard acceptance gates: executed lethal footprint overlap or measured tape overlap still exits nonzero. For conservative experiments, add `--fail-on-overlap` or `--fail-on-inscribed-overlap` to the global plan analyzer.
 
 The detector publishes completed ground-only line segments on `/lidar_line_points`, so the timeline analyzer's first perpendicular/rightward detection should appear before the measured-course footprint contact. If it appears at or after contact, the robot is probably not seeing enough floor-tape geometry early enough for Nav2 to route around it.
 

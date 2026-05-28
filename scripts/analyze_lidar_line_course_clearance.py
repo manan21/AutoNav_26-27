@@ -82,7 +82,7 @@ def main():
     parser.add_argument("--padding", type=float, default=0.03)
     parser.add_argument("--perp-x", type=float, default=1.34)
     parser.add_argument("--perp-y-min", type=float, default=-0.13)
-    parser.add_argument("--perp-y-max", type=float, default=0.50)
+    parser.add_argument("--perp-y-max", type=float, default=1.524)
     parser.add_argument("--sample-step", type=float, default=0.005)
     parser.add_argument(
         "--fail-on-overlap",

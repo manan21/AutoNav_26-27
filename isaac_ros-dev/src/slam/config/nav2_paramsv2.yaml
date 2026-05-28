@@ -187,7 +187,7 @@ controller_server:
         trajectory_point_step: 4
         threshold_to_consider: 0.5
         offset_from_furthest: 5
-        use_path_orientations: false
+        use_path_orientations: true
       PathFollowCritic:
         enabled: true
         cost_power: 1
@@ -218,10 +218,9 @@ local_costmap:
       # Footprint expressed in nav_center frame (was base_link with
       # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      # Local controller footprint margin. The global costmap uses a slightly
-      # larger 0.05 m padding so Smac rejects plans that are technically
-      # centerline-clear but unsafe for the real rectangular body.
-      footprint_padding: 0.03
+      # Match the BT/global footprint safety margin so MPPI evaluates the
+      # same padded body the bag analysis enforces.
+      footprint_padding: 0.05
       # Keep stock Nav2 inflation local to PCA obstacle cells. The camera
       # line layer is deliberately not loaded in this lidar-only test profile.
       # The lidar line layer runs after obstacle inflation so local tape costs
@@ -330,10 +329,13 @@ local_costmap:
         # too much of the narrow legal gap before the planner ever considers
         # soft costs.
         inscribed_radius: 0.05
-        # Intermediate decay keeps near-line angled lattice states expensive
-        # enough to trigger footprint checks, but is not as globally
-        # prohibitive as the 1.5 test in the canonical 5 ft course.
-        cost_scaling_factor: 2.5
+        # Keep the halo non-lethal, but shallow enough that MPPI's
+        # footprint-aware CostCritic evaluates the full rectangle before a
+        # corner can reach the exact tape cells. A steeper 2.5 decay let the
+        # robot center stay in low/moderate cost while the rear corner clipped
+        # the start-line tape; 1.8 preserves the 5 ft gap while exposing that
+        # corner-cut risk to the controller.
+        cost_scaling_factor: 1.8
         clearing: True
         rolling_window: True
         publish_costmap: True

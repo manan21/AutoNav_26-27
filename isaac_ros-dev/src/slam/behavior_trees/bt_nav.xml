@@ -37,9 +37,10 @@
              a transient one-tick costmap blip). PathFootprintSafe below
              rejects planner outputs whose rectangular nav_center footprint
              overlaps lethal global cells before FollowPath can execute them.
-             Inscribed inflated cells are not footprint-overlap gated here
-             because global inflation already encodes robot-radius clearance
-             around lidar tape for Smac/MPPI. -->
+             Inscribed inflated cells are not footprint-overlap gated here:
+             tape/cone center cells are the hard keepout, while non-lethal
+             soft costs bias Smac/MPPI toward wider clearance when space
+             exists without closing the IGVC-required 5 ft passage. -->
         <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from

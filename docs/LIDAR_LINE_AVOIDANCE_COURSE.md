@@ -2,7 +2,7 @@
 
 This document defines the repeatable indoor course for testing lidar retroreflective line detection, PCA obstacle avoidance, Nav2 path following, and physical tape clearance.
 
-Current course revision: the right-side passable gap has been widened to match the IGVC AutoNav minimum corridor width requirement. The passable gap between the perpendicular tape obstacle and the DOT cone is `5 ft` (`1.524 m`), and the perpendicular tape extends `0.63 m` rightward from the left-side tape.
+Current course revision: the left-side tape is placed at the IGVC nominal `10 ft` course half-width from the center start line, and the right-side passable gap matches the IGVC AutoNav minimum corridor width requirement. The passable gap between the perpendicular tape obstacle and the DOT cone is `5 ft` (`1.524 m`), and the perpendicular tape extends from the left-side lane tape to its right-hand end at `y = -0.13 m`.
 
 ## Purpose
 
@@ -31,14 +31,14 @@ If reconstructing the full course in robot/odom coordinates, account for the lid
 
 - Material: retroreflective tape.
 - Orientation: parallel to the robot's starting heading.
-- Location: `0.50 m` left of the front lidar sensor path.
+- Location: `1.524 m` (`5 ft`) left of the front lidar sensor path.
 - Length: `3.20 m`.
 - Start: aligned with the robot wheel axis near the back of the robot.
 - Role: continuous left-side barrier along the test trajectory.
 
 In the lidar-start coordinate convention, the tape centerline is approximately:
 
-- `y = +0.50 m`
+- `y = +1.524 m`
 - `x` extends forward for `3.20 m`, starting from the wheel-axis-aligned point behind the lidar reference.
 
 ### Perpendicular Tape Obstacle
@@ -46,14 +46,14 @@ In the lidar-start coordinate convention, the tape centerline is approximately:
 - Material: retroreflective tape.
 - Orientation: perpendicular to the left-side tape, extending rightward from it.
 - Forward location: `0.905 m` in front of the robot's lidar sensor.
-- Length: `0.63 m`.
+- Length: `1.654 m`.
 - Start: begins at the long left-side tape line.
 - Direction: extends to the robot's right from the left-side tape.
 
 Using the lidar-start coordinate convention and assuming the tape is square to the left barrier, the perpendicular tape is approximately:
 
 - `x = +0.905 m`
-- `y` spans from `+0.50 m` to `-0.13 m`
+- `y` spans from `+1.524 m` to `-0.13 m`
 
 The robot should avoid this tape by driving around the right-hand end, not by crossing over it.
 
@@ -170,13 +170,13 @@ The suite runs:
 python3 scripts/analyze_lidar_line_bag.py /path/to/bag
 python3 scripts/analyze_lidar_line_timeline.py /path/to/bag
 python3 scripts/analyze_lidar_line_plan_gap.py /path/to/bag --perp-x 1.34 --tape-right-y -0.13
-python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46 --require-plan --fail-on-overlap
-python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --padding 0.05 --fail-on-overlap
+python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 1.524 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46
+python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 1.524 --padding 0.05 --fail-on-overlap
 python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
 python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1  # optional; only useful when /evaluation exists
 ```
 
-The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows only when DWB `/evaluation` data exists, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal cells, the diagnostic clearance to inscribed inflated cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The standard suite exits nonzero when the global plan footprint overlaps lethal cells or the measured trajectory overlaps the tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
+The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows only when DWB `/evaluation` data exists, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal cells, the diagnostic clearance to inscribed inflated cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The standard suite exits nonzero when the executed footprint overlaps lethal raw costmap cells or the measured trajectory overlaps the tape; global plan footprint overlap is reported diagnostically because the behavior tree may reject unsafe planner outputs before they reach `FollowPath`. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
 - Whether the first likely perpendicular/rightward `/lidar_line_points` detection occurs before measured physical footprint contact.
