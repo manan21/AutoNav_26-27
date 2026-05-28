@@ -1,18 +1,64 @@
 #!/bin/bash
 # Send a Nav2 goal pose from the command line.
-# Usage: ./send_goal.sh [-r] <x> <y> [yaw_degrees]
-#   -r            relative mode: x/y/yaw are relative to the robot's current pose
-#   yaw_degrees   defaults to 0 (facing +x)
+# Usage: ./send_goal.sh [--topic|--action] [--feedback] [-r] <x> <y> [yaw_degrees]
+#   --topic        publish /goal_pose (default; RViz/HUD-compatible)
+#   --action       send a direct /navigate_to_pose action goal
+#   --feedback     show action feedback when using --action
+#   -r             relative mode: x/y are desired nav_center travel in meters,
+#                  yaw is relative to the current nav_center heading
+#   yaw_degrees    defaults to 0 (facing +x)
 
 RELATIVE=false
-if [ "$1" = "-r" ]; then
-  RELATIVE=true
-  shift
-fi
+TRANSPORT=topic
+ACTION_FEEDBACK=false
+
+usage() {
+  echo "Usage: $0 [--topic|--action] [--feedback] [-r] <x> <y> [yaw_degrees]"
+  echo "  --topic        publish /goal_pose (default)"
+  echo "  --action       send direct /navigate_to_pose action goal"
+  echo "  --feedback     show action feedback when using --action"
+  echo "  -r             goal is relative to the robot's current pose"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --topic)
+      TRANSPORT=topic
+      shift
+      ;;
+    --action|--direct-action)
+      TRANSPORT=action
+      shift
+      ;;
+    --feedback)
+      ACTION_FEEDBACK=true
+      shift
+      ;;
+    -r|--relative)
+      RELATIVE=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [ $# -lt 2 ]; then
-  echo "Usage: $0 [-r] <x> <y> [yaw_degrees]"
-  echo "  -r  goal is relative to the robot's current pose"
+  usage
   exit 1
 fi
 
@@ -21,11 +67,11 @@ Y=$2
 YAW_DEG=${3:-0}
 
 if $RELATIVE; then
-  # Look up map->base_link directly via tf2_ros Python API.
+  # Look up map->nav_center directly via tf2_ros Python API.
   # Retries until a valid transform is available or timeout elapses —
   # avoids the "bad transform" text that tf2_echo prints during startup.
   GLOBAL=$(python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
-import math, sys, time
+import math, os, sys, time
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
@@ -36,7 +82,8 @@ dy = float(sys.argv[2])
 dyaw_deg = float(sys.argv[3])
 
 TARGET_FRAME = 'map'
-SOURCE_FRAME = 'base_link'
+SOURCE_FRAME = os.environ.get('SEND_GOAL_RELATIVE_FRAME', 'nav_center')
+XY_GOAL_TOLERANCE_M = float(os.environ.get('SEND_GOAL_XY_GOAL_TOLERANCE_M', '0.25'))
 TIMEOUT_SEC = 10.0
 POLL_HZ = 10.0
 
@@ -73,10 +120,31 @@ qw = tf.transform.rotation.w
 ryaw = math.atan2(2.0 * qw * qz, 1.0 - 2.0 * qz * qz)
 
 dyaw = math.radians(dyaw_deg)
-goal_x = rx + dx * math.cos(ryaw) - dy * math.sin(ryaw)
-goal_y = ry + dx * math.sin(ryaw) + dy * math.cos(ryaw)
+requested_dist = math.hypot(dx, dy)
+
+# In relative mode, x/y are operator-facing travel commands. Nav2 declares
+# success when robot_base_frame is within xy_goal_tolerance of the target, so
+# place the goal one tolerance farther along the requested translation vector.
+# Pure yaw goals keep the same position.
+if requested_dist > 1e-6:
+    target_dist = requested_dist + XY_GOAL_TOLERANCE_M
+    scale = target_dist / requested_dist
+    goal_dx = dx * scale
+    goal_dy = dy * scale
+else:
+    target_dist = requested_dist
+    goal_dx = dx
+    goal_dy = dy
+
+goal_x = rx + goal_dx * math.cos(ryaw) - goal_dy * math.sin(ryaw)
+goal_y = ry + goal_dx * math.sin(ryaw) + goal_dy * math.cos(ryaw)
 goal_yaw_deg = math.degrees(ryaw + dyaw)
 
+print(
+    f'Relative goal from {SOURCE_FRAME}: requested={requested_dist:.3f}m, '
+    f'goal_offset={target_dist:.3f}m, xy_tolerance={XY_GOAL_TOLERANCE_M:.3f}m',
+    file=sys.stderr,
+)
 print(f'{goal_x} {goal_y} {goal_yaw_deg}')
 PYEOF
 )
@@ -92,24 +160,52 @@ fi
 
 echo "Sending goal: x=$X, y=$Y, yaw=${YAW_DEG}°"
 
+if [ "$TRANSPORT" = "action" ]; then
+  # Direct action mode is preferred for scripted lidar-line tests because
+  # it gives an immediate accept/result stream. The behavior tree publishes
+  # /nav_goal before ComputePathToPose, so map_padder still receives the
+  # active planning target without also publishing /goal_pose and creating
+  # overlapping NavigateToPose goals.
+  ORIENTATION=$(python3 - "$YAW_DEG" <<'PYEOF'
+import math
+import sys
+
+yaw_deg = float(sys.argv[1])
+print(
+    f"{math.sin(math.radians(yaw_deg) / 2.0)} "
+    f"{math.cos(math.radians(yaw_deg) / 2.0)}"
+)
+PYEOF
+)
+  if [ $? -ne 0 ] || [ -z "$ORIENTATION" ]; then
+    echo "Failed to compute goal orientation." >&2
+    exit 1
+  fi
+
+  read QZ QW <<< "$ORIENTATION"
+  ACTION_ARGS=()
+  if $ACTION_FEEDBACK; then
+    ACTION_ARGS+=(--feedback)
+  fi
+
+  ros2 action send_goal "${ACTION_ARGS[@]}" /navigate_to_pose nav2_msgs/action/NavigateToPose \
+    "{pose: {header: {frame_id: map}, pose: {position: {x: $X, y: $Y, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: $QZ, w: $QW}}}}"
+  exit $?
+fi
+
 # Publish to /goal_pose with a long-lived publisher. Both bt_navigator
 # (which translates the topic into a NavigateToPose action) and
 # map_padder (which extends the global-costmap corridor toward the goal)
 # subscribe here — if map_padder misses the message, the goal lands in a
 # LETHAL region and the planner can't path into it. We therefore wait
-# for BOTH expected subscribers before the first publish, then re-spam
-# the goal at 1 Hz until /odom shows the robot has actually started
-# moving (auto mode kicks the planner off). Without this, a single
-# publish that arrives during Nav2's "Activating planner_server" window
-# is silently dropped and the operator sees no motion — by the time
-# they notice and re-issue, autonomous-mode state may have moved on.
+# for BOTH expected subscribers, then hold the publisher alive long
+# enough for RELIABLE delivery to ACK before tearing down.
 python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
 import math, sys, time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Odometry
 
 x = float(sys.argv[1])
 y = float(sys.argv[2])
@@ -119,54 +215,17 @@ yaw_deg = float(sys.argv[3])
 # added; partial delivery presents as silent path-planning failure.
 EXPECTED_SUB_COUNT = 2
 WAIT_FOR_SUB_TIMEOUT_S = 10.0
-SPAM_HZ = 1.0
-SPAM_TIMEOUT_S = 60.0
-# Motion thresholds for the exit condition — chosen above /odom noise
-# floor on the AutoNav drivetrain (encoder ticks at rest jitter well
-# under 0.02 m/s and 0.02 rad/s).
-MOVING_LIN_THRESH = 0.05  # m/s
-MOVING_ANG_THRESH = 0.05  # rad/s
-# Require the robot to be moving for two consecutive checks (~1 s at
-# 1 Hz spam rate) so a single noisy velocity sample doesn't end the
-# spam early before Nav2 has actually committed to a path.
-MOVING_CONSEC_REQUIRED = 2
+POST_PUBLISH_SPIN_S = 3.0
 
 rclpy.init()
 node = Node('send_goal_pose_pub')
 qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
 pub = node.create_publisher(PoseStamped, '/goal_pose', qos)
 
-# Latest twist from /odom, updated by the subscription callback.
-state = {'lin': 0.0, 'ang': 0.0, 'have': False}
-def _odom_cb(msg):
-    lx = msg.twist.twist.linear.x
-    ly = msg.twist.twist.linear.y
-    az = msg.twist.twist.angular.z
-    state['lin'] = math.hypot(lx, ly)
-    state['ang'] = abs(az)
-    state['have'] = True
-odom_sub = node.create_subscription(Odometry, '/odom', _odom_cb, 10)
-
-# Build the goal message once — header.stamp is refreshed on each spam.
-def _make_msg():
-    m = PoseStamped()
-    m.header.frame_id = 'map'
-    m.header.stamp = node.get_clock().now().to_msg()
-    m.pose.position.x = x
-    m.pose.position.y = y
-    m.pose.position.z = 0.0
-    m.pose.orientation.x = 0.0
-    m.pose.orientation.y = 0.0
-    m.pose.orientation.z = math.sin(math.radians(yaw_deg) / 2.0)
-    m.pose.orientation.w = math.cos(math.radians(yaw_deg) / 2.0)
-    return m
-
-# Wait for subscribers on the FIRST publish so the initial drop doesn't
-# race Nav2 lifecycle activation. Re-spams below skip the wait — by
-# then either Nav2 is up and listening, or it never will be.
 deadline = time.monotonic() + WAIT_FOR_SUB_TIMEOUT_S
 while time.monotonic() < deadline and pub.get_subscription_count() < EXPECTED_SUB_COUNT:
     rclpy.spin_once(node, timeout_sec=0.1)
+
 matched = pub.get_subscription_count()
 if matched < EXPECTED_SUB_COUNT:
     print(f'WARNING: only {matched}/{EXPECTED_SUB_COUNT} subscribers on '
@@ -174,52 +233,22 @@ if matched < EXPECTED_SUB_COUNT:
           f'(delivery may be partial; planner may not path)',
           file=sys.stderr)
 
-# Spam loop. Publish once, then on each tick: drain /odom for ~1/SPAM_HZ
-# seconds and decide whether to republish. If motion is detected, we
-# STOP publishing and just keep spinning until the debounce window
-# (MOVING_CONSEC_REQUIRED consecutive moving samples) confirms a real
-# path execution — that way the first publish that actually triggers
-# motion is the LAST publish. Hard cap at SPAM_TIMEOUT_S so we never
-# wedge if auto mode is off or Nav2 silently refuses the goal.
-interval = 1.0 / SPAM_HZ
-start = time.monotonic()
-publish_count = 0
-moving_consec = 0
-done_reason = 'timeout'
+msg = PoseStamped()
+msg.header.frame_id = 'map'
+msg.header.stamp = node.get_clock().now().to_msg()
+msg.pose.position.x = x
+msg.pose.position.y = y
+msg.pose.position.z = 0.0
+msg.pose.orientation.x = 0.0
+msg.pose.orientation.y = 0.0
+msg.pose.orientation.z = math.sin(math.radians(yaw_deg) / 2.0)
+msg.pose.orientation.w = math.cos(math.radians(yaw_deg) / 2.0)
+pub.publish(msg)
 
-pub.publish(_make_msg())
-publish_count += 1
+end = time.monotonic() + POST_PUBLISH_SPIN_S
+while time.monotonic() < end:
+    rclpy.spin_once(node, timeout_sec=0.05)
 
-while time.monotonic() - start < SPAM_TIMEOUT_S:
-    tick_end = time.monotonic() + interval
-    while time.monotonic() < tick_end:
-        rclpy.spin_once(node, timeout_sec=0.05)
-    if state['have'] and (state['lin'] > MOVING_LIN_THRESH
-                          or state['ang'] > MOVING_ANG_THRESH):
-        moving_consec += 1
-        if moving_consec >= MOVING_CONSEC_REQUIRED:
-            done_reason = 'moving'
-            break
-        # Robot is moving but the debounce isn't satisfied yet — just
-        # spin another interval to confirm. Do NOT republish; we want
-        # the moving robot to keep executing the goal Nav2 already
-        # accepted, not be retriggered.
-        continue
-    # Not moving: reset the debounce and try again.
-    moving_consec = 0
-    pub.publish(_make_msg())
-    publish_count += 1
-
-elapsed = time.monotonic() - start
-if done_reason == 'moving':
-    print(f'Robot moving after {publish_count} publish(es), '
-          f'{elapsed:.1f}s — exiting.')
-else:
-    print(f'WARNING: robot did not start moving after {publish_count} '
-          f'publish(es) over {elapsed:.1f}s. Check that auto mode is on '
-          f'and Nav2 is active.', file=sys.stderr)
-
-node.destroy_subscription(odom_sub)
 node.destroy_node()
 rclpy.shutdown()
 PYEOF
