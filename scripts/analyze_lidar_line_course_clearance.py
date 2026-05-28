@@ -84,6 +84,23 @@ def main():
     parser.add_argument("--perp-y-min", type=float, default=-0.13)
     parser.add_argument("--perp-y-max", type=float, default=0.50)
     parser.add_argument("--sample-step", type=float, default=0.005)
+    parser.add_argument(
+        "--fail-on-overlap",
+        action="store_true",
+        help="Exit nonzero if physical or padded footprint clearance is not positive.",
+    )
+    parser.add_argument(
+        "--min-physical-clearance",
+        type=float,
+        default=0.0,
+        help="Minimum acceptable physical footprint clearance when --fail-on-overlap is set.",
+    )
+    parser.add_argument(
+        "--min-padded-clearance",
+        type=float,
+        default=0.0,
+        help="Minimum acceptable padded footprint clearance when --fail-on-overlap is set.",
+    )
     args = parser.parse_args()
 
     reader = rosbag2_py.SequentialReader()
@@ -194,6 +211,26 @@ def main():
             f"tape=({px:+.3f},{py:+.3f}) robot_frame=({robot_x:+.3f},{robot_y:+.3f}) "
             f"sample_overlaps={overlaps}"
         )
+
+    failures = []
+    if args.fail_on_overlap:
+        physical_clearance = best_physical[0]
+        padded_clearance = best_padded[0]
+        if physical_clearance <= args.min_physical_clearance:
+            failures.append(
+                f"physical clearance {physical_clearance:+.3f} "
+                f"<= {args.min_physical_clearance:+.3f}"
+            )
+        if padded_clearance <= args.min_padded_clearance:
+            failures.append(
+                f"padded clearance {padded_clearance:+.3f} "
+                f"<= {args.min_padded_clearance:+.3f}"
+            )
+    if failures:
+        print("\nFAIL: measured-course tape clearance")
+        for failure in failures:
+            print(f"  {failure}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

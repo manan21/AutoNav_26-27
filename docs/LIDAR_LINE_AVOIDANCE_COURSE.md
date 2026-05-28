@@ -170,13 +170,13 @@ The suite runs:
 python3 scripts/analyze_lidar_line_bag.py /path/to/bag
 python3 scripts/analyze_lidar_line_timeline.py /path/to/bag
 python3 scripts/analyze_lidar_line_plan_gap.py /path/to/bag --perp-x 1.34 --tape-right-y -0.13
-python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --tape-right-y -0.13
-python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50
-python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
+python3 scripts/analyze_global_plan_costmap_collision.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --tape-right-y -0.13 --half-length 0.595 --half-width 0.46 --require-plan --fail-on-overlap
+python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.34 --perp-y-min -0.13 --perp-y-max 0.50 --padding 0.05 --fail-on-overlap
 python3 scripts/analyze_costmap_footprint.py /path/to/bag --hard-threshold 100
+python3 scripts/analyze_dwb_evaluation.py /path/to/bag --window 0.1
 ```
 
-The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal/inscribed cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
+The analyzers report the `nav_center` displacement, command response, local-plan dropouts, action status results, detected line-point clearance against the configured footprint, `/lidar_line_costmap` persistence, DWB rejection windows when DWB is active, whether global plans route through the measured gap, whether `/plan` or `/unsmoothed_plan` overlaps raw global costmap lethal/inscribed cells, and whether the measured rectangular footprint overlaps the perpendicular tape. The standard suite exits nonzero when the global plan footprint is unsafe or the measured trajectory overlaps the tape. The timeline analyzer also compares the first likely perpendicular/rightward `/lidar_line_points` detection with the measured first physical footprint contact; a healthy run should detect the perpendicular tape before contact, not at or after contact.
 
 - Whether `/lidar_line_points` matches the measured tape geometry.
 - Whether the first likely perpendicular/rightward `/lidar_line_points` detection occurs before measured physical footprint contact.

@@ -295,6 +295,7 @@ def summarize_path(topic, stamp, path, grid_entry, args, bag_start):
         "y_cross": y_cross,
         "lethal_clear": lethal_clear,
         "inscribed_clear": inscribed_clear,
+        "gap_center_ok": gap_center_ok,
     }
 
 
@@ -311,6 +312,27 @@ def main():
     parser.add_argument("--perp-y-min", type=float, default=-0.13)
     parser.add_argument("--perp-y-max", type=float, default=0.50)
     parser.add_argument("--tape-right-y", type=float, default=-0.13)
+    parser.add_argument(
+        "--require-plan",
+        action="store_true",
+        help="Exit nonzero if no /plan or /unsmoothed_plan is available after action start.",
+    )
+    parser.add_argument(
+        "--fail-on-overlap",
+        action="store_true",
+        help="Exit nonzero if any analyzed plan footprint overlaps lethal or inscribed raw global cells.",
+    )
+    parser.add_argument(
+        "--clearance-margin",
+        type=float,
+        default=0.0,
+        help="Minimum acceptable signed footprint clearance when --fail-on-overlap is set.",
+    )
+    parser.add_argument(
+        "--fail-on-gap-center",
+        action="store_true",
+        help="Exit nonzero if any /plan centerline at the measured tape is not through the configured gap.",
+    )
     args = parser.parse_args()
 
     odom_times = []
@@ -413,6 +435,46 @@ def main():
                 f"dy_at_perp={fmt_float(y_delta)} "
                 f"d_footprint_lethal_clear={fmt_float(lethal_delta)}"
             )
+
+    failures = []
+    if args.require_plan:
+        for topic in ("/unsmoothed_plan", "/plan"):
+            if not summaries[topic]:
+                failures.append(f"{topic}: no plans after action start")
+
+    if args.fail_on_overlap:
+        for topic in ("/unsmoothed_plan", "/plan"):
+            for summary in summaries[topic]:
+                rel_t = summary["stamp"] - bag_start
+                lethal_clear = summary["lethal_clear"]
+                inscribed_clear = summary["inscribed_clear"]
+                if lethal_clear is not None and lethal_clear <= args.clearance_margin:
+                    failures.append(
+                        f"{topic} t={rel_t:.2f}s lethal clearance {lethal_clear:+.3f} "
+                        f"<= margin {args.clearance_margin:+.3f}"
+                    )
+                if inscribed_clear is not None and inscribed_clear <= args.clearance_margin:
+                    failures.append(
+                        f"{topic} t={rel_t:.2f}s inscribed clearance {inscribed_clear:+.3f} "
+                        f"<= margin {args.clearance_margin:+.3f}"
+                    )
+
+    if args.fail_on_gap_center:
+        for summary in summaries["/plan"]:
+            if not summary["gap_center_ok"]:
+                rel_t = summary["stamp"] - bag_start
+                failures.append(
+                    f"/plan t={rel_t:.2f}s y_at_perp={fmt_float(summary['y_cross'])} "
+                    f"is not through gap target"
+                )
+
+    if failures:
+        print("\nFAIL: unsafe global plan geometry")
+        for failure in failures[:20]:
+            print(f"  {failure}")
+        if len(failures) > 20:
+            print(f"  ... {len(failures) - 20} more")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

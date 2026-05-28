@@ -123,9 +123,11 @@ controller_server:
     # Regulated Pure Pursuit tracks the lower-gap Smac path as curvature.
     # DWB repeatedly selected straight samples on this course until the
     # robot was boxed in by tape; RPP starts the clockwise arc immediately.
-    # Its internal forward collision gate is disabled because it rejected
-    # every command in the tight start geometry even when the measured
-    # course clearance was positive.
+    # Its internal forward collision gate is enabled as a final local veto
+    # so RPP cannot keep tracking a global path once the projected footprint
+    # is about to enter tape/obstacle cost. Keep the horizon short enough
+    # that the start pose near the left-side tape is not rejected before the
+    # planner has curved into the gap.
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.22
@@ -134,8 +136,8 @@ controller_server:
       max_lookahead_dist: 0.75
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: false
-      use_collision_detection: false
-      max_allowed_time_to_collision_up_to_carrot: 0.8
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 0.5
       use_regulated_linear_velocity_scaling: true
       use_cost_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.55
@@ -147,7 +149,7 @@ controller_server:
       rotate_to_heading_min_angle: 0.50
       max_angular_accel: 0.90
       allow_reversing: false
-      transform_tolerance: 0.2
+      transform_tolerance: 0.5
 
 local_costmap:
   local_costmap:
@@ -164,16 +166,15 @@ local_costmap:
       # Footprint expressed in nav_center frame (was base_link with
       # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      # Local-only padding for DWB footprint scoring. Keep a small margin
-      # without making visually feasible gates disappear at controller
-      # time; global footprint stays unpadded so the planner can still
-      # thread tight gates.
+      # Local controller footprint margin. The global costmap uses a slightly
+      # larger 0.05 m padding so Smac rejects plans that are technically
+      # centerline-clear but unsafe for the real rectangular body.
       footprint_padding: 0.03
       # Keep stock Nav2 inflation local to PCA obstacle cells. Line layers
       # run after it so tape uses the custom line halo instead of receiving
-      # the full 1.10 m obstacle inflation locally. The global costmap still
-      # mirrors line memory before its inflation layer so Smac keeps planning
-      # around tape with a conservative footprint-wide barrier.
+      # the full 1.10 m obstacle inflation locally. The global costmap mirrors
+      # line memory after its stock obstacle inflation, preserving the custom
+      # tape halo while avoiding obstacle-style double inflation.
       plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -226,7 +227,7 @@ local_costmap:
         enabled: True
         line_topic: "/line_points"
         costmap_topic: "/line_costmap"
-        transform_tolerance: 0.2
+        transform_tolerance: 0.5
         max_message_age_ms: 750
         # With view-gated clearing, this is the time a stale line must be
         # in the camera clearing cone before it is forgotten. Keep this
@@ -249,7 +250,7 @@ local_costmap:
         enabled: True
         line_topic: "/lidar_line_points"
         costmap_topic: "/lidar_line_costmap"
-        transform_tolerance: 0.2
+        transform_tolerance: 0.5
         max_message_age_ms: 750
         # TEMPORARY tape-test behavior: remember LiDAR-detected lines until
         # the operator manually clears costmaps. The current robot can sit
@@ -269,15 +270,14 @@ local_costmap:
         line_clear_range_max_m: 6.0
         max_persisted_points: 2000
         # LiDAR line detections are sparse obstacle-filtered points, not a
-        # continuous wall. Keep the local controller halo narrower than the
-        # global planner halo so DWB can drive out of a soft tape cost field
-        # instead of tie-breaking into zero-motion while a valid path exists.
-        inflation_radius: 0.65
-        # Keep the hard collision band tight for tape. The line-only costmap
-        # background is free; larger inscribed bands can still put the start
-        # pose in Smac's lethal/inscribed rejection zone because the robot
-        # begins close to the horizontal tape.
-        inscribed_radius: 0.05
+        # continuous wall. With the 5 ft competition-style gap, give Smac a
+        # stronger soft cost field so the centerline is pushed deep enough
+        # into the gap for the rectangular footprint to clear tape.
+        inflation_radius: 0.80
+        # Keep the hard collision band narrow enough that the starting pose
+        # near the left-side tape is not boxed in, but wider than an exact
+        # point cell so near-line lattice paths are no longer attractive.
+        inscribed_radius: 0.10
         cost_scaling_factor: 5.0
         clearing: True
         rolling_window: True
@@ -286,8 +286,8 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         # Strong PCA/cone stay-away cost. Line layers run after this layer
-        # and use their own narrower local halo; global planning remains
-        # conservative because line memory is inflated in the global costmap.
+        # and use their own narrower local halo; global planning receives
+        # tape memory through the post-inflation mirror layers below.
         cost_scaling_factor: 4.0
         inflation_radius: 1.10
 
@@ -308,7 +308,11 @@ global_costmap:
       # Footprint expressed in nav_center frame (symmetric ±0.545 x,
       # ±0.41 y) — see local_costmap footprint note.
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      footprint_padding: 0.0
+      # Plan with a small real-world clearance margin. The 5 ft IGVC gap is
+      # wide enough for this padding, and the previous unpadded global
+      # footprint allowed Smac to publish centerlines that the body still
+      # carried over the tape.
+      footprint_padding: 0.05
       # Match the Smac Lattice primitive grid. The installed differential
       # drive primitive set below is generated for 5 cm cells; using a
       # different global resolution invalidates its discrete state graph.
@@ -424,13 +428,13 @@ planner_server:
       # drive robot. SmacPlanner2D produced centerline paths that were too
       # close to lethal lidar-line cells and left DWB to reject them later.
       plugin: "nav2_smac_planner/SmacPlannerLattice"
-      tolerance: 2.0
+      tolerance: 0.5
       allow_unknown: true
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
       lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
-      cost_penalty: 3.0
+      cost_penalty: 5.0
       # Keep the default penalty so in-place rotations are used only when the
       # lattice needs them for obstacle avoidance, not as cheap shortcuts.
       rotation_penalty: 5.0
