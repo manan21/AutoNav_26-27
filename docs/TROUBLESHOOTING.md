@@ -137,6 +137,12 @@ Do not rebuild the slow base image just for this package; the dependency belongs
 
 **Keywords**: estop, e-stop, kill-switch, /dev/ttyTHS1, ttyTHS1, button-b, b-button, serial, uart, motors, control.cpp, estop_port, mount, --device, container, kill-motors
 
+## "Controller connects, auto toggles, but manual stick drive does nothing"
+
+First confirm `/joy` changes when the sticks move and `/motor_speed` is nonzero. If `/joy` is live but `/encoders` counts/RPM stay flat, check the motor controllers before chasing ROS: a red **STAT** light on one motor controller was observed on 2026-05-29 and manual drive recovered after a full robot power cycle. See [2026-05-29 RoboteQ red STAT fault](#2026-05-29--roboteq-red-stat-fault-blocked-manual-drive).
+
+**Keywords**: manual-drive, joystick, xbox, controller, auto-toggle, autonomous-mode, /joy, /motor_speed, /encoders, encoder-flat, no-motion, motors-not-moving, roboteq, red-stat, stat-light, power-cycle
+
 ## "Behavior tree fires in manual mode"
 
 Verify `/autonomous_mode` is being published by the control node. The BT now gates on it. See [2026-04-29 BT gating](#2026-04-29--behavior-tree-triggering-when-not-autonomous).
@@ -972,6 +978,15 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Triage tip**: If yaw tracking misbehaves, first confirm `imu_cov_inflator` is running and publishing on `/sick_scansegment_xd/imu_inflated` (`ros2 topic hz`). Then confirm `ekf_local.yaml`'s `imu0` is pointed at the inflated topic, **not** the raw one. The `imu_frame_transformer.py` no longer exists — do not re-add it without coordinating, since the inflator-based design assumes the frame mismatch is handled by trust-weighting rather than transformation.
 - **Keywords**: imu, sick-imu, yaw, yaw-inverted, imu_cov_inflator, imu_inflated, ekf_local, ekf_local.yaml, lidar_footprint, base_link, sick_scansegment_xd, upside-down, lidar-mount, urdf, π-roll, covariance-inflation, superseded
 
+## 2026-05-29 — RoboteQ red STAT fault blocked manual drive
+
+- **Incident**: Manual Xbox tank drive did not move the robot, but the operator could still toggle autonomous mode with **X**.
+- **Observed evidence**: `/joy` was publishing and both stick axes reached full scale; `/motor_speed` was nonzero (`10`); `control_node` still had the RoboteQ serial device open; `/encoders` continued publishing but counts/RPM stayed flat while the sticks were moved.
+- **Cause**: One motor controller showed a red **STAT** light, indicating the motor controller was in a fault/disabled state downstream of ROS input handling.
+- **Fix**: Full robot power cycle cleared the red STAT fault and restored manual drive.
+- **Triage tip**: If controller input reaches `/joy` but the wheels and encoders do not respond, inspect the motor-controller LEDs before debugging joystick mapping or Nav2. A red STAT light can make the ROS side look healthy while the motor controller ignores drive commands.
+- **Keywords**: roboteq, motor-controller, red-stat, stat-light, fault, disabled, manual-drive, joystick, xbox, auto-toggle, autonomous-mode, /joy, /motor_speed, /encoders, encoder-flat, no-motion, tank-drive, power-cycle, control_node, serial-open
+
 ---
 
 # Keyword index
@@ -985,8 +1000,8 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `ina226`, `ina3221`, `i2c`, `power-pcb` → 2026-03-28 INA226 init retry, 2026-04-17 INA226 unbind, 2026-04-17 Jetson incident, 2026-05-01 polling rate
 - `jetson`, `orin-nano` → 2026-04-17 incident, 2026-04-15 SSH X11 / software GL
 - `lidar`, `sick`, `multiscan`, `eno1`, `192.168.0.x` → 2025-04-04 eth0→eno1, 2026-03-04 driver respawn, 2026-03-24 max_laserscan_range, 2026-03-24 demo-day eth, 2026-03-26 network automation, 2026-05-07 sick.md
-- `motor`, `roboteq`, `encoder` → 2025-04-26 timeouts, 2025-11-15 parser, 2025-11-16 dup guard, 2025-12-03 USB order, 2026-04-04 null deref, 2026-04-15 axis swap, 2026-04-15 wheel radius, 2026-04-29 left over-count
-- `xbox`, `joystick`, `estop`, `e-stop`, `ttyTHS1`, `b-button` → 2025-05-28 e-stop init, 2026-04-15 axis swap
+- `motor`, `roboteq`, `encoder` → 2025-04-26 timeouts, 2025-11-15 parser, 2025-11-16 dup guard, 2025-12-03 USB order, 2026-04-04 null deref, 2026-04-15 axis swap, 2026-04-15 wheel radius, 2026-04-29 left over-count, 2026-05-29 red STAT fault
+- `xbox`, `joystick`, `estop`, `e-stop`, `ttyTHS1`, `b-button` → 2025-05-28 e-stop init, 2026-04-15 axis swap, 2026-05-29 red STAT fault
 - `zed`, `zed-ros2-wrapper`, `submodule`, `v5.2.0`, `506e047`, `sdk-5.1`, `sdk-5.2` → 2026-04-06 SDK CMake, 2026-04-07 calibration files, 2026-04-16 IMU rate, 2026-04-17 zed_override, 2026-05-04 wrapper saga, 2026-05-07 zed.md
 
 **Topics / messages**
@@ -1023,6 +1038,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `drift`, `right-drift`, `straight-line-drift` → 2026-04-29 left encoder
 - `flicker`, `ghost-obstacle`, `stale` → 2026-03-21 ghost traces, 2026-03-24 line-hold, 2026-03-26 line-layer staleness
 - `lag`, `slow`, `performance` → 2026-04-28 (multiple), 2026-05-05 (PCA performance entries)
+- `manual-drive`, `no-motion`, `red-stat`, `stat-light`, `encoder-flat` → 2026-05-29 red STAT fault
 - `not-publishing`, `topic-missing` → 2025-05-05 odom string, 2026-05-06 startup race
 - `queue-stuck`, `button-yellow`, `dot-stuck` → 2026-05-06 5s pacing, 2026-05-06 run-detect, 2026-05-06 startup race
 - `racing`, `race-condition`, `init-race` → 2025-11-16 dup guard, 2026-04-06 container user, 2026-05-06 startup race
