@@ -71,7 +71,7 @@ Speed conversions used by the profiles:
 Bags are written on the Jetson under:
 
 ```text
-~/bags/practice_course/<profile>_<YYYYMMDD_HHMMSS>/bag
+/tmp/autonav_bags/practice_course/<profile>_<YYYYMMDD_HHMMSS>/bag
 ```
 
 Each run directory also contains:
@@ -85,7 +85,10 @@ Each run directory also contains:
 - `command_profile.log` for scripted profiles
 
 The suite runs inside tmux by default so Wi-Fi drops do not kill the bag. Detach
-with `Ctrl-b d`.
+with `Ctrl-b d`. On the real Jetson, recording runs inside the `koopa-kingdom`
+container so custom AutoNav message types are available to `ros2 bag record`.
+`/tmp` is mounted through to the host, so the bag path above is visible from the
+normal SSH shell.
 
 ## Stopping a Run
 

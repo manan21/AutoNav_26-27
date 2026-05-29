@@ -13,8 +13,8 @@ Usage:
 
 Options:
   --robot HOST              SSH target, default: jetson
-  --base-dir DIR            Robot bag root, default: ~/bags/practice_course
-  --remote-suite-dir DIR    Robot staging dir, default: ~/.autonav_real_robot_calibration_suite
+  --base-dir DIR            Robot bag root, default: /tmp/autonav_bags/practice_course
+  --remote-suite-dir DIR    Robot staging dir, default: ~/AutoNav_25-26/scripts/real_robot_calibration
   --session NAME            tmux session name, default: autonav_calib_bag
   --run-name NAME           Override timestamped run name on the robot
   --allow-high-speed        Permit profiles marked high-speed
@@ -49,10 +49,10 @@ REMOTE_SUITE_DIR=${AUTONAV_CALIB_REMOTE_SUITE_DIR:-}
 SESSION=${AUTONAV_CALIB_TMUX_SESSION:-autonav_calib_bag}
 RUN_NAME=""
 if [ -z "$BASE_DIR" ]; then
-  BASE_DIR='~/bags/practice_course'
+  BASE_DIR='/tmp/autonav_bags/practice_course'
 fi
 if [ -z "$REMOTE_SUITE_DIR" ]; then
-  REMOTE_SUITE_DIR='~/.autonav_real_robot_calibration_suite'
+  REMOTE_SUITE_DIR='~/AutoNav_25-26/scripts/real_robot_calibration'
 fi
 ALLOW_HIGH_SPEED=0
 RAW_LIDAR=0
@@ -118,16 +118,17 @@ q() {
 LOCAL_GIT_BRANCH=$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || true)
 LOCAL_GIT_COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)
 
-REMOTE_RUN_CMD="cd $(q "$REMOTE_SUITE_DIR") && AUTONAV_CALIB_GIT_BRANCH=$(q "${LOCAL_GIT_BRANCH:-unknown}") AUTONAV_CALIB_GIT_COMMIT=$(q "${LOCAL_GIT_COMMIT:-unknown}") ./run_on_robot.sh $(q "$PROFILE") --base-dir $(q "$BASE_DIR")"
+RUN_ON_ROBOT_ARGS="$(q "$PROFILE") --base-dir $(q "$BASE_DIR")"
 if [ "$ALLOW_HIGH_SPEED" -eq 1 ]; then
-  REMOTE_RUN_CMD+=" --allow-high-speed"
+  RUN_ON_ROBOT_ARGS+=" --allow-high-speed"
 fi
 if [ "$RAW_LIDAR" -eq 1 ]; then
-  REMOTE_RUN_CMD+=" --raw-lidar"
+  RUN_ON_ROBOT_ARGS+=" --raw-lidar"
 fi
 if [ -n "$RUN_NAME" ]; then
-  REMOTE_RUN_CMD+=" --run-name $(q "$RUN_NAME")"
+  RUN_ON_ROBOT_ARGS+=" --run-name $(q "$RUN_NAME")"
 fi
+REMOTE_RUN_CMD="if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx koopa-kingdom; then docker exec -it -u admin -e AUTONAV_CALIB_GIT_BRANCH=$(q "${LOCAL_GIT_BRANCH:-unknown}") -e AUTONAV_CALIB_GIT_COMMIT=$(q "${LOCAL_GIT_COMMIT:-unknown}") koopa-kingdom bash -lc $(q "cd /autonav/scripts/real_robot_calibration && ./run_on_robot.sh $RUN_ON_ROBOT_ARGS"); else cd $(q "$REMOTE_SUITE_DIR") && AUTONAV_CALIB_GIT_BRANCH=$(q "${LOCAL_GIT_BRANCH:-unknown}") AUTONAV_CALIB_GIT_COMMIT=$(q "${LOCAL_GIT_COMMIT:-unknown}") ./run_on_robot.sh $RUN_ON_ROBOT_ARGS; fi"
 
 echo "Profile:"
 DRY_RUN_ARGS=(--profiles "$PROFILES_FILE" --profile "$PROFILE" --dry-run)
@@ -150,7 +151,7 @@ fi
 echo
 echo "Syncing calibration suite to $ROBOT:$REMOTE_SUITE_DIR ..."
 REMOTE_SUITE_Q=$(q "$REMOTE_SUITE_DIR")
-env LC_ALL=C LANG=C tar -C "$SCRIPT_DIR" --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' -czf - . \
+env COPYFILE_DISABLE=1 LC_ALL=C LANG=C tar -C "$SCRIPT_DIR" --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' --exclude='._*' -czf - . \
   | ssh "$ROBOT" "rm -rf $REMOTE_SUITE_Q && mkdir -p $REMOTE_SUITE_Q && env LC_ALL=C LANG=C tar -xzf - -C $REMOTE_SUITE_Q"
 
 if [ "$USE_TMUX" -eq 1 ]; then

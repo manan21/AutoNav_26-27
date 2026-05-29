@@ -14,7 +14,7 @@ Usage:
   run_on_robot.sh PROFILE [options]
 
 Options:
-  --base-dir DIR            Bag root, default: ~/bags/practice_course
+  --base-dir DIR            Bag root, default: /tmp/autonav_bags/practice_course
   --allow-high-speed        Permit profiles marked high-speed
   --raw-lidar               Add /cloud_all_fields_fullframe
   --run-name NAME           Override timestamped run name
@@ -49,7 +49,7 @@ fi
 PROFILE=$1
 shift
 
-BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-~/bags/practice_course}
+BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-/tmp/autonav_bags/practice_course}
 ALLOW_HIGH_SPEED=0
 RAW_LIDAR=0
 RUN_NAME=""
