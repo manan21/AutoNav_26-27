@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Laptop-side Fast DDS profile for running native RViz against the robot.
+
+  Why this exists (vs env/docker/fastdds_udp.xml, the robot/container profile):
+    * Same UDPv4-only transport (shared memory fails across machines).
+    * ADDS an <initialPeersList> so discovery works WITHOUT multicast.
+      Phone personal-hotspots (e.g. 172.20.10.0/28) routinely block
+      client-to-client multicast, which silently breaks the default Fast DDS
+      SPDP discovery. Listing the robot's possible unicast addresses makes the
+      laptop announce directly to it; the robot then replies unicast, so the
+      ROS graph forms even with multicast blocked.
+
+  Multicast is intentionally left enabled too — on a direct USB/Ethernet link
+  it still works and costs nothing, so this profile is correct "either which
+  way" (hotspot OR plugged straight into the robot).
+
+  Peers covered:
+    * 192.168.55.1        - Jetson over USB device-mode ("ssh jetson")
+    * 172.20.10.1 .. .14  - every host on an iPhone personal-hotspot /28
+                            (the robot gets a DHCP address somewhere in here)
+
+  If you use a DIFFERENT hotspot/router (e.g. Android 192.168.43.x, or a travel
+  router on 192.168.x.x), add the robot's address as another <locator> below.
+  Leaving <port> unset lets Fast DDS probe the well-known discovery ports for
+  the current ROS_DOMAIN_ID, so you do not need to know the robot's port.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>autonav_udp_transport</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="autonav_udp_participant" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>autonav_udp_transport</transport_id>
+      </userTransports>
+      <builtin>
+        <!--
+          Discovery tuning that kills the "RViz shows nothing until I run
+          'ros2 topic list', then reopen RViz" bug. That bug is a cold-start
+          discovery race: on launch RViz announces itself a few times and then
+          goes quiet, so if the robot's announcements are missed during the
+          first second (multicast convergence, hotspot flakiness, late join)
+          the graph never fills in.
+            * initialAnnouncements: send a burst of 10 discovery announcements
+              ~100 ms apart on startup (default is fewer), so RViz reliably
+              reaches the robot the moment it opens.
+            * leaseAnnouncement 1 s: keep re-announcing every second while
+              running (default is ~7 s), so if the robot appears AFTER RViz is
+              already open it is picked up within a second instead of minutes.
+        -->
+        <discovery_config>
+          <leaseDuration>
+            <sec>20</sec>
+          </leaseDuration>
+          <leaseAnnouncement>
+            <sec>1</sec>
+          </leaseAnnouncement>
+          <initialAnnouncements>
+            <count>10</count>
+            <period>
+              <sec>0</sec>
+              <nanosec>100000000</nanosec>
+            </period>
+          </initialAnnouncements>
+        </discovery_config>
+        <initialPeersList>
+          <!-- Direct USB device-mode link to the Jetson -->
+          <locator><udpv4><address>192.168.55.1</address></udpv4></locator>
+          <!-- iPhone personal-hotspot /28 (172.20.10.0/28): all usable hosts -->
+          <locator><udpv4><address>172.20.10.1</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.2</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.3</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.4</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.5</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.6</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.7</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.8</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.9</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.10</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.11</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.12</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.13</address></udpv4></locator>
+          <locator><udpv4><address>172.20.10.14</address></udpv4></locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>
