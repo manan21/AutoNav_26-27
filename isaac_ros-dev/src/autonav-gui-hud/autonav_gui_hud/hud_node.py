@@ -1132,8 +1132,17 @@ class HudWindow(QMainWindow):
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.X11BypassWindowManagerHint
         )
+        # Bypassing the WM means it won't size/place/focus the window for us.
+        # Lock size before show() so Qt's geometry path can't drift to the
+        # X server's misreported 1920x1080 framebuffer, then re-pin position
+        # and manually activate + take keyboard focus after show().
+        self.setFixedSize(1920, 720)
         self.setGeometry(0, 0, 1920, 720)
         self.show()
+        self.move(0, 0)
+        self.activateWindow()
+        self.raise_()
+        self.setFocus(Qt.ActiveWindowFocusReason)
         self.setCursor(Qt.BlankCursor)
 
         # GUI defaults to light theme. The widget tree is built in dark
