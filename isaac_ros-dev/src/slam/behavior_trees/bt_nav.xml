@@ -35,12 +35,10 @@
              without the false-positive issues of an explicit
              IsPathValid check (which can fail-cascade into recovery on
              a transient one-tick costmap blip). PathFootprintSafe below
-             rejects planner outputs whose rectangular nav_center footprint
-             overlaps lethal global cells before FollowPath can execute them.
-             Inscribed inflated cells are not footprint-overlap gated here:
-             tape/cone center cells are the hard keepout, while non-lethal
-             soft costs bias Smac/MPPI toward wider clearance when space
-             exists without closing the IGVC-required 5 ft passage. -->
+             densely validates planner outputs against the rectangular
+             nav_center footprint before FollowPath can execute them. Costs
+             at or above the configured threshold are treated as keepout, so
+             a sparse lattice path cannot skip between lethal/high-cost cells. -->
         <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
@@ -98,7 +96,10 @@
                     lethal_threshold="254"
                     inscribed_threshold="200"
                     ignore_unknown="true"
-                    pose_stride="1"/>
+                    pose_stride="1"
+                    max_pose_step_m="0.05"
+                    max_yaw_step_rad="0.10"
+                    max_costmap_age_ms="750"/>
                 </Sequence>
                 <Sequence name="PlanRecovery">
                   <!-- LOCAL clear only (sim spec): wiping the entire

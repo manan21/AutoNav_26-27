@@ -71,6 +71,15 @@ public:
       BT::InputPort<int>(
         "pose_stride", 1,
         "Validate every Nth path pose; 1 validates every pose"),
+      BT::InputPort<double>(
+        "max_pose_step_m", 0.05,
+        "Maximum linear spacing between interpolated path validation poses"),
+      BT::InputPort<double>(
+        "max_yaw_step_rad", 0.10,
+        "Maximum yaw spacing between interpolated path validation poses"),
+      BT::InputPort<int>(
+        "max_costmap_age_ms", 750,
+        "Reject paths if the raw global costmap is older than this age; negative disables"),
     };
   }
 
@@ -93,6 +102,9 @@ public:
     int inscribed_threshold = 253;
     bool ignore_unknown = true;
     int pose_stride = 1;
+    double max_pose_step_m = 0.05;
+    double max_yaw_step_rad = 0.10;
+    int max_costmap_age_ms = 750;
 
     getInput("costmap_topic", costmap_topic);
     getInput("global_frame", global_frame);
@@ -103,9 +115,14 @@ public:
     getInput("inscribed_threshold", inscribed_threshold);
     getInput("ignore_unknown", ignore_unknown);
     getInput("pose_stride", pose_stride);
+    getInput("max_pose_step_m", max_pose_step_m);
+    getInput("max_yaw_step_rad", max_yaw_step_rad);
+    getInput("max_costmap_age_ms", max_costmap_age_ms);
 
     (void)robot_base_frame;
     pose_stride = std::max(1, pose_stride);
+    max_pose_step_m = std::max(0.001, max_pose_step_m);
+    max_yaw_step_rad = std::max(0.001, max_yaw_step_rad);
     const unsigned char collision_threshold = static_cast<unsigned char>(
       std::clamp(std::min(lethal_threshold, inscribed_threshold), 0, 255));
 
@@ -137,7 +154,12 @@ public:
         "PathFootprintSafe: costmap unavailable on '%s'", costmap_topic_.c_str());
       return BT::NodeStatus::FAILURE;
     }
+    if (!costmapIsFresh(*costmap, max_costmap_age_ms)) {
+      return BT::NodeStatus::FAILURE;
+    }
 
+    std::vector<geometry_msgs::msg::PoseStamped> global_poses;
+    global_poses.reserve(path.poses.size());
     for (size_t i = 0; i < path.poses.size(); i += static_cast<size_t>(pose_stride)) {
       geometry_msgs::msg::PoseStamped pose = path.poses[i];
       if (pose.header.frame_id.empty()) {
@@ -151,7 +173,10 @@ public:
           pose.header.frame_id.c_str(), global_frame.c_str());
         return BT::NodeStatus::FAILURE;
       }
+      global_poses.push_back(pose);
+    }
 
+    auto validate_pose = [&](const geometry_msgs::msg::PoseStamped & pose, const char * where) {
       const auto world_footprint = transformFootprint(footprint, pose);
       if (!footprintIsSafe(
           world_footprint, *costmap, collision_threshold, ignore_unknown))
@@ -159,10 +184,33 @@ public:
         const auto & p = pose.pose.position;
         RCLCPP_WARN(
           node_->get_logger(),
-          "PathFootprintSafe: rejecting path at pose %zu/%zu (%.2f, %.2f); "
+          "PathFootprintSafe: rejecting path at %s (%.2f, %.2f); "
           "footprint overlaps global cost >= %u",
-          i, path.poses.size(), p.x, p.y, static_cast<unsigned int>(collision_threshold));
-        return BT::NodeStatus::FAILURE;
+          where, p.x, p.y, static_cast<unsigned int>(collision_threshold));
+        return false;
+      }
+      return true;
+    };
+
+    if (global_poses.empty()) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    if (!validate_pose(global_poses.front(), "pose 0")) {
+      return BT::NodeStatus::FAILURE;
+    }
+    for (size_t i = 1; i < global_poses.size(); ++i) {
+      const int steps = interpolationSteps(
+        global_poses[i - 1], global_poses[i], max_pose_step_m, max_yaw_step_rad);
+      for (int step = 1; step <= steps; ++step) {
+        const double t = static_cast<double>(step) / static_cast<double>(steps);
+        const auto sample = interpolatePose(global_poses[i - 1], global_poses[i], t);
+        const std::string label =
+          "segment " + std::to_string(i - 1) + "->" + std::to_string(i) +
+          " sample " + std::to_string(step) + "/" + std::to_string(steps);
+        if (!validate_pose(sample, label.c_str())) {
+          return BT::NodeStatus::FAILURE;
+        }
       }
     }
 
@@ -178,6 +226,33 @@ private:
   nav2_msgs::msg::Costmap::SharedPtr latest_costmap_;
   std::mutex costmap_mutex_;
   std::string costmap_topic_;
+
+  bool costmapIsFresh(
+    const nav2_msgs::msg::Costmap & costmap,
+    int max_costmap_age_ms) const
+  {
+    if (max_costmap_age_ms < 0) {
+      return true;
+    }
+    const rclcpp::Time stamp(costmap.header.stamp, node_->get_clock()->get_clock_type());
+    if (stamp.nanoseconds() <= 0) {
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "PathFootprintSafe: rejecting path because global costmap stamp is unset");
+      return false;
+    }
+    const auto age = node_->now() - stamp;
+    const auto max_age =
+      rclcpp::Duration::from_nanoseconds(static_cast<int64_t>(max_costmap_age_ms) * 1000000LL);
+    if (age > max_age) {
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "PathFootprintSafe: rejecting path because global costmap is stale (%.1f ms > %d ms)",
+        age.seconds() * 1000.0, max_costmap_age_ms);
+      return false;
+    }
+    return true;
+  }
 
   void resetCostmapSubscription(const std::string & costmap_topic)
   {
@@ -285,6 +360,52 @@ private:
         y + p.x * s + p.y * c});
     }
     return world;
+  }
+
+  static double normalizeAngle(double angle)
+  {
+    while (angle > M_PI) {
+      angle -= 2.0 * M_PI;
+    }
+    while (angle < -M_PI) {
+      angle += 2.0 * M_PI;
+    }
+    return angle;
+  }
+
+  static int interpolationSteps(
+    const geometry_msgs::msg::PoseStamped & a,
+    const geometry_msgs::msg::PoseStamped & b,
+    double max_pose_step_m,
+    double max_yaw_step_rad)
+  {
+    const double dx = b.pose.position.x - a.pose.position.x;
+    const double dy = b.pose.position.y - a.pose.position.y;
+    const double distance = std::hypot(dx, dy);
+    const double yaw_delta = std::abs(
+      normalizeAngle(tf2::getYaw(b.pose.orientation) - tf2::getYaw(a.pose.orientation)));
+    const int linear_steps = static_cast<int>(std::ceil(distance / max_pose_step_m));
+    const int yaw_steps = static_cast<int>(std::ceil(yaw_delta / max_yaw_step_rad));
+    return std::max(1, std::max(linear_steps, yaw_steps));
+  }
+
+  static geometry_msgs::msg::PoseStamped interpolatePose(
+    const geometry_msgs::msg::PoseStamped & a,
+    const geometry_msgs::msg::PoseStamped & b,
+    double t)
+  {
+    geometry_msgs::msg::PoseStamped out = a;
+    out.pose.position.x = a.pose.position.x + t * (b.pose.position.x - a.pose.position.x);
+    out.pose.position.y = a.pose.position.y + t * (b.pose.position.y - a.pose.position.y);
+    out.pose.position.z = a.pose.position.z + t * (b.pose.position.z - a.pose.position.z);
+
+    const double yaw_a = tf2::getYaw(a.pose.orientation);
+    const double yaw_delta = normalizeAngle(tf2::getYaw(b.pose.orientation) - yaw_a);
+    const double yaw = yaw_a + t * yaw_delta;
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, yaw);
+    out.pose.orientation = tf2::toMsg(q);
+    return out;
   }
 
   static bool footprintIsSafe(
