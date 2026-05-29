@@ -301,14 +301,13 @@ local_costmap:
         line_clear_range_min_m: 0.40
         line_clear_range_max_m: 4.50
         max_persisted_points: 12000
-        # Camera-line costs must be narrow. The plugin defaults are a
-        # 0.90 m radius with a 0.30 m inscribed band, which makes the
-        # footprint collide with "inflation" instead of only with the
-        # actual painted line. Keep only a small lethal/near-lethal core
-        # and a short soft preference halo.
-        inflation_radius: 0.35
+        # Camera-line costs are narrow but planner-blocking. The small
+        # radius avoids boxing the robot in, while the slow decay keeps the
+        # visible halo above PathFootprintSafe's threshold so Smac cannot
+        # route the footprint across lines.
+        inflation_radius: 0.25
         inscribed_radius: 0.02
-        cost_scaling_factor: 5.0
+        cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
         publish_costmap: True
@@ -336,15 +335,14 @@ local_costmap:
         # continuous wall. Keep the lethal geometry exact, then publish a
         # non-lethal preference field that encourages clearance without
         # closing the IGVC-required 5 ft passage beside obstacles.
-        inflation_radius: 0.40
+        inflation_radius: 0.25
         # The 253 band is intentionally small. A wide inscribed band consumes
         # too much of the narrow legal gap before the planner ever considers
         # soft costs.
         inscribed_radius: 0.05
-        # Keep the halo narrow and quickly decaying so the robot is not
-        # stopped by line inflation while still seeing a soft preference away
-        # from exact tape cells.
-        cost_scaling_factor: 5.0
+        # Match camera-line behavior: narrow line halo, slow enough decay
+        # that the planner cannot treat the visible line band as traversable.
+        cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
         publish_costmap: True
@@ -487,7 +485,7 @@ global_costmap:
         # after this layer using the line layer's own hard/soft field so the
         # planner can still use IGVC-minimum 5 ft passages.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.50
+        inflation_radius: 0.25
       always_send_full_costmap: True
 
 map_server:
