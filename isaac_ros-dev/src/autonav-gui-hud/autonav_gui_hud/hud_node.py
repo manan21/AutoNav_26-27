@@ -19,7 +19,7 @@ try:
     from rclpy.node import Node
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry, OccupancyGrid, Path
-    from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+    from geometry_msgs.msg import PoseWithCovarianceStamped
     from std_msgs.msg import Float32, Int32MultiArray, Bool
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
@@ -1440,6 +1440,11 @@ class HudWindow(QMainWindow):
 
         # Container connection state
         self._container_connected = False
+        # Sticky "user explicitly disconnected" flag. The 5 Hz health
+        # check auto-connects whenever the container is up AND this flag
+        # is False; the user clicking Disconnect sets it True so we stop
+        # reconnecting until they click Connect again.
+        self._container_user_disconnected = False
         self._container_name = 'koopa-kingdom'
         self._container_workdir = '/autonav/isaac_ros-dev'
         self._container_user = 'admin'
@@ -2219,13 +2224,13 @@ class HudWindow(QMainWindow):
         lbl_git.setStyleSheet(group_label_style)
         dev_layout.addWidget(lbl_git)
 
-        self._dev_pull_btn = QPushButton("git sync (hard)")
+        self._dev_pull_btn = QPushButton("git sync")
         self._dev_pull_btn.setStyleSheet(dev_btn_compact)
         self._dev_pull_btn.setFocusPolicy(Qt.NoFocus)
         self._dev_pull_btn.clicked.connect(self._dev_git_pull)
         dev_layout.addWidget(self._dev_pull_btn)
         self._dev_nav_buttons.append(
-            (self._dev_pull_btn, "git sync (hard)", dev_btn_compact)
+            (self._dev_pull_btn, "git sync", dev_btn_compact)
         )
 
         # Branch switching is on its own sub-page (one click deeper) so
@@ -3153,11 +3158,15 @@ class HudWindow(QMainWindow):
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
-        # Container health check — every 5 seconds
+        # Container health check — every 5 seconds. Also does the
+        # auto-connect job (see _check_container_health). Fire one early
+        # check ~1 s after startup so the operator doesn't have to wait
+        # the full 5 s tick for the first auto-connect attempt.
         self._container_health_timer = QTimer()
         self._container_health_timer.setInterval(5000)
         self._container_health_timer.timeout.connect(self._check_container_health)
         self._container_health_timer.start()
+        QTimer.singleShot(1000, self._check_container_health)
 
         # Duplicate-publisher detector — polls topics from config/
         # watched_topics.yaml at 0.1 Hz. Flags device dots red when
@@ -3283,15 +3292,25 @@ class HudWindow(QMainWindow):
         # over the layout; _position_auto_badge keeps it pinned to the
         # top-right on resize.
         self._auto_mode = False
+        # Status-pill styling for both themes. ON is a solid green pill
+        # with white text (high contrast, unmistakable). OFF is a ghost
+        # outline with no fill so it doesn't read as a "gray rectangle"
+        # against either dark or light backgrounds. Rgba() values are
+        # intentionally theme-agnostic — _recolor_widget_tree only
+        # translates #rrggbb literals, so we picked colors that read
+        # well in either theme rather than relying on the translate.
         self._auto_badge_on_style = (
-            "color: #0f0; font-size: 13px; font-weight: bold;"
-            " font-family: monospace; background-color: rgba(0, 40, 0, 200);"
-            " border: 1px solid #0f0; border-radius: 4px; padding: 3px 8px;"
+            "color: #ffffff; font-size: 12px; font-weight: bold;"
+            " font-family: monospace; letter-spacing: 1px;"
+            " background-color: #16a834;"
+            " border: none; border-radius: 10px; padding: 2px 10px;"
         )
         self._auto_badge_off_style = (
-            "color: #666; font-size: 13px; font-weight: bold;"
-            " font-family: monospace; background-color: rgba(20, 20, 20, 180);"
-            " border: 1px solid #444; border-radius: 4px; padding: 3px 8px;"
+            "color: #888888; font-size: 12px; font-weight: bold;"
+            " font-family: monospace; letter-spacing: 1px;"
+            " background-color: transparent;"
+            " border: 1px solid rgba(136, 136, 136, 90);"
+            " border-radius: 10px; padding: 1px 9px;"
         )
         self._auto_badge = QLabel("AUTO OFF", central)
         self._auto_badge.setStyleSheet(self._auto_badge_off_style)
@@ -3307,15 +3326,17 @@ class HudWindow(QMainWindow):
         QTimer.singleShot(0, self._position_auto_badge)
 
         # Manual Drive mode — 'M' key toggles a green overlay and routes
-        # arrow keys directly to /cmd_vel (bypasses menu navigation). Esc
-        # also exits. Held arrows are accumulated in _manual_keys; a 20 Hz
-        # timer publishes the resulting Twist. All state is built lazily
-        # in _toggle_manual_mode / _build_manual_overlay.
+        # arrow keys to synthetic /joy messages (same path the Xbox stick
+        # uses, via control.cpp's tank-drive axes[1]/axes[3] mapping).
+        # Esc also exits. Held arrows are accumulated in _manual_keys;
+        # a 20 Hz timer publishes the resulting Joy. control.cpp gates
+        # /joy on !autonomousMode, so _toggle_manual_mode disengages
+        # AUTO on entry. All state is built lazily in _toggle_manual_mode
+        # / _build_manual_overlay.
         self._manual_mode = False
         self._manual_keys = set()
         self._manual_overlay = None
-        self._MANUAL_LIN_SPEED = 0.4   # m/s, forward/back
-        self._MANUAL_ANG_SPEED = 0.7   # rad/s, yaw
+        self._MANUAL_STICK_MAG = 0.8   # axis magnitude when a direction key is held
         self._manual_timer = QTimer(self)
         self._manual_timer.setInterval(50)  # 20 Hz
         self._manual_timer.timeout.connect(self._manual_tick)
@@ -4189,13 +4210,15 @@ class HudWindow(QMainWindow):
                 log(f"[chown skipped] {e}")
             return False
 
-    def _dev_git_hard_sync(self, log=None):
-        """Force the host repo to match origin/<current-branch>.
+    def _dev_git_sync(self, log=None):
+        """Fast-forward the host repo to origin/<current-branch>.
 
-        Sequence: reclaim ownership (best-effort sudo chown) → fetch →
-        reset --hard origin/<branch> → clean -fd → submodule update
-        --init --recursive. Untracked files in the working tree are
-        deleted; gitignored build artifacts are kept.
+        Sequence: reclaim ownership (best-effort sudo chown) →
+        git pull --ff-only origin <branch> → submodule update
+        --init --recursive. Replaces the old reset --hard + clean -fd
+        flow, which kept tripping Permission denied on root-owned
+        artifacts left by the Docker container. --ff-only fails loudly
+        if the branch has diverged rather than rewriting history.
 
         Returns (ok: bool, summary: str). When `log` is provided, every
         sub-step's stdout/stderr is passed to it.
@@ -4209,15 +4232,13 @@ class HudWindow(QMainWindow):
         if rc_b != 0 or not branch:
             return False, f"branch lookup failed: {err_b or 'detached HEAD'}"
 
-        # Reclaim ownership before the destructive steps. Failure here is
-        # silent — if passwordless sudo isn't configured, the git step
-        # below will surface the real Permission denied with a hint.
+        # Reclaim ownership before pulling. Failure is silent — if
+        # passwordless sudo isn't configured, the git step below will
+        # surface the real Permission denied with a hint.
         self._dev_reclaim_repo_ownership(log=log)
 
         for step_args, step_timeout in (
-            (['fetch', 'origin', '--prune'], 60),
-            (['reset', '--hard', f'origin/{branch}'], 30),
-            (['clean', '-fd'], 30),
+            (['pull', '--ff-only', 'origin', branch], 60),
             (['submodule', 'update', '--init', '--recursive'], 120),
         ):
             _emit(f"$ git {' '.join(step_args)}")
@@ -4234,15 +4255,22 @@ class HudWindow(QMainWindow):
                         f"{self._dev_host_repo}` on the Jetson, or "
                         f"enable passwordless sudo for chown)"
                     )
+                elif 'Not possible to fast-forward' in combined or \
+                        'diverged' in combined.lower():
+                    msg = (
+                        f"{msg}  (branch diverged from origin — resolve "
+                        f"on the Jetson with `git status` / `git log`, "
+                        f"then re-sync)"
+                    )
                 return False, f"git {step_args[0]} failed: {msg}"
 
-        return True, f"synced to origin/{branch}"
+        return True, f"pulled origin/{branch}"
 
     def _dev_git_pull(self):
         self._dev_set_status(
-            "Hard-syncing to origin/<branch>…", color='#ff0')
+            "Pulling origin/<branch>…", color='#ff0')
         QApplication.processEvents()
-        ok, summary = self._dev_git_hard_sync()
+        ok, summary = self._dev_git_sync()
         if ok:
             self._dev_set_status(f"Sync OK: {summary}", color='#0f0')
         else:
@@ -4701,12 +4729,12 @@ class HudWindow(QMainWindow):
                 # start step below will surface real issues.
                 log(f"[stop] {e}")
 
-            # 2. Hard-sync host repo to origin/<branch> — discards any
-            #    local edits and untracked files so the Jetson tree
-            #    always matches origin.
+            # 2. Fast-forward pull host repo to origin/<branch>. Fails
+            #    loudly if the branch has diverged — the Jetson tree is
+            #    expected to be pristine (no local edits / commits).
             self._dev_ui_status(
-                "[2/5] git hard-sync to origin…", color='#ff0')
-            ok, summary = self._dev_git_hard_sync(log=log)
+                "[2/5] git pull origin…", color='#ff0')
+            ok, summary = self._dev_git_sync(log=log)
             if not ok:
                 self._dev_ui_status(
                     f"Sync failed: {summary}", color='#f44')
@@ -6270,10 +6298,18 @@ class HudWindow(QMainWindow):
     # Manual Drive mode — 'M' key, green overlay, arrow-key teleop
     # -----------------------------------------------------------------
     def _toggle_manual_mode(self):
-        """M-key handler. Enter: show green overlay, start 20 Hz publish
-        tick. Exit: send a zero Twist for safety, stop tick, hide overlay.
-        Arrow-key handling itself lives in keyPressEvent / keyReleaseEvent."""
+        """M-key handler. Enter: disengage AUTO if on (control.cpp gates
+        /joy on !autonomousMode), show green overlay, start 20 Hz Joy
+        publish tick. Exit: publish a zero-axes Joy for safety, stop
+        tick, hide overlay. Arrow-key handling itself lives in
+        keyPressEvent / keyReleaseEvent."""
         if not self._manual_mode:
+            # control.cpp ignores /joy while autonomousMode is true, so
+            # manual drive can't reach the motors. Toggle AUTO off first.
+            # Per the AUTO-toggle-keeps-goal invariant, this doesn't
+            # cancel any pending nav2 goal.
+            if self._auto_mode:
+                self._toggle_auto_mode()
             if self._manual_overlay is None:
                 self._build_manual_overlay()
             self._manual_overlay.setGeometry(0, 0, self.width(), self.height())
@@ -6287,7 +6323,7 @@ class HudWindow(QMainWindow):
             self._manual_mode = False
             self._manual_timer.stop()
             self._manual_keys.clear()
-            self._publish_manual_twist(0.0, 0.0)
+            self._publish_manual_joy(0.0, 0.0)
             if self._manual_overlay is not None:
                 self._manual_overlay.hide()
             self._gui_log_msg("Manual Drive: OFF")
@@ -6336,37 +6372,48 @@ class HudWindow(QMainWindow):
         return overlay
 
     def _manual_tick(self):
-        """20 Hz publish tick while Manual Drive is on. Sums the currently
-        held arrow keys into a Twist and publishes — Up/Down map to
-        linear.x, Left/Right to angular.z. Opposed keys cancel out."""
+        """20 Hz publish tick while Manual Drive is on. Translates the
+        held arrow keys into tank-drive wheel commands and publishes via
+        synthetic Joy. control.cpp (tank-drive) maps axes[1]→left wheel,
+        axes[3]→right wheel; we synthesise those so this path is exactly
+        the Xbox stick path. Up = both forward; Down = both back; Left/
+        Right = spin in place; combinations mix (e.g. Up+Right curves
+        right). Opposed keys cancel."""
         if not self._manual_mode:
             return
-        lin = 0.0
-        ang = 0.0
+        fwd = 0.0
         if Qt.Key_Up in self._manual_keys:
-            lin += self._MANUAL_LIN_SPEED
+            fwd += 1.0
         if Qt.Key_Down in self._manual_keys:
-            lin -= self._MANUAL_LIN_SPEED
-        if Qt.Key_Left in self._manual_keys:
-            ang += self._MANUAL_ANG_SPEED
+            fwd -= 1.0
+        turn = 0.0
         if Qt.Key_Right in self._manual_keys:
-            ang -= self._MANUAL_ANG_SPEED
-        self._publish_manual_twist(lin, ang)
+            turn += 1.0
+        if Qt.Key_Left in self._manual_keys:
+            turn -= 1.0
+        left  = max(-1.0, min(1.0, fwd + turn)) * self._MANUAL_STICK_MAG
+        right = max(-1.0, min(1.0, fwd - turn)) * self._MANUAL_STICK_MAG
+        self._publish_manual_joy(left, right)
 
-    def _publish_manual_twist(self, linear_x, angular_z):
-        """Publish a Twist on /cmd_vel via HudNode.cmd_vel_pub. No-op if
-        ROS isn't available."""
+    def _publish_manual_joy(self, left_wheel, right_wheel):
+        """Publish a synthetic Joy message with the same shape control.cpp
+        expects: axes[1] = left stick Y (left wheel), axes[3] = right
+        stick Y (right wheel). Buttons left zero so we don't trigger
+        X-button (auto toggle) or bumper speed changes. No-op if ROS
+        isn't available."""
         node = self._ros_node
-        if node is None or not hasattr(node, 'cmd_vel_pub'):
+        if node is None or not hasattr(node, 'joy_pub'):
             return
         try:
-            TwistMsg = node.cmd_vel_pub.msg_type
-            msg = TwistMsg()
-            msg.linear.x = float(linear_x)
-            msg.angular.z = float(angular_z)
-            node.cmd_vel_pub.publish(msg)
+            JoyMsg = node.joy_pub.msg_type
+            msg = JoyMsg()
+            msg.buttons = [0] * 11
+            msg.axes = [0.0] * 8
+            msg.axes[1] = float(left_wheel)
+            msg.axes[3] = float(right_wheel)
+            node.joy_pub.publish(msg)
         except Exception as e:
-            self._gui_log_msg(f"Manual cmd_vel publish failed: {e}")
+            self._gui_log_msg(f"Manual joy publish failed: {e}")
 
     def _position_auto_badge(self):
         """Pin the auto-mode badge to the upper-right of the central widget."""
@@ -7075,10 +7122,15 @@ class HudWindow(QMainWindow):
     # -- Container connection ------------------------------------------------
 
     def _on_connect_container(self):
-        """Toggle connection to the Docker container."""
+        """Toggle connection to the Docker container. Explicit click is
+        the only path that touches _container_user_disconnected — the
+        sticky flag goes True on disconnect (stops auto-reconnect) and
+        clears on a successful connect."""
         if self._container_connected:
+            self._container_user_disconnected = True
             self._disconnect_container()
         else:
+            self._container_user_disconnected = False
             self._connect_container()
 
     def _connect_container(self):
@@ -7220,20 +7272,38 @@ class HudWindow(QMainWindow):
         self._refresh_terminal_display()
 
     def _check_container_health(self):
-        """Periodic check: if connected, verify the container is still running."""
-        if not self._container_connected:
-            return
+        """Periodic check (5 Hz). Two jobs:
+          1. If connected, drop the connection when the container stops.
+          2. If not connected AND the user hasn't explicitly disconnected,
+             auto-connect as soon as the container is up. This way the
+             GUI re-attaches on container restarts and on startup without
+             the operator having to click Connect.
+        """
         try:
             result = subprocess.run(
                 ['docker', 'ps', '--quiet', '--filter', 'status=running',
                  '--filter', f'name=^/{self._container_name}$'],
                 capture_output=True, text=True, timeout=3,
             )
-            if not result.stdout.strip():
-                self._gui_log_msg(f"Container '{self._container_name}' stopped — disconnecting")
-                self._disconnect_container()
         except Exception:
-            pass
+            return
+        running = bool(result.stdout.strip())
+
+        if self._container_connected:
+            if not running:
+                self._gui_log_msg(
+                    f"Container '{self._container_name}' stopped — disconnecting"
+                )
+                # Involuntary drop — sticky flag stays False so we
+                # auto-reconnect when the container comes back.
+                self._disconnect_container()
+            return
+
+        if running and not self._container_user_disconnected:
+            self._gui_log_msg(
+                f"Container '{self._container_name}' is up — auto-connecting"
+            )
+            self._connect_container()
 
     def _wrap_container_cmd(self, cmd, label=None):
         """Wrap a command to run inside the Docker container via docker exec.
@@ -9496,10 +9566,6 @@ if _HAS_ROS:
             # pattern as t002_automator._send_x_button_to_control.
             self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
             self.joy_pub = self.create_publisher(Joy, '/joy', 10)
-            # Direct /cmd_vel publisher for the HUD's Manual Drive mode
-            # (M key → green overlay + arrow-key teleop). Multi-publisher
-            # on /cmd_vel is by design — velocity_smoother handles the mix.
-            self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
             self.create_subscription(
                 Bool, '/autonomous_mode',
                 self._cb_autonomous_mode, _RELIABLE_QOS,
