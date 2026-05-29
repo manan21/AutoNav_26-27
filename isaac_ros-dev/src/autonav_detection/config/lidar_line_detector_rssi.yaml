@@ -1,0 +1,64 @@
+# RSSI/intensity-mode LiDAR line detector parameters for plain white tape.
+#
+# Use this profile when the course lines are visible in SICK RSSI/intensity
+# but are NOT reported as retroreflectors. Keep the default
+# lidar_line_detector.yaml reflector profile intact for retroreflective tape.
+
+lidar_line_detector:
+  ros__parameters:
+    # I/O
+    cloud_topic: "/cloud_all_fields_fullframe"
+    line_points_topic: "/lidar_line_points"
+    debug_points_topic: "/lidar_line_detection/debug/points"
+    diagnostics_topic: "/lidar_line_detection/diagnostics"
+    intensity_field: "i"
+    candidate_mode: "intensity"
+    base_frame: "base_link"
+    target_frame: "odom"
+
+    # Runtime cadence / TF
+    tf_lookup_timeout_ms: 100
+    tf_use_latest: false
+    max_processing_rate_hz: 10.0
+    publish_empty_messages: true
+    publish_debug_points: true
+
+    # Ground-region gate in base_link coordinates.
+    range_min_m: 0.20
+    range_max_m: 6.0
+    base_min_x_m: -0.10
+    base_max_x_m: 5.0
+    base_max_abs_y_m: 3.0
+    ground_z_m: -0.11
+    ground_z_tolerance_m: 0.08
+    layer_min: -1
+    layer_max: -1
+    echo_filter: -1
+
+    # Adaptive RSSI candidate selection. These are deliberately moderate
+    # starting values; use scripts/analyze_lidar_rssi_sweep.py against a raw
+    # course bag before trusting them for autonomy.
+    adaptive_range_bin_m: 0.25
+    adaptive_stddev_multiplier: 1.0
+    adaptive_min_delta: 250.0
+    adaptive_min_samples: 20
+    min_intensity: 0.0
+    normalize_by_layer: true
+    use_reflector_boost: false
+    reflector_threshold_boost: 0.0
+
+    # Shape filter for tape-like marks in the local ground plane.
+    cluster_link_distance_m: 0.20
+    cluster_min_points: 3
+    cluster_min_length_m: 0.20
+    cluster_max_width_m: 0.22
+    cluster_min_aspect_ratio: 2.5
+    output_voxel_size_m: 0.05
+    max_line_points: 8000
+
+    # Complete sparse ground-only RSSI clusters into dense local line segments.
+    segment_completion_enabled: true
+    segment_point_spacing_m: 0.05
+    segment_endpoint_padding_m: 0.05
+    segment_max_points_per_cluster: 80
+    segment_min_completion_length_m: 0.20
