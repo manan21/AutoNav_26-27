@@ -6345,46 +6345,33 @@ class HudWindow(QMainWindow):
         v.setAlignment(Qt.AlignCenter)
         v.addStretch()
 
+        info_font = QFont()
+        info_font.setPointSize(32)
+        info_font.setBold(True)
+        info_style = "color: #fff; background: transparent; border: none;"
+
         title = QLabel("MANUAL DRIVE")
-        f = QFont()
-        f.setPointSize(48)
-        f.setBold(True)
-        title.setFont(f)
+        title.setFont(info_font)
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(
-            "color: #fff; background: transparent; border: none;"
-        )
+        title.setStyleSheet(info_style)
         v.addWidget(title)
 
         hint = QLabel("Arrow keys = drive   ·   M or Esc = exit")
-        hf = QFont()
-        hf.setPointSize(16)
-        hint.setFont(hf)
+        hint.setFont(info_font)
         hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet(
-            "color: #eaffea; background: transparent; border: none;"
-        )
+        hint.setStyleSheet(info_style)
         v.addWidget(hint)
 
         speed_hint = QLabel("1-9 = speed gear   ·   1 → 5,  2 → 10,  …,  9 → 45")
-        sf = QFont()
-        sf.setPointSize(14)
-        speed_hint.setFont(sf)
+        speed_hint.setFont(info_font)
         speed_hint.setAlignment(Qt.AlignCenter)
-        speed_hint.setStyleSheet(
-            "color: #d6f5d6; background: transparent; border: none;"
-        )
+        speed_hint.setStyleSheet(info_style)
         v.addWidget(speed_hint)
 
         controller_hint = QLabel("(Ensure XBox controller is off)")
-        cf = QFont()
-        cf.setPointSize(12)
-        cf.setItalic(True)
-        controller_hint.setFont(cf)
+        controller_hint.setFont(info_font)
         controller_hint.setAlignment(Qt.AlignCenter)
-        controller_hint.setStyleSheet(
-            "color: #c0e8c0; background: transparent; border: none;"
-        )
+        controller_hint.setStyleSheet(info_style)
         v.addWidget(controller_hint)
 
         v.addStretch()
