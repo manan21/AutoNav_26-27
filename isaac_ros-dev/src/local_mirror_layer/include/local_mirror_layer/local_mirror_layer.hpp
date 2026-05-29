@@ -82,6 +82,7 @@ private:
   // those decreases to the current sensor-clearing sector.
   bool allow_decrease_;
   bool decrease_only_in_front_;
+  bool overwrite_master_;
   double decrease_angle_min_rad_;
   double decrease_angle_max_rad_;
   double decrease_range_min_m_;

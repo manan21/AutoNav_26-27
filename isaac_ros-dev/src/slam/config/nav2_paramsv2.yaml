@@ -422,7 +422,11 @@ global_costmap:
         enabled: True
         source_topic: /local_costmap/costmap
         exclude_topics: ["/line_costmap", "/lidar_line_costmap"]
-        exclude_threshold: 1
+        # Mask only exact line cells from the PCA obstacle mirror. The line
+        # costmap's soft halo is navigable preference cost; using threshold 1
+        # also suppressed nearby PCA wall cells and could leave a tiny
+        # wall/line gap in the raw global costmap.
+        exclude_threshold: 100
         # Mirror only true lethal obstacle cells from the combined local
         # costmap. Non-lethal local inflation around cones is deliberately
         # ignored so PCA obstacles and tape/lines both seed the global
@@ -453,6 +457,7 @@ global_costmap:
         # from the local line-only costmap stay in global for the
         # whole run and are not cleared by later FREE cells.
         allow_decrease: false
+        overwrite_master: false
         track_unknown_space: true
 
       lidar_line_memory_mirror_layer:
@@ -471,6 +476,10 @@ global_costmap:
         # lower-cost clears from the rolling local line costmap. The operator
         # clear topic still wipes nearby accumulated mirror cells.
         allow_decrease: false
+        # The line memory layer runs after PCA obstacle inflation. Max-merge
+        # it into master so line soft halo cannot lower a lethal wall/cone
+        # cell that the PCA mirror already supplied.
+        overwrite_master: false
         track_unknown_space: true
 
       inflation_layer:

@@ -38,6 +38,14 @@ class Cone:
 
 
 @dataclass(frozen=True)
+class Wall:
+    name: str
+    start: tuple[float, float]
+    end: tuple[float, float]
+    thickness_m: float
+
+
+@dataclass(frozen=True)
 class Station:
     label: str
     x_m: float
@@ -51,6 +59,7 @@ class Scenario:
     description: str
     tapes: tuple[Tape, ...]
     cones: tuple[Cone, ...]
+    walls: tuple[Wall, ...]
     stations: tuple[Station, ...]
 
 
@@ -105,12 +114,14 @@ def load_scenario(path: Path) -> Scenario:
     if "tape_count" in values:
         tapes = load_indexed_tapes(values)
         cones = load_indexed_cones(values)
+        walls = load_indexed_walls(values)
         stations = load_indexed_stations(values)
         return Scenario(
             scenario_id=cfg_str(values, "scenario_id", path.stem),
             description=cfg_str(values, "description", path.stem),
             tapes=tapes,
             cones=cones,
+            walls=walls,
             stations=stations,
         )
     return load_legacy_scenario(values)
@@ -152,6 +163,27 @@ def load_indexed_cones(values: dict[str, object]) -> tuple[Cone, ...]:
     return tuple(cones)
 
 
+def load_indexed_walls(values: dict[str, object]) -> tuple[Wall, ...]:
+    default_thickness = cfg_float(values, "wall_thickness_m", 0.08)
+    walls: list[Wall] = []
+    for idx in range(cfg_int(values, "wall_count")):
+        prefix = f"wall_{idx}_"
+        walls.append(Wall(
+            name=cfg_str(values, f"{prefix}name", f"wall_{idx}"),
+            start=(
+                cfg_float(values, f"{prefix}start_x_m"),
+                cfg_float(values, f"{prefix}start_y_m"),
+            ),
+            end=(
+                cfg_float(values, f"{prefix}end_x_m"),
+                cfg_float(values, f"{prefix}end_y_m"),
+            ),
+            thickness_m=cfg_float(
+                values, f"{prefix}thickness_m", default_thickness),
+        ))
+    return tuple(walls)
+
+
 def load_indexed_stations(values: dict[str, object]) -> tuple[Station, ...]:
     stations: list[Station] = []
     for idx in range(cfg_int(values, "analysis_station_count")):
@@ -187,6 +219,7 @@ def load_legacy_scenario(values: dict[str, object]) -> Scenario:
         cones=(
             Cone("dot_cone", (perp_x, cone_left - cone_radius), cone_radius),
         ),
+        walls=(),
         stations=(
             Station(
                 "through_5ft_gap",
@@ -261,9 +294,11 @@ def circle_clearance_to_pose(cone: Cone,
     return center_clearance - cone.radius_m
 
 
-def sample_tape(tape: Tape, step: float) -> list[tuple[float, float]]:
-    ax, ay = tape.start
-    bx, by = tape.end
+def sample_segment(start: tuple[float, float],
+                   end: tuple[float, float],
+                   step: float) -> list[tuple[float, float]]:
+    ax, ay = start
+    bx, by = end
     length = math.hypot(bx - ax, by - ay)
     count = max(1, int(math.ceil(length / max(step, 1e-3))))
     points = []
@@ -271,6 +306,14 @@ def sample_tape(tape: Tape, step: float) -> list[tuple[float, float]]:
         t = idx / count
         points.append((ax + (bx - ax) * t, ay + (by - ay) * t))
     return points
+
+
+def sample_tape(tape: Tape, step: float) -> list[tuple[float, float]]:
+    return sample_segment(tape.start, tape.end, step)
+
+
+def sample_wall(wall: Wall, step: float) -> list[tuple[float, float]]:
+    return sample_segment(wall.start, wall.end, step)
 
 
 def y_at_x(points: list[tuple[float, float]], target_x: float) -> float | None:
@@ -368,15 +411,24 @@ def main() -> None:
         for tape in scenario.tapes
         for point in sample_tape(tape, args.sample_step)
     ]
+    wall_points = [
+        (wall, point)
+        for wall in scenario.walls
+        for point in sample_wall(wall, args.sample_step)
+    ]
 
     best_tape_physical = None
     best_tape_padded = None
     best_cone_physical = None
     best_cone_padded = None
+    best_wall_physical = None
+    best_wall_padded = None
     tape_physical_overlaps = 0
     tape_padded_overlaps = 0
     cone_physical_overlaps = 0
     cone_padded_overlaps = 0
+    wall_physical_overlaps = 0
+    wall_padded_overlaps = 0
 
     for stamp, pose in samples:
         for tape, point in tape_points:
@@ -407,6 +459,21 @@ def main() -> None:
                 cone_physical_overlaps += 1
             if padded <= 0.0:
                 cone_padded_overlaps += 1
+
+        for wall, point in wall_points:
+            wall_radius = 0.5 * wall.thickness_m
+            physical = point_clearance_to_pose(point, pose, *physical_half) - wall_radius
+            padded = point_clearance_to_pose(point, pose, *padded_half) - wall_radius
+            physical_sample = (physical, stamp, pose, wall.name, point)
+            padded_sample = (padded, stamp, pose, wall.name, point)
+            if best_wall_physical is None or physical < best_wall_physical[0]:
+                best_wall_physical = physical_sample
+            if best_wall_padded is None or padded < best_wall_padded[0]:
+                best_wall_padded = padded_sample
+            if physical <= 0.0:
+                wall_physical_overlaps += 1
+            if padded <= 0.0:
+                wall_padded_overlaps += 1
 
     traj = [(pose[0], pose[1]) for _, pose in samples]
     xs = [x for x, _ in traj]
@@ -449,6 +516,8 @@ def main() -> None:
     print_best("padded tape", best_tape_padded, tape_padded_overlaps)
     print_best("physical cone", best_cone_physical, cone_physical_overlaps)
     print_best("padded cone", best_cone_padded, cone_padded_overlaps)
+    print_best("physical wall", best_wall_physical, wall_physical_overlaps)
+    print_best("padded wall", best_wall_padded, wall_padded_overlaps)
 
     if args.fail_on_overlap:
         if tape_physical_overlaps:
@@ -457,6 +526,9 @@ def main() -> None:
         if cone_physical_overlaps:
             failures.append(
                 f"physical footprint overlapped cone in {cone_physical_overlaps} samples")
+        if wall_physical_overlaps:
+            failures.append(
+                f"physical footprint overlapped wall in {wall_physical_overlaps} samples")
 
     if args.fail_on_padded_overlap:
         if tape_padded_overlaps:
@@ -465,6 +537,9 @@ def main() -> None:
         if cone_padded_overlaps:
             failures.append(
                 f"padded footprint overlapped cone in {cone_padded_overlaps} samples")
+        if wall_padded_overlaps:
+            failures.append(
+                f"padded footprint overlapped wall in {wall_padded_overlaps} samples")
 
     print("\nscenario stations")
     if not scenario.stations:

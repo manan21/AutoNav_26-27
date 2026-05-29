@@ -81,6 +81,12 @@ PY
     scenario_args+=(--strict-stations --fail-on-padded-overlap)
   fi
   run_step python3 "$SCRIPT_DIR/analyze_lidar_line_scenario.py" "$BAG_PATH" "${scenario_args[@]}"
+  if [ "$scenario_id" = "driveway_1in_wall_gap_repro" ]; then
+    run_step python3 "$SCRIPT_DIR/analyze_driveway_wall_gap_repro.py" "$BAG_PATH" \
+      --scenario-config "$SCENARIO_CONFIG" \
+      --fail-on-gap-plan \
+      --fail-on-masked-wall
+  fi
 fi
 
 if [ -z "$SCENARIO_CONFIG" ] || [ "$scenario_id" = "canonical_5ft_gap" ]; then

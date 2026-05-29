@@ -23,6 +23,7 @@ LocalMirrorLayer::LocalMirrorLayer()
   track_unknown_space_(true),
   allow_decrease_(false),
   decrease_only_in_front_(false),
+  overwrite_master_(true),
   decrease_angle_min_rad_(-1.2217),
   decrease_angle_max_rad_(1.2217),
   decrease_range_min_m_(0.0),
@@ -58,6 +59,7 @@ void LocalMirrorLayer::onInitialize()
   declareParameter("track_unknown_space", rclcpp::ParameterValue(true));
   declareParameter("allow_decrease", rclcpp::ParameterValue(false));
   declareParameter("decrease_only_in_front", rclcpp::ParameterValue(false));
+  declareParameter("overwrite_master", rclcpp::ParameterValue(true));
   declareParameter("decrease_angle_min_rad", rclcpp::ParameterValue(-1.2217));
   declareParameter("decrease_angle_max_rad", rclcpp::ParameterValue(1.2217));
   declareParameter("decrease_range_min_m", rclcpp::ParameterValue(0.0));
@@ -76,6 +78,7 @@ void LocalMirrorLayer::onInitialize()
   node->get_parameter(name_ + "." + "track_unknown_space", track_unknown_space_);
   node->get_parameter(name_ + "." + "allow_decrease", allow_decrease_);
   node->get_parameter(name_ + "." + "decrease_only_in_front", decrease_only_in_front_);
+  node->get_parameter(name_ + "." + "overwrite_master", overwrite_master_);
   node->get_parameter(name_ + "." + "decrease_angle_min_rad", decrease_angle_min_rad_);
   node->get_parameter(name_ + "." + "decrease_angle_max_rad", decrease_angle_max_rad_);
   node->get_parameter(name_ + "." + "decrease_range_min_m", decrease_range_min_m_);
@@ -160,11 +163,12 @@ void LocalMirrorLayer::onInitialize()
 
   RCLCPP_INFO(
     rclcpp::get_logger("nav2_costmap_2d"),
-    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s, exclude_topics=%zu, exclude_threshold=%d, min_occupied_value_to_mirror=%d)",
+    "LocalMirrorLayer subscribed to %s (host frame=%s, allow_decrease=%s, decrease_only_in_front=%s, overwrite_master=%s, exclude_topics=%zu, exclude_threshold=%d, min_occupied_value_to_mirror=%d)",
     source_topic_.c_str(),
     layered_costmap_->getGlobalFrameID().c_str(),
     allow_decrease_ ? "true" : "false",
     decrease_only_in_front_ ? "true" : "false",
+    overwrite_master_ ? "true" : "false",
     exclude_topics_.size(),
     exclude_threshold_,
     min_occupied_value_to_mirror_);
@@ -565,13 +569,11 @@ void LocalMirrorLayer::updateCosts(
     }
   }
 
-  // Overwrite master where this layer has an opinion. Max-merging here
-  // would block raytrace clears from propagating: a cell the local has
-  // since raytrace-cleared (FREE_SPACE in the layer) can't downgrade an
-  // existing LETHAL in master under max-merge, which is what produces
-  // the "smearing into permanent walls" symptom. Layers further down
-  // the plugin chain (line_layer, inflation_layer) still max-merge on
-  // top of this, so lines re-stamp after any clears written here.
+  // The PCA obstacle mirror overwrites master where this layer has an
+  // opinion so raytrace clears can downgrade stored obstacle marks.
+  // Line-memory mirrors must max-merge instead: their soft halo should
+  // add preference cost without lowering a lethal PCA obstacle that was
+  // already present in the global costmap.
   min_i = std::max(0, min_i);
   min_j = std::max(0, min_j);
   max_i = std::min(static_cast<int>(master_grid.getSizeInCellsX()), max_i);
@@ -587,7 +589,11 @@ void LocalMirrorLayer::updateCosts(
         continue;
       }
       const unsigned int midx = j * master_size_x + i;
-      master_array[midx] = layer_cost;
+      if (overwrite_master_ || master_array[midx] == NO_INFORMATION ||
+        layer_cost > master_array[midx])
+      {
+        master_array[midx] = layer_cost;
+      }
     }
   }
 
