@@ -521,7 +521,10 @@ void LocalMirrorLayer::updateCosts(
           if (allow_decrease_ && incoming < existing &&
             decreaseAllowedAt(wx, wy, robot_x, robot_y, robot_yaw, have_pose))
           {
-            costmap_[idx] = incoming;
+            // A FREE source cell means "forget this remembered mark", not
+            // "paint FREE into the global master". Keeping it as no-opinion
+            // prevents one mirror layer from clearing other global layers.
+            costmap_[idx] = incoming == FREE_SPACE ? NO_INFORMATION : incoming;
           }
         }
       }
@@ -565,13 +568,10 @@ void LocalMirrorLayer::updateCosts(
     }
   }
 
-  // Overwrite master where this layer has an opinion. Max-merging here
-  // would block raytrace clears from propagating: a cell the local has
-  // since raytrace-cleared (FREE_SPACE in the layer) can't downgrade an
-  // existing LETHAL in master under max-merge, which is what produces
-  // the "smearing into permanent walls" symptom. Layers further down
-  // the plugin chain (line_layer, inflation_layer) still max-merge on
-  // top of this, so lines re-stamp after any clears written here.
+  // Overwrite master where this layer has an occupied opinion. FREE source
+  // cells clear this layer's memory by turning the cell back to
+  // NO_INFORMATION above, but are not painted into master; that prevents one
+  // mirror source from clearing another global layer.
   min_i = std::max(0, min_i);
   min_j = std::max(0, min_j);
   max_i = std::min(static_cast<int>(master_grid.getSizeInCellsX()), max_i);
@@ -583,7 +583,7 @@ void LocalMirrorLayer::updateCosts(
     for (int i = min_i; i < max_i; ++i) {
       const unsigned int idx = j * size_x_ + i;
       const unsigned char layer_cost = costmap_[idx];
-      if (layer_cost == NO_INFORMATION) {
+      if (layer_cost == NO_INFORMATION || layer_cost == FREE_SPACE) {
         continue;
       }
       const unsigned int midx = j * master_size_x + i;

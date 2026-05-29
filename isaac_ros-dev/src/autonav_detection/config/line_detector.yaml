@@ -39,23 +39,23 @@
     odom_topic: "/local_ekf/odom"
 
     # ── Geometry / stability gates ───────────────────────────────────────
-    roi_min_y_fraction: 0.45
-    max_depth_m: 5.0
-    base_min_x_m: 0.80
-    base_max_x_m: 4.50
-    base_max_abs_y_m: 2.5
+    roi_min_y_fraction: 0.40
+    max_depth_m: 5.5
+    base_min_x_m: 0.30
+    base_max_x_m: 4.75
+    base_max_abs_y_m: 2.75
     ground_z_m: -0.11
-    ground_z_tolerance_m: 0.22
+    ground_z_tolerance_m: 0.28
     depth_fill_radius_px: 5           # Fill ZED depth holes on bright painted lines using only a consistent local depth neighborhood.
     depth_fill_min_neighbors: 2
     depth_fill_max_spread_m: 0.60
     projection_max_points: 8000       # GPU projection can afford denser sampling; improves stability when depth is sparse on the painted line.
-    # Tightened after near-field false positives: require lower-image ROI,
-    # forward-only points outside the camera blind spot, a narrower ground
-    # height band, and larger connected evidence before publishing a line.
-    cluster_min_points: 25
-    cluster_min_length_m: 0.50
-    cluster_max_width_m: 0.45
+    # Tightened from the original broad gates, but not enough to starve real
+    # painted lines. Near-field false positives are handled mostly by shorter
+    # memory and costmap clearing, not by rejecting the whole near course.
+    cluster_min_points: 18
+    cluster_min_length_m: 0.40
+    cluster_max_width_m: 0.55
     # 3D aspect gate. 3.0 rejected T/L junctions. 2.0 admitted T/L but
     # would still fail tight curves (u-turns radius < 1 m have arc-vs-
     # chord ratio near 1.5). 1.5 admits gentle curves AND T/L corners
@@ -63,7 +63,7 @@
     cluster_min_aspect_ratio: 1.5
     # Keep cluster linkage tight enough that isolated bright objects in
     # front of the robot do not merge into a line-sized obstacle.
-    cluster_link_distance_m: 0.35
+    cluster_link_distance_m: 0.45
     temporal_voxel_size_m: 0.10
     # First transformed hit confirms immediately so new lines reach the
     # local costmap during turns instead of waiting for a second frame
@@ -75,7 +75,7 @@
     # 1500 ms == ~7 frames at 5 Hz: covers brief out-of-FOV periods
     # (turning the robot, panning the camera) without persisting stale
     # voxels long enough to confuse the planner.
-    confirmed_hold_ms: 8000
+    confirmed_hold_ms: 3000
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
     debug_image_write_enabled: false
@@ -90,7 +90,7 @@
     # candidates for the kernel; everything else is dropped before GPU
     # work. Range 0-255. ↑ keeps only the whitest pixels (misses dirty
     # lines); ↓ admits more candidates (more GPU work, more false alarms).
-    brightness_threshold: 230.0
+    brightness_threshold: 225.0
 
     # Stage 2: GPU CERIAS kernel. Half-width of the local statistics
     # window — full window = (2*N + 1)^2 = 7x7 by default. ↑ smooths over
@@ -111,4 +111,4 @@
     # the brightness pre-mask survives them. ↑ requires brighter
     # neighborhoods (cleaner lines only); ↓ admits dimmer near-line
     # surfaces. Range 0-255.
-    mew_threshold: 210.0
+    mew_threshold: 205.0

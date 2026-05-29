@@ -291,15 +291,14 @@ local_costmap:
         transform_tolerance: 0.5
         max_message_age_ms: 750
         # With view-gated clearing, this is the time a stale line must be
-        # in the camera clearing cone before it is forgotten. Keep this
-        # cone conservative: do not clear the near ground blind spot right
-        # in front of the robot, where the camera can no longer see a line.
-        observation_persistence_ms: 8000
+        # in the camera clearing cone before it is forgotten. Keep this short
+        # enough that one bad near-field detection cannot pin the robot.
+        observation_persistence_ms: 3000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
         line_clear_angle_min_rad: -0.40
         line_clear_angle_max_rad: 0.40
-        line_clear_range_min_m: 1.20
+        line_clear_range_min_m: 0.40
         line_clear_range_max_m: 4.50
         max_persisted_points: 12000
         # Camera-line costs must be narrow. The plugin defaults are a
@@ -316,7 +315,7 @@ local_costmap:
 
       lidar_line_layer:
         plugin: "line_layer::LineLayer"
-        enabled: False
+        enabled: True
         line_topic: "/lidar_line_points"
         costmap_topic: "/lidar_line_costmap"
         transform_tolerance: 0.5
@@ -456,13 +455,13 @@ global_costmap:
         decrease_only_in_front: true
         decrease_angle_min_rad: -0.40
         decrease_angle_max_rad: 0.40
-        decrease_range_min_m: 1.20
+        decrease_range_min_m: 0.40
         decrease_range_max_m: 4.50
         track_unknown_space: true
 
       lidar_line_memory_mirror_layer:
         plugin: "local_mirror_layer::LocalMirrorLayer"
-        enabled: False
+        enabled: True
         source_topic: /lidar_line_costmap
         # Mirror the line-only costmap's full hard/soft field. Exact tape
         # cells remain lethal, the line layer's small inscribed band remains
@@ -526,7 +525,7 @@ planner_server:
       # The line/cone fields carry clearance preferences. Keep the penalty
       # moderate so Smac still uses the guaranteed 5 ft passage when that is
       # the only legal route.
-      cost_penalty: 3.0
+      cost_penalty: 4.0
       # Keep the default penalty so in-place rotations are used only when the
       # lattice needs them for obstacle avoidance, not as cheap shortcuts.
       rotation_penalty: 5.0

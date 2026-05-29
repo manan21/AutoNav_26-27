@@ -96,7 +96,7 @@
                     footprint="[[0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41]]"
                     footprint_padding="0.05"
                     lethal_threshold="254"
-                    inscribed_threshold="254"
+                    inscribed_threshold="200"
                     ignore_unknown="true"
                     pose_stride="1"/>
                 </Sequence>
