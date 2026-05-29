@@ -90,6 +90,7 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 | `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
 | `controller_server.controller_frequency` | 🟡 | `20.0` Hz | MPPI control tick rate | Higher → more responsive, more CPU |
 | `controller_server.FollowPath.vx_max` | ⚠️ | `0.50` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
+| `controller_server.FollowPath.vx_std` | ⚠️ | `0.25` m/s | MPPI forward sampling spread | Must be wide enough for MPPI to explore the intended cap; `0.12` still behaved like a ~0.20 m/s controller |
 | `controller_server.FollowPath.vx_min` | 🟡 | `0.0` m/s | MPPI reverse sampling cap | Current local controller is forward-only; reverse is handled by `breadcrumb_reverse` |
 | `controller_server.FollowPath.vy_max` | 🔴 | `0.0` m/s | Lateral sampling cap | Must remain zero for differential drive |
 | `controller_server.FollowPath.wz_max` | 🟡 | `1.0` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |

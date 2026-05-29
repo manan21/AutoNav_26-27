@@ -137,7 +137,11 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 1200
-      vx_std: 0.12
+      # Pair with vx_max. Raising the cap to 0.50 without widening this
+      # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
+      # open-lane sim; 0.25 lets the optimizer actually explore/use the new
+      # speed while preserving canonical 5 ft gap safety in regression.
+      vx_std: 0.25
       vy_std: 0.01
       wz_std: 0.45
       vx_max: 0.50

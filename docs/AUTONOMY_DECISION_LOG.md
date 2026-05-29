@@ -328,6 +328,33 @@ Do not repeat:
 Next check:
 - Re-run the real robot course at 0.50 m/s and watch for MPPI chatter, low cone/tape clearance, controller command gaps, and emergency-stop margin.
 
+### 2026-05-29 - Raising The Speed Cap Requires Wider MPPI Forward Sampling
+
+Status: Accepted
+Area: MPPI control, simulation, real robot speed tuning
+Related commits: pending
+Evidence:
+- `/home/cole.guest/autonav-work/lidar_line_runs/speed050_open_20260528_220535`
+- `/home/cole.guest/autonav-work/lidar_line_runs/speed050_vxstd025_open_20260528_220956`
+- `/home/cole.guest/autonav-work/lidar_line_runs/speed050_vxstd025_canonical_20260528_221052`
+
+Decision:
+- Keep the 0.50 m/s forward cap.
+- Raise `controller_server.FollowPath.vx_std` from 0.12 to 0.25 so MPPI samples enough forward velocity to use the new cap.
+- Do not change PathAlignCritic or PathFollowCritic offsets yet.
+
+Why:
+- A clean open-lane sim with only `vx_max=0.50` and smoother `max_velocity[0]=0.50` still commanded only about 0.21 m/s max.
+- Raising `vx_std` alone made open lane sustain 0.50 m/s and made canonical 5 ft gap complete much faster without hard overlap, disruptive FollowPath aborts, planner aborts, or command gaps.
+- A more aggressive experiment that also increased path-follow/alignment offsets reached 0.50 but caused multi-second command gaps in the canonical 5 ft gap, so offsets are not part of this accepted change.
+
+Do not repeat:
+- Do not assume a higher MPPI hard cap automatically increases actual speed.
+- Do not bundle path-offset changes into speed tuning without targeted gap tests.
+
+Next check:
+- Pull and relaunch Nav2 on the Jetson, then verify live `/controller_server` `FollowPath.vx_max`, `FollowPath.vx_std`, `/velocity_smoother` `max_velocity`, and measured `/cmd_vel` during a straight open-lane run.
+
 ## Open Items To Track
 
 - Add randomized obstacle course variants while preserving the fixed 5 ft canonical course.
