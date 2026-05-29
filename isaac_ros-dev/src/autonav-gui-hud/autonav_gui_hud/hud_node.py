@@ -20,7 +20,7 @@ try:
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry, OccupancyGrid, Path
     from geometry_msgs.msg import PoseWithCovarianceStamped
-    from std_msgs.msg import Float32, Int32MultiArray, Bool
+    from std_msgs.msg import Float32, Int32, Int32MultiArray, Bool
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
         _HAS_PC2 = True
@@ -3309,8 +3309,8 @@ class HudWindow(QMainWindow):
             "color: #888888; font-size: 12px; font-weight: bold;"
             " font-family: monospace; letter-spacing: 1px;"
             " background-color: transparent;"
-            " border: 1px solid rgba(136, 136, 136, 90);"
-            " border-radius: 10px; padding: 1px 9px;"
+            " border: none;"
+            " padding: 2px 10px;"
         )
         self._auto_badge = QLabel("AUTO OFF", central)
         self._auto_badge.setStyleSheet(self._auto_badge_off_style)
@@ -6366,6 +6366,27 @@ class HudWindow(QMainWindow):
         )
         v.addWidget(hint)
 
+        speed_hint = QLabel("1-9 = speed gear   ·   1 → 5,  2 → 10,  …,  9 → 45")
+        sf = QFont()
+        sf.setPointSize(14)
+        speed_hint.setFont(sf)
+        speed_hint.setAlignment(Qt.AlignCenter)
+        speed_hint.setStyleSheet(
+            "color: #d6f5d6; background: transparent; border: none;"
+        )
+        v.addWidget(speed_hint)
+
+        controller_hint = QLabel("(Ensure XBox controller is off)")
+        cf = QFont()
+        cf.setPointSize(12)
+        cf.setItalic(True)
+        controller_hint.setFont(cf)
+        controller_hint.setAlignment(Qt.AlignCenter)
+        controller_hint.setStyleSheet(
+            "color: #c0e8c0; background: transparent; border: none;"
+        )
+        v.addWidget(controller_hint)
+
         v.addStretch()
         overlay.hide()
         self._manual_overlay = overlay
@@ -6394,6 +6415,23 @@ class HudWindow(QMainWindow):
         left  = max(-1.0, min(1.0, fwd + turn)) * self._MANUAL_STICK_MAG
         right = max(-1.0, min(1.0, fwd - turn)) * self._MANUAL_STICK_MAG
         self._publish_manual_joy(left, right)
+
+    def _publish_manual_speed_setpoint(self, gear):
+        """Publish an Int32 on /manual_speed_setpoint. control.cpp's
+        manual_speed_callback clamps to 0..75 and calls motors.setSpeed
+        directly, ignoring the request under AUTO. No-op if ROS isn't
+        available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'manual_speed_pub'):
+            return
+        try:
+            Int32Msg = node.manual_speed_pub.msg_type
+            msg = Int32Msg()
+            msg.data = int(gear)
+            node.manual_speed_pub.publish(msg)
+            self._gui_log_msg(f"Manual speed setpoint: {gear}")
+        except Exception as e:
+            self._gui_log_msg(f"Manual speed publish failed: {e}")
 
     def _publish_manual_joy(self, left_wheel, right_wheel):
         """Publish a synthetic Joy message with the same shape control.cpp
@@ -6742,8 +6780,9 @@ class HudWindow(QMainWindow):
         # including QLineEdit. No handling needed here.
 
         # Manual Drive mode owns input while active: arrows drive the
-        # robot, Esc/M exit, everything else is swallowed so the operator
-        # can't accidentally toggle Auto / Performance / Record mid-drive.
+        # robot, 1-9 snap the speed gear, Esc/M exit, everything else is
+        # swallowed so the operator can't accidentally toggle Auto /
+        # Performance / Record mid-drive.
         if self._manual_mode:
             if key == Qt.Key_M and not event.modifiers():
                 self._toggle_manual_mode()
@@ -6754,6 +6793,11 @@ class HudWindow(QMainWindow):
             if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
                 if not event.isAutoRepeat():
                     self._manual_keys.add(key)
+                return
+            if Qt.Key_1 <= key <= Qt.Key_9 and not event.modifiers():
+                if not event.isAutoRepeat():
+                    gear = (key - Qt.Key_0) * 5  # 1→5, 2→10, ..., 9→45
+                    self._publish_manual_speed_setpoint(gear)
                 return
             return
 
@@ -9566,6 +9610,13 @@ if _HAS_ROS:
             # pattern as t002_automator._send_x_button_to_control.
             self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
             self.joy_pub = self.create_publisher(Joy, '/joy', 10)
+            # Direct manual-speed setpoint for the HUD's Manual Drive
+            # mode (1-9 keys → 5/10/15/.../45 gear). control.cpp
+            # subscribes and snaps motors.setSpeed() — bypasses the slow
+            # bumper ramp (200 ms per +1). Honored only when !autonomousMode.
+            self.manual_speed_pub = self.create_publisher(
+                Int32, '/manual_speed_setpoint', 10,
+            )
             self.create_subscription(
                 Bool, '/autonomous_mode',
                 self._cb_autonomous_mode, _RELIABLE_QOS,
