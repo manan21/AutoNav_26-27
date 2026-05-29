@@ -232,11 +232,10 @@ local_costmap:
       # Match the BT/global footprint safety margin so MPPI evaluates the
       # same padded body the bag analysis enforces.
       footprint_padding: 0.05
-      # Keep stock Nav2 inflation local to PCA obstacle cells. The camera
-      # line layer is deliberately not loaded in this lidar-only test profile.
-      # The lidar line layer runs after obstacle inflation so local tape costs
-      # stay narrow enough to avoid boxing the robot at the start pose.
-      plugins: ["obstacle_layer", "inflation_layer", "lidar_line_layer"]
+      # Keep stock Nav2 inflation local to PCA obstacle cells. Camera and
+      # LiDAR line layers run after obstacle inflation so tape costs stay
+      # narrow enough to avoid boxing the robot at the start pose.
+      plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -286,7 +285,7 @@ local_costmap:
 
       line_layer:
         plugin: "line_layer::LineLayer"
-        enabled: False
+        enabled: True
         line_topic: "/line_points"
         costmap_topic: "/line_costmap"
         transform_tolerance: 0.5
@@ -395,6 +394,8 @@ global_costmap:
       # The contributors are:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
       #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells, then mirrors only local lethal obstacle marks so local inflation is not copied into global and inflated again.
+      #   line_memory_mirror_layer → /line_costmap → persistent camera-line
+      #     memory promoted from the local camera line layer.
       #   lidar_line_memory_mirror_layer → /lidar_line_costmap → persistent
       #     lidar tape memory. It runs after stock global inflation and mirrors
       #     the line layer's exact lethal tape cells plus non-lethal soft halo
@@ -402,9 +403,7 @@ global_costmap:
       #     hard centerline band around tape. This preserves the IGVC 5 ft legal
       #     passage while still preferring clearance in wider lanes.
       # PCA obstacle memory is inflated by the stock global inflation layer.
-      # The camera line mirror is intentionally disabled in this lidar-only
-      # profile.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "lidar_line_memory_mirror_layer"]
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -447,7 +446,7 @@ global_costmap:
 
       line_memory_mirror_layer:
         plugin: "local_mirror_layer::LocalMirrorLayer"
-        enabled: False
+        enabled: True
         source_topic: /line_costmap
         # Strict accumulator mode for line memory: line cells promoted
         # from the local line-only costmap stay in global for the
