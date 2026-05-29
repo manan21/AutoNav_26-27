@@ -313,18 +313,13 @@ local_costmap:
         costmap_topic: "/lidar_line_costmap"
         transform_tolerance: 0.5
         max_message_age_ms: 750
-        # TEMPORARY tape-test behavior: remember LiDAR-detected lines until
-        # the operator manually clears costmaps. The current robot can sit
-        # near tape long enough for sparse RSSI points to age out, then drive
-        # over the forgotten line. Ideally this should become view-gated
-        # clearing in the LiDAR's actual frame of vision so lines clear only
-        # after the sensor has positively re-observed free space.
-        observation_persistence_ms: -1
+        # LiDAR tape memory is finite but view-gated: stale cells clear only
+        # after they are inside the lidar clearing cone long enough to count
+        # as positively re-observed free space. Outside that cone, tape stays
+        # stamped in local/global memory instead of aging out while unseen.
+        observation_persistence_ms: 5000
         observation_persistence_resolution_m: 0.10
-        # Keep automatic clearing off for now; the unlimited persistence
-        # above means this parameter only matters once the temporary behavior
-        # is replaced with LiDAR-view-gated clearing.
-        clear_lines_only_in_view: false
+        clear_lines_only_in_view: true
         line_clear_angle_min_rad: -0.95
         line_clear_angle_max_rad: 0.95
         line_clear_range_min_m: 0.2
@@ -334,7 +329,7 @@ local_costmap:
         # continuous wall. Keep the lethal geometry exact, then publish a
         # non-lethal preference field that encourages clearance without
         # closing the IGVC-required 5 ft passage beside obstacles.
-        inflation_radius: 0.80
+        inflation_radius: 0.95
         # The 253 band is intentionally small. A wide inscribed band consumes
         # too much of the narrow legal gap before the planner ever considers
         # soft costs.
@@ -345,7 +340,7 @@ local_costmap:
         # robot center stay in low/moderate cost while the rear corner clipped
         # the start-line tape; 1.8 preserves the 5 ft gap while exposing that
         # corner-cut risk to the controller.
-        cost_scaling_factor: 1.8
+        cost_scaling_factor: 1.5
         clearing: True
         rolling_window: True
         publish_costmap: True
@@ -355,8 +350,8 @@ local_costmap:
         # PCA/cone stay-away cost. The lidar line layer runs after this layer
         # and uses its own narrower local halo; global planning receives
         # lidar tape memory before global inflation.
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.85
+        cost_scaling_factor: 3.2
+        inflation_radius: 1.00
 
       always_send_full_costmap: True
 
@@ -448,10 +443,16 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /line_costmap
-        # Strict accumulator mode for line memory: line cells promoted
-        # from the local line-only costmap stay in global for the
-        # whole run and are not cleared by later FREE cells.
-        allow_decrease: false
+        # Accumulate camera-line memory globally, but accept lower-cost
+        # clears only in the same conservative camera clearing cone used by
+        # the local line layer. Lines outside current FOV stay stamped.
+        min_occupied_value_to_mirror: 1
+        allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -0.40
+        decrease_angle_max_rad: 0.40
+        decrease_range_min_m: 1.20
+        decrease_range_max_m: 4.50
         track_unknown_space: true
 
       lidar_line_memory_mirror_layer:
@@ -465,11 +466,15 @@ global_costmap:
         # a second footprint-radius hard centerline band that can close a
         # legal 5 ft passage.
         min_occupied_value_to_mirror: 1
-        # TEMPORARY tape-test behavior: local LiDAR-line memory is
-        # manual-clear-only, so the global mirror must not accept automatic
-        # lower-cost clears from the rolling local line costmap. The operator
-        # clear topic still wipes nearby accumulated mirror cells.
-        allow_decrease: false
+        # Accept lower-cost clears only where the lidar line layer itself
+        # would clear stale tape. Outside current lidar FOV, global tape
+        # memory remains stamped.
+        allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -0.95
+        decrease_angle_max_rad: 0.95
+        decrease_range_min_m: 0.2
+        decrease_range_max_m: 6.0
         track_unknown_space: true
 
       inflation_layer:
@@ -477,8 +482,8 @@ global_costmap:
         # Stock global inflation for PCA/cone obstacles. Lidar tape is mirrored
         # after this layer using the line layer's own hard/soft field so the
         # planner can still use IGVC-minimum 5 ft passages.
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.85
+        cost_scaling_factor: 3.2
+        inflation_radius: 1.00
       always_send_full_costmap: True
 
 map_server:
@@ -516,7 +521,7 @@ planner_server:
       # The line/cone fields carry clearance preferences. Keep the penalty
       # moderate so Smac still uses the guaranteed 5 ft passage when that is
       # the only legal route.
-      cost_penalty: 2.0
+      cost_penalty: 3.0
       # Keep the default penalty so in-place rotations are used only when the
       # lattice needs them for obstacle avoidance, not as cheap shortcuts.
       rotation_penalty: 5.0

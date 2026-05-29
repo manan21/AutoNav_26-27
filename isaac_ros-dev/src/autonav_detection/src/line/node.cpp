@@ -22,7 +22,9 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -48,6 +50,7 @@ public:
 		this->declare_parameter("target_frame", "odom");
 		this->declare_parameter("enable_timer", true);
 		this->declare_parameter("publish_interval_ms", 100);
+		this->declare_parameter("max_input_age_ms", 250);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("tf_wait_for_stamp_ms", 125);
@@ -100,6 +103,7 @@ public:
 		target_frame_ = this->get_parameter("target_frame").as_string();
 		this->get_parameter("enable_timer", enable_timer_);
 		publish_interval_ms_ = std::max<int64_t>(50, this->get_parameter("publish_interval_ms").as_int());
+		max_input_age_ms_ = std::max<int64_t>(0, this->get_parameter("max_input_age_ms").as_int());
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		tf_wait_for_stamp_ms_ = std::max<int64_t>(0, this->get_parameter("tf_wait_for_stamp_ms").as_int());
@@ -147,6 +151,7 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
 		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Publish interval: %ld ms", publish_interval_ms_);
+		RCLCPP_INFO(this->get_logger(), "Max input age: %ld ms", max_input_age_ms_);
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Stamped TF wait: %ld ms", tf_wait_for_stamp_ms_);
@@ -177,7 +182,20 @@ public:
 			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
-		// Subscribe to camera topics
+		camera_callback_group_ = this->create_callback_group(
+			rclcpp::CallbackGroupType::MutuallyExclusive);
+		depth_callback_group_ = this->create_callback_group(
+			rclcpp::CallbackGroupType::MutuallyExclusive);
+		processing_callback_group_ = this->create_callback_group(
+			rclcpp::CallbackGroupType::Reentrant);
+
+		rclcpp::SubscriptionOptions camera_sub_options;
+		camera_sub_options.callback_group = camera_callback_group_;
+		rclcpp::SubscriptionOptions depth_sub_options;
+		depth_sub_options.callback_group = depth_callback_group_;
+
+		// Subscribe to camera topics. Keep only the latest sensor sample so
+		// CUDA processing never works through seconds of stale queued frames.
 		auto get_latest_msg = [this](sensor_msgs::msg::Image::SharedPtr msg) {
 			std::lock_guard<std::mutex> lock(callback_lock);
 			latest_img = msg;
@@ -188,10 +206,12 @@ public:
 		};
 		
 		_zed_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			camera_topic, 10, get_latest_msg);
+			camera_topic, rclcpp::SensorDataQoS().keep_last(1), get_latest_msg,
+			camera_sub_options);
 
 		_zed_depth_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			depth_camera_topic, 10, get_latest_depth_msg);
+			depth_camera_topic, rclcpp::SensorDataQoS().keep_last(1), get_latest_depth_msg,
+			depth_sub_options);
 
 		_camera_model_sub = this->create_subscription<sensor_msgs::msg::CameraInfo>(
 			camera_info_topic, 1, std::bind(&LineDetectorNode::cameraInfoCallback, this, std::placeholders::_1));
@@ -205,7 +225,8 @@ public:
 			
 		_line_timer = this->create_wall_timer(
 			std::chrono::milliseconds(publish_interval_ms_),
-			std::bind(&LineDetectorNode::line_callback, this));
+			std::bind(&LineDetectorNode::line_callback, this),
+			processing_callback_group_);
 
 		_line_point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(
 			"lines_pointcloud", 10);
@@ -282,6 +303,7 @@ private:
 	bool configured_ = false;
 	std::string target_frame_;
 	int64_t publish_interval_ms_ = 100;
+	int64_t max_input_age_ms_ = 250;
 	int64_t max_rgb_depth_delta_ms_ = 120;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t tf_wait_for_stamp_ms_ = 125;
@@ -322,6 +344,12 @@ private:
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
 	bool has_last_valid_message_ = false;
 	std::vector<cv::Point> last_valid_debug_pixels_;
+	std::atomic<bool> processing_busy_{false};
+	std::atomic<int64_t> skipped_busy_count_{0};
+	std::mutex processing_state_mutex_;
+	rclcpp::CallbackGroup::SharedPtr camera_callback_group_;
+	rclcpp::CallbackGroup::SharedPtr depth_callback_group_;
+	rclcpp::CallbackGroup::SharedPtr processing_callback_group_;
 
 	struct DetectionFrameStats {
 		int raw_pixels = 0;
@@ -341,6 +369,9 @@ private:
 		int yaw_gated_frames = 0;
 		int tf_wait_failures = 0;
 		int tf_latest_fallbacks = 0;
+		double rgb_age_ms = -1.0;
+		double depth_age_ms = -1.0;
+		int64_t skipped_busy_count = 0;
 		double total_callback_ms = 0.0;
 		double cuda_detect_ms = 0.0;
 		double tf_lookup_ms = 0.0;
@@ -649,6 +680,7 @@ void LineDetectorNode::clearRememberedLines(
 	std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
 	(void)request;
+	std::lock_guard<std::mutex> state_lock(processing_state_mutex_);
 
 	has_last_valid_message_ = false;
 	last_valid_message_ = autonav_interfaces::msg::LinePoints();
@@ -1289,6 +1321,9 @@ void LineDetectorNode::publishDiagnostics(
 		<< "\"yaw_gated_frames\":" << stats.yaw_gated_frames << ","
 		<< "\"tf_wait_failures\":" << stats.tf_wait_failures << ","
 		<< "\"tf_latest_fallbacks\":" << stats.tf_latest_fallbacks << ","
+		<< "\"rgb_age_ms\":" << stats.rgb_age_ms << ","
+		<< "\"depth_age_ms\":" << stats.depth_age_ms << ","
+		<< "\"skipped_busy_count\":" << stats.skipped_busy_count << ","
 		<< "\"total_callback_ms\":" << stats.total_callback_ms << ","
 		<< "\"cuda_detect_ms\":" << stats.cuda_detect_ms << ","
 		<< "\"tf_lookup_ms\":" << stats.tf_lookup_ms << ","
@@ -1385,6 +1420,7 @@ void LineDetectorNode::line_service(
 	std::shared_ptr<autonav_interfaces::srv::AnvLines::Response> response)
 {
 	(void)request;
+	std::lock_guard<std::mutex> state_lock(processing_state_mutex_);
 
 	// Get latest images
 	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
@@ -1460,6 +1496,7 @@ void LineDetectorNode::line_callback()
 			std::chrono::steady_clock::now() - start).count();
 	};
 	auto publish_timed_diagnostics = [&](const char * reason) {
+		stats.skipped_busy_count = skipped_busy_count_.load();
 		stats.total_callback_ms = elapsed_ms(callback_start);
 		publishDiagnostics(stats, reason);
 	};
@@ -1470,6 +1507,19 @@ void LineDetectorNode::line_callback()
 	}
 	
 	if (!enable_timer_) return;
+
+	bool expected_idle = false;
+	if (!processing_busy_.compare_exchange_strong(expected_idle, true)) {
+		stats.skipped_busy_count = skipped_busy_count_.fetch_add(1) + 1;
+		stats.total_callback_ms = elapsed_ms(callback_start);
+		publishDiagnostics(stats, "processing busy; skipped tick");
+		return;
+	}
+	struct BusyScope {
+		std::atomic<bool> & busy;
+		~BusyScope() { busy.store(false); }
+	} busy_scope{processing_busy_};
+	std::lock_guard<std::mutex> state_lock(processing_state_mutex_);
 
 	// Get latest images
 	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
@@ -1491,6 +1541,26 @@ void LineDetectorNode::line_callback()
 		publish_timed_diagnostics("missing camera/depth image");
 		return;
 	}
+
+	const rclcpp::Time now_stamp = this->now();
+	auto message_age_ms = [&](const builtin_interfaces::msg::Time & stamp) -> double {
+		const rclcpp::Time msg_stamp(stamp, now_stamp.get_clock_type());
+		if (msg_stamp.nanoseconds() <= 0) {
+			return -1.0;
+		}
+		return (now_stamp - msg_stamp).seconds() * 1000.0;
+	};
+	stats.rgb_age_ms = message_age_ms(camera_msg->header.stamp);
+	stats.depth_age_ms = message_age_ms(depth_msg->header.stamp);
+	if (max_input_age_ms_ > 0 &&
+		((stats.rgb_age_ms > static_cast<double>(max_input_age_ms_)) ||
+		 (stats.depth_age_ms > static_cast<double>(max_input_age_ms_))))
+	{
+		republishConfirmedCache(now_stamp);
+		publish_timed_diagnostics("stale camera/depth image");
+		return;
+	}
+
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
 		republishConfirmedCache(depth_msg->header.stamp);
 		publish_timed_diagnostics("RGB/depth desynchronization");
@@ -1674,7 +1744,10 @@ void LineDetectorNode::line_callback()
 int main(int argc, char** argv) {
 	rclcpp::init(argc, argv);
 	auto node = std::make_shared<LineDetectorNode>();
-	rclcpp::spin(node);
+	rclcpp::executors::MultiThreadedExecutor executor(
+		rclcpp::ExecutorOptions(), 3);
+	executor.add_node(node);
+	executor.spin();
 	rclcpp::shutdown();
 	return 0;
 }
