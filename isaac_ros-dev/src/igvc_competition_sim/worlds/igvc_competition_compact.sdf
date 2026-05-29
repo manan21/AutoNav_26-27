@@ -48,8 +48,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.9490 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.9490 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -59,8 +59,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.0555 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.0555 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -70,8 +70,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.2535 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.2535 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -81,8 +81,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.9083 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.9083 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -92,8 +92,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.5297 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.5297 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -103,8 +103,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.6370 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6370 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -114,8 +114,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.3338 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.3338 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -125,8 +125,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.4240 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.4240 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -136,8 +136,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.6686 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6686 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -147,8 +147,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.3918 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.3918 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -158,8 +158,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.6310 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.6310 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -169,8 +169,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>5.0622 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.0622 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -180,8 +180,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.6135 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6135 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -191,8 +191,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>3.5338 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>3.5338 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -202,8 +202,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.1522 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.1522 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -213,8 +213,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>4.0410 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.0410 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -224,8 +224,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>1.8000 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>1.8000 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -235,8 +235,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -246,8 +246,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -257,8 +257,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -268,8 +268,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -279,8 +279,8 @@
       <link name='link'>
         
         <visual name='visual'>
-          <geometry><box><size>0.7099 0.1200 0.0120</size></box></geometry>
-          <material><ambient>0.96 0.96 0.9 1.0</ambient><diffuse>0.96 0.96 0.9 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7099 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
       </link>
     </model>
@@ -386,6 +386,25 @@
           <geometry><box><size>1.0900 0.8200 0.2600</size></box></geometry>
           <material><ambient>0.22 0.28 0.36 1.0</ambient><diffuse>0.22 0.28 0.36 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
         </visual>
+        <sensor name='zed2i_rgbd' type='rgbd_camera'>
+          <pose>0.657600 0.009075 0.307230 0 0.349070 0</pose>
+          <always_on>1</always_on>
+          <update_rate>15</update_rate>
+          <visualize>false</visualize>
+          <topic>/igvc_sim/zed</topic>
+          <camera>
+            <horizontal_fov>1.918862</horizontal_fov>
+            <image>
+              <width>960</width>
+              <height>540</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.10</near>
+              <far>15.0</far>
+            </clip>
+          </camera>
+        </sensor>
       </link>
       <link name='left_wheel_link'>
         <pose>0 0.36163 0 1.570796 0 0</pose>

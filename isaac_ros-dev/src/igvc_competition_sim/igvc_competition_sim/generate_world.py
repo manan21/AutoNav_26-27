@@ -62,7 +62,7 @@ def _tape_model(name: str,
         name,
         (cx, cy, 0.011, 0.0, 0.0, yaw),
         (length, width_m, 0.012),
-        (0.96, 0.96, 0.90, 1.0),
+        (0.98, 0.98, 0.98, 1.0),
         collide=False,
     )
 
@@ -145,6 +145,25 @@ def _robot_model(course: Course) -> str:
           <geometry><box><size>1.0900 0.8200 0.2600</size></box></geometry>
           {_material('body', (0.22, 0.28, 0.36, 1.0))}
         </visual>
+        <sensor name='zed2i_rgbd' type='rgbd_camera'>
+          <pose>0.657600 0.009075 0.307230 0 0.349070 0</pose>
+          <always_on>1</always_on>
+          <update_rate>15</update_rate>
+          <visualize>false</visualize>
+          <topic>/igvc_sim/zed</topic>
+          <camera>
+            <horizontal_fov>1.918862</horizontal_fov>
+            <image>
+              <width>960</width>
+              <height>540</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.10</near>
+              <far>15.0</far>
+            </clip>
+          </camera>
+        </sensor>
       </link>
       <link name='left_wheel_link'>
         <pose>0 {track * 0.5:.5f} 0 1.570796 0 0</pose>

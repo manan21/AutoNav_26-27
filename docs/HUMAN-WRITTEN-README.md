@@ -97,7 +97,7 @@ What are all our packages? Here is a list of them:
 - **custom_behavior_tree_plugins** — A place for creating custom behavior trees that activate when the robot is stuck.
 - **gps_handler** — Talks to the GPS to get GPS data to the robot.
 - **gps_waypoint_handler** — Allows the robot to navigate to GPS waypoints by translating them into local coordinates.
-- **line_layer** — Adds camera or LiDAR-detected line points to a costmap so the robot will avoid them like obstacles. The active lidar-line profile uses `/lidar_line_points`.
+- **line_layer** — Adds camera or LiDAR-detected line points to a costmap so the robot will avoid them like obstacles. The default profile uses camera `/line_points`; the lidar regression profile uses `/lidar_line_points`.
 - **map_padder** — Pads the costmap whenever the robot, path, goal, or obstacles are placed outside the current map.
 - **odom_handler** — Helps build odometry values, positions, and heading from raw encoder readings.
 - **pointcloud_to_laserscan** — Helps smush 3D scans of point clouds to a 2D surface for a costmap.

@@ -17,7 +17,7 @@ public:
                            const BT::NodeConfiguration & config)
   : BT::DecoratorNode(name, config)
   {
-    // Tuning lives in bt_navigator's ROS params (see nav2_paramsv2.yaml),
+    // Tuning lives in bt_navigator's ROS params (see active Nav2 params),
     // not in BT XML input ports — so the values can be edited in YAML or
     // changed live with `ros2 param set /bt_navigator ...` without rebuilding
     // or re-loading the BT.

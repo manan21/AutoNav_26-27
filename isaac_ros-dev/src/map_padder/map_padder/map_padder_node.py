@@ -64,7 +64,7 @@ class MapPadder(Node):
         # Half-side of the local-costmap window in meters. Seeds the
         # corridor around the robot so the global covers exactly the
         # ground the local-mirror layer can stamp into. Matches the
-        # local costmap's width/2 = 3.0 m in nav2_paramsv2.yaml.
+        # local costmap's width/2 = 3.0 m in the active Nav2 params.
         self.declare_parameter('local_window_radius_m', 3.0)
 
         self._tile = self.get_parameter('tile_size_m').value

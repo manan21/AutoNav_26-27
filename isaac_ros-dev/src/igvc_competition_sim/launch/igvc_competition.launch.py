@@ -17,7 +17,7 @@ from launch.actions import (
     OpaqueFunction,
     SetEnvironmentVariable,
 )
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -77,8 +77,7 @@ def _load_robot_description() -> str:
 
 
 def _gazebo_process(context, *args, **kwargs):
-    enabled = LaunchConfiguration("launch_gazebo").perform(context).lower()
-    if enabled not in ("1", "true", "yes", "on"):
+    if not _truthy(context, "launch_gazebo"):
         return []
     world = LaunchConfiguration("world").perform(context)
     server_only = (
@@ -95,6 +94,19 @@ def _gazebo_process(context, *args, **kwargs):
     else:
         cmd = ["ign", "gazebo", *server_args, "-r", world]
     return [ExecuteProcess(cmd=cmd, output="screen")]
+
+
+def _truthy(context, name: str) -> bool:
+    return LaunchConfiguration(name).perform(context).lower() in (
+        "1", "true", "yes", "on")
+
+
+def _line_detection_mode(context) -> str:
+    mode = LaunchConfiguration("line_detection_mode").perform(context).lower()
+    if mode not in ("camera", "ground_truth", "lidar"):
+        raise RuntimeError(
+            "line_detection_mode must be camera, ground_truth, or lidar")
+    return mode
 
 
 def _robot_state_publisher(context, *args, **kwargs):
@@ -131,8 +143,7 @@ def _nav2_params_with_bt(params_file: str, bt_xml: str) -> str:
 
 
 def _nav2_process(context, *args, **kwargs):
-    enabled = LaunchConfiguration("launch_nav").perform(context).lower()
-    if enabled not in ("1", "true", "yes", "on"):
+    if not _truthy(context, "launch_nav"):
         return []
     nav2_launch = os.path.join(
         _package_share("nav2_bringup"),
@@ -154,21 +165,69 @@ def _nav2_process(context, *args, **kwargs):
     ]
 
 
+def _camera_bridge_process(context, *args, **kwargs):
+    if not _truthy(context, "launch_bridge"):
+        return []
+    if _line_detection_mode(context) != "camera":
+        return []
+    return [
+        Node(
+            package="igvc_competition_sim",
+            executable="igvc_camera_bridge",
+            name="igvc_camera_bridge",
+            output="screen",
+            parameters=[{"use_sim_time": True}],
+        )
+    ]
+
+
+def _harness_process(context, *args, **kwargs):
+    return [
+        Node(
+            package="igvc_competition_sim",
+            executable="igvc_sensor_harness",
+            name="igvc_sensor_harness",
+            output="screen",
+            parameters=[{
+                "use_sim_time": True,
+                "course_config": LaunchConfiguration("course_config"),
+                "fallback_integrate_cmd": LaunchConfiguration(
+                    "fallback_integrate_cmd"),
+                "publish_ground_truth_pca": LaunchConfiguration(
+                    "ground_truth_pca"),
+                "publish_ground_truth_lines": (
+                    _line_detection_mode(context) == "ground_truth"),
+            }],
+        )
+    ]
+
+
+def _detection_process(context, *args, **kwargs):
+    mode = _line_detection_mode(context)
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                _package_share("autonav_detection"),
+                "launch",
+                "detection.launch.py",
+            )),
+            launch_arguments={
+                "enable_line": "true" if mode == "camera" else "false",
+                "enable_grade": (
+                    "false" if _truthy(context, "ground_truth_pca")
+                    else "true"
+                ),
+                "enable_lidar_line": "true" if mode == "lidar" else "false",
+                "use_sim_time": "true",
+            }.items(),
+        )
+    ]
+
+
 def generate_launch_description() -> LaunchDescription:
     course_config = LaunchConfiguration("course_config")
-    launch_gazebo = LaunchConfiguration("launch_gazebo")
     launch_bridge = LaunchConfiguration("launch_bridge")
-    ground_truth_pca = LaunchConfiguration("ground_truth_pca")
-    fallback_integrate_cmd = LaunchConfiguration("fallback_integrate_cmd")
 
-    nav2_params = LaunchConfiguration("nav2_params")
-    bt_xml = LaunchConfiguration("bt_xml")
-
-    detection_launch = os.path.join(
-        _package_share("autonav_detection"),
-        "launch",
-        "detection.launch.py",
-    )
     bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -178,21 +237,11 @@ def generate_launch_description() -> LaunchDescription:
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
             "/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
             "/model/shogi/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
+            "/igvc_sim/zed/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/igvc_sim/zed/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/igvc_sim/zed/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
         ],
         condition=IfCondition(launch_bridge),
-    )
-
-    harness = Node(
-        package="igvc_competition_sim",
-        executable="igvc_sensor_harness",
-        name="igvc_sensor_harness",
-        output="screen",
-        parameters=[{
-            "use_sim_time": True,
-            "course_config": course_config,
-            "fallback_integrate_cmd": fallback_integrate_cmd,
-            "publish_ground_truth_pca": ground_truth_pca,
-        }],
     )
 
     monitor = Node(
@@ -204,27 +253,6 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time": True,
             "course_config": course_config,
         }],
-    )
-
-    detection_real_pca = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(detection_launch),
-        launch_arguments={
-            "enable_line": "false",
-            "enable_grade": "true",
-            "enable_lidar_line": "true",
-            "use_sim_time": "true",
-        }.items(),
-        condition=UnlessCondition(ground_truth_pca),
-    )
-    detection_ground_truth_pca = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(detection_launch),
-        launch_arguments={
-            "enable_line": "false",
-            "enable_grade": "false",
-            "enable_lidar_line": "true",
-            "use_sim_time": "true",
-        }.items(),
-        condition=IfCondition(ground_truth_pca),
     )
 
     pca_scan = Node(
@@ -291,11 +319,16 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("launch_bridge", default_value="true"),
         DeclareLaunchArgument("launch_nav", default_value="true"),
         DeclareLaunchArgument("ground_truth_pca", default_value="false"),
+        DeclareLaunchArgument(
+            "line_detection_mode",
+            default_value="camera",
+            description="Line source: camera, ground_truth, or lidar.",
+        ),
         DeclareLaunchArgument("fallback_integrate_cmd", default_value="false"),
         DeclareLaunchArgument(
             "nav2_params",
             default_value=os.path.join(
-                _package_share("slam"), "config", "nav2_paramsv2.yaml"),
+                _package_share("slam"), "config", "nav2_params_camera.yaml"),
         ),
         DeclareLaunchArgument("bt_xml", default_value=_default_bt_xml()),
         SetEnvironmentVariable(
@@ -307,11 +340,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         OpaqueFunction(function=_gazebo_process),
         bridge,
+        OpaqueFunction(function=_camera_bridge_process),
         OpaqueFunction(function=_robot_state_publisher),
-        harness,
+        OpaqueFunction(function=_harness_process),
         monitor,
-        detection_real_pca,
-        detection_ground_truth_pca,
+        OpaqueFunction(function=_detection_process),
         pca_scan,
         pca_scan_clear,
         gps_handler,

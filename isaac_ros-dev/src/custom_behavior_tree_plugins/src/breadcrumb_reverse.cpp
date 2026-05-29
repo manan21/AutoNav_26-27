@@ -198,7 +198,7 @@ Status BreadcrumbReverse::onCycleUpdate()
 
   // Robot pose in the same frame as the breadcrumb (odom by buffer
   // construction). global_frame_ on the behavior_server is "odom" — see
-  // nav2_paramsv2.yaml:423 — so getCurrentPose returns the matching
+  // the active Nav2 params — so getCurrentPose returns the matching
   // frame without extra TF math.
   geometry_msgs::msg::PoseStamped pose;
   if (!nav2_util::getCurrentPose(

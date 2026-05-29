@@ -52,6 +52,10 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
         "/scan_pca_filtered_points",
         "/scan_pca_filtered",
         "/scan_pca_filtered_clear",
+        "/zed/zed_node/rgb/color/rect/camera_info",
+        "/zed/zed_node/depth/depth_info",
+        "/line_points",
+        "/line_costmap",
         "/lidar_line_points",
         "/lidar_line_costmap",
         "/local_costmap/costmap_raw",
@@ -73,6 +77,7 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
     plans: list[dict[str, Any]] = []
     odom: list[dict[str, float]] = []
     costmaps: dict[str, list[dict[str, Any]]] = {}
+    detector_counts: dict[str, list[dict[str, Any]]] = {}
     scores: list[dict[str, Any]] = []
 
     while reader.has_next():
@@ -137,7 +142,15 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
                     "start": [float(start.x), float(start.y)],
                     "end": [float(end.x), float(end.y)],
                 })
-        elif topic.endswith("costmap_raw") or topic == "/lidar_line_costmap":
+        elif topic in ("/line_points", "/lidar_line_points"):
+            detector_counts.setdefault(topic, []).append({
+                "rel_s": rel_s,
+                "points": len(msg.points),
+            })
+        elif topic.endswith("costmap_raw") or topic in (
+            "/line_costmap",
+            "/lidar_line_costmap",
+        ):
             costmaps.setdefault(topic, []).append({
                 "rel_s": rel_s,
                 **_cost_counts(msg),
@@ -154,6 +167,7 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
         "/scan_pca_filtered_points",
         "/scan_pca_filtered",
         "/scan_pca_filtered_clear",
+        "/line_points",
         "/lidar_line_points",
     ]
     wall_stamped = []
@@ -218,8 +232,16 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
         "final_score": scores[-1] if scores else None,
         "odom_final": odom[-1] if odom else None,
         "odom_max_x": max((sample["x"] for sample in odom), default=None),
+        "detector_point_ranges": {},
         "costmap_ranges": {},
     }
+
+    for topic, samples in detector_counts.items():
+        summary["detector_point_ranges"][topic] = {
+            "samples": len(samples),
+            "max_points": max((s["points"] for s in samples), default=0),
+            "last_points": samples[-1]["points"] if samples else 0,
+        }
 
     for topic, samples in costmaps.items():
         summary["costmap_ranges"][topic] = {

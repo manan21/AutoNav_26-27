@@ -27,7 +27,7 @@ using nav2_behaviors::Status;
 //
 // Safety: queries /global_costmap/costmap_raw at the target breadcrumb
 // pose before committing. Global costmap retains rear obstacles via
-// local_mirror_layer (see nav2_paramsv2.yaml), so the robot can check
+// local_mirror_layer (see active Nav2 params), so the robot can check
 // what it lidar-saw on the way forward.
 //
 // Returns:

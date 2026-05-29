@@ -41,7 +41,7 @@ Both paths reconfigure `eno1`, launch the SICK driver, and emit `[GUI_READY] Lid
 
 `/scan_pca_filtered_points` is **not** raw LiDAR — it is the grade detector's output after PCA-filtering against ground/ramp slopes. The point cloud is collapsed to two LaserScans: a 180° marking scan and a narrower 140° clearing scan. Nav2 sees those obstacle scans, not raw points. SLAM gets the raw 2D scan directly.
 
-The `/scan` vs `/scan_fullframe` historical inconsistency is **resolved** — `slam.yaml`, the active Nav2 params (`nav2_paramsv2.yaml`), and the HUD all reference `/scan_fullframe` consistently for raw LiDAR. Some dead-code legacy YAMLs (`nav_defaults.yaml`, `nav.yaml`) still mention `/scan` but are not loaded. `pointcloud_to_laserscan` is active only for the PCA obstacle path, not for SLAM's raw scan input.
+The `/scan` vs `/scan_fullframe` historical inconsistency is **resolved** — `slam.yaml`, the active Nav2 params (`nav2_params_camera.yaml`), and the HUD all reference `/scan_fullframe` consistently for raw LiDAR. Some dead-code legacy YAMLs (`nav_defaults.yaml`, `nav.yaml`) still mention `/scan` but are not loaded. `pointcloud_to_laserscan` is active only for the PCA obstacle path, not for SLAM's raw scan input.
 
 ### TF
 
@@ -134,11 +134,11 @@ The wrapper's default is **100 Hz** (capped). We raise it to **380 Hz** so the E
 | `/zed/zed_node/imu/data` | `sensor_msgs/msg/Imu` | EKF (subject to remap; see `ekf_local.yaml`) |
 | `/zed/zed_node/depth/depth_info` | `sensor_msgs/msg/CameraInfo` | depth intrinsics (available; not currently consumed) |
 
-The line detector specifically requires all three RGB-rect/depth/camera-info streams to be time-aligned within `max_rgb_depth_delta_ms: 120` (see `line_detector.yaml`); otherwise it drops the frame.
+The line detector specifically requires all three RGB-rect/depth/camera-info streams to be time-aligned within `max_rgb_depth_delta_ms: 500` (see `line_detector.yaml`); otherwise it drops the frame. The wrapper publishes a 960x540 downscaled image/depth stream at 15 Hz (`HD1080` grab mode with `pub_downscale_factor: 2.0`).
 
 ### TF
 
-The camera link is defined in the URDF (`isaac_ros-dev/src/bringup/description/`) — fixed `base_link → zed_camera_link`, mounted **0.4 m forward** of `base_link` and tilted **~45° downward** (rpy `0 0.785398 0`). Because `publish_tf:=false`, the ZED wrapper does **not** broadcast its own frames — they come from the URDF's `robot_state_publisher`.
+The camera link is defined in the URDF (`isaac_ros-dev/src/bringup/description/`) — fixed `base_link → zed_camera_link`, mounted at xyz `0.657600 0.009075 0.307230` and tilted about **20° downward** (rpy `0 0.349070 0`). Because `publish_tf:=false`, the ZED wrapper does **not** broadcast its own base camera transform — it comes from the URDF's `robot_state_publisher`.
 
 ### Setup expectations
 

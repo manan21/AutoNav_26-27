@@ -44,7 +44,7 @@ The runner writes the combined output to:
 - `scripts/analyze_global_plan_costmap_collision.py`: time-aligns `/plan` and `/unsmoothed_plan` with `/global_costmap/costmap_raw` and checks whether the rectangular nav-center footprint overlaps raw lethal global costmap cells. It still reports inscribed-cell clearance, but the standard suite treats inscribed overlap as a diagnostic because global inflation already encodes tape/obstacle clearance.
 - `scripts/analyze_lidar_line_course_clearance.py`: compares odometry against the measured course geometry and reports physical and padded rectangular-footprint clearance to the perpendicular tape. In the standard suite any physical or padded overlap fails the analysis.
 - `scripts/analyze_costmap_footprint.py`: checks hard local/lidar-line costmap cells against the configured nav-center footprint over time.
-- `scripts/analyze_dwb_evaluation.py`: optional legacy/controller-debug analyzer for DWB `/evaluation`; the active lidar-line branch uses MPPI, so missing `/evaluation` is expected unless DWB is restored for a comparison run.
+- `scripts/analyze_dwb_evaluation.py`: optional legacy/controller-debug analyzer for DWB `/evaluation`; the active Nav2 profiles use MPPI, so missing `/evaluation` is expected unless DWB is restored for a comparison run.
 - `scripts/analyze_pointcloud_footprint.py`: checks point-cloud obstacle points against the footprint when point-cloud debugging is needed.
 
 ## Course Defaults
@@ -59,7 +59,7 @@ python3 scripts/analyze_lidar_line_course_clearance.py /path/to/bag --perp-x 1.3
 
 If the measured physical course changes, update both the course document and the canonical defaults in `scripts/run_lidar_line_bag_analysis.sh` so future runs stay consistent. For simulator scenarios, prefer adding or updating the scenario YAML and passing `--scenario-config` instead of hard-coding another analyzer invocation.
 
-The DWB evaluation analyzer is optional in the standard suite because the active lidar-line branch uses MPPI. Missing `/evaluation` should not mask the hard acceptance gates: executed lethal footprint overlap or measured tape overlap still exits nonzero. For conservative experiments, add `--fail-on-overlap` or `--fail-on-inscribed-overlap` to the global plan analyzer.
+The DWB evaluation analyzer is optional in the standard suite because the active Nav2 profiles use MPPI. Missing `/evaluation` should not mask the hard acceptance gates: executed lethal footprint overlap or measured tape overlap still exits nonzero. For conservative experiments, add `--fail-on-overlap` or `--fail-on-inscribed-overlap` to the global plan analyzer.
 
 The detector publishes completed ground-only line segments on `/lidar_line_points`, so the timeline analyzer's first perpendicular/rightward detection should appear before the measured-course footprint contact. If it appears at or after contact, the robot is probably not seeing enough floor-tape geometry early enough for Nav2 to route around it.
 

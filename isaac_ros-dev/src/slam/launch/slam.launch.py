@@ -60,7 +60,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             get_package_share_directory('slam'),
             'config',
-            'nav2_paramsv2.yaml'
+            'nav2_params_camera.yaml'
         ]),
         description='Path to Nav2 parameters file')
 
@@ -204,7 +204,7 @@ def generate_launch_description():
     # autonav_detection::grade_detector publishes /scan_pca_filtered_points
     # (PointCloud2, obstacles only — drivable ground / ramps already
     # filtered out via PCA grade classification). Nav2's obstacle_layer
-    # in nav2_paramsv2.yaml is configured to consume the 2-D LaserScan
+    # in the Nav2 params is configured to consume the 2-D LaserScan
     # /scan_pca_filtered, so we collapse the 3-D cloud once here and let
     # both local and global costmaps share the result.
     #
@@ -222,7 +222,7 @@ def generate_launch_description():
     # Two converters share the same input pointcloud:
     #   /scan_pca_filtered      → 180°, marking source
     #   /scan_pca_filtered_clear→ 160°, clearing source
-    # The local obstacle_layer in nav2_paramsv2.yaml lists both as
+    # The local obstacle_layer in the Nav2 params lists both as
     # observation_sources, with marking/clearing flags split.
     pca_pc2_to_scan = Node(
         package='pointcloud_to_laserscan',

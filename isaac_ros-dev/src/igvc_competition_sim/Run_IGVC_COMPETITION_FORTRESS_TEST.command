@@ -10,9 +10,17 @@ MISSION_TIMEOUT_SEC="${MISSION_TIMEOUT_SEC:-300}"
 STARTUP_WAIT_SEC="${STARTUP_WAIT_SEC:-12}"
 PRE_MISSION_WAIT_SEC="${PRE_MISSION_WAIT_SEC:-8}"
 GROUND_TRUTH_PCA="${GROUND_TRUTH_PCA:-false}"
+LINE_DETECTION_MODE="${LINE_DETECTION_MODE:-camera}"
 LAUNCH_GAZEBO="${LAUNCH_GAZEBO:-true}"
 GAZEBO_SERVER_ONLY="${GAZEBO_SERVER_ONLY:-true}"
 LAUNCH_BRIDGE="${LAUNCH_BRIDGE:-true}"
+if [[ -z "${NAV2_PARAMS:-}" ]]; then
+  if [[ "$LINE_DETECTION_MODE" == "lidar" ]]; then
+    NAV2_PARAMS="$ROS_WS/install/slam/share/slam/config/nav2_params_lidar.yaml"
+  else
+    NAV2_PARAMS="$ROS_WS/install/slam/share/slam/config/nav2_params_camera.yaml"
+  fi
+fi
 
 if [[ ! -f /opt/ros/humble/setup.bash ]]; then
   echo "ROS Humble setup not found at /opt/ros/humble/setup.bash" >&2
@@ -86,6 +94,8 @@ trap cleanup EXIT INT TERM
 setsid ros2 launch igvc_competition_sim igvc_competition.launch.py \
   course_config:="$COURSE_CONFIG" \
   ground_truth_pca:="$GROUND_TRUTH_PCA" \
+  line_detection_mode:="$LINE_DETECTION_MODE" \
+  nav2_params:="$NAV2_PARAMS" \
   launch_gazebo:="$LAUNCH_GAZEBO" \
   gazebo_server_only:="$GAZEBO_SERVER_ONLY" \
   launch_bridge:="$LAUNCH_BRIDGE" &
@@ -118,6 +128,21 @@ ros2 bag record --include-hidden-topics \
   /scan_pca_filtered_points \
   /terrain/grade_map \
   /pca/surface_normal \
+  /igvc_sim/zed/image \
+  /igvc_sim/zed/depth_image \
+  /igvc_sim/zed/camera_info \
+  /zed/zed_node/rgb/color/rect/image \
+  /zed/zed_node/depth/depth_registered \
+  /zed/zed_node/rgb/color/rect/camera_info \
+  /zed/zed_node/depth/depth_info \
+  /line_points \
+  /line_costmap \
+  /line_detection/line_pixels \
+  /line_detection/diagnostics \
+  /line_detection/debug/raw \
+  /line_detection/debug/mask \
+  /line_detection/debug/overlay \
+  /lines_pointcloud \
   /lidar_line_points \
   /lidar_line_costmap \
   /lidar_line_detection/diagnostics \

@@ -43,7 +43,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             get_package_share_directory("slam"),
             "config",
-            "nav2_paramsv2.yaml",
+            "nav2_params_camera.yaml",
         ]),
         description="Nav2 parameter file for demo-day navigation",
     )
@@ -95,7 +95,7 @@ def generate_launch_description():
         ],
     )
 
-    # nav2_paramsv2.yaml's obstacle_layer subscribes to
+    # The Nav2 obstacle_layer subscribes to
     # /scan_pca_filtered_points (NOT /scan_fullframe), so demo day must
     # also start grade_detector or Nav2 will see no obstacle source.
     grade_detection = Node(

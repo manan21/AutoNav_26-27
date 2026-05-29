@@ -4,7 +4,7 @@
 #   - lidar_line_detector (SICK PointCloud2 RSSI → painted-line points)
 #
 # Single Ctrl-C brings them both down. Parameters are loaded from the
-# package's own config/ directory (NOT nav2_paramsv2.yaml — algorithm
+# package's own config/ directory (NOT the Nav2 params YAML — algorithm
 # tuning lives with the package).
 
 import os
@@ -44,8 +44,8 @@ def generate_launch_description():
         description='Set false to skip the PCA grade detector.',
     )
     enable_lidar_line = DeclareLaunchArgument(
-        'enable_lidar_line', default_value='true',
-        description='Set false to skip the LiDAR RSSI line detector.',
+        'enable_lidar_line', default_value='false',
+        description='Set true to run the opt-in LiDAR RSSI line detector.',
     )
     use_sim_time = DeclareLaunchArgument(
         'use_sim_time', default_value='false',

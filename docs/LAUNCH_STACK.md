@@ -41,16 +41,15 @@ the dependency notes after the table).
   `/scan_pca_filtered_clear` for Nav2's obstacle layer. Starting PCA
   before SLAM means those converter outputs are live before Nav2
   starts.
-- **CAMERA LINE DETECT is still in Run All, but it is not consumed by
-  the active lidar-line Nav2 profile.** The camera `line_layer` entry is
-  disabled in `nav2_paramsv2.yaml`; lidar tape avoidance uses
-  `/lidar_line_points` through the separate lidar line layer.
+- **CAMERA LINE DETECT is the default line source.** The active
+  `nav2_params_camera.yaml` profile consumes `/line_points`, publishes
+  `/line_costmap`, and mirrors camera-line memory into the global costmap.
 - **LIDAR LINE DETECT is opt-in.** It's an alternate / supplementary
   line-detection source running off the LiDAR. Clicking **Run All**
   skips it (`_launch_all_excluded`); click it directly when you want
-  the LiDAR line stream. It is required for the measured lidar-line
-  avoidance test and any run that expects retroreflective tape to appear
-  in Nav2.
+  the LiDAR line stream. Pair it with `nav2_params_lidar.yaml` for the
+  measured lidar-line avoidance regression or any retroreflective-tape
+  test that expects RSSI line points to enter Nav2.
 - **NAV2 last among nav components** because it depends on SLAM
   producing the `map→odom` TF.
 - **Power PCB** can technically come up at any time; it's last only

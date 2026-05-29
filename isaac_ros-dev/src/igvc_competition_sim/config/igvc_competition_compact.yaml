@@ -30,13 +30,13 @@ robot:
   physical_half_length_m: 0.545
   physical_half_width_m: 0.410
   footprint_padding_m: 0.050
-  max_linear_speed_mps: 0.25
+  max_linear_speed_mps: 0.50
   max_angular_speed_radps: 1.0
   cmd_latency_s: 0.08
   linear_time_constant_s: 0.20
   angular_time_constant_s: 0.18
 
-tape_width_m: 0.12
+tape_width_m: 0.0762
 
 # The lane alternates between nominal 10 ft and open 20 ft sections. Boundary
 # tape is generated from these stations.
@@ -55,13 +55,13 @@ internal_lines:
   - name: internal_no_cross
     start: {x_m: 17.0, y_m: 1.60}
     end: {x_m: 17.0, y_m: -0.20}
-    width_m: 0.12
+    width_m: 0.0762
 
 dashed_lines:
   - name: dashed_right_boundary_stress
     start: {x_m: 25.5, y_m: -2.10}
     end: {x_m: 31.0, y_m: -2.43}
-    width_m: 0.12
+    width_m: 0.0762
     dash_length_m: 0.75
     gap_length_m: 0.45
 

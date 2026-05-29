@@ -15,7 +15,8 @@ try:
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from builtin_interfaces.msg import Time
-    from geometry_msgs.msg import TransformStamped, Twist
+    from autonav_interfaces.msg import LinePoints
+    from geometry_msgs.msg import TransformStamped, Twist, Vector3
     from nav_msgs.msg import OccupancyGrid, Odometry
     from sensor_msgs.msg import (
         JointState,
@@ -75,10 +76,14 @@ class IgvcSensorHarness(Node):
         self.declare_parameter("course_config", "")
         self.declare_parameter("fallback_integrate_cmd", False)
         self.declare_parameter("publish_ground_truth_pca", False)
+        self.declare_parameter("publish_ground_truth_lines", False)
         self.declare_parameter("cloud_rate_hz", 10.0)
         self.declare_parameter("odom_rate_hz", 50.0)
         self.declare_parameter("map_rate_hz", 1.0)
         self.declare_parameter("gps_rate_hz", 10.0)
+        self.declare_parameter("ground_truth_line_rate_hz", 10.0)
+        self.declare_parameter("ground_truth_line_spacing_m", 0.05)
+        self.declare_parameter("ground_truth_line_lateral_spacing_m", 0.025)
         self.declare_parameter("gps_noise_std_m", 0.05)
 
         course_path = str(self.get_parameter("course_config").value).strip()
@@ -88,11 +93,14 @@ class IgvcSensorHarness(Node):
             self.get_parameter("fallback_integrate_cmd").value)
         self.publish_ground_truth_pca = bool(
             self.get_parameter("publish_ground_truth_pca").value)
+        self.publish_ground_truth_lines = bool(
+            self.get_parameter("publish_ground_truth_lines").value)
         self.gps_noise_std_m = max(
             0.0, float(self.get_parameter("gps_noise_std_m").value))
 
         sensor_qos = QoSProfile(depth=5)
         sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
+        line_qos = QoSProfile(depth=1)
         map_qos = QoSProfile(depth=1)
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
@@ -104,6 +112,10 @@ class IgvcSensorHarness(Node):
             self.create_publisher(
                 PointCloud2, "/scan_pca_filtered_points", sensor_qos)
             if self.publish_ground_truth_pca else None
+        )
+        self.line_gt_pub = (
+            self.create_publisher(LinePoints, "/line_points", line_qos)
+            if self.publish_ground_truth_lines else None
         )
         self.map_pub = self.create_publisher(
             OccupancyGrid, "/map_padded", map_qos)
@@ -134,6 +146,7 @@ class IgvcSensorHarness(Node):
         self.last_step_s: float | None = None
         self.left_wheel_position = 0.0
         self.right_wheel_position = 0.0
+        self.ground_truth_line_points = self._build_ground_truth_line_points()
 
         self.create_timer(
             1.0 / max(1.0, float(self.get_parameter("odom_rate_hz").value)),
@@ -151,6 +164,14 @@ class IgvcSensorHarness(Node):
             1.0 / max(0.5, float(self.get_parameter("gps_rate_hz").value)),
             self._publish_gps,
         )
+        if self.line_gt_pub is not None:
+            self.create_timer(
+                1.0 / max(
+                    0.5,
+                    float(self.get_parameter("ground_truth_line_rate_hz").value),
+                ),
+                self._publish_ground_truth_lines,
+            )
         self._publish_map()
         self.get_logger().info(
             "IGVC competition harness loaded %s: tapes=%d obstacles=%d "
@@ -164,6 +185,11 @@ class IgvcSensorHarness(Node):
                 len(self.course.mission_waypoints),
             )
         )
+        if self.line_gt_pub is not None:
+            self.get_logger().info(
+                "Publishing ground-truth /line_points from %d sampled tape cells"
+                % len(self.ground_truth_line_points)
+            )
 
     def _cmd_vel_callback(self, msg: Twist) -> None:
         now_s = _stamp_to_float(self.get_clock().now().to_msg())
@@ -603,6 +629,56 @@ class IgvcSensorHarness(Node):
                 ranges[idx] = float(rng)
         scan.ranges = ranges
         self.scan_pub.publish(scan)
+
+    def _build_ground_truth_line_points(self) -> list[Vector3]:
+        spacing = max(
+            0.01, float(self.get_parameter("ground_truth_line_spacing_m").value))
+        lateral_spacing = max(
+            0.01,
+            float(self.get_parameter("ground_truth_line_lateral_spacing_m").value),
+        )
+        points: list[Vector3] = []
+        for tape in self.course.tapes:
+            ax, ay = tape.start
+            bx, by = tape.end
+            dx = bx - ax
+            dy = by - ay
+            length = math.hypot(dx, dy)
+            if length <= 1e-6:
+                continue
+            ux = dx / length
+            uy = dy / length
+            nx = -uy
+            ny = ux
+            longitudinal_steps = max(1, int(math.ceil(length / spacing)))
+            lateral_steps = max(1, int(math.ceil(tape.width_m / lateral_spacing)))
+            for i in range(longitudinal_steps + 1):
+                along = min(length, i * spacing)
+                cx = ax + ux * along
+                cy = ay + uy * along
+                for j in range(lateral_steps + 1):
+                    if lateral_steps == 1:
+                        offset = 0.0
+                    else:
+                        offset = (
+                            -0.5 * tape.width_m
+                            + tape.width_m * j / float(lateral_steps)
+                        )
+                    point = Vector3()
+                    point.x = cx + nx * offset
+                    point.y = cy + ny * offset
+                    point.z = 0.0
+                    points.append(point)
+        return points
+
+    def _publish_ground_truth_lines(self) -> None:
+        if self.line_gt_pub is None:
+            return
+        msg = LinePoints()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.points = self.ground_truth_line_points
+        self.line_gt_pub.publish(msg)
 
     def _publish_map(self) -> None:
         msg = OccupancyGrid()

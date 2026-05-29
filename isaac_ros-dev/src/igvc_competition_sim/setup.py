@@ -28,6 +28,7 @@ setup(
     entry_points={
         "console_scripts": [
             "generate_igvc_world = igvc_competition_sim.generate_world:main",
+            "igvc_camera_bridge = igvc_competition_sim.camera_bridge:main",
             "igvc_course_monitor = igvc_competition_sim.course_monitor:main",
             "igvc_mission_runner = igvc_competition_sim.mission_runner:main",
             "igvc_run_analyzer = igvc_competition_sim.run_analyzer:main",

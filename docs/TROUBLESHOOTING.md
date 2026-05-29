@@ -96,7 +96,7 @@ The left encoder over-samples physically. There's a calibration factor (~1.016) 
 
 ## "Stale line obstacles linger in costmap, blocking the path"
 
-For the active lidar-line profile, this is currently intentional during tape testing: `local_costmap.lidar_line_layer.observation_persistence_ms: -1` and `global_costmap.lidar_line_memory_mirror_layer.allow_decrease: false` keep detected tape until an operator clears costmaps. This prevents the robot from pausing near tape, forgetting it, and driving over it.
+For the active camera profile, line memory is intentionally persistent enough to survive brief camera/TF gaps: `local_costmap.line_layer.observation_persistence_ms: 8000`, view-gated clearing, and `global_costmap.line_memory_mirror_layer.allow_decrease: false` keep detected tape in the global costmap until the line layer or operator clears it. This prevents the robot from pausing near tape, forgetting it, and driving over it.
 
 If stale cells are from a previous run, clear both local/global costmaps or publish the mirror clear topic used by the test runner:
 
@@ -106,9 +106,9 @@ ros2 service call /local_costmap/clear_entirely_local_costmap nav2_msgs/srv/Clea
 ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap "{}"
 ```
 
-Camera-line staleness is a separate legacy path: `line_hold_timeout_ms` in `line_detector.yaml` affects camera detections, but the camera `line_layer` is disabled in the active lidar-line Nav2 profile.
+The opt-in lidar profile is stricter during retroreflective tape testing: `local_costmap.lidar_line_layer.observation_persistence_ms: -1` and `global_costmap.lidar_line_memory_mirror_layer.allow_decrease: false` keep lidar-detected tape until an operator clears costmaps.
 
-**Keywords**: line-layer, lidar-line, costmap, stale, observation_persistence_ms, allow_decrease, local_mirror_layer, clear-costmap, ghost-obstacle, blocked-path, nav2, planner, line-detection, tape, /lidar_line_points, /lidar_line_costmap, autonav_detection
+**Keywords**: line-layer, camera-line, lidar-line, costmap, stale, observation_persistence_ms, allow_decrease, local_mirror_layer, clear-costmap, ghost-obstacle, blocked-path, nav2, planner, line-detection, tape, /line_points, /line_costmap, /lidar_line_points, /lidar_line_costmap, autonav_detection
 
 ## "Nav2 fails to start: MPPI controller plugin not found"
 
@@ -348,7 +348,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: YAML was loading width/height as the wrong numeric type, leaving them at 0.
 - **Fix**: Aligned the YAML types with what the costmap plugin expects.
 - **Triage tip**: If `local_costmap` or `global_costmap` initializes with zero dimensions, this is the first place to look.
-- **Keywords**: costmap, width, height, data-type, yaml, nav2_paramsv2.yaml, local_costmap, global_costmap, type-mismatch, zero-dimension, init-failure
+- **Keywords**: costmap, width, height, data-type, yaml, nav2_params_camera.yaml, local_costmap, global_costmap, type-mismatch, zero-dimension, init-failure
 
 ## 2026-03-21 — Costmap window size + ghost traces
 
@@ -532,7 +532,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `e9c5bf90` — 2026-04-15 — *"Add ObstacleFootprint critic for controller"*
 - **Fix**: Added the critic to DWB's list with scale 1.0; controller now evaluates obstacle distance footprint-aware.
 - **Triage tip**: Robot clips obstacles in tight spaces → confirm `ObstacleFootprint` is in the critics list.
-- **Keywords**: nav2, dwb, controller, ObstacleFootprint, critic, footprint, obstacle, nav2_paramsv2.yaml, BaseObstacle, scale, clipping
+- **Keywords**: nav2, dwb, controller, ObstacleFootprint, critic, footprint, obstacle, nav2_params_camera.yaml, BaseObstacle, scale, clipping
 
 ## 2026-04-15 — Footprint + inflation radii rebalanced
 
@@ -540,7 +540,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: `robot_radius` 0.41 m circle oversimplified the actual 0.52 × 0.82 m rectangle.
 - **Fix**: Explicit footprint polygon; **local** inflation 0.3 m (DWB knows the shape), **global** 0.8 m (NavfnPlanner doesn't).
 - **Triage tip**: Plans hug obstacles too tight or veer wildly → check inflation per costmap.
-- **Keywords**: footprint, inflation, robot_radius, polygon, nav2_paramsv2.yaml, local-inflation, global-inflation, dwb, navfn, planner, 0.52, 0.82
+- **Keywords**: footprint, inflation, robot_radius, polygon, nav2_params_camera.yaml, local-inflation, global-inflation, dwb, navfn, planner, 0.52, 0.82
 
 ## 2026-04-16 — ZED IMU 100 Hz limit override
 
@@ -592,7 +592,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `b4354d31` — 2026-04-22 — *"Fixing Costmap"*
 - **Fix**: Removed unused `line_memory_resolution_m`; tuned obstacle layer to subscribe to the right topics; cleaned up bounds.
 - **Triage tip**: Costmap origin doesn't follow the robot → check static_layer status and SLAM map origin.
-- **Keywords**: costmap, slam, line_memory_resolution_m, obstacle-layer, static-layer, nav2_paramsv2.yaml, origin, geometry, line-detector
+- **Keywords**: costmap, slam, line_memory_resolution_m, obstacle-layer, static-layer, nav2_params_camera.yaml, origin, geometry, line-detector
 
 ## 2026-04-22 — DDS UDP discovery forced
 
@@ -636,7 +636,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `226d2b0d` — 2026-04-22 — *"Rolling fixed-size window around the robot"*
 - **Fix**: `rolling_window: true`, 20 × 20 m, removed `static_layer`.
 - **Triage tip**: Planner ignores distant obstacles → confirm rolling_window is true and StaticLayer is disabled.
-- **Keywords**: costmap, rolling_window, static_layer, global-costmap, nav2_paramsv2.yaml, distant-obstacle, planner, window-size, 20x20
+- **Keywords**: costmap, rolling_window, static_layer, global-costmap, nav2_params_camera.yaml, distant-obstacle, planner, window-size, 20x20
 
 ## 2026-04-24 — Live mode flashing all dots
 
@@ -680,7 +680,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: 2D scan misses height-filtered obstacles; 3D cloud separates ground from obstacles.
 - **Fix**: Source = `/cloud_all_fields_fullframe`; `min_obstacle_height: 0.4`.
 - **Triage tip**: Robot hits obstacles at certain heights → tune `min/max_obstacle_height`.
-- **Keywords**: obstacle-layer, laserscan, pointcloud, /cloud_all_fields_fullframe, /scan_fullframe, min_obstacle_height, max_obstacle_height, nav2_paramsv2.yaml, costmap, height-filter, 3d-obstacle
+- **Keywords**: obstacle-layer, laserscan, pointcloud, /cloud_all_fields_fullframe, /scan_fullframe, min_obstacle_height, max_obstacle_height, nav2_params_camera.yaml, costmap, height-filter, 3d-obstacle
 
 ## 2026-04-28 — GPS crash on invalid `stoi`
 
@@ -756,7 +756,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `fdcd7f40` — 2026-04-30 — *"More tweaks to keep the robot from giving up"*
 - **Fix**: Planner tolerance 0.5 → 2.0 m; recovery retries → 999; server timeout 20 → 60 s; added Spin to recovery.
 - **Triage tip**: Robot abandons goals after a few attempts → bump retries / tolerance.
-- **Keywords**: nav2, planner, tolerance, behavior-tree, bt_nav.xml, retries, number_of_retries, default_server_timeout, spin, recovery, nav2_paramsv2.yaml, goal-abandoned
+- **Keywords**: nav2, planner, tolerance, behavior-tree, bt_nav.xml, retries, number_of_retries, default_server_timeout, spin, recovery, nav2_params_camera.yaml, goal-abandoned
 
 ## 2026-04-30 — BT plugin export macro missing
 
@@ -779,7 +779,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: `cost_threshold` declared as int (127), used as double.
 - **Fix**: Declared `127.0` everywhere; also fixed `default_bt_xml_filename` wiring in `run-nav2.sh`.
 - **Triage tip**: GradientEscape silently doesn't run → check param type and the BT XML path.
-- **Keywords**: behavior-tree, bt, gradient_escape, GradientEscape, cost_threshold, 127.0, type-mismatch, int-double, default_bt_xml_filename, run-nav2.sh, nav2_paramsv2.yaml, custom_behavior_tree_plugins
+- **Keywords**: behavior-tree, bt, gradient_escape, GradientEscape, cost_threshold, 127.0, type-mismatch, int-double, default_bt_xml_filename, run-nav2.sh, nav2_params_camera.yaml, custom_behavior_tree_plugins
 
 ## 2026-04-30 — Map padder dynamic resolution
 
@@ -800,7 +800,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `e7b38f56` — 2026-04-30 — *"Allowing rotation"*
 - **Fix**: `min_speed_theta: 0.15 rad/s` so the controller actually rotates instead of drifting sideways.
 - **Triage tip**: Robot drifts sideways at goal instead of turning → raise `min_speed_theta`.
-- **Keywords**: nav2, controller, dwb, min_speed_theta, 0.15, rotation, in-place-turn, sideways-drift, nav2_paramsv2.yaml, goal-alignment
+- **Keywords**: nav2, controller, dwb, min_speed_theta, 0.15, rotation, in-place-turn, sideways-drift, nav2_params_camera.yaml, goal-alignment
 
 ## 2026-04-30 — Dijkstra planner tried (then reverted)
 
@@ -808,7 +808,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Cause**: Tested `use_astar: false` to fix planner oscillations.
 - **Note**: Reverted on **2026-05-04** by `270b3d5a`.
 - **Triage tip**: Planner timeouts → A* is back on; if it spreads too widely, tighten `tolerance` first.
-- **Keywords**: nav2, planner, dijkstra, a-star, astar, use_astar, NavfnPlanner, nav2_paramsv2.yaml, planner-oscillation, revert
+- **Keywords**: nav2, planner, dijkstra, a-star, astar, use_astar, NavfnPlanner, nav2_params_camera.yaml, planner-oscillation, revert
 
 ## 2026-05-01 — Polling rate mismatch (electrical / DAQ)
 
@@ -831,7 +831,7 @@ Every bug fix mined from git history (15 parallel research agents), sorted by da
 - **Commit**: `270b3d5a` — 2026-05-04 — *"Revert 'Using the original Dijkstra planner.'"*
 - **Fix**: Back to A* with tightened tolerance.
 - **Triage tip**: Path-quality regression in this window → check planner config.
-- **Keywords**: nav2, planner, dijkstra, a-star, astar, use_astar, revert, tolerance, nav2_paramsv2.yaml
+- **Keywords**: nav2, planner, dijkstra, a-star, astar, use_astar, revert, tolerance, nav2_params_camera.yaml
 
 ## 2026-05-05 — `-Wpedantic` tripping NVCC stub files
 
@@ -1052,7 +1052,7 @@ A flat alphabetical map of common search terms to entries that mention them. Use
 - `.gitmodules` → 2026-05-04 wrapper saga
 - `bt_nav.xml`, `bt2.xml` → 2026-03-24 BT path, 2026-04-30 retries, 2026-04-30 goal bender
 - `core_bringup.launch.py`, `pre_slam.launch.py`, `sensors.launch.py`, `demo_day.launch.py`, `bringup.launch.py` → 2025-04-16 SLAM, 2026-03-24 staggered delays, 2026-03-24 demo-day eth, 2026-05-06 missing deps
-- `ekf_local.yaml`, `slam.yaml`, `nav2_paramsv2.yaml` → many entries
+- `ekf_local.yaml`, `slam.yaml`, `nav2_params_camera.yaml` → many entries
 - `env/docker/run-container.sh`, `entrypoint.sh`, `entrypoint_additions/*.sh`, `fastdds_udp.xml` → 2025-12-03 USB, 2026-04-06 user race, 2026-04-08 X11, 2026-04-15 X11 (multi), 2026-04-17 INA226 unbind, 2026-04-22 DDS, 2026-04-22 headless
 - `grade_detector.yaml`, `line_detector.yaml`, `zed_override.yaml` → many detection / ZED entries
 - `hud_node.py`, `run_gui.sh`, `run-gui.sh` → all 2026-04-24 / 2026-04-28 / 2026-05-06 GUI entries

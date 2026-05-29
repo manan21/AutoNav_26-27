@@ -32,7 +32,8 @@ column shows whether the file is loaded by the live GUI launch path.
 
 | File | Status | Purpose | Loaded by |
 |---|---|---|---|
-| `slam/config/nav2_paramsv2.yaml` | ✅ active | Nav2 params (Smac Lattice, MPPI, costmaps, planner_server, bt_navigator, smoother, velocity_smoother) — the big one | `run-nav2.sh`, `slam.launch.py`, `nav.launch.py` |
+| `slam/config/nav2_params_camera.yaml` | ✅ active | Default Nav2 params (Smac Lattice, MPPI, PCA obstacle memory, camera `/line_points` local/global line memory) | `run-nav2.sh`, `slam.launch.py`, `nav.launch.py`, IGVC Gazebo sim |
+| `slam/config/nav2_params_lidar.yaml` | ⚙️ opt-in | Lidar-line variant for RSSI/reflector tape regressions (`/lidar_line_points` and `/lidar_line_costmap`) | Pass as `nav2_params:=.../nav2_params_lidar.yaml` |
 | `slam/config/slam.yaml` | ✅ active | SLAM Toolbox node params: raw LiDAR scan, scan matching, map→odom publication | `slam.launch.py` |
 | `slam/config/ekf_local.yaml` | ✅ active | Local EKF — wheel odom + IMU fusion, owns `odom → base_link` | `slam.launch.py` |
 | `slam/config/ekf_global.yaml` | ⚙️ gated off by default | Global EKF — adds GPS XY fusion when `enable_gps_fusion:=true`; does not publish `map → odom` | `slam.launch.py` only when `enable_gps_fusion:=true` |
@@ -50,7 +51,7 @@ column shows whether the file is loaded by the live GUI launch path.
 | `slam/config/nav.yaml` | 📦 legacy / unused | Predecessor Nav2 config. No active loader. Delete candidate. | — |
 | `slam/config/nav_minimal.yaml` | 📦 legacy / unused | Stripped-down Nav2 variant. No active loader. Delete candidate. | — |
 | `slam/config/nav_defaults.yaml` | 📦 legacy / unused | Default Nav2 variant. No active loader. Delete candidate. | — |
-| `slam/config/nav2_params.yaml` | 📦 legacy / unused | Predecessor to `nav2_paramsv2.yaml`. Only referenced by `run-nav.sh` (also unused — GUI uses `run-nav2.sh`). Delete candidate. | `run-nav.sh` only |
+| `slam/config/nav2_params.yaml` | 📦 legacy / unused | Predecessor to `nav2_params_camera.yaml`. Only referenced by `run-nav.sh` (also unused — GUI uses `run-nav2.sh`). Delete candidate. | `run-nav.sh` only |
 | `slam/config/mapper_params_online_async.yaml` | 📦 legacy / unused | Older slam_toolbox mapper params; `slam.launch.py` explicitly uses `slam.yaml` instead. | — |
 | `slam/config/dual_ekf_navsat_params.yaml` | 📦 legacy / unused | navsat_transform_node params. `dual_ekf_navsat.launch.py` exists but is not included by any GUI-path launch file. Delete candidate (or wire up the launch if the GPS handler's heading bootstrap should use it). | `dual_ekf_navsat.launch.py` (not invoked from GUI path) |
 | `autonav_automated_testing/config/calibration_constants.yaml` | 📦 legacy / unused | No active loader. Delete candidate. | — |
@@ -63,11 +64,11 @@ If you delete any of the 📦 files, also delete the launch file or script that'
 
 | System | File | What it controls |
 |---|---|---|
-| Velocity envelope | `nav2_paramsv2.yaml` (velocity_smoother, MPPI `FollowPath`) | Robot speed cap, accel limits |
+| Velocity envelope | `nav2_params_camera.yaml` (velocity_smoother, MPPI `FollowPath`) | Robot speed cap, accel limits |
 | Behavior Tree | `bt_nav.xml` | Replan cadence, recovery durations, retries |
-| Global planning | `nav2_paramsv2.yaml` (planner_server) | Smac Lattice primitive file, lattice penalties, planning budget |
-| Local control | `nav2_paramsv2.yaml` (controller_server `FollowPath`) | MPPI sampling, critics, goal tolerance |
-| Costmap / inflation | `nav2_paramsv2.yaml` (local_costmap, global_costmap) | Obstacle inflation, line layer persistence |
+| Global planning | `nav2_params_camera.yaml` (planner_server) | Smac Lattice primitive file, lattice penalties, planning budget |
+| Local control | `nav2_params_camera.yaml` (controller_server `FollowPath`) | MPPI sampling, critics, goal tolerance |
+| Costmap / inflation | `nav2_params_camera.yaml` (local_costmap, global_costmap) | Obstacle inflation, line layer persistence |
 | SLAM | `slam.yaml` | Scan rate, match confidence, keyframes |
 | EKF (local + global) | `ekf_local.yaml`, `ekf_global.yaml` | Sensor fusion config, TF ownership |
 | GPS handler | `gps_handler_node.py` (constants + ROS params) | Goal republish cadence, heading resync thresholds |
@@ -78,7 +79,7 @@ If you delete any of the 📦 files, also delete the launch file or script that'
 
 ---
 
-## Robot velocity envelope (`nav2_paramsv2.yaml`)
+## Robot velocity envelope (`nav2_params_camera.yaml`)
 
 The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_velocity[0])`. Raising one without the other does not change the robot's top speed, and raising both without retuning the MPPI critics can reintroduce start-stop chatter around frequent replans.
 
@@ -122,9 +123,9 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 ---
 
-## Active FollowPath Churn Gate Params (`nav2_paramsv2.yaml` under `bt_navigator.ros__parameters`)
+## Active FollowPath Churn Gate Params (`nav2_params_camera.yaml` under `bt_navigator.ros__parameters`)
 
-`PathSignificantlyChanged` is active in `bt_nav.xml`. It filters 3 Hz global replans before `FollowPath`: route-geometry changes pass through immediately, and same-corridor refreshes are forwarded at least every bounded TTL. This avoids action-server churn while preserving fresh MPPI paths through lidar-line route changes.
+`PathSignificantlyChanged` is active in `bt_nav.xml`. It filters 3 Hz global replans before `FollowPath`: route-geometry changes pass through immediately, and same-corridor refreshes are forwarded at least every bounded TTL. This avoids action-server churn while preserving fresh MPPI paths through obstacle and line-memory route changes.
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
@@ -137,14 +138,14 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 ---
 
-## Planning, control, and goal checker (`nav2_paramsv2.yaml`)
+## Planning, control, and goal checker (`nav2_params_camera.yaml`)
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
 | `planner_server.expected_planner_frequency` | 🟡 | `20.0` Hz | Planner-server expected rate | BT still gates global replans at 3 Hz |
 | `planner_server.GridBased.plugin` | 🔴 | `nav2_smac_planner/SmacPlannerLattice` | Footprint-aware SE2 lattice planner | Replaced SmacPlanner2D so global paths account for rectangular footprint geometry |
 | `planner_server.GridBased.lattice_filepath` | 🔴 | `/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json` | Differential-drive lattice primitive set | Must match global costmap `resolution: 0.05` |
-| `planner_server.GridBased.cost_penalty` | 🟡 | `5.0` | Cost sensitivity during lattice search | Higher avoids soft costs more aggressively |
+| `planner_server.GridBased.cost_penalty` | 🟡 | `2.0` | Cost sensitivity during lattice search | Higher avoids soft costs more aggressively |
 | `planner_server.GridBased.rotation_penalty` | 🟡 | `5.0` | Penalty for rotation-heavy lattice paths | Lower if the robot needs more precise maneuvers; too low made rotation shortcuts attractive |
 | `controller_server.FollowPath.plugin` | 🔴 | `nav2_mppi_controller::MPPIController` | Active local controller | Requires `ros-humble-nav2-mppi-controller` in the runtime image |
 | `controller_server.FollowPath.CostCritic.consider_footprint` | 🔴 | `true` | MPPI collision scoring uses full footprint | Must stay true for tape/cone clearance |
@@ -157,7 +158,7 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 ---
 
-## Costmap + inflation (`nav2_paramsv2.yaml`)
+## Costmap + inflation (`nav2_params_camera.yaml`)
 
 | Parameter | Status | Default | Effect |
 |---|---|---|---|
@@ -165,22 +166,22 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 | `local_costmap.local_costmap.publish_frequency` | 🟡 | `15.0` Hz | Local costmap broadcast rate | |
 | `local_costmap.local_costmap.resolution` | 🟡 | `0.05` m | Local cell size | MPPI and line-layer clearance depend on this; coarsening reduces narrow-gap fidelity |
 | `local_costmap.local_costmap.width` / `height` | 🟡 | `6` m × `6` m | Rolling window size | **Must equal 2× `map_padder.local_window_radius_m`** so global mirrors local cleanly |
-| `local_costmap.local_costmap.footprint_padding` | 🟡 | `0.03` m | Local controller footprint margin | Global padding is intentionally larger (`0.05` m) so unsafe paths are rejected before MPPI |
+| `local_costmap.local_costmap.footprint_padding` | 🟡 | `0.05` m | Local controller footprint margin | Matches the global footprint safety margin |
 | `local_costmap.obstacle_layer.mark_scan.obstacle_max_range` | 🟡 | `2.5` m | Lidar marking range | Short — line obstacles only mark when close |
 | `local_costmap.obstacle_layer.clear_scan.raytrace_max_range` | 🟡 | `25.0` m | Lidar clearing raytrace range | Long — clears all the way to SICK reach |
-| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `-1` | Manual-clear-only LiDAR-line memory | Temporary tape-test behavior so the robot cannot forget a detected line while paused |
-| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.10` m | High-cost band around LiDAR line points | Wider than exact point cells, narrow enough not to box in the start pose |
-| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.80` m | Outer LiDAR-line halo | Softly pushes MPPI/Smac away from sparse tape detections |
+| `local_costmap.line_layer.observation_persistence_ms` | 🟡 | `8000` ms | Camera-line local memory | View-gated clearing prevents the robot from forgetting tape when it rotates or briefly loses sight of it |
+| `local_costmap.line_layer.inscribed_radius` | 🟡 | `0.05` m | High-cost band around camera line points | Keeps exact tape blocking while preserving legal 5 ft passages |
+| `local_costmap.line_layer.inflation_radius` | 🟡 | `0.80` m | Outer camera-line halo | Softly pushes MPPI/Smac away from tape without closing legal gaps |
 | `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Exponential decay of PCA obstacle inflation cost | Pair with global |
 | `local_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Max distance from PCA obstacle for stock inflation | Matched to global so cones and tape are not artificially imbalanced |
 | `global_costmap.global_costmap.update_frequency` | 🟡 | `3.0` Hz | Global regenerate rate | Conservative — global is mostly the paste from local |
 | `global_costmap.global_costmap.resolution` | 🔴 | `0.05` m | Global cell size | Must match the 5 cm Smac Lattice primitive file |
 | `global_costmap.global_costmap.footprint_padding` | 🟡 | `0.05` m | Planner/path gate footprint margin | Rejects paths that are centerline-clear but unsafe for the real body |
 | `global_costmap.local_mirror_layer.min_occupied_value_to_mirror` | 🟡 | `100` | Mirrors only lethal PCA obstacle seeds from local costmap | Prevents local soft inflation from being copied into global and inflated again |
-| `global_costmap.local_mirror_layer.exclude_topics` | 🟡 | `["/line_costmap", "/lidar_line_costmap"]` | Masks line-layer cells from obstacle memory mirroring | Prevents lidar lines from entering global through the wrong layer |
-| `global_costmap.lidar_line_memory_mirror_layer.allow_decrease` | 🟡 | `false` | Global LiDAR-line memory clearing policy | Manual-clear-only for the current tape-test behavior |
-| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Shared decay for PCA/cone and lidar tape seeds | **Must equal local** unless intentionally testing a planner/controller mismatch |
-| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Shared global inflation radius | Applied once after PCA obstacle seeds and exact lidar tape seeds enter global |
+| `global_costmap.local_mirror_layer.exclude_topics` | 🟡 | `["/line_costmap", "/lidar_line_costmap"]` | Masks line-layer cells from obstacle memory mirroring | Prevents lines from entering global through the wrong layer |
+| `global_costmap.line_memory_mirror_layer.allow_decrease` | 🟡 | `false` | Global camera-line memory clearing policy | Camera line cells persist globally until the line layer or operator clears them |
+| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Shared decay for PCA/cone obstacle seeds | Camera line halo is mirrored after stock global inflation to avoid double-inflating tape |
+| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Shared global obstacle inflation radius | Applied once to PCA obstacle seeds before camera tape memory is max-merged |
 
 ---
 
@@ -390,7 +391,7 @@ Bumper indexes are OR'd across two layouts ({6,7} normal / {9,10} wrong-containe
 ```bash
 # After PHASE C.1 outdoor test was clean at 0.50, before C.2 try at 0.80:
 # YAML edit (preferred — survives relaunch):
-#   nav2_paramsv2.yaml: max_velocity[0]: 0.50 -> 0.80
+#   nav2_params_camera.yaml: max_velocity[0]: 0.50 -> 0.80
 #   Keep min_velocity[0] at -0.25 unless faster reverse is part of the test.
 # Pair-edit the MPPI cap or the smoother will still clamp at the lower value:
 #   FollowPath.vx_max: 0.50 -> 0.80
