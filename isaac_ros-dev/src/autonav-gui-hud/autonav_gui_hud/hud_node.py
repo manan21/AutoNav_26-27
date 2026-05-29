@@ -1120,16 +1120,20 @@ class HudWindow(QMainWindow):
         super().__init__()
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
-        # Small initial seed so Qt's layout pass computes minimums against
-        # a compact canvas — seeding to availableGeometry() (screen minus
-        # GNOME strut) locks fixed-size widgets in at sizes that then clip
-        # at the bottom once fullscreen lands. Fire showFullScreen()
-        # synchronously, then re-arm through the event loop as a safety
-        # net because Mutter has been observed to drop the first call
-        # when it lands before the window is mapped.
-        self.resize(1920, 720)
-        self.showFullScreen()
-        QTimer.singleShot(0, self.showFullScreen)
+        # Hard kiosk geometry instead of showFullScreen(). The panel is
+        # 1920x720 native; relying on Mutter's fullscreen state has been
+        # unreliable (top bar leaks, bottom clipped) and the display
+        # stack on the Jetson has been reporting a 1920x1080 virtual
+        # framebuffer of which only the top 720 rows reach the panel —
+        # so a 1080-tall fullscreen window loses its bottom 1/3.
+        # Frameless + X11BypassWindowManagerHint takes the window out
+        # from under the WM entirely; we place it at (0,0) at exact
+        # panel size so nothing the compositor does can shift it.
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.X11BypassWindowManagerHint
+        )
+        self.setGeometry(0, 0, 1920, 720)
+        self.show()
         self.setCursor(Qt.BlankCursor)
 
         # GUI defaults to light theme. The widget tree is built in dark
