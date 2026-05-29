@@ -36,11 +36,10 @@
              IsPathValid check (which can fail-cascade into recovery on
              a transient one-tick costmap blip). PathFootprintSafe below
              rejects planner outputs whose rectangular nav_center footprint
-             overlaps lethal global cells before FollowPath can execute them.
-             Inscribed inflated cells are not footprint-overlap gated here:
-             tape/cone center cells are the hard keepout, while non-lethal
-             soft costs bias Smac/MPPI toward wider clearance when space
-             exists without closing the IGVC-required 5 ft passage. -->
+             overlaps hard global keepout cells before FollowPath can execute
+             them. INSCRIBED/non-lethal line and obstacle halos remain
+             clearance preference costs; making those a hard BT reject closes
+             legal IGVC passages and can deadlock the bootstrap approach. -->
         <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
@@ -117,6 +116,17 @@
             </Sequence>
           </GoalUpdater>
         </RateController>
+        <!-- Do not let FollowPath consume a stale blackboard path after a
+             NavigateToPose preemption. The planner may be throttled by the
+             RateController for one tick; if the previous controller goal
+             completes in that window Nav2 can otherwise report the NEW goal
+             as succeeded using the OLD path. -->
+        <PathGoalConsistent path="{path}"
+          action_goal="{goal}"
+          planner_goal="{nav_goal}"
+          goal_tolerance_m="0.75"
+          stamp_tolerance_s="0.02"
+          stale_timeout_s="1.50"/>
         <!-- Forward/reverse dispatch.
              When the planner's path leads behind the robot but the
              actual goal is in front (IsForwardBlocked = SUCCESS), the

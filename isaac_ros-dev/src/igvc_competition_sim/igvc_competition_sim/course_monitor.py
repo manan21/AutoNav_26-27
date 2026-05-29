@@ -67,6 +67,7 @@ class IgvcCourseMonitor(Node):
         self.last_time_s: float | None = None
         self.distance_m = 0.0
         self.speed_check_start_s: float | None = None
+        self.speed_check_start_distance_m: float = 0.0
         self.speed_check_end_s: float | None = None
         self.stop_started_s: float | None = None
         self.autonomous = True
@@ -95,9 +96,17 @@ class IgvcCourseMonitor(Node):
 
     def _update_speed_checks(self, now_s: float, speed: float) -> None:
         if self.speed_check_start_s is None:
+            # The sim stack can publish odom for many seconds before the
+            # mission runner sends the first waypoint. The IGVC 44 ft speed
+            # check starts when the robot actually begins the run, not while
+            # it is parked during bringup.
+            if speed < 0.05 and self.distance_m < 0.05:
+                return
             self.speed_check_start_s = now_s
+            self.speed_check_start_distance_m = self.distance_m
         if (self.speed_check_end_s is None
-                and self.distance_m >= self.course.speed_check.end_distance_m):
+                and self.distance_m - self.speed_check_start_distance_m
+                >= self.course.speed_check.end_distance_m):
             self.speed_check_end_s = now_s
             elapsed = max(1e-6, now_s - self.speed_check_start_s)
             avg = self.course.speed_check.end_distance_m / elapsed

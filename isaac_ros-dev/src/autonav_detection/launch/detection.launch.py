@@ -47,6 +47,11 @@ def generate_launch_description():
         'enable_lidar_line', default_value='true',
         description='Set false to skip the LiDAR RSSI line detector.',
     )
+    use_sim_time = DeclareLaunchArgument(
+        'use_sim_time', default_value='false',
+        description='Use /clock for detector output stamps in simulation.',
+    )
+    sim_time_param = {'use_sim_time': LaunchConfiguration('use_sim_time')}
 
     line_detector = Node(
         package='autonav_detection',
@@ -55,7 +60,7 @@ def generate_launch_description():
         # consumers (line_layer plugin, automated_testing) keep working.
         name='line_detection_node',
         output='screen',
-        parameters=[LaunchConfiguration('line_detector_params')],
+        parameters=[LaunchConfiguration('line_detector_params'), sim_time_param],
         condition=IfCondition(LaunchConfiguration('enable_line')),
     )
     grade_detector = Node(
@@ -63,7 +68,7 @@ def generate_launch_description():
         executable='grade_detector',
         name='grade_detector',
         output='screen',
-        parameters=[LaunchConfiguration('grade_detector_params')],
+        parameters=[LaunchConfiguration('grade_detector_params'), sim_time_param],
         condition=IfCondition(LaunchConfiguration('enable_grade')),
     )
     lidar_line_detector = Node(
@@ -71,7 +76,7 @@ def generate_launch_description():
         executable='lidar_line_detector',
         name='lidar_line_detector',
         output='screen',
-        parameters=[LaunchConfiguration('lidar_line_detector_params')],
+        parameters=[LaunchConfiguration('lidar_line_detector_params'), sim_time_param],
         condition=IfCondition(LaunchConfiguration('enable_lidar_line')),
     )
 
@@ -82,6 +87,7 @@ def generate_launch_description():
         enable_line,
         enable_grade,
         enable_lidar_line,
+        use_sim_time,
         line_detector,
         grade_detector,
         lidar_line_detector,

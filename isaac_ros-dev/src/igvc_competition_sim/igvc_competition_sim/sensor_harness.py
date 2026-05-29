@@ -11,6 +11,7 @@ from .lidar_geometry import raycast_cylinders
 try:
     import rclpy
     from rclpy.executors import ExternalShutdownException
+    from rclpy.exceptions import RCLError
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from builtin_interfaces.msg import Time
@@ -72,7 +73,7 @@ class IgvcSensorHarness(Node):
     def __init__(self) -> None:
         super().__init__("igvc_sensor_harness")
         self.declare_parameter("course_config", "")
-        self.declare_parameter("fallback_integrate_cmd", True)
+        self.declare_parameter("fallback_integrate_cmd", False)
         self.declare_parameter("publish_ground_truth_pca", False)
         self.declare_parameter("cloud_rate_hz", 10.0)
         self.declare_parameter("odom_rate_hz", 50.0)
@@ -633,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
     node = IgvcSensorHarness()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
+    except (KeyboardInterrupt, ExternalShutdownException, RCLError):
         pass
     finally:
         node.destroy_node()

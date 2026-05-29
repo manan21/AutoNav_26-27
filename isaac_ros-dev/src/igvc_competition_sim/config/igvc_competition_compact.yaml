@@ -93,7 +93,11 @@ speed_check:
 mission_waypoints:
   - {label: bootstrap_local, type: local, x_m: 6.0, y_m: 0.25, radius_m: 0.75}
   - {label: obstacle_gps, type: gps, x_m: 15.8, y_m: -0.75, radius_m: 1.0}
-  - {label: ramp_gps, type: gps, x_m: 27.2, y_m: -0.55, radius_m: 1.0}
+  # Keep the ramp goal on the drivable lower half of the ramp lane. The
+  # previous centerline target put the padded robot footprint over the
+  # nearby white pothole marker, so the line/pothole memory correctly made
+  # the requested goal unreachable.
+  - {label: ramp_gps, type: gps, x_m: 27.2, y_m: -1.00, radius_m: 1.0}
   - {label: finish_gps, type: gps, x_m: 38.0, y_m: -0.10, radius_m: 1.25}
 
 analysis_stations:

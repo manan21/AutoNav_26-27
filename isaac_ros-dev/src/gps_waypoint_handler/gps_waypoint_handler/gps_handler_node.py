@@ -109,6 +109,15 @@ loose enough to absorb GPS jitter + EKF position noise (empirically
 to occasionally hover near a goal without graduating, blocking the
 next mission leg; the prior 1.0 m default was looser than necessary.
 Per-goal override available via ``goal_msg.success_radius_m``."""
+NAV2_SETTLE_RADIUS_M: float = 0.35
+"""Before the wrapper reports waypoint success, the robot must also be
+within this map-frame distance of the last goal handed to Nav2. This
+prevents a loose mission radius from ending a leg while the previous
+FollowPath action is still finishing, which can make the next NavigateToPose
+goal inherit a stale controller success. Keep this slightly wider than
+Nav2's nominal 0.25 m goal checker because the wrapper samples TF and
+feedback asynchronously; bagged sim runs have shown final nav_center
+poses around 0.25-0.30 m immediately after Nav2 reports success."""
 STOP_REFINE_K: float = 2.0
 """``‖ekf_pos − goal‖ < k · σ_GPS`` ⇒ refinement_locked. k=2."""
 STOP_REFINE_SIGMA_GPS_M: float = 0.3
@@ -451,6 +460,9 @@ class GpsHandlerNode(Node):
         self.declare_parameter("feedback_hz", FEEDBACK_HZ)
         self.declare_parameter("gps_stale_timeout_s", GPS_STALE_TIMEOUT_S)
         self.declare_parameter("tf_timeout_s", TF_TIMEOUT_S)
+        self.declare_parameter("nav2_settle_radius_m", NAV2_SETTLE_RADIUS_M)
+        self.declare_parameter("require_nav2_settle_before_success", True)
+        self.declare_parameter("nav2_base_frame", "nav_center")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("odom_frame", "odom")
 
@@ -495,6 +507,15 @@ class GpsHandlerNode(Node):
         )
         self._tf_timeout_s: float = float(
             self.get_parameter("tf_timeout_s").value
+        )
+        self._nav2_settle_radius_m: float = float(
+            self.get_parameter("nav2_settle_radius_m").value
+        )
+        self._require_nav2_settle_before_success: bool = bool(
+            self.get_parameter("require_nav2_settle_before_success").value
+        )
+        self._nav2_base_frame: str = str(
+            self.get_parameter("nav2_base_frame").value
         )
         self._map_frame: str = str(self.get_parameter("map_frame").value)
         self._odom_frame: str = str(self.get_parameter("odom_frame").value)
@@ -776,27 +797,30 @@ class GpsHandlerNode(Node):
         """Return the robot's (x, y) in the map frame via TF.
 
         Used by the LOCAL/map-frame arrival check so distance is
-        computed in the goal's native frame. Returns ``None`` on TF
-        failure — caller decides on a fallback. Cheap; called once per
-        feedback tick (~2 Hz).
+        computed in the same frame Nav2 uses for goal checking
+        (nav_center by default). Falls back to base_link for older launch
+        profiles. Returns ``None`` on TF failure — caller decides on a
+        fallback. Cheap; called once per feedback tick (~2 Hz).
         """
-        try:
-            tf_map_base = self._tf_buffer.lookup_transform(
-                self._map_frame,
-                "base_link",
-                Time(),
-                rclpy.duration.Duration(seconds=self._tf_timeout_s),
+        for child_frame in (self._nav2_base_frame, "base_link"):
+            try:
+                tf_map_base = self._tf_buffer.lookup_transform(
+                    self._map_frame,
+                    child_frame,
+                    Time(),
+                    rclpy.duration.Duration(seconds=self._tf_timeout_s),
+                )
+            except (
+                LookupException,
+                ConnectivityException,
+                ExtrapolationException,
+            ):
+                continue
+            return (
+                float(tf_map_base.transform.translation.x),
+                float(tf_map_base.transform.translation.y),
             )
-        except (
-            LookupException,
-            ConnectivityException,
-            ExtrapolationException,
-        ):
-            return None
-        return (
-            float(tf_map_base.transform.translation.x),
-            float(tf_map_base.transform.translation.y),
-        )
+        return None
 
     # ── Sensor callbacks ───────────────────────────────────────────
 
@@ -1596,12 +1620,18 @@ class GpsHandlerNode(Node):
         active: "_ActiveGoal",
         goal_map_xy: Tuple[float, float],
     ) -> None:
-        """Publish a LOCAL/map-frame goal directly to /goal_pose.
+        """Publish a LOCAL/map-frame goal directly into the Nav2 goal stream.
 
         For LOCAL goals the goal's (x, y) is *already* in map frame —
         no projection, no TF lookup, no candidate smoother. This is the
         L1 (Wave 3) fast path that keeps GPS-pipeline machinery from
         corrupting an already-correct map-frame target.
+
+        The first publish starts the NavigateToPose action via /goal_pose.
+        Later in-leg refreshes must go through /goal_update just like GPS
+        goals; otherwise a static LOCAL waypoint preempts Nav2 once per
+        second and can leave the controller finishing a stale path while the
+        wrapper has already accepted the next waypoint.
         """
         gx_map, gy_map = float(goal_map_xy[0]), float(goal_map_xy[1])
 
@@ -1626,7 +1656,13 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.y = qy
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
-        self._goal_pub.publish(msg)
+        now_pub_s = self._now_s()
+        first_pub = active.last_published_goal_map is None
+        if first_pub:
+            self._goal_pub.publish(msg)
+            active.last_goal_pose_t_s = now_pub_s
+        else:
+            self._goal_update_pub.publish(msg)
 
         with self._lock:
             if self._active is not None and self._active.handle is active.handle:
@@ -1635,6 +1671,7 @@ class GpsHandlerNode(Node):
                 # ``current_goal_in_map`` feedback works.
                 self._active.last_published_goal_world = (gx_map, gy_map)
                 self._active.last_published_goal_map = (gx_map, gy_map)
+                self._active.last_published_t_s = now_pub_s
 
     def _publisher_tick(self) -> None:
         if self._active is None or self._publisher_disabled:
@@ -2242,6 +2279,7 @@ class GpsHandlerNode(Node):
 
                 # Distance to goal — frame must match goal's native frame.
                 gx, gy = active.goal_world_xy
+                robot_map_xy_for_arrival: Optional[Tuple[float, float]] = None
                 if active.goal_type == NavigateToWaypoint.Goal.GOAL_TYPE_LOCAL:
                     # LOCAL/map goal: goal_world_xy IS in map frame; need
                     # robot's map-frame position. Try map → base_link
@@ -2249,10 +2287,11 @@ class GpsHandlerNode(Node):
                     # failure with imprecision flagged. LOCAL-goal use is
                     # an edge case for the GPS waypoint handler — see L1
                     # scope note in ``_goal_callback``.
-                    robot_map_xy = self._lookup_robot_in_map()
-                    if robot_map_xy is not None:
+                    robot_map_xy_for_arrival = self._lookup_robot_in_map()
+                    if robot_map_xy_for_arrival is not None:
                         d_goal = math.hypot(
-                            robot_map_xy[0] - gx, robot_map_xy[1] - gy
+                            robot_map_xy_for_arrival[0] - gx,
+                            robot_map_xy_for_arrival[1] - gy,
                         )
                     else:
                         # Imprecise fallback (world ↔ map offset bias).
@@ -2265,6 +2304,25 @@ class GpsHandlerNode(Node):
                 refinement_locked = d_goal < (
                     STOP_REFINE_K * STOP_REFINE_SIGMA_GPS_M
                 )
+                nav2_settled = True
+                nav2_settle_distance_m = 0.0
+                if (
+                    self._require_nav2_settle_before_success
+                    and last_pub_map is not None
+                ):
+                    if robot_map_xy_for_arrival is None:
+                        robot_map_xy_for_arrival = self._lookup_robot_in_map()
+                    if robot_map_xy_for_arrival is None:
+                        nav2_settled = False
+                        nav2_settle_distance_m = math.inf
+                    else:
+                        nav2_settle_distance_m = math.hypot(
+                            robot_map_xy_for_arrival[0] - last_pub_map[0],
+                            robot_map_xy_for_arrival[1] - last_pub_map[1],
+                        )
+                        nav2_settled = (
+                            nav2_settle_distance_m <= self._nav2_settle_radius_m
+                        )
 
                 # Liveness telemetry. We deliberately do NOT abort on
                 # GPS staleness — operator policy is "goals run until
@@ -2323,11 +2381,27 @@ class GpsHandlerNode(Node):
                     == NavigateToWaypoint.Goal.GOAL_TYPE_GPS
                     else True
                 )
-                if arrival_ready and d_goal < active.success_radius_m:
+                if (
+                    arrival_ready
+                    and d_goal < active.success_radius_m
+                    and nav2_settled
+                ):
                     return self._terminate(
                         goal_handle,
                         NavigateToWaypoint.Result.STATUS_SUCCESS,
                         "",
+                    )
+                if (
+                    arrival_ready
+                    and d_goal < active.success_radius_m
+                    and not nav2_settled
+                ):
+                    self.get_logger().debug(
+                        "arrival radius reached, waiting for Nav2 settle: "
+                        f"d_goal={d_goal:.2f}m nav2_goal_dist="
+                        f"{nav2_settle_distance_m:.2f}m "
+                        f"threshold={self._nav2_settle_radius_m:.2f}m",
+                        throttle_duration_sec=1.0,
                     )
 
                 # NOTE: ``time.sleep`` blocks the executor thread that

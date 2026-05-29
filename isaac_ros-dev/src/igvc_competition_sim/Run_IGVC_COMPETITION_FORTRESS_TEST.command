@@ -110,6 +110,7 @@ ros2 bag record --include-hidden-topics \
   /gps_waypoint/debug \
   /goal_pose \
   /goal_update \
+  /nav_goal \
   /cloud_all_fields_fullframe \
   /scan_fullframe \
   /scan_pca_filtered \

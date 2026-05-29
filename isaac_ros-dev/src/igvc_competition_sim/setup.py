@@ -30,6 +30,7 @@ setup(
             "generate_igvc_world = igvc_competition_sim.generate_world:main",
             "igvc_course_monitor = igvc_competition_sim.course_monitor:main",
             "igvc_mission_runner = igvc_competition_sim.mission_runner:main",
+            "igvc_run_analyzer = igvc_competition_sim.run_analyzer:main",
             "igvc_sensor_harness = igvc_competition_sim.sensor_harness:main",
         ],
     },

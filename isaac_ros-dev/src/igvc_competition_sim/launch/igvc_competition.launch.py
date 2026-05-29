@@ -212,6 +212,7 @@ def generate_launch_description() -> LaunchDescription:
             "enable_line": "false",
             "enable_grade": "true",
             "enable_lidar_line": "true",
+            "use_sim_time": "true",
         }.items(),
         condition=UnlessCondition(ground_truth_pca),
     )
@@ -221,6 +222,7 @@ def generate_launch_description() -> LaunchDescription:
             "enable_line": "false",
             "enable_grade": "false",
             "enable_lidar_line": "true",
+            "use_sim_time": "true",
         }.items(),
         condition=IfCondition(ground_truth_pca),
     )
@@ -289,7 +291,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("launch_bridge", default_value="true"),
         DeclareLaunchArgument("launch_nav", default_value="true"),
         DeclareLaunchArgument("ground_truth_pca", default_value="false"),
-        DeclareLaunchArgument("fallback_integrate_cmd", default_value="true"),
+        DeclareLaunchArgument("fallback_integrate_cmd", default_value="false"),
         DeclareLaunchArgument(
             "nav2_params",
             default_value=os.path.join(

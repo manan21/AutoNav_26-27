@@ -88,6 +88,7 @@ bt_navigator:
       - autonav_path_significantly_changed_bt_node   # PHASEB
       - autonav_is_forward_blocked_bt_node            # breadcrumb dispatch
       - autonav_path_footprint_safe_bt_node           # runtime global footprint path gate
+      - autonav_path_goal_consistent_bt_node          # blocks stale path reuse across goal preemptions
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -276,7 +277,11 @@ local_costmap:
           marking: False
           clearing: True
           data_type: "LaserScan"
-          inf_is_valid: false
+          # The PCA clear scan represents every beam in the clearing FOV.
+          # Infinite beams are positive free-space observations and must
+          # raytrace; otherwise local obstacle marks smear until the rolling
+          # window drops them, then the global mirror loses them abruptly.
+          inf_is_valid: true
           # raytrace-clear free space all the way out to the lidar's
           # full reach. Marking ranges unused (marking: False).
           raytrace_max_range: 25.0
