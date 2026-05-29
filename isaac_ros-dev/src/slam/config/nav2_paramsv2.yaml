@@ -140,7 +140,7 @@ controller_server:
       vx_std: 0.12
       vy_std: 0.01
       wz_std: 0.45
-      vx_max: 0.25
+      vx_max: 0.50
       vx_min: 0.0
       vy_max: 0.0
       wz_max: 1.0
@@ -652,7 +652,7 @@ velocity_smoother:
     scale_velocities: False
     feedback: "OPEN_LOOP"
     # ────────────────────────────────────────────────────────────────
-    # 0.25 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
+    # 0.50 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
     # matching the MPPI vx_max above. Two distinct
     # constraints meet at this value — touching either side has cost:
     #
@@ -672,9 +672,9 @@ velocity_smoother:
     #   against a moving target → map-catching-up snap → stall.
     # ────────────────────────────────────────────────────────────────
     # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
-    # GPS-waypoint runs; drop to 0.25 m/s for in-house lab tests near
-    # people / equipment.
-    max_velocity: [0.25, 0.0, 1.0]
+    # GPS-waypoint and AutoNav runs; drop to 0.25 m/s for in-house lab
+    # tests near people / equipment.
+    max_velocity: [0.50, 0.0, 1.0]
     min_velocity: [-0.25, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]

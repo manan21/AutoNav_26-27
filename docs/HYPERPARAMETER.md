@@ -84,12 +84,12 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 | Parameter | Status | Default | Effect | Tune direction |
 |---|---|---|---|---|
-| `velocity_smoother.max_velocity[0]` | ⚠️ | `0.25` m/s | Hard cap on forward `/cmd_vel.linear.x` | Higher → faster, watch for chatter past ~0.50 outdoors before EKF tuning |
-| `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` m/s | Hard cap on reverse | Pair with max_velocity |
+| `velocity_smoother.max_velocity[0]` | ⚠️ | `0.50` m/s | Hard cap on forward `/cmd_vel.linear.x` | Higher → faster, watch for chatter past ~0.50 outdoors before EKF tuning |
+| `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` m/s | Hard cap on reverse | Leave lower unless deliberately testing faster reverse/recovery motion |
 | `velocity_smoother.max_accel[0]` | 🟡 | `2.5` m/s² | Smoother linear accel cap | Higher → snappier ramp-up; retune with MPPI samples and chatter checks. |
 | `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
 | `controller_server.controller_frequency` | 🟡 | `20.0` Hz | MPPI control tick rate | Higher → more responsive, more CPU |
-| `controller_server.FollowPath.vx_max` | ⚠️ | `0.25` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
+| `controller_server.FollowPath.vx_max` | ⚠️ | `0.50` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
 | `controller_server.FollowPath.vx_min` | 🟡 | `0.0` m/s | MPPI reverse sampling cap | Current local controller is forward-only; reverse is handled by `breadcrumb_reverse` |
 | `controller_server.FollowPath.vy_max` | 🔴 | `0.0` m/s | Lateral sampling cap | Must remain zero for differential drive |
 | `controller_server.FollowPath.wz_max` | 🟡 | `1.0` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |
@@ -102,7 +102,7 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 
 | Parameter | Line | Status | Default | Effect |
 |---|---|---|---|---|
-| `RateController hz` | 43 | 🟡 | `3.0` | Replan cadence | Matches 3 Hz global costmap updates so newly detected tape reaches the global plan within ~8 cm at 0.25 m/s |
+| `RateController hz` | 43 | 🟡 | `3.0` | Replan cadence | Matches 3 Hz global costmap updates so newly detected tape reaches the global plan within ~17 cm at 0.50 m/s |
 | `GoalBender bend_distance` | 67 | 🟡 | `0.8` m | Forward-bend intermediate distance | Fires when the path leads behind the robot and the goal/path context requires a turnaround |
 | `GoalBender angle_threshold` | 69 | 🟡 | `1.57` rad (90°) | Behind-robot trigger angle | Loose default |
 | `GoalBender bend_angle` | 69 | 🟡 | `1.05` rad (60°) | Forward-bend offset | |
@@ -291,10 +291,10 @@ Design invariants (not tunables — described for context):
 
 | Path | Per-mille throttle formula | Example |
 |---|---|---|
-| Autonomous | `wheel_speed_mps × 40 × stepSize × grade_mult` | `0.25 m/s × 40 × 10 × 1.0 = 100 = 10 %` |
+| Autonomous | `wheel_speed_mps × 40 × stepSize × grade_mult` | `0.50 m/s × 40 × 10 × 1.0 = 200 = 20 %` |
 | Manual | `joy_stick × speed × stepSize × grade_mult` | full stick × `10 × 10 × 1.0 = 100 = 10 %` |
 
-`stepSize = 10` and `speed = 10` are deliberately matched so manual full-stick equals the 0.25 m/s autonomous cap — calibration parity.
+`stepSize = 10` and `speed = 10` keep manual full-stick conservative. The outdoor AutoNav cap is now higher than manual default; raise manual `speed` only as a separate driver-control tuning decision.
 
 Autonomous deadband compensation is applied after `cmd_vel` is converted to per-wheel motor arguments and after grade compensation. Exact zero remains zero; small nonzero wheel commands are lifted so Nav2's valid low-speed turn requests do not sit below static friction. With defaults, `auto_deadband_min_motor_arg = 6.5`, so `6.5 × stepSize(10) = 65` per-mille RoboteQ throttle.
 
@@ -311,7 +311,7 @@ Autonomous deadband compensation is applied after `cmd_vel` is converted to per-
 | Constant | Status | Default | Effect |
 |---|---|---|---|
 | `stepSize` | 🛠️ | `10` | move()-arg → per-mille RoboteQ throttle multiplier | Don't change without retuning Phase D + manual speed |
-| `speed` | 🛠️ | `10` | Initial manual "gear" (full-stick scalar) | Set to `10` (was `11`) to match autonomous 0.25 m/s cap. Bumpers ±1 from here |
+| `speed` | 🛠️ | `10` | Initial manual "gear" (full-stick scalar) | Conservative manual default. Bumpers ±1 from here |
 
 ### Control safety gates
 
@@ -390,9 +390,9 @@ Bumper indexes are OR'd across two layouts ({6,7} normal / {9,10} wrong-containe
 # After PHASE C.1 outdoor test was clean at 0.50, before C.2 try at 0.80:
 # YAML edit (preferred — survives relaunch):
 #   nav2_paramsv2.yaml: max_velocity[0]: 0.50 -> 0.80
-#                       min_velocity[0]: -0.50 -> -0.80
-# Pair-edit the MPPI cap or the smoother will still clamp at 0.25:
-#   FollowPath.vx_max: 0.25 -> 0.50 or 0.80
+#   Keep min_velocity[0] at -0.25 unless faster reverse is part of the test.
+# Pair-edit the MPPI cap or the smoother will still clamp at the lower value:
+#   FollowPath.vx_max: 0.50 -> 0.80
 # Then retune in bags if chatter returns:
 #   FollowPath.vx_std, time_steps/model_dt, PathAlignCritic/PathFollowCritic weights
 #   velocity_smoother.max_accel/max_decel

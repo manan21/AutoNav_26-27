@@ -304,6 +304,30 @@ Do not repeat:
 Next check:
 - The 5 ft tape/cone gap can still produce low physical cone clearance in some runs while passing hard overlap gates. Treat that as a separate clearance/cost tuning problem, not as FollowPath abort churn.
 
+### 2026-05-29 - Raise Outdoor AutoNav Forward Cap To 0.50 m/s
+
+Status: Accepted
+Area: real robot, MPPI control, velocity smoothing
+Related commits: pending
+Evidence: Outdoor robot test on `autoresearch_path_nav_fix` successfully avoided lines and obstacles.
+
+Decision:
+- Raise the active outdoor AutoNav forward speed cap from 0.25 m/s to 0.50 m/s.
+- Pair-edit both `controller_server.FollowPath.vx_max` and `velocity_smoother.max_velocity[0]`; the effective top speed is the lower of the two.
+- Keep reverse speed capped at -0.25 m/s for now because the current request is faster forward course traversal, not faster recovery motion.
+
+Why:
+- The robot has now demonstrated real-world line and obstacle avoidance on this branch.
+- Competition timing requires higher traversal speed than the lab-safe 0.25 m/s cap.
+- Changing only MPPI or only the smoother would not raise the actual `/cmd_vel.linear.x` cap.
+
+Do not repeat:
+- Do not raise one speed cap without checking the paired cap.
+- Do not treat the old 0.25 m/s value as a competition target; it was a cautious lab setting.
+
+Next check:
+- Re-run the real robot course at 0.50 m/s and watch for MPPI chatter, low cone/tape clearance, controller command gaps, and emergency-stop margin.
+
 ## Open Items To Track
 
 - Add randomized obstacle course variants while preserving the fixed 5 ft canonical course.
