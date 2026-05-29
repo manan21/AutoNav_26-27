@@ -19,7 +19,7 @@ try:
     from rclpy.node import Node
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry, OccupancyGrid, Path
-    from geometry_msgs.msg import PoseWithCovarianceStamped
+    from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
     from std_msgs.msg import Float32, Int32MultiArray, Bool
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
@@ -3306,6 +3306,20 @@ class HudWindow(QMainWindow):
         # parent.width() reflects the real geometry.
         QTimer.singleShot(0, self._position_auto_badge)
 
+        # Manual Drive mode — 'M' key toggles a green overlay and routes
+        # arrow keys directly to /cmd_vel (bypasses menu navigation). Esc
+        # also exits. Held arrows are accumulated in _manual_keys; a 20 Hz
+        # timer publishes the resulting Twist. All state is built lazily
+        # in _toggle_manual_mode / _build_manual_overlay.
+        self._manual_mode = False
+        self._manual_keys = set()
+        self._manual_overlay = None
+        self._MANUAL_LIN_SPEED = 0.4   # m/s, forward/back
+        self._MANUAL_ANG_SPEED = 0.7   # rad/s, yaw
+        self._manual_timer = QTimer(self)
+        self._manual_timer.setInterval(50)  # 20 Hz
+        self._manual_timer.timeout.connect(self._manual_tick)
+
         self._update_selection()
 
         self._nav_timer = QTimer()
@@ -6252,6 +6266,108 @@ class HudWindow(QMainWindow):
                 f"{'ON' if self._auto_mode else 'OFF'}"
             )
 
+    # -----------------------------------------------------------------
+    # Manual Drive mode — 'M' key, green overlay, arrow-key teleop
+    # -----------------------------------------------------------------
+    def _toggle_manual_mode(self):
+        """M-key handler. Enter: show green overlay, start 20 Hz publish
+        tick. Exit: send a zero Twist for safety, stop tick, hide overlay.
+        Arrow-key handling itself lives in keyPressEvent / keyReleaseEvent."""
+        if not self._manual_mode:
+            if self._manual_overlay is None:
+                self._build_manual_overlay()
+            self._manual_overlay.setGeometry(0, 0, self.width(), self.height())
+            self._manual_overlay.show()
+            self._manual_overlay.raise_()
+            self._manual_keys.clear()
+            self._manual_mode = True
+            self._manual_timer.start()
+            self._gui_log_msg("Manual Drive: ON (arrows = drive, Esc/M = exit)")
+        else:
+            self._manual_mode = False
+            self._manual_timer.stop()
+            self._manual_keys.clear()
+            self._publish_manual_twist(0.0, 0.0)
+            if self._manual_overlay is not None:
+                self._manual_overlay.hide()
+            self._gui_log_msg("Manual Drive: OFF")
+
+    def _build_manual_overlay(self):
+        """Lazily build the green Manual Drive overlay. Semi-transparent
+        so the operator still sees the underlying sensor canvases."""
+        overlay = QWidget(self)
+        overlay.setObjectName("manualOverlay")
+        overlay.setStyleSheet(
+            "QWidget#manualOverlay { background-color: rgba(0, 200, 0, 110); }"
+        )
+        overlay.setAutoFillBackground(True)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+
+        v = QVBoxLayout(overlay)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setAlignment(Qt.AlignCenter)
+        v.addStretch()
+
+        title = QLabel("MANUAL DRIVE")
+        f = QFont()
+        f.setPointSize(48)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(
+            "color: #fff; background: transparent; border: none;"
+        )
+        v.addWidget(title)
+
+        hint = QLabel("Arrow keys = drive   ·   M or Esc = exit")
+        hf = QFont()
+        hf.setPointSize(16)
+        hint.setFont(hf)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(
+            "color: #eaffea; background: transparent; border: none;"
+        )
+        v.addWidget(hint)
+
+        v.addStretch()
+        overlay.hide()
+        self._manual_overlay = overlay
+        return overlay
+
+    def _manual_tick(self):
+        """20 Hz publish tick while Manual Drive is on. Sums the currently
+        held arrow keys into a Twist and publishes — Up/Down map to
+        linear.x, Left/Right to angular.z. Opposed keys cancel out."""
+        if not self._manual_mode:
+            return
+        lin = 0.0
+        ang = 0.0
+        if Qt.Key_Up in self._manual_keys:
+            lin += self._MANUAL_LIN_SPEED
+        if Qt.Key_Down in self._manual_keys:
+            lin -= self._MANUAL_LIN_SPEED
+        if Qt.Key_Left in self._manual_keys:
+            ang += self._MANUAL_ANG_SPEED
+        if Qt.Key_Right in self._manual_keys:
+            ang -= self._MANUAL_ANG_SPEED
+        self._publish_manual_twist(lin, ang)
+
+    def _publish_manual_twist(self, linear_x, angular_z):
+        """Publish a Twist on /cmd_vel via HudNode.cmd_vel_pub. No-op if
+        ROS isn't available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'cmd_vel_pub'):
+            return
+        try:
+            TwistMsg = node.cmd_vel_pub.msg_type
+            msg = TwistMsg()
+            msg.linear.x = float(linear_x)
+            msg.angular.z = float(angular_z)
+            node.cmd_vel_pub.publish(msg)
+        except Exception as e:
+            self._gui_log_msg(f"Manual cmd_vel publish failed: {e}")
+
     def _position_auto_badge(self):
         """Pin the auto-mode badge to the upper-right of the central widget."""
         if not hasattr(self, '_auto_badge') or self._auto_badge is None:
@@ -6578,6 +6694,29 @@ class HudWindow(QMainWindow):
         # filter (see eventFilter) so it works from any focus context,
         # including QLineEdit. No handling needed here.
 
+        # Manual Drive mode owns input while active: arrows drive the
+        # robot, Esc/M exit, everything else is swallowed so the operator
+        # can't accidentally toggle Auto / Performance / Record mid-drive.
+        if self._manual_mode:
+            if key == Qt.Key_M and not event.modifiers():
+                self._toggle_manual_mode()
+                return
+            if key == Qt.Key_Escape:
+                self._toggle_manual_mode()
+                return
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if not event.isAutoRepeat():
+                    self._manual_keys.add(key)
+                return
+            return
+
+        # 'M' enters Manual Drive (green overlay + arrow-key teleop).
+        # Same mod/focus rules as 'A': window-level only, no modifiers,
+        # so typing 'm' into a focused QLineEdit still enters the char.
+        if key == Qt.Key_M and not event.modifiers():
+            self._toggle_manual_mode()
+            return
+
         # 'A' toggles auto mode. No modifiers so it doesn't fight Ctrl+A
         # or similar; intentionally only handled at the window level so
         # that typing 'a' into a focused QLineEdit (send_goal / GPS
@@ -6732,6 +6871,18 @@ class HudWindow(QMainWindow):
                 self._on_play_pause()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """Manual Drive needs key-release tracking so the robot stops the
+        moment the operator lets go. Outside manual mode this is a no-op
+        — the existing keyPressEvent owns all input semantics."""
+        if self._manual_mode:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if not event.isAutoRepeat():
+                    self._manual_keys.discard(key)
+                return
+        super().keyReleaseEvent(event)
 
     def _update_selection(self):
         """Restyle all buttons: selected gets highlight + mirrored arrows, others reset."""
@@ -9345,6 +9496,10 @@ if _HAS_ROS:
             # pattern as t002_automator._send_x_button_to_control.
             self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
             self.joy_pub = self.create_publisher(Joy, '/joy', 10)
+            # Direct /cmd_vel publisher for the HUD's Manual Drive mode
+            # (M key → green overlay + arrow-key teleop). Multi-publisher
+            # on /cmd_vel is by design — velocity_smoother handles the mix.
+            self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
             self.create_subscription(
                 Bool, '/autonomous_mode',
                 self._cb_autonomous_mode, _RELIABLE_QOS,
