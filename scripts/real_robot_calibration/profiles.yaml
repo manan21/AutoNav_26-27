@@ -1,0 +1,168 @@
+{
+  "defaults": {
+    "bag_pre_roll_s": 3.0,
+    "bag_post_roll_s": 2.0,
+    "command_rate_hz": 20.0,
+    "zero_hold_s": 2.0,
+    "auto_timeout_s": 60.0
+  },
+  "profiles": {
+    "record_manual_full_course": {
+      "description": "Record a broad full-course bag while the operator manually drives. The script does not command motion.",
+      "bag_profile": "full_perception",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "operator_notes": "Manual drive the course naturally. Include slow and normal passes over lines, cones, and ramp."
+    },
+    "closed_loop_observe": {
+      "description": "Record full Nav2/perception/planning data while RViz/Nav2 controls the robot. The script does not command motion.",
+      "bag_profile": "full_perception",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "operator_notes": "Use RViz to place goals. Keep controller/e-stop ready. Stop this recorder with Ctrl-C when the closed-loop run is done."
+    },
+    "perception_static_sweep": {
+      "description": "Record full perception data while the robot is stationary or manually crept through representative line/cone/ramp views.",
+      "bag_profile": "full_perception",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "operator_notes": "Stationary or hand-crept views of tape, cones, ramp, shadows, legal gaps, and illegal narrow gaps."
+    },
+    "straight_speed_ladder_low": {
+      "description": "Straight-line low-speed response at maneuvering and 1 mph qualification threshold speeds.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_0p25_mph", "duration_s": 8.0, "linear_mph": 0.25, "angular_radps": 0.0},
+        {"label": "stop_after_0p25", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_0p5_mph", "duration_s": 8.0, "linear_mph": 0.5, "angular_radps": 0.0},
+        {"label": "stop_after_0p5", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_1_mph", "duration_s": 10.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Use a clear straightaway. Toggle AUTO only after everyone is ready."
+    },
+    "straight_speed_ladder_high": {
+      "description": "Straight-line higher-speed response at 2 and 3 mph. Requires explicit --allow-high-speed.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "requires_allow_high_speed": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_2_mph", "duration_s": 8.0, "linear_mph": 2.0, "angular_radps": 0.0},
+        {"label": "stop_after_2", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_3_mph", "duration_s": 8.0, "linear_mph": 3.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Requires a long clear straightaway and physical e-stop coverage."
+    },
+    "accel_stop_response": {
+      "description": "Command step changes to calibrate acceleration lag, command latency, and coastdown/stop response.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "step_0p5_mph", "duration_s": 5.0, "linear_mph": 0.5, "angular_radps": 0.0},
+        {"label": "stop_after_0p5", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "step_1_mph", "duration_s": 5.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "stop_after_1", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Keep the robot pointed down a clear lane. This profile intentionally repeats stop transients."
+    },
+    "accel_stop_response_high": {
+      "description": "High-speed extension of accel_stop_response with a 2 mph step. Requires explicit --allow-high-speed.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "requires_allow_high_speed": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "step_2_mph", "duration_s": 5.0, "linear_mph": 2.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 6.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Requires a long clear straightaway and physical e-stop coverage."
+    },
+    "in_place_yaw_ladder": {
+      "description": "In-place yaw response for angular calibration.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_pos_0p3", "duration_s": 6.0, "linear_mps": 0.0, "angular_radps": 0.3},
+        {"label": "stop_after_pos_0p3", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_neg_0p3", "duration_s": 6.0, "linear_mps": 0.0, "angular_radps": -0.3},
+        {"label": "stop_after_neg_0p3", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_pos_0p6", "duration_s": 6.0, "linear_mps": 0.0, "angular_radps": 0.6},
+        {"label": "stop_after_pos_0p6", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_neg_0p6", "duration_s": 6.0, "linear_mps": 0.0, "angular_radps": -0.6},
+        {"label": "stop_after_neg_0p6", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_pos_1p0", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 1.0},
+        {"label": "stop_after_pos_1p0", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_neg_1p0", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": -1.0},
+        {"label": "final_stop", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Run on open flat asphalt with enough room for rotational drift."
+    },
+    "arc_ladder": {
+      "description": "Forward arcs to calibrate effective turn radius, turn slowdown, and yaw response under translation.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_0p5mph_pos_0p3", "duration_s": 7.0, "linear_mph": 0.5, "angular_radps": 0.3},
+        {"label": "stop_1", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_0p5mph_neg_0p3", "duration_s": 7.0, "linear_mph": 0.5, "angular_radps": -0.3},
+        {"label": "stop_2", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_1mph_pos_0p3", "duration_s": 7.0, "linear_mph": 1.0, "angular_radps": 0.3},
+        {"label": "stop_3", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_1mph_neg_0p3", "duration_s": 7.0, "linear_mph": 1.0, "angular_radps": -0.3},
+        {"label": "stop_4", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_1mph_pos_0p6", "duration_s": 6.0, "linear_mph": 1.0, "angular_radps": 0.6},
+        {"label": "stop_5", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_1mph_neg_0p6", "duration_s": 6.0, "linear_mph": 1.0, "angular_radps": -0.6},
+        {"label": "final_stop", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Run in a large open area. Reposition manually between segments if needed by toggling AUTO off; the script will abort safely."
+    },
+    "arc_ladder_high": {
+      "description": "Higher-speed 2 mph arc at moderate yaw. Requires explicit --allow-high-speed.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "requires_allow_high_speed": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_2mph_pos_0p3", "duration_s": 6.0, "linear_mph": 2.0, "angular_radps": 0.3},
+        {"label": "stop_1", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "arc_2mph_neg_0p3", "duration_s": 6.0, "linear_mph": 2.0, "angular_radps": -0.3},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Requires a large clear area and physical e-stop coverage."
+    },
+    "ramp_ladder": {
+      "description": "Low-speed ramp approach/climb/descent dynamics.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_0p25_mph", "duration_s": 10.0, "linear_mph": 0.25, "angular_radps": 0.0},
+        {"label": "stop_after_0p25", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_0p5_mph", "duration_s": 10.0, "linear_mph": 0.5, "angular_radps": 0.0},
+        {"label": "stop_after_0p5", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_1_mph", "duration_s": 10.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Align carefully before toggling AUTO. Run one direction at a time; stop and reposition between passes if needed."
+    }
+  }
+}
