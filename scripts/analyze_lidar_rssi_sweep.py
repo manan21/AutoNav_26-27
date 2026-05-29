@@ -532,6 +532,7 @@ def evaluate_params(
                     result.cluster_rows.append(
                         {
                             "cloud_index": cloud_index,
+                            "rel_time_s": rel_time,
                             "min_intensity": params.min_intensity,
                             "adaptive_range_bin_m": params.adaptive_range_bin_m,
                             "adaptive_min_delta": params.adaptive_min_delta,
@@ -710,6 +711,15 @@ def main() -> None:
     topic_types = get_topic_types(args.bag)
     graph = build_tf_graph(args.bag, topic_types)
     cloud_samples = load_cloud_samples(args.bag, topic_types, graph, args)
+    sampled_start_s = min(rel_time for rel_time, _samples in cloud_samples)
+    sampled_end_s = max(rel_time for rel_time, _samples in cloud_samples)
+    for name, window in (("positive", args.positive_window), ("negative", args.negative_window)):
+        if window and (window[0] < sampled_start_s or window[1] > sampled_end_s):
+            print(
+                f"warning: {name} window {window[0]:.1f}-{window[1]:.1f}s is not fully covered "
+                f"by loaded samples {sampled_start_s:.1f}-{sampled_end_s:.1f}s. "
+                "Increase --max-clouds, lower --cloud-stride, or set --max-clouds 0."
+            )
 
     min_intensities = parse_float_list(args.min_intensity_values)
     range_bins = parse_float_list(args.adaptive_range_bin_values)
@@ -734,7 +744,8 @@ def main() -> None:
     print(f"topic: {args.topic}")
     print(
         f"clouds analyzed: {len(cloud_samples)} "
-        f"(cloud_stride={args.cloud_stride}, max_clouds={args.max_clouds})"
+        f"(cloud_stride={args.cloud_stride}, max_clouds={args.max_clouds}, "
+        f"sample_time={sampled_start_s:.1f}-{sampled_end_s:.1f}s)"
     )
     print(f"parameter combinations: {len(results)}")
     print()
@@ -816,9 +827,9 @@ def main() -> None:
     print(
         "  ros2 run autonav_detection lidar_line_detector --ros-args "
         "--params-file $(ros2 pkg prefix autonav_detection)/share/autonav_detection/config/lidar_line_detector_rssi.yaml "
-        f"-p min_intensity:={best.params.min_intensity:.0f} "
+        f"-p min_intensity:={best.params.min_intensity:.1f} "
         f"-p adaptive_range_bin_m:={best.params.adaptive_range_bin_m:.2f} "
-        f"-p adaptive_min_delta:={best.params.adaptive_min_delta:.0f} "
+        f"-p adaptive_min_delta:={best.params.adaptive_min_delta:.1f} "
         f"-p adaptive_stddev_multiplier:={best.params.adaptive_stddev_multiplier:.2f}"
     )
 

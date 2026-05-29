@@ -71,16 +71,23 @@ The default sweep is subsampled for Jetson-side turnaround:
 smaller threshold range with denser sampling, for example `--cloud-stride 3
 --point-stride 1`.
 
+For timing-window analysis, make sure the sampled time range reaches the
+negative window. If the analyzer warns that a window is not covered, rerun with
+`--max-clouds 0` or a larger `--max-clouds`; otherwise the ranking can make a
+false-positive interval look clean.
+
 ## Live RSSI Detector Test
 
 After choosing values from the bag sweep, run the RSSI profile:
 
 ```bash
 ./config/run-lidar-rssi-lines.sh \
-  -p min_intensity:=0 \
-  -p adaptive_range_bin_m:=0.25 \
-  -p adaptive_min_delta:=250 \
-  -p adaptive_stddev_multiplier:=1.0
+  -p min_intensity:=40000.0 \
+  -p adaptive_range_bin_m:=0.15 \
+  -p adaptive_min_delta:=4000.0 \
+  -p adaptive_stddev_multiplier:=2.0 \
+  -p cluster_min_length_m:=0.70 \
+  -p cluster_max_width_m:=0.08
 ```
 
 Then inspect in RViz:
@@ -92,3 +99,31 @@ Then inspect in RViz:
 
 Keep the default `lidar_line_detector.yaml` reflector profile unchanged for
 retroreflective tape tests.
+
+## 2026-05-29 Course Bag Result
+
+Bag: `course_lines_20260529_132420`.
+
+The existing reflector detector produced 548 `/lidar_line_points` messages and
+all were empty, confirming that the plain white course tape is not usable as a
+SICK reflector target.
+
+RSSI can see the tape, but RSSI-only detection is not clean enough to trust as a
+hard competition line source from this bag alone. The best replay-tested
+tradeoff was:
+
+```bash
+-p min_intensity:=40000.0 \
+-p adaptive_range_bin_m:=0.15 \
+-p adaptive_min_delta:=4000.0 \
+-p adaptive_stddev_multiplier:=2.0 \
+-p cluster_min_length_m:=0.70 \
+-p cluster_max_width_m:=0.08
+```
+
+The full-density analyzer showed useful detections in both line-present windows
+and zero detections in the sampled empty-lot window, but C++ bag replay still
+produced empty-lot line outputs. Tightening geometry or intensity enough to
+remove those replay false positives also removed most or all tape detections.
+Use this RSSI profile only for live RViz inspection or as a secondary signal
+until it is gated by another detector or validated on more course backgrounds.

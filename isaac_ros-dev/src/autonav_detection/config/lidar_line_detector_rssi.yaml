@@ -38,11 +38,11 @@ lidar_line_detector:
     # Adaptive RSSI candidate selection. These are deliberately moderate
     # starting values; use scripts/analyze_lidar_rssi_sweep.py against a raw
     # course bag before trusting them for autonomy.
-    adaptive_range_bin_m: 0.25
-    adaptive_stddev_multiplier: 1.0
-    adaptive_min_delta: 250.0
+    adaptive_range_bin_m: 0.15
+    adaptive_stddev_multiplier: 2.0
+    adaptive_min_delta: 4000.0
     adaptive_min_samples: 20
-    min_intensity: 0.0
+    min_intensity: 40000.0
     normalize_by_layer: true
     use_reflector_boost: false
     reflector_threshold_boost: 0.0
@@ -50,8 +50,8 @@ lidar_line_detector:
     # Shape filter for tape-like marks in the local ground plane.
     cluster_link_distance_m: 0.20
     cluster_min_points: 3
-    cluster_min_length_m: 0.20
-    cluster_max_width_m: 0.22
+    cluster_min_length_m: 0.70
+    cluster_max_width_m: 0.08
     cluster_min_aspect_ratio: 2.5
     output_voxel_size_m: 0.05
     max_line_points: 8000
