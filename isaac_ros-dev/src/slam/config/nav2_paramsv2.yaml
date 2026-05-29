@@ -356,7 +356,7 @@ local_costmap:
         # and uses its own narrower local halo; global planning receives
         # lidar tape memory before global inflation.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.50
+        inflation_radius: 0.25
 
       always_send_full_costmap: True
 
@@ -462,7 +462,7 @@ global_costmap:
 
       lidar_line_memory_mirror_layer:
         plugin: "local_mirror_layer::LocalMirrorLayer"
-        enabled: True
+        enabled: False
         source_topic: /lidar_line_costmap
         # Mirror the line-only costmap's full hard/soft field. Exact tape
         # cells remain lethal, the line layer's small inscribed band remains
@@ -488,7 +488,7 @@ global_costmap:
         # after this layer using the line layer's own hard/soft field so the
         # planner can still use IGVC-minimum 5 ft passages.
         cost_scaling_factor: 3.2
-        inflation_radius: 1.00
+        inflation_radius: 0.50
       always_send_full_costmap: True
 
 map_server:
