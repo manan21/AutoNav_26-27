@@ -246,14 +246,11 @@ local_costmap:
         # still consumes the raw /scan_fullframe LaserScan. Every return
         # in the PCA-filtered scan is an obstacle
         # (ground / ramp already filtered by PCA grade classification).
-        # Two observation sources to split marking and clearing FOVs:
-        #   mark_scan  → /scan_pca_filtered       (180°, marking only)
-        #   clear_scan → /scan_pca_filtered_clear (140°, clearing only)
-        # The outer 20° wedge on each side marks obstacles but doesn't
-        # raytrace-clear them — the lidar's beam density / accuracy
-        # falls off at the FOV edges, so we don't let those edge rays
-        # claim "this cell is free." Stored marks in that wedge persist
-        # until the local rolling window drops them.
+        # Two observation sources over the same trusted central 140°:
+        #   mark_scan  → /scan_pca_filtered       (marking only)
+        #   clear_scan → /scan_pca_filtered_clear (clearing only)
+        # Edge-FOV PCA points are deliberately excluded; during turns
+        # they smear obstacle marks wide enough to block the robot.
         observation_sources: mark_scan clear_scan
 
         mark_scan:
@@ -275,7 +272,7 @@ local_costmap:
           marking: False
           clearing: True
           data_type: "LaserScan"
-          inf_is_valid: false
+          inf_is_valid: true
           # raytrace-clear free space all the way out to the lidar's
           # full reach. Marking ranges unused (marking: False).
           raytrace_max_range: 25.0

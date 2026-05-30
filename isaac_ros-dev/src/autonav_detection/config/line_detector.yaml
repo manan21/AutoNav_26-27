@@ -84,6 +84,10 @@
     confirmed_hold_ms: 3000
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
+    # Debug images are rendered on a separate low-rate timer so /line_points
+    # publication is not blocked by overlay drawing or image serialization.
+    debug_image_max_rate_hz: 2.0
+    debug_overlay_max_points: 3000
     debug_image_write_enabled: false
     # Default to stamped TF at the depth-image timestamp. Latest-TF
     # projection is kept as an emergency field fallback only; it can smear

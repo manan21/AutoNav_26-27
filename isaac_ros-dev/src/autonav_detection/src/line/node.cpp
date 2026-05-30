@@ -87,6 +87,8 @@ public:
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
 		this->declare_parameter("debug_image_write_enabled", false);
+		this->declare_parameter("debug_image_max_rate_hz", 2.0);
+		this->declare_parameter("debug_overlay_max_points", 3000);
 		// Emergency fallback only. Latest-TF projection is responsive but
 		// smears line points during motion because the image/depth frame
 		// was captured at an older robot pose. The default stamped lookup
@@ -164,6 +166,10 @@ public:
 		yaw_rate_gate_rad_s_ = std::max<double>(0.0, this->get_parameter("yaw_rate_gate_rad_s").as_double());
 		debug_image_publish_enabled_ = this->get_parameter("debug_image_publish_enabled").as_bool();
 		debug_image_write_enabled_ = this->get_parameter("debug_image_write_enabled").as_bool();
+		debug_image_max_rate_hz_ = std::max<double>(
+			0.0, this->get_parameter("debug_image_max_rate_hz").as_double());
+		debug_overlay_max_points_ = std::max<int>(
+			1, this->get_parameter("debug_overlay_max_points").as_int());
 		tf_use_latest_ = this->get_parameter("tf_use_latest").as_bool();
 		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
 		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
@@ -210,6 +216,9 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Debug image topics: %s", debug_image_publish_enabled_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Debug image writes: %s", debug_image_write_enabled_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(),
+			"Debug image rate: %.2f Hz overlay max points: %d",
+			debug_image_max_rate_hz_, debug_overlay_max_points_);
+		RCLCPP_INFO(this->get_logger(),
 			"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
 			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
 		RCLCPP_INFO(this->get_logger(), "==================================");
@@ -219,6 +228,8 @@ public:
 		depth_callback_group_ = this->create_callback_group(
 			rclcpp::CallbackGroupType::MutuallyExclusive);
 		processing_callback_group_ = this->create_callback_group(
+			rclcpp::CallbackGroupType::Reentrant);
+		debug_callback_group_ = this->create_callback_group(
 			rclcpp::CallbackGroupType::Reentrant);
 
 		rclcpp::SubscriptionOptions camera_sub_options;
@@ -282,6 +293,15 @@ public:
 			"/line_detection/debug/mask", 10);
 		_debug_overlay_image_pub = this->create_publisher<sensor_msgs::msg::Image>(
 			"/line_detection/debug/overlay", 10);
+
+		if (debug_image_publish_enabled_ && debug_image_max_rate_hz_ > 0.0) {
+			const auto debug_period = std::chrono::nanoseconds(
+				static_cast<int64_t>(1e9 / debug_image_max_rate_hz_));
+			_debug_image_timer = this->create_wall_timer(
+				debug_period,
+				std::bind(&LineDetectorNode::debugImageTimerCallback, this),
+				debug_callback_group_);
+		}
 			
 		// Create service for line detection
 		_line_service = this->create_service<autonav_interfaces::srv::AnvLines>(
@@ -312,6 +332,7 @@ private:
 	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_mask_image_pub;
 	rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr _debug_overlay_image_pub;
 	rclcpp::TimerBase::SharedPtr _line_timer;
+	rclcpp::TimerBase::SharedPtr _debug_image_timer;
 
 	std::mutex callback_lock;
 	std::mutex depth_callback_lock;
@@ -371,6 +392,8 @@ private:
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
+	double  debug_image_max_rate_hz_ = 2.0;
+	int     debug_overlay_max_points_ = 3000;
 	bool    tf_use_latest_ = false;
 	double  brightness_threshold_ = 230.0;
 	int     half_window_size_ = 3;
@@ -385,9 +408,11 @@ private:
 	std::atomic<bool> processing_busy_{false};
 	std::atomic<int64_t> skipped_busy_count_{0};
 	std::mutex processing_state_mutex_;
+	std::mutex debug_frame_mutex_;
 	rclcpp::CallbackGroup::SharedPtr camera_callback_group_;
 	rclcpp::CallbackGroup::SharedPtr depth_callback_group_;
 	rclcpp::CallbackGroup::SharedPtr processing_callback_group_;
+	rclcpp::CallbackGroup::SharedPtr debug_callback_group_;
 
 	struct DetectionFrameStats {
 		int raw_pixels = 0;
@@ -428,6 +453,14 @@ private:
 		cv::Point pixel;
 	};
 
+	struct DebugFrame {
+		sensor_msgs::msg::Image::SharedPtr camera_msg;
+		cv::Mat gray_image;
+		std::vector<cv::Point> raw_pixels;
+		std::vector<cv::Point> accepted_pixels;
+		std::vector<cv::Point> published_pixels;
+	};
+
 	struct VoxelKey {
 		int x = 0;
 		int y = 0;
@@ -455,6 +488,8 @@ private:
 	};
 
 	std::unordered_map<VoxelKey, VoxelState, VoxelKeyHash> temporal_voxels_;
+	DebugFrame latest_debug_frame_;
+	bool has_debug_frame_ = false;
 
 	void line_service(
 		const std::shared_ptr<autonav_interfaces::srv::AnvLines::Request> request,
@@ -506,12 +541,26 @@ private:
 		const builtin_interfaces::msg::Time & stamp);
 	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
 	std::vector<cv::Point> publishedDebugPixels() const;
-	void publishDebugImages(
+	std::vector<cv::Point> samplePixels(
+		const std::vector<cv::Point> & pixels,
+		int max_points) const;
+	std::vector<cv::Point> sampleRawLinePixels(
+		const int2 * line_points,
+		int line_points_len,
+		int max_points) const;
+	void enqueueDebugFrame(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
 		const int2 * line_points,
 		int line_points_len,
 		const std::vector<CandidatePoint> & accepted_candidates,
+		const std::vector<cv::Point> & published_pixels);
+	void debugImageTimerCallback();
+	void publishDebugImages(
+		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+		const cv::Mat & gray_image,
+		const std::vector<cv::Point> & raw_pixels,
+		const std::vector<cv::Point> & accepted_pixels,
 		const std::vector<cv::Point> & published_pixels);
 
 	void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg);
@@ -1541,12 +1590,120 @@ std::vector<cv::Point> LineDetectorNode::publishedDebugPixels() const
 	return last_valid_debug_pixels_;
 }
 
-void LineDetectorNode::publishDebugImages(
+std::vector<cv::Point> LineDetectorNode::samplePixels(
+	const std::vector<cv::Point> & pixels,
+	int max_points) const
+{
+	std::vector<cv::Point> sampled;
+	if (pixels.empty() || max_points <= 0) {
+		return sampled;
+	}
+	const int count = std::min(static_cast<int>(pixels.size()), max_points);
+	sampled.reserve(count);
+	for (int sample_idx = 0; sample_idx < count; ++sample_idx) {
+		const int idx = std::min(
+			static_cast<int>(pixels.size()) - 1,
+			static_cast<int>(
+				(static_cast<int64_t>(sample_idx) *
+				 static_cast<int64_t>(pixels.size())) /
+				static_cast<int64_t>(count)));
+		sampled.push_back(pixels[idx]);
+	}
+	return sampled;
+}
+
+std::vector<cv::Point> LineDetectorNode::sampleRawLinePixels(
+	const int2 * line_points,
+	int line_points_len,
+	int max_points) const
+{
+	std::vector<cv::Point> sampled;
+	if (!line_points || line_points_len <= 0 || max_points <= 0) {
+		return sampled;
+	}
+	const int count = std::min(line_points_len, max_points);
+	sampled.reserve(count);
+	for (int sample_idx = 0; sample_idx < count; ++sample_idx) {
+		const int idx = std::min(
+			line_points_len - 1,
+			static_cast<int>(
+				(static_cast<int64_t>(sample_idx) *
+				 static_cast<int64_t>(line_points_len)) /
+				static_cast<int64_t>(count)));
+		sampled.emplace_back(line_points[idx].x, line_points[idx].y);
+	}
+	return sampled;
+}
+
+void LineDetectorNode::enqueueDebugFrame(
 	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 	const cv::Mat & gray_image,
 	const int2 * line_points,
 	int line_points_len,
 	const std::vector<CandidatePoint> & accepted_candidates,
+	const std::vector<cv::Point> & published_pixels)
+{
+	if (!debug_image_publish_enabled_ || !_debug_image_timer ||
+		!camera_msg || gray_image.empty())
+	{
+		return;
+	}
+
+	const bool has_subscribers =
+		_debug_raw_image_pub->get_subscription_count() > 0 ||
+		_debug_mask_image_pub->get_subscription_count() > 0 ||
+		_debug_overlay_image_pub->get_subscription_count() > 0;
+	if (!has_subscribers) {
+		return;
+	}
+
+	const bool need_overlay = _debug_overlay_image_pub->get_subscription_count() > 0;
+	const int per_group_budget = std::max(1, debug_overlay_max_points_ / 3);
+
+	DebugFrame frame;
+	frame.camera_msg = camera_msg;
+	frame.gray_image = gray_image.clone();
+	if (need_overlay) {
+		frame.raw_pixels = sampleRawLinePixels(
+			line_points, line_points_len, per_group_budget);
+		std::vector<cv::Point> accepted_pixels;
+		accepted_pixels.reserve(accepted_candidates.size());
+		for (const auto & candidate : accepted_candidates) {
+			accepted_pixels.push_back(candidate.pixel);
+		}
+		frame.accepted_pixels = samplePixels(accepted_pixels, per_group_budget);
+		frame.published_pixels = samplePixels(published_pixels, per_group_budget);
+	}
+
+	std::lock_guard<std::mutex> lock(debug_frame_mutex_);
+	latest_debug_frame_ = std::move(frame);
+	has_debug_frame_ = true;
+}
+
+void LineDetectorNode::debugImageTimerCallback()
+{
+	DebugFrame frame;
+	{
+		std::lock_guard<std::mutex> lock(debug_frame_mutex_);
+		if (!has_debug_frame_) {
+			return;
+		}
+		frame = std::move(latest_debug_frame_);
+		has_debug_frame_ = false;
+	}
+	publishDebugImages(
+		frame.camera_msg,
+		frame.gray_image,
+		frame.raw_pixels,
+		frame.accepted_pixels,
+		frame.published_pixels);
+}
+
+void LineDetectorNode::publishDebugImages(
+	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+	const cv::Mat & gray_image,
+	const std::vector<cv::Point> & raw_pixels,
+	const std::vector<cv::Point> & accepted_pixels,
 	const std::vector<cv::Point> & published_pixels)
 {
 	if (!debug_image_publish_enabled_ || !camera_msg || gray_image.empty()) {
@@ -1591,19 +1748,18 @@ void LineDetectorNode::publishDebugImages(
 	}
 	if (need_overlay) {
 		cv::Mat overlay = raw_bgr.clone();
-		const int n = std::max(0, line_points_len);
-		for (int i = 0; i < n; ++i) {
-			const int x = line_points[i].x;
-			const int y = line_points[i].y;
+		for (const auto & pixel : raw_pixels) {
+			const int x = pixel.x;
+			const int y = pixel.y;
 			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
-				cv::circle(overlay, cv::Point(x, y), 2, cv::Scalar(0, 0, 255), -1);
+				cv::circle(overlay, pixel, 2, cv::Scalar(0, 0, 255), -1);
 			}
 		}
-		for (const auto & candidate : accepted_candidates) {
-			const int x = candidate.pixel.x;
-			const int y = candidate.pixel.y;
+		for (const auto & pixel : accepted_pixels) {
+			const int x = pixel.x;
+			const int y = pixel.y;
 			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
-				cv::circle(overlay, candidate.pixel, 3, cv::Scalar(0, 255, 255), -1);
+				cv::circle(overlay, pixel, 3, cv::Scalar(0, 255, 255), -1);
 			}
 		}
 		for (const auto & pixel : published_pixels) {
@@ -1758,6 +1914,14 @@ void LineDetectorNode::line_callback()
 		}
 		return (now_stamp - msg_stamp).seconds() * 1000.0;
 	};
+	auto current_message_age_ms = [this](const builtin_interfaces::msg::Time & stamp) -> double {
+		const rclcpp::Time now = this->now();
+		const rclcpp::Time msg_stamp(stamp, now.get_clock_type());
+		if (msg_stamp.nanoseconds() <= 0) {
+			return -1.0;
+		}
+		return (now - msg_stamp).seconds() * 1000.0;
+	};
 	stats.rgb_age_ms = message_age_ms(camera_msg->header.stamp);
 	stats.depth_age_ms = depth_msg ? message_age_ms(depth_msg->header.stamp) : -1.0;
 
@@ -1863,6 +2027,24 @@ void LineDetectorNode::line_callback()
 		_line_pixels_pub->publish(px_msg);
 	}
 
+	const double final_active_age_ms = current_message_age_ms(active_stamp);
+	if (max_input_age_ms_ > 0 &&
+		final_active_age_ms > static_cast<double>(max_input_age_ms_))
+	{
+		stats.rgb_age_ms = current_message_age_ms(camera_msg->header.stamp);
+		stats.depth_age_ms = depth_msg ? current_message_age_ms(depth_msg->header.stamp) : -1.0;
+		republishConfirmedCache(this->now());
+		const auto debug_start = std::chrono::steady_clock::now();
+		enqueueDebugFrame(
+			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			{}, publishedDebugPixels());
+		stats.debug_publish_ms = elapsed_ms(debug_start);
+		publish_timed_diagnostics("processed frame stale before temporal update");
+		delete[] line_points;
+		delete line_points_len;
+		return;
+	}
+
 	if (*line_points_len == 0) {
 		const rclcpp::Time stamp(active_stamp);
 		const bool yaw_gated = isYawGated();
@@ -1879,7 +2061,7 @@ void LineDetectorNode::line_callback()
 			republishConfirmedCache(active_stamp);
 		}
 		const auto debug_start = std::chrono::steady_clock::now();
-		publishDebugImages(
+		enqueueDebugFrame(
 			camera_msg, cv_ptr->image, line_points, *line_points_len,
 			{}, publishedDebugPixels());
 		stats.debug_publish_ms = elapsed_ms(debug_start);
@@ -1914,6 +2096,24 @@ void LineDetectorNode::line_callback()
 	stats.candidate_points = static_cast<int>(transformed_points.size());
 	stats.kept_clusters = transformed_points.empty() ? 0 : 1;
 
+	const double final_post_projection_age_ms = current_message_age_ms(active_stamp);
+	if (max_input_age_ms_ > 0 &&
+		final_post_projection_age_ms > static_cast<double>(max_input_age_ms_))
+	{
+		stats.rgb_age_ms = current_message_age_ms(camera_msg->header.stamp);
+		stats.depth_age_ms = depth_msg ? current_message_age_ms(depth_msg->header.stamp) : -1.0;
+		republishConfirmedCache(this->now());
+		const auto debug_start = std::chrono::steady_clock::now();
+		enqueueDebugFrame(
+			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			clustered_points, publishedDebugPixels());
+		stats.debug_publish_ms = elapsed_ms(debug_start);
+		publish_timed_diagnostics("projected frame stale before temporal update");
+		delete[] line_points;
+		delete line_points_len;
+		return;
+	}
+
 	const rclcpp::Time stamp(active_stamp);
 	const bool yaw_gated = isYawGated();
 	const auto temporal_start = std::chrono::steady_clock::now();
@@ -1943,7 +2143,7 @@ void LineDetectorNode::line_callback()
 		publishConfirmedOrEmpty(confirmed_points, active_stamp);
 	}
 	const auto debug_start = std::chrono::steady_clock::now();
-	publishDebugImages(
+	enqueueDebugFrame(
 		camera_msg, cv_ptr->image, line_points, *line_points_len,
 		clustered_points, publishedDebugPixels());
 	stats.debug_publish_ms = elapsed_ms(debug_start);

@@ -7,7 +7,8 @@
 # Algorithm reference: terrain-grade-layer-plan.md, alternative deployment
 # (lines 655-902). Steps 1-5 of the slope_layer pipeline run inside this
 # node; Steps 6-7 (projection, inflation) are handled by Nav2's stock
-# nav2_costmap_2d::ObstacleLayer subscribing to /scan_pca_filtered_points.
+# nav2_costmap_2d::ObstacleLayer after pointcloud_to_laserscan converts
+# /scan_pca_filtered_points into central-140° mark/clear scans.
 #
 # RULES.md #1: All slope math is performed in the SENSOR FRAME against
 # the LiDAR-derived surface normal. Do NOT add IMU / world-up references.
@@ -22,6 +23,10 @@ grade_detector:
     surface_normal_topic: "/pca/surface_normal"    # debug (Vector3Stamped)
     publish_grade_map: true
     publish_surface_normal: true
+    # 0 publishes once per input cloud and preserves the source lidar
+    # stamp. Do not restamp cached lidar-frame clouds with now(); that
+    # smears PCA obstacle marks during robot turns.
+    publish_rate_hz: 0.0
 
     # ── Costmap geometry (sensor-frame local grid) ───────────────────────
     internal_resolution: 0.10      # fine grid cell (m) for point binning

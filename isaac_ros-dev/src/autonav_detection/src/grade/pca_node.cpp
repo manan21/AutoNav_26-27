@@ -11,7 +11,7 @@
 // Per terrain-grade-layer-plan.md "What NOT to do":
 //   - Don't apply a TF transform to the OUTPUT cloud — publish in the
 //     same frame the input came in.
-//   - Strip to xyz only — bandwidth saving at 20 Hz × 11.5k points.
+//   - Strip to xyz only — bandwidth saving for downstream conversion.
 
 #include "autonav_detection/grade_detector.hpp"
 
@@ -120,15 +120,11 @@ class GradeDetectorNode : public rclcpp::Node {
         std::bind(&GradeDetectorNode::cloudCallback, this,
                   std::placeholders::_1));
 
-    // Steady-rate publisher. The callback caches the latest result; the
-    // timer publishes from the cache at exactly publish_rate_hz so the
-    // costmap sees a constant update cadence regardless of input jitter.
-    // If a scan is missed, we re-emit the previous cloud with a fresh
-    // stamp ("duplicate the points for that frame"). Set publish_rate_hz
-    // to 0 to fall back to publish-on-callback (default behavior of the
-    // earlier revisions).
+    // Compatibility knob only. The default publish-on-callback path
+    // preserves the source lidar stamp so Nav2 does not transform old
+    // lidar-frame obstacle geometry as if it were a current scan.
     publish_rate_hz_ =
-        this->declare_parameter<double>("publish_rate_hz", 20.0);
+        this->declare_parameter<double>("publish_rate_hz", 0.0);
     if (publish_rate_hz_ > 0.0) {
       const auto period_ns =
           std::chrono::nanoseconds(static_cast<int64_t>(1e9 / publish_rate_hz_));
@@ -264,8 +260,6 @@ class GradeDetectorNode : public rclcpp::Node {
     }
 
     if (publish_rate_hz_ > 0.0) {
-      // Cache only — the timer will publish at a steady rate, filling
-      // any input gap by re-emitting this cloud with a fresh stamp.
       std::lock_guard<std::mutex> lock(cache_mutex_);
       cached_cloud_ = std::move(out);
       has_cached_cloud_ = true;
@@ -276,11 +270,9 @@ class GradeDetectorNode : public rclcpp::Node {
     }
   }
 
-  // Steady-rate timer that pulls the latest cached cloud and publishes
-  // it with a current stamp. If the input has not produced a new scan
-  // since the last tick, this just republishes the previous cloud
-  // ("duplicate the points for that frame") so downstream consumers
-  // (Nav2 ObstacleLayer) see a constant 20 Hz cadence.
+  // Legacy steady-rate timer. Preserve the original source stamp even
+  // when compatibility mode is enabled; refreshing a lidar-frame cloud
+  // with now() smears obstacle marks during turns.
   void publishTimerTick() {
     sensor_msgs::msg::PointCloud2 cloud;
     {
@@ -288,7 +280,6 @@ class GradeDetectorNode : public rclcpp::Node {
       if (!has_cached_cloud_) return;
       cloud = cached_cloud_;
     }
-    cloud.header.stamp = this->now();
     auto out = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(cloud));
     obstacle_pub_->publish(std::move(out));
   }
@@ -341,10 +332,9 @@ class GradeDetectorNode : public rclcpp::Node {
   Eigen::Matrix3f R_cached_ = Eigen::Matrix3f::Identity();
   bool rotation_cached_ = false;
 
-  // Steady-rate publish regulator. Callback caches into cached_cloud_;
-  // publish_timer_ pulls from cache and emits with a fresh stamp so the
-  // costmap sees a constant cadence regardless of input jitter.
-  double publish_rate_hz_ = 20.0;
+  // Legacy steady-rate publish regulator. Disabled by default because
+  // stale lidar-frame geometry must not be restamped as current.
+  double publish_rate_hz_ = 0.0;
   rclcpp::TimerBase::SharedPtr publish_timer_;
   std::mutex cache_mutex_;
   sensor_msgs::msg::PointCloud2 cached_cloud_;
