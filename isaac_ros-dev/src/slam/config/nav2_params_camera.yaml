@@ -142,7 +142,7 @@ controller_server:
       # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
       # open-lane sim; 0.25 lets the optimizer actually explore/use the new
       # speed while preserving canonical 5 ft gap safety in regression.
-      vx_std: 0.25
+      vx_std: 0.40
       vy_std: 0.01
       wz_std: 0.45
       vx_max: 0.50

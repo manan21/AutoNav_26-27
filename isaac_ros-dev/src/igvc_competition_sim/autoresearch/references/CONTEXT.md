@@ -125,3 +125,17 @@ DEFERRED until the sim env is available:
 - 2026-05-30 harness: metrics.py + fitness.py built and self-tested (16/16); evaluate.py/run_one.sh/reaper.sh
   built (sim-run path unvalidated). C-ii (config-only line clearing) + C-iii (cost_penalty 3.0) implemented,
   UNVALIDATED. Loop run still blocked on a runnable sim env.
+- 2026-05-30 SIM UNBLOCKED: user installed Gazebo Fortress 6.16 + ros_gz (sudo). Brought the sim up on this
+  x86 host (commit b7278e96): prefer `ign gazebo` over Classic `gz sim`; add gz Sensors-system plugin so the
+  camera renders headless (GLX on :1) -> /line_points ~1500/run; tolerate missing rclpy RCLError in 3 sim
+  nodes; fix run_one.sh REPO depth; build copy-mode (setuptools 80 breaks --symlink-install). Harness now
+  VALIDATED end-to-end against the real sim (camera line + PCA obstacle + Nav2 + scorer + metrics).
+- 2026-05-30 BASELINE (compact_baseline, current C-ii/C-iii config): FAILS. The robot traverses most of the
+  course but (a) gets STUCK >60s mid-course -> timeout/non-completion (blocking_stop_over_60s), (b) clips
+  right_boundary_1 + pothole_0 early (min_course_clear ~ -0.16 to -0.45), (c) slow (~0.40-0.42 m/s over the
+  first 44ft, under the 0.447 = 1 mph minimum). High run-to-run variance (one run finished at ~144s, another
+  stalled) -> the 3-run gate is essential. While failing, rank candidates by PROGRESS (distance reached,
+  fewer violations, better clearance, completion) since fitness is gate-gated. Primary targets: eliminate the
+  stuck-stall, raise speed, keep margin off boundaries/potholes.
+- 2026-05-30 exp1 (in progress): vx_std 0.25->0.40 (the config comment notes 0.25 made MPPI dawdle at
+  ~0.2 m/s; raise it to use the 0.5 cap -> faster, more decisive, less stall).
