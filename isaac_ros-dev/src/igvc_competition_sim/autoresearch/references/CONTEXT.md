@@ -224,3 +224,27 @@ speed-legal, near-clean."
 small targeted clearance only there / verify Smac footprint-collision is using the line lethal cells;
 (2) cross-course clearance for tight_gaps; (3) inject odom drift in sensor_harness to actually exercise
 C-ii; (4) pothole detection (P1, still the hard qualification blocker on pothole courses).
+
+## CAMERA LINE DETECTION INVESTIGATION (2026-05-30, sim-fidelity)
+FINDING: the camera line detector emits ZERO line points on EVERY course (all /line_points msgs empty)
+-> camera line avoidance has never functioned in sim; the robot drives blind to lines (follows waypoints,
+clips boundaries it cannot see). Earlier "1506 line points" was 1506 empty MESSAGES (my error).
+Diagnosis chain (live probes + a saved camera frame /tmp/ar_frame.png):
+- RGB (9 Hz) + depth (32FC1, valid 0.4-14 m) both flow to the detector. Not a pipeline/topic issue.
+- The tape originally rendered too DARK for the real-world-tuned detector (brightness 220 / mew 200).
+  CORRECT FIX per user guidance: do NOT lower the detector thresholds (they are calibrated to real white
+  tape outdoors); make the SIM match reality. Made the tape EMISSIVE white (generate_world _tape_model)
+  -> the saved frame now shows BRIGHT white boundary lines (255). Emissive fix KEPT.
+- BUT detector still reports raw_pixels=0 (CERIAS CUDA kernel runs: cuda_detect_ms~3.8). The CERIAS gate
+  keeps a pixel only if its 7x7 window is uniformly bright (mew>200 AND sigma<5). The rendered tape is
+  bright but THIN -> a 7x7 window straddles tape+ground -> mean<200/sigma high -> rejected. Raising the
+  sim camera to 1920x1080 (to widen tape in px) did NOT resolve it; a static fat-stripe test also gave 0
+  but was likely flawed (publisher QoS/sync), so "CUDA kernel broken on x86" is UNCONFIRMED.
+- Reverted: detector thresholds (real-world calibration preserved); 1080p camera (no detection benefit +
+  slows render/PCA -> back to 960x540). KEPT: emissive tape (real-brightness match).
+NEXT (resume here for the auto_camera goal): (1) verify the detector produces line points on the REAL
+robot/Jetson with the real ZED -- if yes, the gap is sim render fidelity (tape pixels-on-target); if no,
+it's an x86/CUDA-12.9/NPP portability bug in the CERIAS integral-image path (src/line/detection.cpp +
+cuda.cu). (2) Compare real ZED resolution/FOV/camera height to the sim so the 3in tape subtends the same
+pixels the detector was tuned for. (3) A robust offline check: feed the detector a recorded REAL-robot
+RGB+depth bag and confirm raw_pixels>0. Until line detection fires, nav tuning only improves blind driving.
