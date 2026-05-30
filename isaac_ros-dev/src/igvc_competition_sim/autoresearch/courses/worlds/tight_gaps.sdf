@@ -1,0 +1,350 @@
+<?xml version='1.0'?>
+<sdf version='1.9'>
+  <world name='igvc_competition'>
+    <plugin filename='ignition-gazebo-physics-system' name='ignition::gazebo::systems::Physics'/>
+    <plugin filename='ignition-gazebo-user-commands-system' name='ignition::gazebo::systems::UserCommands'/>
+    <plugin filename='ignition-gazebo-scene-broadcaster-system' name='ignition::gazebo::systems::SceneBroadcaster'/>
+    <light name='sun' type='directional'>
+      <pose>0 0 20 0 0 0</pose>
+      <diffuse>0.8 0.8 0.75 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.35 0.15 -0.92</direction>
+    </light>
+    <gravity>0 0 -9.80665</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type='adiabatic'/>
+    <physics name='default_physics' type='ode'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <scene>
+      <ambient>0.45 0.45 0.45 1</ambient>
+      <background>0.70 0.72 0.75 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <latitude_deg>37.23027000</latitude_deg>
+      <longitude_deg>-80.42504000</longitude_deg>
+      <elevation>650.000</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+    
+    <model name='asphalt_ground'>
+      <static>1</static>
+      <pose>17.0000 0.0000 -0.0250 0.000000 0.000000 0.000000</pose>
+      <link name='link'>
+        <collision name='collision'><geometry><box><size>60.0000 30.0000 0.0500</size></box></geometry></collision>
+        <visual name='visual'>
+          <geometry><box><size>60.0000 30.0000 0.0500</size></box></geometry>
+          <material><ambient>0.16 0.16 0.15 1.0</ambient><diffuse>0.16 0.16 0.15 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_0'>
+      <static>1</static>
+      <pose>2.9924 1.8288 0.0110 0.000000 0.000000 -0.000011</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>5.9848 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_0'>
+      <static>1</static>
+      <pose>3.0076 -1.8288 0.0110 0.000000 0.000000 0.000011</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>6.0152 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_1'>
+      <static>1</static>
+      <pose>8.9924 1.8788 0.0110 0.000000 0.000000 0.016633</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>6.0161 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_1'>
+      <static>1</static>
+      <pose>9.0076 -1.7788 0.0110 0.000000 0.000000 0.016697</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>5.9856 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_2'>
+      <static>1</static>
+      <pose>15.0152 1.8787 0.0110 0.000000 0.000000 -0.016623</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>6.0313 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_2'>
+      <static>1</static>
+      <pose>14.9848 -1.7787 0.0110 0.000000 0.000000 -0.016708</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>5.9704 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_3'>
+      <static>1</static>
+      <pose>21.0152 1.7787 0.0110 0.000000 0.000000 -0.016708</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>5.9704 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_3'>
+      <static>1</static>
+      <pose>20.9848 -1.8787 0.0110 0.000000 0.000000 -0.016623</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>6.0313 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_4'>
+      <static>1</static>
+      <pose>26.9909 1.7788 0.0110 0.000000 0.000000 0.016701</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>5.9825 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_4'>
+      <static>1</static>
+      <pose>27.0091 -1.8788 0.0110 0.000000 0.000000 0.016630</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>6.0191 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='left_boundary_5'>
+      <static>1</static>
+      <pose>31.9909 1.8288 0.0110 0.000000 0.000000 0.000023</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>4.0183 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='right_boundary_5'>
+      <static>1</static>
+      <pose>32.0091 -1.8288 0.0110 0.000000 0.000000 -0.000023</pose>
+      <link name='link'>
+        
+        <visual name='visual'>
+          <geometry><box><size>3.9817 0.0762 0.0120</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap1_left'>
+      <static>1</static>
+      <pose>8.0000 1.0800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap1_right'>
+      <static>1</static>
+      <pose>8.0000 -1.0800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap2_left'>
+      <static>1</static>
+      <pose>16.0000 1.4800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap2_right'>
+      <static>1</static>
+      <pose>16.0000 -0.6800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap3_left'>
+      <static>1</static>
+      <pose>24.0000 0.6800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap3_right'>
+      <static>1</static>
+      <pose>24.0000 -1.4800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.4250 0 0 0</pose><geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.4250 0 0 0</pose>
+          <geometry><cylinder><radius>0.2800</radius><length>0.8500</length></cylinder></geometry>
+          <material><ambient>0.95 0.32 0.05 1.0</ambient><diffuse>0.95 0.32 0.05 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap4_left'>
+      <static>1</static>
+      <pose>30.0000 0.9800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.5500 0 0 0</pose><geometry><cylinder><radius>0.1800</radius><length>1.1000</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.5500 0 0 0</pose>
+          <geometry><cylinder><radius>0.1800</radius><length>1.1000</length></cylinder></geometry>
+          <material><ambient>0.25 0.25 0.25 1.0</ambient><diffuse>0.25 0.25 0.25 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='gap4_right'>
+      <static>1</static>
+      <pose>30.0000 -0.9800 0 0 0 0</pose>
+      <link name='link'>
+        <collision name='collision'><pose>0 0 0.5500 0 0 0</pose><geometry><cylinder><radius>0.1800</radius><length>1.1000</length></cylinder></geometry></collision>
+        <visual name='visual'>
+          <pose>0 0 0.5500 0 0 0</pose>
+          <geometry><cylinder><radius>0.1800</radius><length>1.1000</length></cylinder></geometry>
+          <material><ambient>0.25 0.25 0.25 1.0</ambient><diffuse>0.25 0.25 0.25 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+      </link>
+    </model>
+    <model name='shogi'>
+      <pose>0.0000 0.0000 0.1295 0 0 0.000000</pose>
+      <link name='base_link'>
+        <inertial>
+          <mass>90.0</mass>
+          <inertia>
+            <ixx>4.0</ixx><iyy>8.0</iyy><izz>9.0</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name='body_collision'>
+          <pose>0.2250 0 0.1800 0 0 0</pose>
+          <geometry><box><size>1.0900 0.8200 0.2600</size></box></geometry>
+        </collision>
+        <visual name='body_visual'>
+          <pose>0.2250 0 0.1800 0 0 0</pose>
+          <geometry><box><size>1.0900 0.8200 0.2600</size></box></geometry>
+          <material><ambient>0.22 0.28 0.36 1.0</ambient><diffuse>0.22 0.28 0.36 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+        </visual>
+        <sensor name='zed2i_rgbd' type='rgbd_camera'>
+          <pose>0.657600 0.009075 0.307230 0 0.349070 0</pose>
+          <always_on>1</always_on>
+          <update_rate>15</update_rate>
+          <visualize>false</visualize>
+          <topic>/igvc_sim/zed</topic>
+          <camera>
+            <horizontal_fov>1.918862</horizontal_fov>
+            <image>
+              <width>960</width>
+              <height>540</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.10</near>
+              <far>15.0</far>
+            </clip>
+          </camera>
+        </sensor>
+      </link>
+      <link name='left_wheel_link'>
+        <pose>0 0.36163 0 1.570796 0 0</pose>
+        <inertial><mass>3.0</mass><inertia><ixx>0.05</ixx><iyy>0.05</iyy><izz>0.05</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name='collision'><geometry><cylinder><radius>0.12946</radius><length>0.1000</length></cylinder></geometry></collision>
+        <visual name='visual'><geometry><cylinder><radius>0.12946</radius><length>0.1000</length></cylinder></geometry><material><ambient>0.03 0.03 0.03 1.0</ambient><diffuse>0.03 0.03 0.03 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material></visual>
+      </link>
+      <link name='right_wheel_link'>
+        <pose>0 -0.36163 0 1.570796 0 0</pose>
+        <inertial><mass>3.0</mass><inertia><ixx>0.05</ixx><iyy>0.05</iyy><izz>0.05</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name='collision'><geometry><cylinder><radius>0.12946</radius><length>0.1000</length></cylinder></geometry></collision>
+        <visual name='visual'><geometry><cylinder><radius>0.12946</radius><length>0.1000</length></cylinder></geometry><material><ambient>0.03 0.03 0.03 1.0</ambient><diffuse>0.03 0.03 0.03 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material></visual>
+      </link>
+      <joint name='Left_Wheel' type='revolute'>
+        <parent>base_link</parent>
+        <child>left_wheel_link</child>
+        <axis><xyz>0 1 0</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis>
+      </joint>
+      <joint name='Right_Wheel' type='revolute'>
+        <parent>base_link</parent>
+        <child>right_wheel_link</child>
+        <axis><xyz>0 1 0</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis>
+      </joint>
+      <plugin filename='ignition-gazebo-diff-drive-system' name='ignition::gazebo::systems::DiffDrive'>
+        <left_joint>Left_Wheel</left_joint>
+        <right_joint>Right_Wheel</right_joint>
+        <wheel_separation>0.72326</wheel_separation>
+        <wheel_radius>0.12946</wheel_radius>
+        <topic>/cmd_vel_gazebo</topic>
+        <odom_topic>/model/shogi/odometry</odom_topic>
+        <tf_topic>/model/shogi/tf</tf_topic>
+        <frame_id>odom</frame_id>
+        <child_frame_id>base_link</child_frame_id>
+        <odom_publish_frequency>50</odom_publish_frequency>
+        <max_linear_acceleration>1.0</max_linear_acceleration>
+        <max_angular_acceleration>2.0</max_angular_acceleration>
+      </plugin>
+    </model>
+  </world>
+</sdf>

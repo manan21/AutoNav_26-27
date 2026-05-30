@@ -17,3 +17,9 @@ ZED_Diagnostic_Results.json
 CLAUDE.md
 BEHAVIOR.md
 RESEARCH.md
+
+# auto_camera build-loop runtime outputs (experiment logs + bags are not committed)
+isaac_ros-dev/src/igvc_competition_sim/autoresearch/results/run_log.tsv
+isaac_ros-dev/src/igvc_competition_sim/autoresearch/results/runs/
+isaac_ros-dev/src/igvc_competition_sim/autoresearch/**/run.log
+*.db3
