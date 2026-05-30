@@ -27,43 +27,48 @@ wave in front of the ZED and lidar.
    - Setup: recreate tape plus wall/cone false-gap issue; start recording before placing the RViz goal.
    - Success: bag contains plans, local/global costmaps, line costmap, obstacle sources, TF, odom, action status, and recovery behavior.
 
+4. `manual_nav_shadow_course`
+   - Command: `./run_remote.sh manual_nav_shadow_course --run-name manual_nav_shadow_course_1`
+   - Setup: keep AUTO off/manual, start recording, place an RViz/Nav2 goal, then manually drive the course through ramp, cones, lines, legal gaps, and illegal narrow-gap cases.
+   - Success: bag shows whether Nav2 plans across the ramp without treating it as an obstacle, avoids cones and camera-line costs, preserves global obstacle/line memory, and produces reasonable controller outputs while the operator provides actual motion.
+
 ## P1: Costmap Memory And Obstacle Persistence
 
-4. `costmap_memory_yaw_sweep`
+5. `costmap_memory_yaw_sweep`
    - Command: `./run_remote.sh costmap_memory_yaw_sweep --run-name costmap_memory_yaw_sweep_1`
    - Setup: visible tape plus cone/wall in front of robot.
    - Success: global costmap line/obstacle memory persists while rotating away and back until properly cleared.
 
-5. `pca_obstacle_memory_manual`
+6. `pca_obstacle_memory_manual`
    - Command: `./run_remote.sh pca_obstacle_memory_manual --raw-lidar --run-name pca_obstacle_memory_manual_1`
    - Setup: manually drive past cones/walls as they enter, leave, and re-enter lidar view.
    - Success: local costmap smearing and global obstacle persistence can be measured from PCA/lidar data.
 
 ## P2: Dynamics, Ramp, And GPS Transfer
 
-6. `straight_distance_level_10m_1mph`
+7. `straight_distance_level_10m_1mph`
    - Commands:
      - `./run_remote.sh straight_distance_level_10m_1mph --run-name straight_distance_level_10m_1mph_forward_1`
      - `./run_remote.sh straight_distance_level_10m_1mph --run-name straight_distance_level_10m_1mph_reverse_direction_1`
    - Setup: level measured straight lane.
    - Success: physical distance, odom distance, lateral drift, and heading drift are consistent across opposite directions.
 
-7. `in_place_yaw_ladder`
+8. `in_place_yaw_ladder`
    - Command: `./run_remote.sh in_place_yaw_ladder --run-name in_place_yaw_ladder_level_1`
    - Setup: run only after `/odom`, `/local_ekf/odom`, `/encoders`, and `/tf` are confirmed present.
    - Success: odom yaw changes consistently with commanded yaw.
 
-8. `arc_ladder`
+9. `arc_ladder`
    - Command: `./run_remote.sh arc_ladder --run-name arc_ladder_level_1`
    - Setup: large level open area.
    - Success: left/right turn radius and yaw response under translation are repeatable.
 
-9. `ramp_ladder_full_perception`
+10. `ramp_ladder_full_perception`
    - Command: `./run_remote.sh ramp_ladder_full_perception --run-name ramp_ladder_full_perception_1`
    - Setup: competition-style ramp; align carefully before AUTO.
    - Success: bag captures speed loss, IMU pitch/grade, perception continuity, GPS, line detector, and costmaps on the ramp.
 
-10. `gps_nav_observe`
+11. `gps_nav_observe`
     - Command: `./run_remote.sh gps_nav_observe --run-name gps_nav_observe_1`
     - Setup: RViz or GPS waypoint navigation over a small course section.
     - Success: bag captures GPS topics, goals, Nav2 status, plans, costmaps, actual path, recovery behavior, and average-speed behavior.

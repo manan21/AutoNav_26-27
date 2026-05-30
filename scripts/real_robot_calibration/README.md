@@ -15,6 +15,7 @@ cd ~/code/git/AutoNav_25-26/scripts/real_robot_calibration
 ./run_remote.sh record_manual_full_course --run-name manual_course_slow_pass_1
 ./run_remote.sh camera_line_static_canon --run-name camera_line_static_canon_1
 ./run_remote.sh nav_debug_driveway_gap --run-name nav_debug_driveway_gap_1
+./run_remote.sh manual_nav_shadow_course --run-name manual_nav_shadow_course_1
 ```
 
 High-speed profiles require an explicit acknowledgement:
@@ -54,6 +55,7 @@ the real control node to publish `/autonomous_mode=true`, then command
 - `camera_line_static_canon`: strict static white-tape camera projection validation.
 - `camera_line_motion_creep`: strict 0.25 mph approach over/near white tape.
 - `nav_debug_driveway_gap`: strict autonomous Nav2 debug recording for tape/obstacle gaps, plans, costmaps, and recovery.
+- `manual_nav_shadow_course`: strict manual-driven course run while Nav2 plans from an RViz goal in the background.
 - `costmap_memory_yaw_sweep`: strict yaw sweep to test global costmap memory for lines and obstacles.
 - `pca_obstacle_memory_manual`: strict manual PCA obstacle persistence/smearing capture; usually run with `--raw-lidar`.
 - `gps_nav_observe`: strict GPS/RViz/Nav2 closed-loop observation.
@@ -81,19 +83,20 @@ P0 mission-critical perception and planning:
 1. `camera_line_static_canon`: stationary white tape at about 2 ft, 4 ft, and 8 ft; include diagonal tape plus sun/shadow if available. Confirm line pixels become `/line_points` and `/line_costmap` cells.
 2. `camera_line_motion_creep`: slow 0.25 mph approach toward/near tape. Confirm motion does not collapse projection due to TF/depth sync failures.
 3. `nav_debug_driveway_gap`: recreate tape plus wall/cone false-gap issue, start recording, then place the RViz goal. Confirm `/plan`, costmaps, line costmap, obstacle sources, and recovery behavior are recorded.
+4. `manual_nav_shadow_course`: keep AUTO off/manual, start recording, place an RViz/Nav2 goal, then manually drive the course through ramp, cones, tape, legal gaps, and illegal narrow-gap cases. Confirm Nav2 plans and costmaps respond correctly while the operator supplies actual motion.
 
 P1 costmap memory and obstacle persistence:
 
-4. `costmap_memory_yaw_sweep`: place visible tape and a cone/wall in front, then yaw away and back. Confirm global costmap line/obstacle memory persists until properly cleared.
-5. `pca_obstacle_memory_manual --raw-lidar`: manually drive past cones/walls as they enter, leave, and re-enter lidar view. Use this for PCA persistence and local-costmap smearing analysis.
+5. `costmap_memory_yaw_sweep`: place visible tape and a cone/wall in front, then yaw away and back. Confirm global costmap line/obstacle memory persists until properly cleared.
+6. `pca_obstacle_memory_manual --raw-lidar`: manually drive past cones/walls as they enter, leave, and re-enter lidar view. Use this for PCA persistence and local-costmap smearing analysis.
 
 P2 dynamics, ramp, and GPS transfer:
 
-6. `straight_distance_level_10m_1mph`: run on level measured ground in both directions with separate run names.
-7. `in_place_yaw_ladder`: rerun only after `/odom`, `/local_ekf/odom`, `/encoders`, and `/tf` are confirmed present.
-8. `arc_ladder`: repeat on level ground for turn-radius and yaw-under-translation calibration.
-9. `ramp_ladder_full_perception`: capture speed loss, IMU pitch/grade, perception continuity, and costmaps on a competition-style ramp.
-10. `gps_nav_observe`: run GPS/RViz waypoint navigation over a small course section to capture GPS, plans, recovery, and average-speed behavior.
+7. `straight_distance_level_10m_1mph`: run on level measured ground in both directions with separate run names.
+8. `in_place_yaw_ladder`: rerun only after `/odom`, `/local_ekf/odom`, `/encoders`, and `/tf` are confirmed present.
+9. `arc_ladder`: repeat on level ground for turn-radius and yaw-under-translation calibration.
+10. `ramp_ladder_full_perception`: capture speed loss, IMU pitch/grade, perception continuity, and costmaps on a competition-style ramp.
+11. `gps_nav_observe`: run GPS/RViz waypoint navigation over a small course section to capture GPS, plans, recovery, and average-speed behavior.
 
 Speed conversions used by the profiles:
 

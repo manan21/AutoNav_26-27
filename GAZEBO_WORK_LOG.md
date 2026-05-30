@@ -63,6 +63,10 @@ Selected videos:
   plus named profiles for camera-line projection, Nav2 gap debug, costmap
   memory, PCA obstacle memory, level-ground straight distance, ramp full
   perception, and GPS/Nav2 observation.
+- Added `manual_nav_shadow_course` for a manual full-course run with an active
+  RViz/Nav2 goal. The robot stays in manual mode while Nav2 publishes plans,
+  costmaps, action status, and controller outputs for ramp, line, cone, and
+  false-gap analysis.
 
 ## Findings
 
@@ -127,6 +131,10 @@ Selected videos:
   `/transformed_global_plan`, local/global costmaps, line costmap, obstacle
   sources, TF, odom, and all line detector diagnostics. The selected manual
   bags are not enough for planner clearance analysis.
+- Collect `manual_nav_shadow_course` before risky autonomy if possible. It
+  should show whether Nav2 would route over the ramp, avoid camera-line costs,
+  avoid cones, and reject illegal narrow gaps while the operator supplies
+  actual motion.
 - Explain the `in_place_yaw_ladder_1` odom result before using yaw ladder data
   for physics calibration.
 - Treat straight-line odom scale as a candidate diagnostic; do not encode the

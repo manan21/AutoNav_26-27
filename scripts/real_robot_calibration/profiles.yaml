@@ -62,6 +62,15 @@
       "strict_required_topics": true,
       "operator_notes": "Recreate the wall/obstacle plus tape gap issue. Start recording, then place the RViz goal and let Nav2 drive with e-stop coverage."
     },
+    "manual_nav_shadow_course": {
+      "description": "Strict manual-driven full-course capture while Nav2 plans in the background from an RViz goal.",
+      "bag_profile": "canon_full",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "strict_required_topics": true,
+      "operator_notes": "Keep AUTO off/manual. Start recording, place the RViz/Nav2 goal, then manually drive the course through ramp, cones, lines, and narrow-gap cases. Nav2 should publish plans/costmaps for analysis, but the operator provides actual motion."
+    },
     "costmap_memory_yaw_sweep": {
       "description": "Strict line/obstacle global-costmap memory validation while rotating away from visible tape and obstacles.",
       "bag_profile": "canon_full",
