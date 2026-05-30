@@ -1,201 +1,28 @@
 <!--
-  AutoNav behavior tree — persistent goal pursuit with GoalBender and
-  breadcrumb-reverse stuck-extraction.
+  Pass-through BT (branch fix/lines_again_no_bt).
 
-  Flow:
-    1. GoalBender bends the goal toward the front when:
-         - the real goal AND the planned path are both behind the robot,
-         - OR the path is behind, goal is in front, but the breadcrumb
-           buffer is empty (breadcrumb-reverse has nothing left to spend
-           so we must turn the robot around).
-       Otherwise pass the goal through.
-    2. Compute path to the (possibly bent) goal (replan at 3 Hz).
-    3. Forward/reverse dispatch:
-         - If the path leads forward → FollowPath.
-         - Else if path leads behind and goal is in front → spend one
-           breadcrumb via the BreadcrumbReverse behavior. Replan next
-           tick; if that path is forward, FollowPath resumes.
-    4. If everything stalls, cycle through recoveries forever.
+  All BT failure triggers stripped. GoalUpdater → ComputePathToPose
+  → FollowPath. No PathFootprintSafe, no RecoveryNode, no recoveries.
 
-  Recovery sequence:
-    1. BackUp           — reverse out of tight spots
-    2. GradientEscape   — follow costmap gradient away from high cost
-    3. Clear costmaps   — remove ghost obstacles
-    4. Wait 1 s         — let transient obstacles pass
+  GoalUpdater is kept so 1 Hz GPS goal refreshes don't cancel the
+  in-flight FollowPath. Planner runs at 3 Hz; if it ever returns
+  FAILURE the goal aborts, but planner is tuned to always emit a
+  path (large goal tolerance, allow_unknown).
+
+  Controller is tuned so MPPI never reports FAILURE
+  (failure_tolerance: -1, progress checker effectively disabled).
+  This means the robot will sit idle if MPPI emits zero velocity
+  rather than ever surfacing a failure — by design on this branch.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="999" name="NavigateRecovery">
-      <PipelineSequence name="NavigateWithReplanning">
-        <!-- Replan at 3 Hz. The standard Nav2 approach to "what if the
-             path becomes invalid?" is just to replan often enough that
-             a fresh path naturally replaces a stale one within one
-             cycle. 3 Hz matches the global costmap update cadence and
-             gives a ~333 ms worst-case staleness window at the planner,
-             without the false-positive issues of an explicit
-             IsPathValid check (which can fail-cascade into recovery on
-             a transient one-tick costmap blip). PathFootprintSafe below
-             densely validates planner outputs against the rectangular
-             nav_center footprint before FollowPath can execute them. Costs
-             at or above the configured threshold are treated as keepout, so
-             a sparse lattice path cannot skip between lethal/high-cost cells. -->
-        <RateController hz="3.0">
-          <!--
-            GoalUpdater intercepts in-mission goal corrections from
-            gps_handler_node. It subscribes to /goal_update; each tick
-            it copies input_goal -> output_goal, but if a fresh
-            /goal_update message has arrived since the last tick the
-            output_goal is rewritten in place WITHOUT canceling the
-            FollowPath action below.
-
-            This is what keeps the controller running between
-            gps_handler's 1 Hz goal refreshes. Previously every fresh
-            /goal_pose re-issued NavigateToPose, which canceled the
-            in-flight FollowPath, briefly halting the robot until the
-            new global path was ready (the stop/go observed during
-            mission runs). With GoalUpdater, in-mission corrections
-            flow through {live_goal}, the planner re-runs at 3 Hz on
-            the new goal, and FollowPath keeps emitting cmd_vel
-            uninterrupted as it consumes the next {path} the planner
-            writes.
-          -->
-          <GoalUpdater input_goal="{goal}" output_goal="{live_goal}">
-            <Sequence name="BendAndPlan">
-              <!-- Bend goal if it's behind the robot -->
-              <!-- previous_path feeds prior tick's {path} so the bend fires when the path U-turns. -->
-              <GoalBender input_goal="{live_goal}" output_goal="{nav_goal}"
-                previous_path="{path}"
-                bend_distance="0.8" angle_threshold="2.20" bend_angle="1.05"
-                min_lookahead_m="0.6"/>
-              <!-- 8 retries × 0.5 s wait = ~4 s of patient retrying
-                   before the BT escalates to the heavy RecoveryFallback
-                   (BackUp, etc.). The previous 3 × 0.1 s (=0.3 s)
-                   budget was tight enough that fresh bring-up timing
-                   (SLAM publishing map→odom for the first time, costmap
-                   subscribers latching first scan, /tf_static warm-up)
-                   would blow through retries and the robot would BackUp
-                   instead of just *waiting* for the system to settle —
-                   then operators saw "first goal does nothing, second
-                   goal works" because the second goal-send arrives
-                   after the recovery dance has cleared the start gate.
-                   4 s is generous for warm-up while staying short
-                   enough that genuinely-unreachable goals still
-                   escalate within a reasonable window. ClearCostmap
-                   between retries also handles the transient-inflation
-                   case the previous PHASEA tuning targeted; this just
-                   widens the budget for both. -->
-              <RecoveryNode number_of_retries="8" name="ComputePathRecovery">
-                <Sequence name="ComputeAndValidatePath">
-                  <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
-                  <PathFootprintSafe path="{path}"
-                    costmap_topic="global_costmap/costmap_raw"
-                    global_frame="map"
-                    robot_base_frame="nav_center"
-                    footprint="[[0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41]]"
-                    footprint_padding="0.05"
-                    lethal_threshold="254"
-                    inscribed_threshold="200"
-                    ignore_unknown="true"
-                    pose_stride="1"
-                    max_pose_step_m="0.05"
-                    max_yaw_step_rad="0.10"
-                    max_costmap_age_ms="750"/>
-                </Sequence>
-                <Sequence name="PlanRecovery">
-                  <!-- LOCAL clear only (sim spec): wiping the entire
-                       global costmap erases distant lidar marks the
-                       robot needs to re-find its way back, and the
-                       planner immediately draws a straight line through
-                       the now-empty space. A 1 m around-robot clear
-                       handles the transient-inflation case without that
-                       memory loss. -->
-                  <ClearCostmapAroundRobot name="ClearAroundRobot-PlanRecovery"
-                    service_name="local_costmap/clear_around_local_costmap"
-                    reset_distance="1.0"/>
-                  <Wait wait_duration="0.5"/>
-                </Sequence>
-              </RecoveryNode>
-            </Sequence>
-          </GoalUpdater>
-        </RateController>
-        <!-- Forward/reverse dispatch.
-             When the planner's path leads behind the robot but the
-             actual goal is in front (IsForwardBlocked = SUCCESS), the
-             forward-only controller should not be asked to solve a reverse
-             path. Take the BreadcrumbReverse
-             branch — drive backward to the most recent breadcrumb the
-             robot dropped on its way in. The next RateController tick
-             replans from the new pose; if that path is forward-leading,
-             the ReactiveFallback halts breadcrumb_reverse and the
-             ForwardPathOK branch runs FollowPath. If breadcrumb_reverse
-             FAILS (buffer empty or rear obstacle), the Wait child holds
-             for the next planning tick — GoalBender now fires when the
-             buffer is empty, bending the goal to force a turnaround. -->
-        <ReactiveFallback name="FollowOrReverse">
-          <Sequence name="ForwardPathOK">
-            <Inverter>
-              <IsForwardBlocked path="{path}" goal="{nav_goal}"
-                angle_threshold="2.20" path_lookahead_index="5"
-                min_lookahead_m="0.6"/>
-            </Inverter>
-            <!-- Path-following test tune: give MPPI more chances before
-                 escalating to the outer recovery dance. Recovery waits
-                 briefly before clearing so transient controller misses do
-                 not immediately churn the local costmap. -->
-            <RecoveryNode number_of_retries="8" name="FollowPathRecovery">
-              <!-- Keep planner updates fast, but do not replace the
-                   FollowPath action for every same-corridor 3 Hz replan.
-                   PathSignificantlyChanged compares route geometry across
-                   the full path and also forces a bounded periodic refresh,
-                   so real tape/cone route changes still reach MPPI while
-                   identical path refreshes do not churn the action server. -->
-              <PathSignificantlyChanged path="{path}" filtered_path="{controller_path}">
-                <FollowPath path="{controller_path}" controller_id="FollowPath"/>
-              </PathSignificantlyChanged>
-              <Sequence name="FollowPathRetryPauseThenClear">
-                <Wait wait_duration="0.2"/>
-                <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
-                  service_name="local_costmap/clear_around_local_costmap"
-                  reset_distance="1.0"/>
-              </Sequence>
-            </RecoveryNode>
-          </Sequence>
-          <!-- Path is forward-blocked AND breadcrumb buffer still has
-               crumbs — spend one. Each invocation reverses to the most
-               recent breadcrumb (~10 cm of travel). If FAILED (buffer
-               empty / lethal rear cell / timeout), fall through to
-               Wait, which lets the next 3 Hz RateController tick run
-               GoalBender — which fires on (path_behind && buffer_empty)
-               to bend the goal and turn the robot around. -->
-          <DriveOnHeading server_name="breadcrumb_reverse"
-            dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
-          <!-- Sim-tuned: 0.1 s wait between failed breadcrumb_reverse
-               attempts. The original 1.1 s gated each retry on a fresh
-               RateController tick, but the sim showed the BT can
-               re-evaluate as fast as the planner publishes — every
-               crumb pop the planner runs and we re-check the path's
-               first-segment bearing. Shorter wait → recovery clears
-               faster when the geometry actually opens up. -->
-          <Wait wait_duration="0.1" name="WaitForPlanner"/>
-        </ReactiveFallback>
-      </PipelineSequence>
-      <ReactiveFallback name="RecoveryFallback">
-        <GoalUpdated/>
-        <RoundRobin name="RecoveryActions">
-          <Wait wait_duration="1"/>
-          <!-- LOCAL-only clear in the recovery dance. Global wipe was
-               removed per sim spec: the global costmap accumulates
-               distant obstacles via local_mirror_layer; wiping it makes
-               the planner think the world is empty and route through
-               invisible walls. -->
-          <ClearCostmapAroundRobot name="ClearAroundRobot-Dance"
-            service_name="local_costmap/clear_around_local_costmap"
-            reset_distance="2.0"/>
-          <DriveOnHeading server_name="gradient_escape"
-            dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
-          <BackUp backup_dist="0.10" backup_speed="0.05"/>
-        </RoundRobin>
-      </ReactiveFallback>
-    </RecoveryNode>
+    <PipelineSequence name="NavigateWithReplanning">
+      <RateController hz="3.0">
+        <GoalUpdater input_goal="{goal}" output_goal="{live_goal}">
+          <ComputePathToPose goal="{live_goal}" path="{path}" planner_id="GridBased"/>
+        </GoalUpdater>
+      </RateController>
+      <FollowPath path="{path}" controller_id="FollowPath"/>
+    </PipelineSequence>
   </BehaviorTree>
 </root>
