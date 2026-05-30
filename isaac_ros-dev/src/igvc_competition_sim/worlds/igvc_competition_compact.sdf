@@ -4,6 +4,13 @@
     <plugin filename='ignition-gazebo-physics-system' name='ignition::gazebo::systems::Physics'/>
     <plugin filename='ignition-gazebo-user-commands-system' name='ignition::gazebo::systems::UserCommands'/>
     <plugin filename='ignition-gazebo-scene-broadcaster-system' name='ignition::gazebo::systems::SceneBroadcaster'/>
+    <!-- Sensors system: REQUIRED for the rgbd camera to render. When a world
+         lists explicit system <plugin> tags, gz-sim loads ONLY those, so the
+         camera produces no images without this (line detection sees nothing).
+         auto_camera env-compat fix. -->
+    <plugin filename='ignition-gazebo-sensors-system' name='ignition::gazebo::systems::Sensors'>
+      <render_engine>ogre2</render_engine>
+    </plugin>
     <light name='sun' type='directional'>
       <pose>0 0 20 0 0 0</pose>
       <diffuse>0.8 0.8 0.75 1</diffuse>
@@ -14,9 +21,9 @@
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type='adiabatic'/>
     <physics name='default_physics' type='ode'>
-      <max_step_size>0.001</max_step_size>
+      <max_step_size>0.010</max_step_size>
       <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_update_rate>100</real_time_update_rate>
     </physics>
     <scene>
       <ambient>0.45 0.45 0.45 1</ambient>
@@ -44,243 +51,221 @@
     </model>
     <model name='left_boundary_0'>
       <static>1</static>
-      <pose>2.4277 1.5971 0.0110 0.000000 0.000000 0.029803</pose>
+      <pose>2.4277 1.5971 0.011 0 0 0.029803</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.9490 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.9490 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_0'>
       <static>1</static>
-      <pose>2.5723 -1.4471 0.0110 0.000000 0.000000 0.030175</pose>
+      <pose>2.5723 -1.4471 0.011 0 0 0.030175</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.0555 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.0555 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_1'>
       <static>1</static>
-      <pose>7.4506 2.3034 0.0110 0.000000 0.000000 0.243224</pose>
+      <pose>7.4506 2.3034 0.011 0 0 0.243224</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.2535 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.2535 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_1'>
       <static>1</static>
-      <pose>7.5494 -1.5034 0.0110 0.000000 0.000000 -0.054059</pose>
+      <pose>7.5494 -1.5034 0.011 0 0 -0.054059</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.9083 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.9083 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_2'>
       <static>1</static>
-      <pose>12.7627 3.0442 0.0110 0.000000 0.000000 0.039140</pose>
+      <pose>12.7627 3.0442 0.011 0 0 0.039140</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.5297 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.5297 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_2'>
       <static>1</static>
-      <pose>12.2373 -2.2442 0.0110 0.000000 0.000000 -0.265426</pose>
+      <pose>12.2373 -2.2442 0.011 0 0 -0.265426</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.6370 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6370 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_3'>
       <static>1</static>
-      <pose>17.8159 1.7863 0.0110 0.000000 0.000000 -0.537765</pose>
+      <pose>17.8159 1.7863 0.011 0 0 -0.537765</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.3338 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.3338 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_3'>
       <static>1</static>
-      <pose>17.1841 -2.7363 0.0110 0.000000 0.000000 0.042803</pose>
+      <pose>17.1841 -2.7363 0.011 0 0 0.042803</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.4240 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.4240 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_4'>
       <static>1</static>
-      <pose>22.4255 0.6864 0.0110 0.000000 0.000000 0.114236</pose>
+      <pose>22.4255 0.6864 0.011 0 0 0.114236</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.6686 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6686 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_4'>
       <static>1</static>
-      <pose>22.5745 -2.3364 0.0110 0.000000 0.000000 0.105510</pose>
+      <pose>22.5745 -2.3364 0.011 0 0 0.105510</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.3918 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.3918 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_5'>
       <static>1</static>
-      <pose>27.2206 2.2927 0.0110 0.000000 0.000000 0.496115</pose>
+      <pose>27.2206 2.2927 0.011 0 0 0.496115</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.6310 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.6310 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_5'>
       <static>1</static>
-      <pose>27.7794 -2.2427 0.0110 0.000000 0.000000 -0.075222</pose>
+      <pose>27.7794 -2.2427 0.011 0 0 -0.075222</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>5.0622 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>5.0622 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_6'>
       <static>1</static>
-      <pose>31.9480 3.1301 0.0110 0.000000 0.000000 -0.219729</pose>
+      <pose>31.9480 3.1301 0.011 0 0 -0.219729</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.6135 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.6135 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_6'>
       <static>1</static>
-      <pose>32.0520 -2.1801 0.0110 0.000000 0.000000 0.143561</pose>
+      <pose>32.0520 -2.1801 0.011 0 0 0.143561</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>3.5338 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>3.5338 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_7'>
       <static>1</static>
-      <pose>36.1848 2.0209 0.0110 0.000000 0.000000 -0.296421</pose>
+      <pose>36.1848 2.0209 0.011 0 0 -0.296421</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.1522 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.1522 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_7'>
       <static>1</static>
-      <pose>35.8152 -1.7709 0.0110 0.000000 0.000000 0.077497</pose>
+      <pose>35.8152 -1.7709 0.011 0 0 0.077497</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>4.0410 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>4.0410 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='internal_no_cross'>
       <static>1</static>
-      <pose>17.0000 0.7000 0.0110 0.000000 0.000000 -1.570796</pose>
+      <pose>17.0000 0.7000 0.011 0 0 -1.570796</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>1.8000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>1.8000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='dashed_right_boundary_stress_0'>
       <static>1</static>
-      <pose>25.8743 -2.1225 0.0110 0.000000 0.000000 -0.059928</pose>
+      <pose>25.8743 -2.1225 0.011 0 0 -0.059928</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='dashed_right_boundary_stress_1'>
       <static>1</static>
-      <pose>27.0722 -2.1943 0.0110 0.000000 0.000000 -0.059928</pose>
+      <pose>27.0722 -2.1943 0.011 0 0 -0.059928</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='dashed_right_boundary_stress_2'>
       <static>1</static>
-      <pose>28.2700 -2.2662 0.0110 0.000000 0.000000 -0.059928</pose>
+      <pose>28.2700 -2.2662 0.011 0 0 -0.059928</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='dashed_right_boundary_stress_3'>
       <static>1</static>
-      <pose>29.4679 -2.3381 0.0110 0.000000 0.000000 -0.059928</pose>
+      <pose>29.4679 -2.3381 0.011 0 0 -0.059928</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>0.7500 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7500 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='dashed_right_boundary_stress_4'>
       <static>1</static>
-      <pose>30.6457 -2.4087 0.0110 0.000000 0.000000 -0.059928</pose>
+      <pose>30.6457 -2.4087 0.011 0 0 -0.059928</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>0.7099 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>0.7099 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>

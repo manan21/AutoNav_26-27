@@ -31,7 +31,7 @@
     publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
-    tf_wait_for_stamp_ms: 125         # Bounded stamped-TF wait. GPU projection leaves enough budget to wait a little longer without using scatter-prone latest TF.
+    tf_wait_for_stamp_ms: 300         # Distributed sim can put RGB-D frames ~100-200 ms ahead of TF. Wait longer for stamped TF instead of using scatter-prone latest TF.
     line_hold_timeout_ms: 8000        # Bridge RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
     motion_cache_hold_ms: 8000        # Same hold during yaw/TF misses so projection gaps do not clear the local costmap.
     line_memory_max_points: 12000     # cap confirmed output points

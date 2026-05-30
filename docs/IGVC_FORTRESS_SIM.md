@@ -93,6 +93,112 @@ Useful environment overrides:
 - `LAUNCH_GAZEBO=false` for harness-only debugging
 - `LAUNCH_BRIDGE=false` when using a custom bridge
 
+## Distributed Laptop + Jetson Mode
+
+Use this mode when Gazebo runs on the laptop/ROS VM and the spare Jetson runs
+the robot stack. This keeps Gazebo rendering and physics off the Jetson while
+still exercising the Jetson CPU/GPU with Nav2, MPPI, camera-line CUDA
+projection, PCA, costmaps, BT plugins, and command generation.
+
+Network baseline:
+
+- Mac/laptop Ethernet: `10.66.0.1/24`
+- Spare Jetson Ethernet: `10.66.0.2/24`
+- Gazebo Lima VM Ethernet: `10.66.0.3/24` on the direct Jetson Ethernet
+  bridge.
+- SSH alias: `jetson-spare-eth`
+- Recommended ROS graph: `ROS_DOMAIN_ID=42`, `ROS_LOCALHOST_ONLY=0`
+- Confirm the link is gigabit before testing: `1000baseT <full-duplex>` on the
+  laptop and `Speed: 1000Mb/s` on the Jetson.
+
+For the current Mac/Lima setup, the Gazebo VM is `autonav-gazebo-sim`. Its
+`~/.lima/autonav-gazebo-sim/lima.yaml` should include both the normal bridged
+network and the direct Jetson Ethernet bridge:
+
+```yaml
+networks:
+- lima: bridged
+- lima: jetsoneth
+```
+
+The VM should assign the Jetson-side interface `10.66.0.3/24`; on the current
+machine this is handled by the VM-local systemd unit
+`autonav-jetsoneth-ip.service`.
+
+Before running camera-line tests, confirm the generated SDF world contains the
+Gazebo Sensors system. Without it, Gazebo publishes `/clock` and odometry but
+does not publish `/igvc_sim/zed/*` camera topics:
+
+```bash
+grep -n "ignition-gazebo-sensors-system" \
+  isaac_ros-dev/src/igvc_competition_sim/worlds/igvc_competition_compact.sdf
+```
+
+Run the Jetson stack inside the `koopa-kingdom` container:
+
+```bash
+ssh jetson-spare-eth
+cd ~/AutoNav_25-26
+ROS_DOMAIN_ID=42 AUTONAV_CONTAINER_GUI=0 ./env/docker/run-container.sh --no-attach
+docker exec -it -u admin \
+  -e ROS_DOMAIN_ID=42 \
+  -e ROS_LOCALHOST_ONLY=0 \
+  -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+  -e AUTONAV_REPO=/autonav \
+  -e ROS_WS=/autonav/isaac_ros-dev \
+  koopa-kingdom \
+  /bin/bash -lc 'cd /autonav/isaac_ros-dev/src/igvc_competition_sim && ./Run_IGVC_COMPETITION_FORTRESS_JETSON_STACK.command'
+```
+
+Run Gazebo and the Gazebo bridge on the laptop/ROS VM:
+
+```bash
+cd isaac_ros-dev/src/igvc_competition_sim
+ROS_DOMAIN_ID=42 ROS_LOCALHOST_ONLY=0 RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+  ./Run_IGVC_COMPETITION_FORTRESS_SIM_ONLY.command
+```
+
+Quick link validation:
+
+```bash
+# VM -> Jetson
+limactl shell autonav-gazebo-sim ping -c 2 10.66.0.2
+
+# Jetson -> VM
+ssh jetson-spare-eth 'ping -c 2 10.66.0.3'
+
+# ROS camera topics visible from inside the Jetson container
+ssh jetson-spare-eth 'docker exec -u admin \
+  -e ROS_DOMAIN_ID=42 \
+  -e ROS_LOCALHOST_ONLY=0 \
+  -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+  koopa-kingdom \
+  bash -lc "source /opt/ros/humble/setup.bash && \
+    source /autonav/isaac_ros-dev/install/setup.bash && \
+    timeout 4s ros2 topic hz /igvc_sim/zed/image"'
+```
+
+Role split:
+
+- Laptop/VM: Gazebo Fortress, `ros_gz_bridge`, `/clock`, rendered RGB-D camera,
+  Gazebo odometry, course monitor. The generated world runs physics at 100 Hz
+  so distributed `/clock` traffic does not flood DDS.
+- Jetson: `igvc_camera_bridge`, lightweight `igvc_odom_bridge` for 50 Hz
+  `/odom`, `/local_ekf/odom`, and `/tf`, `igvc_sensor_harness` for simulated
+  lidar/GPS/map support, CUDA camera line detector, PCA detector,
+  pointcloud-to-laserscan converters, GPS waypoint action server, robot state
+  publisher, Nav2, MPPI, custom BT plugins, and calibrated
+  `/cmd_vel -> /cmd_vel_gazebo`.
+
+Do not publish odom/TF from both sides in distributed mode. The VM sim-only
+script disables `launch_odom_bridge`, and the Jetson stack script runs
+`launch_odom_bridge:=true publish_harness_odom_tf:=false` so Nav2 sees one
+monotonic 50 Hz base transform stream.
+
+This mode intentionally moves raw RGB-D camera topics over the Ethernet link.
+Use wired gigabit Ethernet or better; the Jetson USB gadget link is only
+100 Mbps in this setup and is not appropriate for full-rate raw camera/depth.
+
 Line-source modes:
 
 - `camera`: bridges Gazebo RGB-D into ZED topics, runs the CUDA camera line detector, and uses `nav2_params_camera.yaml`.

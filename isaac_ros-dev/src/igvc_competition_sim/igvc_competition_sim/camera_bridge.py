@@ -65,6 +65,7 @@ class IgvcCameraBridge(Node):
         self.declare_parameter("fallback_width", 960)
         self.declare_parameter("fallback_height", 540)
         self.declare_parameter("fallback_horizontal_fov_rad", 1.918862)
+        self.declare_parameter("override_inconsistent_camera_info", True)
 
         self.optical_frame_id = str(
             self.get_parameter("optical_frame_id").value)
@@ -75,6 +76,8 @@ class IgvcCameraBridge(Node):
         self.fallback_height = int(self.get_parameter("fallback_height").value)
         self.fallback_horizontal_fov_rad = float(
             self.get_parameter("fallback_horizontal_fov_rad").value)
+        self.override_inconsistent_camera_info = bool(
+            self.get_parameter("override_inconsistent_camera_info").value)
 
         image_qos = QoSProfile(depth=10)
         info_qos = QoSProfile(depth=1)
@@ -149,7 +152,7 @@ class IgvcCameraBridge(Node):
         self.depth_info_pub.publish(msg)
 
     def _fill_camera_info_if_empty(self, msg: CameraInfo) -> None:
-        if msg.k[0] > 0.0 and msg.k[4] > 0.0:
+        if not self._camera_info_needs_override(msg):
             return
         width = int(msg.width) if msg.width else self.fallback_width
         height = int(msg.height) if msg.height else self.fallback_height
@@ -164,6 +167,25 @@ class IgvcCameraBridge(Node):
         msg.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
         msg.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         msg.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+    def _camera_info_needs_override(self, msg: CameraInfo) -> bool:
+        if msg.k[0] <= 0.0 or msg.k[4] <= 0.0:
+            return True
+        if not self.override_inconsistent_camera_info:
+            return False
+
+        width = int(msg.width) if msg.width else self.fallback_width
+        height = int(msg.height) if msg.height else self.fallback_height
+        expected_cx = 0.5 * (width - 1)
+        expected_cy = 0.5 * (height - 1)
+        # ros_gz_bridge/Fortress can report 960x540 image dimensions while
+        # leaving 320x240 intrinsics in K/P. Projection then maps real ground
+        # tape pixels to impossible base-frame heights, so treat a principal
+        # point far from the declared image center as invalid.
+        return (
+            abs(float(msg.k[2]) - expected_cx) > max(4.0, 0.05 * width)
+            or abs(float(msg.k[5]) - expected_cy) > max(4.0, 0.05 * height)
+        )
 
     def _publish_static_camera_transforms(self) -> None:
         stamp = self.get_clock().now().to_msg()

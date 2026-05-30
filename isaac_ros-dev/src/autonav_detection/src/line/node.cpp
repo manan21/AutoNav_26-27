@@ -31,6 +31,7 @@
 #include <queue>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 class LineDetectorNode : public rclcpp::Node {
 
@@ -842,6 +843,19 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	int tf_success = 0;
 	const int roi_min_y = static_cast<int>(
 		std::round(static_cast<double>(depth_msg->height) * roi_min_y_fraction_));
+	std::vector<int2> roi_line_points;
+	roi_line_points.reserve(static_cast<size_t>(line_points_len));
+	for (int i = 0; i < line_points_len; ++i) {
+		if (line_points[i].y < roi_min_y) {
+			stats.roi_rejects++;
+			continue;
+		}
+		roi_line_points.push_back(line_points[i]);
+	}
+	const int roi_line_points_len = static_cast<int>(roi_line_points.size());
+	if (roi_line_points_len <= 0) {
+		return depth_line_points;
+	}
 
 	auto to_row_major_float = [](const Eigen::Affine3d & transform, float * out) {
 		const Eigen::Matrix4d matrix = transform.matrix();
@@ -852,7 +866,7 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		}
 	};
 
-	const int projection_count = std::min(line_points_len, projection_max_points_);
+	const int projection_count = std::min(roi_line_points_len, projection_max_points_);
 	if (projection_count > 0) {
 		float target_matrix[16];
 		float base_matrix[16];
@@ -862,8 +876,8 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		LineProjectionStats projection_stats;
 		const auto projection_start = std::chrono::steady_clock::now();
 		const cudaError_t projection_err = project_line_pixels_cuda(
-			line_points,
-			line_points_len,
+			roi_line_points.data(),
+			roi_line_points_len,
 			depth_ptr_u8,
 			depth_msg->data.size(),
 			static_cast<int>(depth_msg->width),
@@ -927,30 +941,27 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 	// CPU fallback uses the same even sampling as the GPU path. Avoid a
 	// simple integer stride here: when line_points_len is only slightly
 	// above the cap, floor-striding samples a biased prefix of the line.
-	const int cpu_projection_count = std::min(line_points_len, projection_max_points_);
+	const int cpu_projection_count = std::min(roi_line_points_len, projection_max_points_);
 
 	// Process each line point
 	const auto projection_start = std::chrono::steady_clock::now();
 	for (int sample_idx = 0; sample_idx < cpu_projection_count; ++sample_idx) {
 		const int i = std::min(
-			line_points_len - 1,
+			roi_line_points_len - 1,
 			static_cast<int>(
-				(static_cast<int64_t>(sample_idx) * line_points_len) /
+				(static_cast<int64_t>(sample_idx) * roi_line_points_len) /
 				cpu_projection_count));
-		if (line_points[i].y < roi_min_y) {
-			stats.roi_rejects++;
-			continue;
-		}
+		const int2 & point = roi_line_points[i];
 
 		// Bounds checking
-		if (line_points[i].x < 0 || line_points[i].x >= (int)depth_msg->width ||
-			line_points[i].y < 0 || line_points[i].y >= (int)depth_msg->height) {
+		if (point.x < 0 || point.x >= (int)depth_msg->width ||
+			point.y < 0 || point.y >= (int)depth_msg->height) {
 			stats.out_of_bounds++;
 			continue;
 		}
 
 		float depth_m;
-		if (!read_nearest_depth(line_points[i].x, line_points[i].y, depth_m)) {
+		if (!read_nearest_depth(point.x, point.y, depth_m)) {
 			stats.depth_rejects++;
 			continue;
 		}
@@ -958,8 +969,8 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 		valid_count++;
 
 		// Manual 3D proj — camera optical frame
-		double x_normalized = (line_points[i].x - cx) / fx;
-		double y_normalized = (line_points[i].y - cy) / fy;
+		double x_normalized = (point.x - cx) / fx;
+		double y_normalized = (point.y - cy) / fy;
 
 		double px = x_normalized * depth_m;
 		double py = y_normalized * depth_m;
@@ -994,7 +1005,7 @@ std::vector<LineDetectorNode::CandidatePoint> LineDetectorNode::map_transform(
 			CandidatePoint candidate;
 			candidate.target = Eigen::Vector3d(p_target.x(), p_target.y(), 0.0);
 			candidate.base = p_base;
-			candidate.pixel = cv::Point(line_points[i].x, line_points[i].y);
+			candidate.pixel = cv::Point(point.x, point.y);
 			depth_line_points.emplace_back(candidate);
 			tf_success++;
 		}

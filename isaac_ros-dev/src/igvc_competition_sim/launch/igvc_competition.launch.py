@@ -124,7 +124,8 @@ def _line_detection_mode(context) -> str:
 
 
 def _robot_state_publisher(context, *args, **kwargs):
-    _ = context
+    if not _truthy(context, "launch_robot_state_publisher"):
+        return []
     return [
         Node(
             package="robot_state_publisher",
@@ -180,7 +181,7 @@ def _nav2_process(context, *args, **kwargs):
 
 
 def _camera_bridge_process(context, *args, **kwargs):
-    if not _truthy(context, "launch_bridge"):
+    if not _truthy(context, "launch_camera_bridge"):
         return []
     if _line_detection_mode(context) != "camera":
         return []
@@ -196,6 +197,8 @@ def _camera_bridge_process(context, *args, **kwargs):
 
 
 def _harness_process(context, *args, **kwargs):
+    if not _truthy(context, "launch_harness"):
+        return []
     return [
         Node(
             package="igvc_competition_sim",
@@ -211,12 +214,32 @@ def _harness_process(context, *args, **kwargs):
                     "ground_truth_pca"),
                 "publish_ground_truth_lines": (
                     _line_detection_mode(context) == "ground_truth"),
+                "publish_odom_tf": ParameterValue(
+                    LaunchConfiguration("publish_harness_odom_tf"),
+                    value_type=bool,
+                ),
             }],
         )
     ]
 
 
+def _odom_bridge_process(context, *args, **kwargs):
+    if not _truthy(context, "launch_odom_bridge"):
+        return []
+    return [
+        Node(
+            package="igvc_competition_sim",
+            executable="igvc_odom_bridge",
+            name="igvc_odom_bridge",
+            output="screen",
+            parameters=[{"use_sim_time": True}],
+        )
+    ]
+
+
 def _calibrated_dynamics_process(context, *args, **kwargs):
+    if not _truthy(context, "launch_dynamics"):
+        return []
     return [
         Node(
             package="igvc_competition_sim",
@@ -237,6 +260,8 @@ def _calibrated_dynamics_process(context, *args, **kwargs):
 
 
 def _detection_process(context, *args, **kwargs):
+    if not _truthy(context, "launch_detection"):
+        return []
     mode = _line_detection_mode(context)
     return [
         IncludeLaunchDescription(
@@ -261,6 +286,9 @@ def _detection_process(context, *args, **kwargs):
 def generate_launch_description() -> LaunchDescription:
     course_config = LaunchConfiguration("course_config")
     launch_bridge = LaunchConfiguration("launch_bridge")
+    launch_monitor = LaunchConfiguration("launch_monitor")
+    launch_pca_scan_converters = LaunchConfiguration("launch_pca_scan_converters")
+    launch_gps_handler = LaunchConfiguration("launch_gps_handler")
 
     bridge = Node(
         package="ros_gz_bridge",
@@ -287,6 +315,7 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time": True,
             "course_config": course_config,
         }],
+        condition=IfCondition(launch_monitor),
     )
 
     pca_scan = Node(
@@ -311,6 +340,7 @@ def generate_launch_description() -> LaunchDescription:
             ("cloud_in", "/scan_pca_filtered_points"),
             ("scan", "/scan_pca_filtered"),
         ],
+        condition=IfCondition(launch_pca_scan_converters),
     )
 
     pca_scan_clear = Node(
@@ -335,6 +365,7 @@ def generate_launch_description() -> LaunchDescription:
             ("cloud_in", "/scan_pca_filtered_points"),
             ("scan", "/scan_pca_filtered_clear"),
         ],
+        condition=IfCondition(launch_pca_scan_converters),
     )
 
     gps_handler = Node(
@@ -343,6 +374,7 @@ def generate_launch_description() -> LaunchDescription:
         name="gps_handler_node",
         output="screen",
         parameters=[{"use_sim_time": True}],
+        condition=IfCondition(launch_gps_handler),
     )
 
     return LaunchDescription([
@@ -351,6 +383,16 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("launch_gazebo", default_value="true"),
         DeclareLaunchArgument("gazebo_server_only", default_value="true"),
         DeclareLaunchArgument("launch_bridge", default_value="true"),
+        DeclareLaunchArgument("launch_camera_bridge", default_value="true"),
+        DeclareLaunchArgument("launch_harness", default_value="true"),
+        DeclareLaunchArgument("launch_odom_bridge", default_value="true"),
+        DeclareLaunchArgument("publish_harness_odom_tf", default_value="false"),
+        DeclareLaunchArgument("launch_dynamics", default_value="true"),
+        DeclareLaunchArgument("launch_robot_state_publisher", default_value="true"),
+        DeclareLaunchArgument("launch_detection", default_value="true"),
+        DeclareLaunchArgument("launch_monitor", default_value="true"),
+        DeclareLaunchArgument("launch_pca_scan_converters", default_value="true"),
+        DeclareLaunchArgument("launch_gps_handler", default_value="true"),
         DeclareLaunchArgument("launch_nav", default_value="true"),
         DeclareLaunchArgument("use_calibrated_dynamics", default_value="true"),
         DeclareLaunchArgument(
@@ -381,6 +423,7 @@ def generate_launch_description() -> LaunchDescription:
         bridge,
         OpaqueFunction(function=_calibrated_dynamics_process),
         OpaqueFunction(function=_camera_bridge_process),
+        OpaqueFunction(function=_odom_bridge_process),
         OpaqueFunction(function=_robot_state_publisher),
         OpaqueFunction(function=_harness_process),
         monitor,

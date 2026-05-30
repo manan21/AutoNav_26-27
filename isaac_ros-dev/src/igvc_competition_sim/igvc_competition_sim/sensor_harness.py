@@ -94,6 +94,7 @@ class IgvcSensorHarness(Node):
         self.declare_parameter("publish_ground_truth_odom", True)
         self.declare_parameter(
             "ground_truth_odom_topic", "/igvc_sim/ground_truth_odom")
+        self.declare_parameter("publish_odom_tf", True)
 
         course_path = str(self.get_parameter("course_config").value).strip()
         self.course: Course = load_course(course_path or None)
@@ -106,6 +107,8 @@ class IgvcSensorHarness(Node):
             self.get_parameter("publish_ground_truth_lines").value)
         self.gps_noise_std_m = max(
             0.0, float(self.get_parameter("gps_noise_std_m").value))
+        self.publish_odom_tf = bool(
+            self.get_parameter("publish_odom_tf").value)
 
         sensor_qos = QoSProfile(depth=5)
         sensor_qos.reliability = ReliabilityPolicy.BEST_EFFORT
@@ -223,14 +226,19 @@ class IgvcSensorHarness(Node):
         self.last_cmd_s = now_s
 
     def _gazebo_odom_callback(self, msg: Odometry) -> None:
-        self.last_gazebo_odom_s = _stamp_to_float(
-            self.get_clock().now().to_msg())
+        stamp = msg.header.stamp
+        if stamp.sec == 0 and stamp.nanosec == 0:
+            stamp = self.get_clock().now().to_msg()
+        self.last_gazebo_odom_s = _stamp_to_float(stamp)
         self.base_x = float(msg.pose.pose.position.x)
         self.base_y = float(msg.pose.pose.position.y)
         q = msg.pose.pose.orientation
         self.heading = _yaw_from_quaternion(q.x, q.y, q.z, q.w)
         self.applied_v = float(msg.twist.twist.linear.x)
         self.applied_w = float(msg.twist.twist.angular.z)
+        if self.publish_odom_tf:
+            self._publish_dynamic_transforms(stamp)
+            self._publish_odom(stamp)
 
     def _step_and_publish_odom(self) -> None:
         stamp = self.get_clock().now().to_msg()
@@ -240,11 +248,13 @@ class IgvcSensorHarness(Node):
         dt = max(0.0, min(0.10, now_s - self.last_step_s))
         self.last_step_s = now_s
 
-        if self.fallback_integrate_cmd and now_s - self.last_gazebo_odom_s > 1.0:
+        gazebo_odom_live = now_s - self.last_gazebo_odom_s <= 1.0
+        if self.fallback_integrate_cmd and not gazebo_odom_live:
             self._integrate_cmd_fallback(now_s, dt)
         self._integrate_wheels(dt, self.applied_v, self.applied_w)
-        self._publish_dynamic_transforms(stamp)
-        self._publish_odom(stamp)
+        if self.publish_odom_tf and not gazebo_odom_live:
+            self._publish_dynamic_transforms(stamp)
+            self._publish_odom(stamp)
         self._publish_joint_states(stamp)
         self.autonomous_pub.publish(Bool(data=True))
 

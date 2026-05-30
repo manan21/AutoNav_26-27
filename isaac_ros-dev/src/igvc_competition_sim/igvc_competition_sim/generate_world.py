@@ -278,9 +278,9 @@ def generate_world(course: Course) -> str:
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type='adiabatic'/>
     <physics name='default_physics' type='ode'>
-      <max_step_size>0.001</max_step_size>
+      <max_step_size>0.010</max_step_size>
       <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_update_rate>100</real_time_update_rate>
     </physics>
     <scene>
       <ambient>0.45 0.45 0.45 1</ambient>

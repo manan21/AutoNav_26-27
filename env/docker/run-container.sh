@@ -224,11 +224,20 @@ if [[ $PLATFORM == "aarch64" ]]; then
 fi
 
 # SERIAL / USB / CAMERA DEVICES
-# USB
-DOCKER_ARGS+=("--device=/dev/arduino_uno:/dev/arduino_uno")
-DOCKER_ARGS+=("--device=/dev/roboteq:/dev/roboteq")
+# USB. The real robot has these udev symlinks; the spare Jetson simulation
+# stack intentionally does not. Only pass devices that exist so the same
+# container launcher works for both roles.
+for device in /dev/arduino_uno /dev/roboteq; do
+    if [[ -e "${device}" ]]; then
+        DOCKER_ARGS+=("--device=${device}:${device}")
+    else
+        echo "Optional robot device ${device} not present; skipping."
+    fi
+done
 
-DOCKER_ARGS+=("-v" "/dev/serial/by-id:/dev/serial/by-id:ro")
+if [[ -d /dev/serial/by-id ]]; then
+    DOCKER_ARGS+=("-v" "/dev/serial/by-id:/dev/serial/by-id:ro")
+fi
 
 for link in \
   /dev/serial/by-id/usb-Arduino* \

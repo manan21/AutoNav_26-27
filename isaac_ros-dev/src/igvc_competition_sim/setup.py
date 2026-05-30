@@ -38,6 +38,7 @@ setup(
             "igvc_course_monitor = igvc_competition_sim.course_monitor:main",
             "igvc_dynamics_replay = igvc_competition_sim.dynamics_replay:main",
             "igvc_mission_runner = igvc_competition_sim.mission_runner:main",
+            "igvc_odom_bridge = igvc_competition_sim.odom_bridge:main",
             "igvc_run_analyzer = igvc_competition_sim.run_analyzer:main",
             "igvc_sensor_harness = igvc_competition_sim.sensor_harness:main",
         ],
