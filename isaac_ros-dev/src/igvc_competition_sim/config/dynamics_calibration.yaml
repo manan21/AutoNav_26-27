@@ -39,12 +39,15 @@ source_runs:
       bag_dir: "in_place_yaw_ladder_1"
       video_file: "in_place_yaw_ladder_1.MOV"
       data_quality_notes:
-        - "Use decoded odom summaries for review before changing default angular gains; /odom is not a complete yaw source in this bag."
-      use_for_default_tuning:
+        - "Offline report 2026-05-30: /cmd_vel commanded up to 1.0 rad/s, but /odom yaw changed 0.0 deg and /local_ekf/odom yaw changed only 0.022 deg."
+        - "Treat as an odom/encoder/TF data-quality investigation source, not a yaw dynamics calibration source, until explained."
+      use_for_default_tuning: []
+      excluded_from_default_tuning:
         - angular_speed_response
         - angular_command_latency
         - yaw_stop_settling
         - left_right_yaw_asymmetry
+      exclusion_reason: "Yaw command was present, but odom yaw did not integrate."
 
 competition_constraints:
   tape_width_m: 0.0762
@@ -84,8 +87,10 @@ odometry_model:
   publish_ground_truth_odom: true
   ground_truth_topic: "/igvc_sim/ground_truth_odom"
   apply_default_odom_scale: false
-  observed_straight_forward_odom_m: 8.0583
+  observed_straight_forward_odom_m: 7.9542
+  observed_straight_local_ekf_forward_m: 8.2193
   observed_straight_physical_forward_m: 9.3726
-  observed_physical_to_odom_ratio: 1.1631
+  observed_physical_to_odom_ratio: 1.1783
+  observed_physical_to_local_ekf_ratio: 1.1403
   notes:
     - "The straight run suggests odom under-reported forward travel, but this is recorded as a diagnostic until repeated on level ground."

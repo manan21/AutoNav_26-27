@@ -1,0 +1,5673 @@
+{
+  "findings": [
+    "Camera detector published non-empty /line_points in 1/4 camera/perception bags; the working run was: manual_course_rerun_7.",
+    "3/4 camera/perception bags had non-empty line_pixels but zero /line_points: manual_course_rerun_5, camera_line_detection_rerun, camera_line_detection_rerun_2feet_stationary. In those runs /line_costmap stayed empty, so Nav2 could drive over visible tape.",
+    "Dominant camera line diagnostic reason: stamped TF unavailable (1228 messages).",
+    "Only 1/4 camera/perception bags include raw ZED RGB+depth image topics; missing raw ZED image data in: manual_course_rerun_5, camera_line_detection_rerun, camera_line_detection_rerun_2feet_stationary.",
+    "Selected manual/calibration bags contain zero Nav2 plan messages, so they cannot validate planner-vs-costmap clearance or path-through-line behavior; use an autonomous nav debug bag or a live sim run for that check.",
+    "in_place_yaw_ladder_1 commanded yaw up to 1.00 rad/s, but odom yaw changed only 0.022 deg; do not tune Gazebo yaw dynamics from this bag until the odom/encoder yaw path is explained.",
+    "straight_distance_drift_low_2 physical/odom forward ratio = 1.178; treat as odom-scale diagnostic, not lateral-bias tuning."
+  ],
+  "repo": "/Users/cole/code/git/AutoNavB",
+  "runs": [
+    {
+      "bag_dir": "/Users/cole/autonav_bags/jetson_practice_course_20260529_211047/arc_ladder_1",
+      "bag_metadata": {
+        "duration_s": 83.606,
+        "message_count": 20415,
+        "present": true,
+        "topic_count": 23
+      },
+      "category": "dynamics",
+      "cmd_vel": {
+        "/cmd_vel": {
+          "count": 1091,
+          "first_nonzero_s": 20.441,
+          "last_nonzero_s": 75.982,
+          "max_abs_angular_radps": 0.6,
+          "max_abs_linear_mps": 0.447,
+          "mean_abs_angular_nonzero_radps": 0.3943,
+          "mean_abs_linear_nonzero_mps": 0.3672,
+          "nonzero_count": 700
+        }
+      },
+      "costmaps": {
+        "/terrain/grade_map": {
+          "first_nonzero_s": 2.099,
+          "hard_cells": {
+            "count": 115,
+            "max": 27.0,
+            "mean": 8.5652,
+            "min": 3.0
+          },
+          "max_value": 100,
+          "messages": 115,
+          "nonzero_cells": {
+            "count": 115,
+            "max": 224.0,
+            "mean": 197.5565,
+            "min": 179.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 0
+      },
+      "images": {},
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {},
+        "diagnostic_reason_counts": {},
+        "diagnostic_samples": [],
+        "line_pixels": {
+          "first_nonzero_s": null,
+          "max_pixel_count": 0,
+          "messages": 0,
+          "pixel_count": {
+            "count": 0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "name": "arc_ladder_1",
+      "odometry": {
+        "/local_ekf/odom": {
+          "count": 988,
+          "duration_s": 80.73,
+          "euclidean_delta_m": 4.6595,
+          "mean_abs_angular_radps": 0.1003,
+          "mean_abs_linear_mps": 0.0697,
+          "path_length_m": 7.4114,
+          "start_frame_forward_m": 4.5623,
+          "start_frame_lateral_m": 0.947,
+          "yaw_delta_deg": 33.766
+        },
+        "/odom": {
+          "count": 286,
+          "duration_s": 75.613,
+          "euclidean_delta_m": 4.6595,
+          "mean_abs_angular_radps": 0.0528,
+          "mean_abs_linear_mps": 0.08,
+          "path_length_m": 4.9082,
+          "start_frame_forward_m": 4.5622,
+          "start_frame_lateral_m": 0.9476,
+          "yaw_delta_deg": 33.769
+        }
+      },
+      "physical_measurement": {},
+      "plans": {},
+      "pointclouds": {
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 45.786,
+          "messages": 984,
+          "points": {
+            "count": 984,
+            "max": 93.0,
+            "mean": 10.7815,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/tmp/autonav_bags/practice_course/arc_ladder_1/bag",
+        "bag_profile": "dynamics_light",
+        "command_line": "./run_on_robot.sh arc_ladder",
+        "command_mode": "scripted",
+        "created_utc": "2026-05-29T22:29:24.380995+00:00",
+        "description": "Forward arcs to calibrate effective turn radius, turn slowdown, and yaw response under translation.",
+        "expected_scripted_duration_s": "60.0",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "02f8bc160f59",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "1.000",
+        "max_abs_command_speed_mps": "0.447040",
+        "operator_notes": "Run in a large open area. Reposition manually between segments if needed by toggling AUTO off; the script will abort safely.",
+        "profile": "arc_ladder",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "False",
+        "run_name": "arc_ladder_1",
+        "speed_conversions": "",
+        "topic_count": "29",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/dynamics_light.txt",
+        "topics": "",
+        "wait_for_auto": "True"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 201,
+            "max": 294.0,
+            "mean": 230.6418,
+            "min": 169.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 255,
+              "min_range_m": 0.0,
+              "t_s": 1.049
+            },
+            {
+              "finite_ranges": 261,
+              "min_range_m": 0.0,
+              "t_s": 3.387
+            },
+            {
+              "finite_ranges": 259,
+              "min_range_m": 0.0,
+              "t_s": 3.727
+            },
+            {
+              "finite_ranges": 258,
+              "min_range_m": 0.0,
+              "t_s": 3.812
+            },
+            {
+              "finite_ranges": 261,
+              "min_range_m": 0.0,
+              "t_s": 3.971
+            }
+          ],
+          "finite_ranges": {
+            "count": 201,
+            "max": 294.0,
+            "mean": 238.8259,
+            "min": 183.0
+          },
+          "messages": 201,
+          "min_range_m": {
+            "count": 201,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 927,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 6,
+              "min_range_m": 9.9688,
+              "t_s": 45.954
+            },
+            {
+              "finite_ranges": 6,
+              "min_range_m": 9.9688,
+              "t_s": 46.106
+            },
+            {
+              "finite_ranges": 6,
+              "min_range_m": 9.9688,
+              "t_s": 46.124
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.9906,
+              "t_s": 45.843
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.9906,
+              "t_s": 45.91
+            }
+          ],
+          "finite_ranges": {
+            "count": 927,
+            "max": 39.0,
+            "mean": 4.3182,
+            "min": 0.0
+          },
+          "messages": 927,
+          "min_range_m": {
+            "count": 356,
+            "max": 9.9906,
+            "mean": 6.5721,
+            "min": 2.806
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 901,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 7,
+              "min_range_m": 9.9688,
+              "t_s": 45.955
+            },
+            {
+              "finite_ranges": 7,
+              "min_range_m": 9.9688,
+              "t_s": 46.143
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.9906,
+              "t_s": 45.787
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.9906,
+              "t_s": 45.839
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.9906,
+              "t_s": 45.908
+            }
+          ],
+          "finite_ranges": {
+            "count": 901,
+            "max": 32.0,
+            "mean": 3.5094,
+            "min": 0.0
+          },
+          "messages": 901,
+          "min_range_m": {
+            "count": 312,
+            "max": 9.9906,
+            "mean": 6.5001,
+            "min": 2.8862
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {
+            "zed_camera_center->zed_left_camera_frame": 35,
+            "zed_camera_center->zed_right_camera_frame": 38
+          },
+          "first_bag_s": 0.512,
+          "first_stamp_s": -0.353,
+          "last_bag_s": 83.566,
+          "last_stamp_s": 80.579,
+          "messages": 706,
+          "top_child_frames": {
+            "base_link": 156,
+            "left_wheel_link": 102,
+            "odom": 375,
+            "right_wheel_link": 102,
+            "zed_left_camera_frame": 35,
+            "zed_right_camera_frame": 38
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 102,
+            "base_link->right_wheel_link": 102,
+            "map->odom": 375,
+            "odom->base_link": 156,
+            "zed_camera_center->zed_left_camera_frame": 35,
+            "zed_camera_center->zed_right_camera_frame": 38
+          },
+          "top_parent_frames": {
+            "base_link": 204,
+            "map": 375,
+            "odom": 156,
+            "zed_camera_center": 73
+          },
+          "transform_count": 808
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 1.434,
+          "first_stamp_s": -213.025,
+          "last_bag_s": 2.897,
+          "last_stamp_s": -217.604,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 29,
+        "missing_at_start": [
+          "/gps_waypoint/health",
+          "/gps_waypoint/debug",
+          "/sick_scansegment_xd/imu_inflated",
+          "/scan_pca_filtered_points",
+          "/terrain/grade_map",
+          "/pca/surface_normal"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel_nav",
+          "/encoders",
+          "/global_ekf/odom",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/local_ekf/odom": "nav_msgs/msg/Odometry",
+        "/motor_speed": "std_msgs/msg/String",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage"
+      },
+      "video": {
+        "duration_s": 88.035,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/arc_ladder_1.MOV",
+        "present": true,
+        "size_mb": 97.79,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bags/jetson_practice_course_20260529_211047/in_place_yaw_ladder_1",
+      "bag_metadata": {
+        "duration_s": 78.081,
+        "message_count": 21109,
+        "present": true,
+        "topic_count": 23
+      },
+      "category": "dynamics",
+      "cmd_vel": {
+        "/cmd_vel": {
+          "count": 991,
+          "first_nonzero_s": 20.972,
+          "last_nonzero_s": 69.961,
+          "max_abs_angular_radps": 1.0,
+          "max_abs_linear_mps": 0.0,
+          "mean_abs_angular_nonzero_radps": 0.6152,
+          "mean_abs_linear_nonzero_mps": 0.0,
+          "nonzero_count": 613
+        }
+      },
+      "costmaps": {
+        "/terrain/grade_map": {
+          "first_nonzero_s": 5.613,
+          "hard_cells": {
+            "count": 185,
+            "max": 34.0,
+            "mean": 9.8649,
+            "min": 2.0
+          },
+          "max_value": 100,
+          "messages": 185,
+          "nonzero_cells": {
+            "count": 185,
+            "max": 232.0,
+            "mean": 195.3892,
+            "min": 166.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 0
+      },
+      "images": {},
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {},
+        "diagnostic_reason_counts": {},
+        "diagnostic_samples": [],
+        "line_pixels": {
+          "first_nonzero_s": null,
+          "max_pixel_count": 0,
+          "messages": 0,
+          "pixel_count": {
+            "count": 0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "name": "in_place_yaw_ladder_1",
+      "odometry": {
+        "/local_ekf/odom": {
+          "count": 1013,
+          "duration_s": 76.057,
+          "euclidean_delta_m": 0.0,
+          "mean_abs_angular_radps": 0.1455,
+          "mean_abs_linear_mps": 0.0,
+          "path_length_m": 0.0,
+          "start_frame_forward_m": -0.0,
+          "start_frame_lateral_m": -0.0,
+          "yaw_delta_deg": 0.022
+        },
+        "/odom": {
+          "count": 270,
+          "duration_s": 68.622,
+          "euclidean_delta_m": 0.0,
+          "mean_abs_angular_radps": 0.0,
+          "mean_abs_linear_mps": 0.0,
+          "path_length_m": 0.0,
+          "start_frame_forward_m": 0.0,
+          "start_frame_lateral_m": 0.0,
+          "yaw_delta_deg": 0.0
+        }
+      },
+      "physical_measurement": {},
+      "plans": {},
+      "pointclouds": {
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 16.2,
+          "messages": 952,
+          "points": {
+            "count": 952,
+            "max": 228.0,
+            "mean": 79.1565,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/tmp/autonav_bags/practice_course/in_place_yaw_ladder_1/bag",
+        "bag_profile": "dynamics_light",
+        "command_line": "./run_on_robot.sh in_place_yaw_ladder",
+        "command_mode": "scripted",
+        "created_utc": "2026-05-29T22:32:14.251883+00:00",
+        "description": "In-place yaw response for angular calibration.",
+        "expected_scripted_duration_s": "54.0",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "02f8bc160f59",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "0.000",
+        "max_abs_command_speed_mps": "0.000000",
+        "operator_notes": "Run on open flat asphalt with enough room for rotational drift.",
+        "profile": "in_place_yaw_ladder",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "False",
+        "run_name": "in_place_yaw_ladder_1",
+        "speed_conversions": "",
+        "topic_count": "29",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/dynamics_light.txt",
+        "topics": "",
+        "wait_for_auto": "True"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 281,
+            "max": 306.0,
+            "mean": 247.363,
+            "min": 145.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 285,
+              "min_range_m": 0.0,
+              "t_s": 6.444
+            },
+            {
+              "finite_ranges": 281,
+              "min_range_m": 0.0,
+              "t_s": 6.537
+            },
+            {
+              "finite_ranges": 284,
+              "min_range_m": 0.0,
+              "t_s": 7.002
+            },
+            {
+              "finite_ranges": 282,
+              "min_range_m": 0.0,
+              "t_s": 7.002
+            },
+            {
+              "finite_ranges": 281,
+              "min_range_m": 0.0,
+              "t_s": 7.072
+            }
+          ],
+          "finite_ranges": {
+            "count": 281,
+            "max": 312.0,
+            "mean": 259.8648,
+            "min": 168.0
+          },
+          "messages": 281,
+          "min_range_m": {
+            "count": 281,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 919,
+            "max": 26.0,
+            "mean": 0.3547,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 21,
+              "min_range_m": 3.7796,
+              "t_s": 67.989
+            },
+            {
+              "finite_ranges": 21,
+              "min_range_m": 3.7796,
+              "t_s": 68.016
+            },
+            {
+              "finite_ranges": 22,
+              "min_range_m": 3.783,
+              "t_s": 59.82
+            },
+            {
+              "finite_ranges": 22,
+              "min_range_m": 3.783,
+              "t_s": 60.084
+            },
+            {
+              "finite_ranges": 21,
+              "min_range_m": 3.8087,
+              "t_s": 59.744
+            }
+          ],
+          "finite_ranges": {
+            "count": 919,
+            "max": 44.0,
+            "mean": 15.1012,
+            "min": 0.0
+          },
+          "messages": 919,
+          "min_range_m": {
+            "count": 605,
+            "max": 3.8087,
+            "mean": 2.0272,
+            "min": 0.8276
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 945,
+            "max": 26.0,
+            "mean": 0.3725,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 20,
+              "min_range_m": 3.783,
+              "t_s": 59.827
+            },
+            {
+              "finite_ranges": 17,
+              "min_range_m": 3.8087,
+              "t_s": 59.612
+            },
+            {
+              "finite_ranges": 17,
+              "min_range_m": 3.8087,
+              "t_s": 59.65
+            },
+            {
+              "finite_ranges": 17,
+              "min_range_m": 3.8087,
+              "t_s": 59.717
+            },
+            {
+              "finite_ranges": 17,
+              "min_range_m": 3.8087,
+              "t_s": 59.745
+            }
+          ],
+          "finite_ranges": {
+            "count": 945,
+            "max": 43.0,
+            "mean": 14.4116,
+            "min": 0.0
+          },
+          "messages": 945,
+          "min_range_m": {
+            "count": 624,
+            "max": 3.8087,
+            "mean": 2.0412,
+            "min": 0.8276
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {
+            "zed_camera_center->zed_left_camera_frame": 67,
+            "zed_camera_center->zed_right_camera_frame": 72
+          },
+          "first_bag_s": 0.611,
+          "first_stamp_s": 0.636,
+          "last_bag_s": 77.571,
+          "last_stamp_s": 64.794,
+          "messages": 1333,
+          "top_child_frames": {
+            "base_link": 297,
+            "left_wheel_link": 165,
+            "odom": 732,
+            "right_wheel_link": 165,
+            "zed_left_camera_frame": 67,
+            "zed_right_camera_frame": 72
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 165,
+            "base_link->right_wheel_link": 165,
+            "map->odom": 732,
+            "odom->base_link": 297,
+            "zed_camera_center->zed_left_camera_frame": 67,
+            "zed_camera_center->zed_right_camera_frame": 72
+          },
+          "top_parent_frames": {
+            "base_link": 330,
+            "map": 732,
+            "odom": 297,
+            "zed_camera_center": 139
+          },
+          "transform_count": 1498
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 3.277,
+          "first_stamp_s": -388.485,
+          "last_bag_s": 6.56,
+          "last_stamp_s": -383.907,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 29,
+        "missing_at_start": [
+          "/cmd_vel",
+          "/encoders",
+          "/motor_speed",
+          "/autonomous_mode",
+          "/joy",
+          "/global_ekf/odom",
+          "/gps_waypoint/health",
+          "/gps_waypoint/debug",
+          "/scan_fullframe",
+          "/scan_pca_filtered",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel_nav",
+          "/encoders",
+          "/global_ekf/odom",
+          "/pose",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/local_ekf/odom": "nav_msgs/msg/Odometry",
+        "/motor_speed": "std_msgs/msg/String",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage"
+      },
+      "video": {
+        "duration_s": 81.802,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/in_place_yaw_ladder_1.MOV",
+        "present": true,
+        "size_mb": 91.2,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bags/jetson_practice_course_20260529_211047/straight_distance_drift_low_2",
+      "bag_metadata": {
+        "duration_s": 54.833,
+        "message_count": 14626,
+        "present": true,
+        "topic_count": 23
+      },
+      "category": "dynamics",
+      "cmd_vel": {
+        "/cmd_vel": {
+          "count": 687,
+          "first_nonzero_s": 15.849,
+          "last_nonzero_s": 45.228,
+          "max_abs_angular_radps": 0.0,
+          "max_abs_linear_mps": 0.447,
+          "mean_abs_angular_nonzero_radps": 0.0,
+          "mean_abs_linear_nonzero_mps": 0.3064,
+          "nonzero_count": 445
+        }
+      },
+      "costmaps": {
+        "/terrain/grade_map": {
+          "first_nonzero_s": 4.546,
+          "hard_cells": {
+            "count": 100,
+            "max": 17.0,
+            "mean": 8.79,
+            "min": 3.0
+          },
+          "max_value": 100,
+          "messages": 100,
+          "nonzero_cells": {
+            "count": 100,
+            "max": 207.0,
+            "mean": 197.11,
+            "min": 175.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 0
+      },
+      "images": {},
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {},
+        "diagnostic_reason_counts": {},
+        "diagnostic_samples": [],
+        "line_pixels": {
+          "first_nonzero_s": null,
+          "max_pixel_count": 0,
+          "messages": 0,
+          "pixel_count": {
+            "count": 0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "name": "straight_distance_drift_low_2",
+      "odometry": {
+        "/local_ekf/odom": {
+          "count": 725,
+          "duration_s": 53.904,
+          "euclidean_delta_m": 8.3914,
+          "mean_abs_angular_radps": 0.0095,
+          "mean_abs_linear_mps": 0.1535,
+          "path_length_m": 11.642,
+          "start_frame_forward_m": 8.2193,
+          "start_frame_lateral_m": -1.6908,
+          "yaw_delta_deg": -23.635
+        },
+        "/odom": {
+          "count": 203,
+          "duration_s": 49.673,
+          "euclidean_delta_m": 8.1091,
+          "mean_abs_angular_radps": 0.0389,
+          "mean_abs_linear_mps": 0.1984,
+          "path_length_m": 8.5961,
+          "start_frame_forward_m": 7.9542,
+          "start_frame_lateral_m": -1.5775,
+          "yaw_delta_deg": -22.52
+        }
+      },
+      "physical_measurement": {
+        "forward_m": 9.3726,
+        "right_drift_m": 1.5288,
+        "right_drift_policy": "slope-contaminated; diagnostic only"
+      },
+      "plans": {},
+      "pointclouds": {
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 4.659,
+          "messages": 633,
+          "points": {
+            "count": 633,
+            "max": 106.0,
+            "mean": 11.6288,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/tmp/autonav_bags/practice_course/straight_distance_drift_low_2/bag",
+        "bag_profile": "dynamics_light",
+        "command_line": "./run_on_robot.sh straight_distance_drift_low",
+        "command_mode": "scripted",
+        "created_utc": "2026-05-29T22:19:47.681115+00:00",
+        "description": "Distance-gated straight-line drift test at 0.5 and 1 mph. Stops each segment from odometry distance and logs forward/lateral/heading drift.",
+        "expected_scripted_duration_s": "50.0",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "02f8bc160f59",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "1.000",
+        "max_abs_command_speed_mps": "0.447040",
+        "operator_notes": "Use a marked straight lane. Measure the physical start/end line if possible; command_metrics.csv will log odom forward distance, lateral drift, heading drift, and overshoot.",
+        "profile": "straight_distance_drift_low",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "False",
+        "run_name": "straight_distance_drift_low_2",
+        "speed_conversions": "",
+        "topic_count": "29",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/dynamics_light.txt",
+        "topics": "",
+        "wait_for_auto": "True"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 191,
+            "max": 313.0,
+            "mean": 286.0314,
+            "min": 245.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 299,
+              "min_range_m": 0.0,
+              "t_s": 0.0
+            },
+            {
+              "finite_ranges": 298,
+              "min_range_m": 0.0,
+              "t_s": 0.0
+            },
+            {
+              "finite_ranges": 301,
+              "min_range_m": 0.0,
+              "t_s": 0.0
+            },
+            {
+              "finite_ranges": 298,
+              "min_range_m": 0.0,
+              "t_s": 0.0
+            },
+            {
+              "finite_ranges": 299,
+              "min_range_m": 0.0,
+              "t_s": 0.095
+            }
+          ],
+          "finite_ranges": {
+            "count": 191,
+            "max": 326.0,
+            "mean": 292.8272,
+            "min": 245.0
+          },
+          "messages": 191,
+          "min_range_m": {
+            "count": 191,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 613,
+            "max": 21.0,
+            "mean": 0.1387,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 12,
+              "min_range_m": 5.2521,
+              "t_s": 4.874
+            },
+            {
+              "finite_ranges": 12,
+              "min_range_m": 5.2521,
+              "t_s": 8.468
+            },
+            {
+              "finite_ranges": 12,
+              "min_range_m": 5.2521,
+              "t_s": 8.529
+            },
+            {
+              "finite_ranges": 12,
+              "min_range_m": 5.2531,
+              "t_s": 5.048
+            },
+            {
+              "finite_ranges": 12,
+              "min_range_m": 5.2531,
+              "t_s": 11.868
+            }
+          ],
+          "finite_ranges": {
+            "count": 613,
+            "max": 31.0,
+            "mean": 5.2577,
+            "min": 0.0
+          },
+          "messages": 613,
+          "min_range_m": {
+            "count": 253,
+            "max": 5.2531,
+            "mean": 5.0559,
+            "min": 0.6893
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 675,
+            "max": 21.0,
+            "mean": 0.1259,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 3,
+              "min_range_m": 5.2881,
+              "t_s": 8.869
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 5.2881,
+              "t_s": 8.923
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 5.2881,
+              "t_s": 8.973
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 5.2881,
+              "t_s": 9.017
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 5.2894,
+              "t_s": 2.517
+            }
+          ],
+          "finite_ranges": {
+            "count": 675,
+            "max": 23.0,
+            "mean": 1.4993,
+            "min": 0.0
+          },
+          "messages": 675,
+          "min_range_m": {
+            "count": 276,
+            "max": 5.2894,
+            "mean": 5.1557,
+            "min": 0.6893
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {
+            "zed_camera_center->zed_left_camera_frame": 44,
+            "zed_camera_center->zed_right_camera_frame": 43
+          },
+          "first_bag_s": 0.094,
+          "first_stamp_s": 0.087,
+          "last_bag_s": 53.941,
+          "last_stamp_s": 49.82,
+          "messages": 554,
+          "top_child_frames": {
+            "base_link": 102,
+            "left_wheel_link": 59,
+            "odom": 306,
+            "right_wheel_link": 59,
+            "zed_left_camera_frame": 44,
+            "zed_right_camera_frame": 43
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 59,
+            "base_link->right_wheel_link": 59,
+            "map->odom": 306,
+            "odom->base_link": 102,
+            "zed_camera_center->zed_left_camera_frame": 44,
+            "zed_camera_center->zed_right_camera_frame": 43
+          },
+          "top_parent_frames": {
+            "base_link": 118,
+            "map": 306,
+            "odom": 102,
+            "zed_camera_center": 87
+          },
+          "transform_count": 613
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 0.094,
+          "first_stamp_s": -503.129,
+          "last_bag_s": 3.27,
+          "last_stamp_s": -506.19,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 29,
+        "missing_at_start": [],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel_nav",
+          "/encoders",
+          "/global_ekf/odom",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/local_ekf/odom": "nav_msgs/msg/Odometry",
+        "/motor_speed": "std_msgs/msg/String",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage"
+      },
+      "video": {
+        "duration_s": 56.867,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/straight_distance_drift_low_2.MOV",
+        "present": true,
+        "size_mb": 63.03,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bag_backups/manual_course_rerun_5",
+      "bag_metadata": {
+        "duration_s": 188.903,
+        "message_count": 54590,
+        "present": true,
+        "topic_count": 48
+      },
+      "category": "full_perception",
+      "cmd_vel": {},
+      "costmaps": {
+        "/global_costmap/costmap": {
+          "first_nonzero_s": 0.435,
+          "hard_cells": {
+            "count": 110,
+            "max": 10318.0,
+            "mean": 9256.7182,
+            "min": 6643.0
+          },
+          "max_value": 100,
+          "messages": 110,
+          "nonzero_cells": {
+            "count": 110,
+            "max": 10432.0,
+            "mean": 9318.2727,
+            "min": 6645.0
+          }
+        },
+        "/line_costmap": {
+          "first_nonzero_s": null,
+          "hard_cells": {
+            "count": 1175,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "max_value": 0,
+          "messages": 1175,
+          "nonzero_cells": {
+            "count": 1175,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/local_costmap/costmap": {
+          "first_nonzero_s": 3.923,
+          "hard_cells": {
+            "count": 567,
+            "max": 2590.0,
+            "mean": 915.1199,
+            "min": 137.0
+          },
+          "max_value": 100,
+          "messages": 567,
+          "nonzero_cells": {
+            "count": 567,
+            "max": 5496.0,
+            "mean": 2459.0018,
+            "min": 362.0
+          }
+        },
+        "/map": {
+          "first_nonzero_s": 1.727,
+          "hard_cells": {
+            "count": 83,
+            "max": 83.0,
+            "mean": 74.3253,
+            "min": 13.0
+          },
+          "max_value": 100,
+          "messages": 83,
+          "nonzero_cells": {
+            "count": 83,
+            "max": 83.0,
+            "mean": 74.3253,
+            "min": 13.0
+          }
+        },
+        "/map_padded": {
+          "first_nonzero_s": 2.137,
+          "hard_cells": {
+            "count": 7,
+            "max": 7100.0,
+            "mean": 5857.1429,
+            "min": 4700.0
+          },
+          "max_value": 100,
+          "messages": 7,
+          "nonzero_cells": {
+            "count": 7,
+            "max": 7100.0,
+            "mean": 5857.1429,
+            "min": 4700.0
+          }
+        },
+        "/terrain/grade_map": {
+          "first_nonzero_s": 0.503,
+          "hard_cells": {
+            "count": 474,
+            "max": 124.0,
+            "mean": 33.5169,
+            "min": 2.0
+          },
+          "max_value": 100,
+          "messages": 474,
+          "nonzero_cells": {
+            "count": 474,
+            "max": 367.0,
+            "mean": 232.1941,
+            "min": 177.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 4674,
+        "last_left_rpm": 0,
+        "last_right_rpm": 0,
+        "left_count_delta": -14154072,
+        "right_count_delta": 13970204
+      },
+      "images": {
+        "/line_detection/debug/mask": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "encoding": {
+            "mono8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 15.7771,
+            "mean": 15.7771,
+            "min": 15.7771
+          },
+          "messages": 486,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.487
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 7.339
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 7.36
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 7.366
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 7.429
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/overlay": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0533,
+            "mean": 0.0533,
+            "min": 0.0533
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 124.3133,
+            "mean": 124.3133,
+            "min": 124.3133
+          },
+          "messages": 665,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.41
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.624
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.627
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.642
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.652
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/raw": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0598,
+            "mean": 0.0598,
+            "min": 0.0598
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 125.3346,
+            "mean": 125.3346,
+            "min": 125.3346
+          },
+          "messages": 561,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.902
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.916
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.923
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.928
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 6.94
+            }
+          ],
+          "width": 960
+        }
+      },
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {
+          "candidate_points": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cluster_rejects": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "confirmed_points": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cuda_detect_ms": {
+            "count": 511,
+            "max": 171.998,
+            "mean": 45.1097,
+            "min": 13.1761
+          },
+          "debug_publish_ms": {
+            "count": 511,
+            "max": 203.114,
+            "mean": 44.1626,
+            "min": 8.9888
+          },
+          "depth_fill_hits": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "depth_rejects": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "filtered_pixels": {
+            "count": 511,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          },
+          "geometry_rejects": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_clusters": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_components": {
+            "count": 511,
+            "max": 3.0,
+            "mean": 3.0,
+            "min": 3.0
+          },
+          "out_of_bounds": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projected_output_count": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projection_ms": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "raw_pixels": {
+            "count": 511,
+            "max": 2595.0,
+            "mean": 2595.0,
+            "min": 2595.0
+          },
+          "roi_rejects": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "temporal_update_ms": {
+            "count": 511,
+            "max": 1.1322,
+            "mean": 0.0058,
+            "min": 0.0011
+          },
+          "tf_latest_fallbacks": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "tf_lookup_ms": {
+            "count": 511,
+            "max": 147.22,
+            "mean": 131.4268,
+            "min": 125.185
+          },
+          "tf_wait_failures": {
+            "count": 511,
+            "max": 1.0,
+            "mean": 1.0,
+            "min": 1.0
+          },
+          "total_callback_ms": {
+            "count": 511,
+            "max": 444.122,
+            "mean": 244.5592,
+            "min": 161.825
+          },
+          "transform_rejects": {
+            "count": 511,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "yaw_gated_frames": {
+            "count": 511,
+            "max": 1.0,
+            "mean": 0.0098,
+            "min": 0.0
+          }
+        },
+        "diagnostic_reason_counts": {
+          "stamped TF unavailable": 511
+        },
+        "diagnostic_samples": [
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 35.2609,
+              "debug_publish_ms": 41.9786,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.00384,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 125.767,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 220.462,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 7.729
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 49.9406,
+              "debug_publish_ms": 31.1575,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.002945,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.932,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 242.407,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 7.73
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 49.0714,
+              "debug_publish_ms": 20.1669,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003072,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.899,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 219.064,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 7.733
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 72.5449,
+              "debug_publish_ms": 19.7297,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003104,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 129.101,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 243.72,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 7.736
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 49.5117,
+              "debug_publish_ms": 93.7845,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003168,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 129.894,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 274.635,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 7.739
+          }
+        ],
+        "line_pixels": {
+          "first_nonzero_s": 4.095,
+          "max_pixel_count": 2592,
+          "messages": 622,
+          "pixel_count": {
+            "count": 622,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {
+            "odom": 372
+          },
+          "max_point_count": 0,
+          "messages": 372,
+          "point_count": {
+            "count": 372,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        }
+      },
+      "name": "manual_course_rerun_5",
+      "odometry": {
+        "/local_ekf/odom": {
+          "count": 2426,
+          "duration_s": 188.547,
+          "euclidean_delta_m": 8.5975,
+          "mean_abs_angular_radps": 0.1398,
+          "mean_abs_linear_mps": 0.054,
+          "path_length_m": 10.9044,
+          "start_frame_forward_m": 8.5891,
+          "start_frame_lateral_m": -0.3803,
+          "yaw_delta_deg": -6.46
+        },
+        "/odom": {
+          "count": 638,
+          "duration_s": 185.013,
+          "euclidean_delta_m": 8.5975,
+          "mean_abs_angular_radps": 0.0061,
+          "mean_abs_linear_mps": 0.0457,
+          "path_length_m": 8.7086,
+          "start_frame_forward_m": 8.5891,
+          "start_frame_lateral_m": -0.3798,
+          "yaw_delta_deg": -6.458
+        }
+      },
+      "physical_measurement": {},
+      "plans": {
+        "/plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/transformed_global_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/unsmoothed_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        }
+      },
+      "pointclouds": {
+        "/lines_pointcloud": {
+          "first_nonzero_s": null,
+          "messages": 648,
+          "points": {
+            "count": 648,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 0.303,
+          "messages": 1575,
+          "points": {
+            "count": 1575,
+            "max": 1631.0,
+            "mean": 222.1752,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/autonav/logs/real_robot_calibration/manual_course_rerun_5/bag",
+        "bag_profile": "full_perception",
+        "command_line": "./run_on_robot.sh record_manual_full_course",
+        "command_mode": "none",
+        "created_utc": "2026-05-30T13:29:41.748186+00:00",
+        "description": "Record a broad full-course bag while the operator manually drives. The script does not command motion.",
+        "expected_scripted_duration_s": "manual_stop",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "37b181206bb0",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "0.000",
+        "max_abs_command_speed_mps": "0.000000",
+        "operator_notes": "Manual drive the course naturally. Include slow and normal passes over lines, cones, and ramp.",
+        "profile": "record_manual_full_course",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "True",
+        "run_name": "manual_course_rerun_5",
+        "speed_conversions": "",
+        "topic_count": "63",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/full_perception.txt",
+        "topics": "",
+        "wait_for_auto": "False"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 695,
+            "max": 340.0,
+            "mean": 178.4086,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 326,
+              "min_range_m": 2.586,
+              "t_s": 38.09
+            },
+            {
+              "finite_ranges": 313,
+              "min_range_m": 3.008,
+              "t_s": 36.952
+            },
+            {
+              "finite_ranges": 313,
+              "min_range_m": 3.114,
+              "t_s": 36.781
+            },
+            {
+              "finite_ranges": 323,
+              "min_range_m": 3.334,
+              "t_s": 38.813
+            },
+            {
+              "finite_ranges": 306,
+              "min_range_m": 4.161,
+              "t_s": 39.005
+            }
+          ],
+          "finite_ranges": {
+            "count": 695,
+            "max": 347.0,
+            "mean": 263.9655,
+            "min": 128.0
+          },
+          "messages": 695,
+          "min_range_m": {
+            "count": 695,
+            "max": 4.161,
+            "mean": 0.0341,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 1517,
+            "max": 29.0,
+            "mean": 0.3935,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5074,
+              "t_s": 109.122
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.564,
+              "t_s": 174.488
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.66,
+              "t_s": 108.916
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.66,
+              "t_s": 109.015
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 9.66,
+              "t_s": 109.075
+            }
+          ],
+          "finite_ranges": {
+            "count": 1517,
+            "max": 151.0,
+            "mean": 40.8675,
+            "min": 0.0
+          },
+          "messages": 1517,
+          "min_range_m": {
+            "count": 1256,
+            "max": 9.66,
+            "mean": 3.9886,
+            "min": 0.6901
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 1534,
+            "max": 29.0,
+            "mean": 0.3246,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5074,
+              "t_s": 109.122
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.66,
+              "t_s": 108.916
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.66,
+              "t_s": 109.015
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.66,
+              "t_s": 109.063
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 10.6309,
+              "t_s": 173.395
+            }
+          ],
+          "finite_ranges": {
+            "count": 1534,
+            "max": 150.0,
+            "mean": 38.5678,
+            "min": 0.0
+          },
+          "messages": 1534,
+          "min_range_m": {
+            "count": 1250,
+            "max": 10.6309,
+            "mean": 3.9495,
+            "min": 0.6901
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {},
+          "first_bag_s": 0.0,
+          "first_stamp_s": -0.656,
+          "last_bag_s": 188.851,
+          "last_stamp_s": 185.661,
+          "messages": 631,
+          "top_child_frames": {
+            "base_link": 228,
+            "left_wheel_link": 205,
+            "odom": 198,
+            "right_wheel_link": 205
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 205,
+            "base_link->right_wheel_link": 205,
+            "map->odom": 198,
+            "odom->base_link": 228
+          },
+          "top_parent_frames": {
+            "base_link": 410,
+            "map": 198,
+            "odom": 228
+          },
+          "transform_count": 836
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 0.22,
+          "first_stamp_s": -503.533,
+          "last_bag_s": 3.202,
+          "last_stamp_s": -507.837,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 63,
+        "missing_at_start": [
+          "/cmd_vel_nav",
+          "/encoders",
+          "/motor_speed",
+          "/autonomous_mode",
+          "/joy",
+          "/odom",
+          "/local_ekf/odom",
+          "/global_ekf/odom",
+          "/pose",
+          "/gps_fix",
+          "/gps_waypoint/health",
+          "/gps_waypoint/debug",
+          "/sick_scansegment_xd/imu",
+          "/sick_scansegment_xd/imu_inflated",
+          "/scan_fullframe",
+          "/scan_pca_filtered",
+          "/scan_pca_filtered_clear",
+          "/scan_pca_filtered_points",
+          "/terrain/grade_map",
+          "/pca/surface_normal",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/line_points",
+          "/line_costmap",
+          "/line_detection/line_pixels",
+          "/line_detection/diagnostics",
+          "/line_detection/debug/raw",
+          "/line_detection/debug/mask",
+          "/line_detection/debug/overlay",
+          "/lines_pointcloud",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/map",
+          "/map_padded",
+          "/local_costmap/costmap",
+          "/global_costmap/costmap",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel",
+          "/cmd_vel_nav",
+          "/autonomous_mode",
+          "/global_ekf/odom",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/plan",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/compute_path_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/encoders": "autonav_interfaces/msg/Encoders",
+        "/follow_path/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/global_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/line_costmap": "nav_msgs/msg/OccupancyGrid",
+        "/line_detection/debug/mask": "sensor_msgs/msg/Image",
+        "/line_detection/debug/overlay": "sensor_msgs/msg/Image",
+        "/line_detection/debug/raw": "sensor_msgs/msg/Image",
+        "/line_detection/diagnostics": "std_msgs/msg/String",
+        "/line_detection/line_pixels": "std_msgs/msg/Int32MultiArray",
+        "/line_points": "autonav_interfaces/msg/LinePoints",
+        "/lines_pointcloud": "sensor_msgs/msg/PointCloud2",
+        "/local_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/local_ekf/odom": "nav_msgs/msg/Odometry",
+        "/map": "nav_msgs/msg/OccupancyGrid",
+        "/map_padded": "nav_msgs/msg/OccupancyGrid",
+        "/motor_speed": "std_msgs/msg/String",
+        "/navigate_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/plan": "nav_msgs/msg/Path",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage",
+        "/trajectories": "visualization_msgs/msg/MarkerArray",
+        "/transformed_global_plan": "nav_msgs/msg/Path",
+        "/unsmoothed_plan": "nav_msgs/msg/Path"
+      },
+      "video": {
+        "duration_s": 195.237,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/manual_course_rerun_5.MOV",
+        "present": true,
+        "size_mb": 241.1,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bag_backups/manual_course_rerun_7",
+      "bag_metadata": {
+        "duration_s": 138.348,
+        "message_count": 26656,
+        "present": true,
+        "topic_count": 51
+      },
+      "category": "full_perception",
+      "cmd_vel": {},
+      "costmaps": {
+        "/global_costmap/costmap": {
+          "first_nonzero_s": 1.632,
+          "hard_cells": {
+            "count": 64,
+            "max": 8595.0,
+            "mean": 7812.7969,
+            "min": 6240.0
+          },
+          "max_value": 100,
+          "messages": 64,
+          "nonzero_cells": {
+            "count": 64,
+            "max": 8998.0,
+            "mean": 8255.2969,
+            "min": 6271.0
+          }
+        },
+        "/line_costmap": {
+          "first_nonzero_s": 21.498,
+          "hard_cells": {
+            "count": 574,
+            "max": 499.0,
+            "mean": 166.9024,
+            "min": 0.0
+          },
+          "max_value": 100,
+          "messages": 574,
+          "nonzero_cells": {
+            "count": 574,
+            "max": 5522.0,
+            "mean": 3363.3223,
+            "min": 0.0
+          }
+        },
+        "/local_costmap/costmap": {
+          "first_nonzero_s": 2.307,
+          "hard_cells": {
+            "count": 274,
+            "max": 3038.0,
+            "mean": 1400.4088,
+            "min": 555.0
+          },
+          "max_value": 100,
+          "messages": 274,
+          "nonzero_cells": {
+            "count": 274,
+            "max": 8055.0,
+            "mean": 5495.9854,
+            "min": 1694.0
+          }
+        },
+        "/map": {
+          "first_nonzero_s": 6.275,
+          "hard_cells": {
+            "count": 40,
+            "max": 35.0,
+            "mean": 29.95,
+            "min": 11.0
+          },
+          "max_value": 100,
+          "messages": 40,
+          "nonzero_cells": {
+            "count": 40,
+            "max": 35.0,
+            "mean": 29.95,
+            "min": 11.0
+          }
+        },
+        "/map_padded": {
+          "first_nonzero_s": 0.233,
+          "hard_cells": {
+            "count": 2,
+            "max": 5300.0,
+            "mean": 4850.0,
+            "min": 4400.0
+          },
+          "max_value": 100,
+          "messages": 2,
+          "nonzero_cells": {
+            "count": 2,
+            "max": 5300.0,
+            "mean": 4850.0,
+            "min": 4400.0
+          }
+        },
+        "/terrain/grade_map": {
+          "first_nonzero_s": 1.245,
+          "hard_cells": {
+            "count": 129,
+            "max": 133.0,
+            "mean": 49.907,
+            "min": 2.0
+          },
+          "max_value": 100,
+          "messages": 129,
+          "nonzero_cells": {
+            "count": 129,
+            "max": 357.0,
+            "mean": 242.8992,
+            "min": 183.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 2316,
+        "last_left_rpm": 0,
+        "last_right_rpm": 0,
+        "left_count_delta": -8505303,
+        "right_count_delta": 8110615
+      },
+      "images": {
+        "/line_detection/debug/mask": {
+          "bright_ratio_ge_220": {
+            "count": 123,
+            "max": 0.0671,
+            "mean": 0.0512,
+            "min": 0.011
+          },
+          "encoding": {
+            "mono8": 123
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 123
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 123,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 123,
+            "max": 17.1112,
+            "mean": 13.0675,
+            "min": 2.8058
+          },
+          "messages": 123,
+          "nonzero_ratio": {
+            "count": 123,
+            "max": 0.0671,
+            "mean": 0.0512,
+            "min": 0.011
+          },
+          "sampled": 123,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 29.4927,
+              "t_s": 71.368
+            },
+            {
+              "mean_abs_luma_diff": 29.0131,
+              "t_s": 67.153
+            },
+            {
+              "mean_abs_luma_diff": 28.534,
+              "t_s": 87.368
+            },
+            {
+              "mean_abs_luma_diff": 28.4809,
+              "t_s": 82.761
+            },
+            {
+              "mean_abs_luma_diff": 28.4745,
+              "t_s": 71.516
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/overlay": {
+          "bright_ratio_ge_220": {
+            "count": 155,
+            "max": 0.0585,
+            "mean": 0.0429,
+            "min": 0.0083
+          },
+          "encoding": {
+            "bgr8": 155
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 155
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 155,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 155,
+            "max": 131.0683,
+            "mean": 121.8314,
+            "min": 100.6114
+          },
+          "messages": 155,
+          "nonzero_ratio": {
+            "count": 155,
+            "max": 0.9996,
+            "mean": 0.9986,
+            "min": 0.9969
+          },
+          "sampled": 155,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 73.631,
+              "t_s": 82.592
+            },
+            {
+              "mean_abs_luma_diff": 63.6048,
+              "t_s": 111.163
+            },
+            {
+              "mean_abs_luma_diff": 61.1099,
+              "t_s": 85.222
+            },
+            {
+              "mean_abs_luma_diff": 60.2068,
+              "t_s": 116.292
+            },
+            {
+              "mean_abs_luma_diff": 57.3942,
+              "t_s": 106.572
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/raw": {
+          "bright_ratio_ge_220": {
+            "count": 87,
+            "max": 0.0629,
+            "mean": 0.0495,
+            "min": 0.0091
+          },
+          "encoding": {
+            "bgr8": 87
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 87
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 87,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 87,
+            "max": 131.5153,
+            "mean": 124.2587,
+            "min": 101.0221
+          },
+          "messages": 87,
+          "nonzero_ratio": {
+            "count": 87,
+            "max": 0.9996,
+            "mean": 0.9984,
+            "min": 0.996
+          },
+          "sampled": 87,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 77.1222,
+              "t_s": 81.918
+            },
+            {
+              "mean_abs_luma_diff": 60.9793,
+              "t_s": 86.866
+            },
+            {
+              "mean_abs_luma_diff": 58.1389,
+              "t_s": 113.621
+            },
+            {
+              "mean_abs_luma_diff": 55.963,
+              "t_s": 74.059
+            },
+            {
+              "mean_abs_luma_diff": 55.4121,
+              "t_s": 67.787
+            }
+          ],
+          "width": 960
+        },
+        "/zed/zed_node/depth/depth_registered": {
+          "bright_ratio_ge_220": {
+            "count": 0
+          },
+          "encoding": {
+            "32FC1": 26
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 26
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 0
+          },
+          "luma_mean": {
+            "count": 0
+          },
+          "messages": 26,
+          "nonzero_ratio": {
+            "count": 0
+          },
+          "sampled": 26,
+          "top_frame_diffs": [],
+          "width": 960
+        },
+        "/zed/zed_node/rgb/color/rect/image": {
+          "bright_ratio_ge_220": {
+            "count": 33,
+            "max": 0.0644,
+            "mean": 0.047,
+            "min": 0.0262
+          },
+          "encoding": {
+            "bgra8": 33
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 33
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 33,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 33,
+            "max": 139.8147,
+            "mean": 124.647,
+            "min": 105.5829
+          },
+          "messages": 33,
+          "nonzero_ratio": {
+            "count": 33,
+            "max": 0.9996,
+            "mean": 0.9983,
+            "min": 0.997
+          },
+          "sampled": 33,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 65.8572,
+              "t_s": 82.301
+            },
+            {
+              "mean_abs_luma_diff": 62.7297,
+              "t_s": 77.484
+            },
+            {
+              "mean_abs_luma_diff": 60.6365,
+              "t_s": 109.14
+            },
+            {
+              "mean_abs_luma_diff": 57.0933,
+              "t_s": 114.234
+            },
+            {
+              "mean_abs_luma_diff": 53.4293,
+              "t_s": 87.515
+            }
+          ],
+          "width": 960
+        }
+      },
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {
+          "candidate_points": {
+            "count": 491,
+            "max": 7882.0,
+            "mean": 136.611,
+            "min": 0.0
+          },
+          "cluster_rejects": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "confirmed_points": {
+            "count": 491,
+            "max": 86.0,
+            "mean": 5.4134,
+            "min": 0.0
+          },
+          "cuda_detect_ms": {
+            "count": 491,
+            "max": 199.312,
+            "mean": 14.9732,
+            "min": 0.0
+          },
+          "debug_publish_ms": {
+            "count": 491,
+            "max": 284.369,
+            "mean": 29.9028,
+            "min": 0.0
+          },
+          "depth_fill_hits": {
+            "count": 491,
+            "max": 2.0,
+            "mean": 0.0081,
+            "min": 0.0
+          },
+          "depth_rejects": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "filtered_pixels": {
+            "count": 491,
+            "max": 13582.0,
+            "mean": 514.5031,
+            "min": 0.0
+          },
+          "geometry_rejects": {
+            "count": 491,
+            "max": 119.0,
+            "mean": 0.7271,
+            "min": 0.0
+          },
+          "kept_clusters": {
+            "count": 491,
+            "max": 1.0,
+            "mean": 0.0774,
+            "min": 0.0
+          },
+          "kept_components": {
+            "count": 491,
+            "max": 27.0,
+            "mean": 1.6049,
+            "min": 0.0
+          },
+          "out_of_bounds": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projected_output_count": {
+            "count": 491,
+            "max": 7882.0,
+            "mean": 136.611,
+            "min": 0.0
+          },
+          "projection_ms": {
+            "count": 491,
+            "max": 56.9033,
+            "mean": 2.9748,
+            "min": 0.0
+          },
+          "raw_pixels": {
+            "count": 491,
+            "max": 13582.0,
+            "mean": 538.9593,
+            "min": 0.0
+          },
+          "roi_rejects": {
+            "count": 491,
+            "max": 7954.0,
+            "mean": 326.1344,
+            "min": 0.0
+          },
+          "temporal_update_ms": {
+            "count": 491,
+            "max": 2.3718,
+            "mean": 0.0235,
+            "min": 0.0
+          },
+          "tf_latest_fallbacks": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "tf_lookup_ms": {
+            "count": 491,
+            "max": 134.929,
+            "mean": 1.2076,
+            "min": 0.0
+          },
+          "tf_wait_failures": {
+            "count": 491,
+            "max": 1.0,
+            "mean": 0.0081,
+            "min": 0.0
+          },
+          "total_callback_ms": {
+            "count": 491,
+            "max": 417.636,
+            "mean": 59.688,
+            "min": 0.216
+          },
+          "transform_rejects": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "yaw_gated_frames": {
+            "count": 491,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "diagnostic_reason_counts": {
+          "RGB/depth desynchronization": 329,
+          "empty line detection": 16,
+          "stamped TF unavailable": 4,
+          "updated": 142
+        },
+        "diagnostic_samples": [
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 0,
+              "debug_publish_ms": 0,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 0,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 0,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 0,
+              "reason": "RGB/depth desynchronization",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 0,
+              "tf_wait_failures": 0,
+              "total_callback_ms": 0.234054,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 2.77
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 0,
+              "debug_publish_ms": 0,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 0,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 0,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 0,
+              "reason": "RGB/depth desynchronization",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 0,
+              "tf_wait_failures": 0,
+              "total_callback_ms": 0.353433,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 2.872
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 28.4584,
+              "debug_publish_ms": 53.3408,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 781,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 1,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 807,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003968,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.948,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 217.12,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 5.378
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 21.7126,
+              "debug_publish_ms": 33.2839,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 784,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 1,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 801,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003552,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 134.929,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 227.732,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 5.404
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 53.7837,
+              "debug_publish_ms": 96.078,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 784,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 1,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 801,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.002977,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 128.342,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 279.604,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 5.405
+          }
+        ],
+        "line_pixels": {
+          "first_nonzero_s": 3.029,
+          "max_pixel_count": 13447,
+          "messages": 243,
+          "pixel_count": {
+            "count": 243,
+            "max": 13447.0,
+            "mean": 1211.2099,
+            "min": 0.0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": 21.217,
+          "frames": {
+            "odom": 298
+          },
+          "max_point_count": 86,
+          "messages": 298,
+          "point_count": {
+            "count": 298,
+            "max": 86.0,
+            "mean": 24.2013,
+            "min": 0.0
+          }
+        }
+      },
+      "name": "manual_course_rerun_7",
+      "odometry": {
+        "/local_ekf/odom": {
+          "count": 1184,
+          "duration_s": 136.063,
+          "euclidean_delta_m": 3.3915,
+          "mean_abs_angular_radps": 0.1059,
+          "mean_abs_linear_mps": 0.0392,
+          "path_length_m": 5.2939,
+          "start_frame_forward_m": 3.2732,
+          "start_frame_lateral_m": -0.8878,
+          "yaw_delta_deg": -13.405
+        },
+        "/odom": {
+          "count": 291,
+          "duration_s": 135.05,
+          "euclidean_delta_m": 3.3918,
+          "mean_abs_angular_radps": 0.0065,
+          "mean_abs_linear_mps": 0.0191,
+          "path_length_m": 3.4138,
+          "start_frame_forward_m": 3.2735,
+          "start_frame_lateral_m": -0.8878,
+          "yaw_delta_deg": -13.421
+        }
+      },
+      "physical_measurement": {},
+      "plans": {
+        "/plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/transformed_global_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/unsmoothed_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        }
+      },
+      "pointclouds": {
+        "/lines_pointcloud": {
+          "first_nonzero_s": 22.642,
+          "messages": 512,
+          "points": {
+            "count": 512,
+            "max": 86.0,
+            "mean": 22.5918,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 1.208,
+          "messages": 846,
+          "points": {
+            "count": 846,
+            "max": 1617.0,
+            "mean": 326.0887,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/autonav/logs/real_robot_calibration/manual_course_rerun_7/bag",
+        "bag_profile": "full_perception",
+        "command_line": "./run_on_robot.sh record_manual_full_course",
+        "command_mode": "none",
+        "created_utc": "2026-05-30T13:54:32.243028+00:00",
+        "description": "Record a broad full-course bag while the operator manually drives. The script does not command motion.",
+        "expected_scripted_duration_s": "manual_stop",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "37b181206bb0",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "0.000",
+        "max_abs_command_speed_mps": "0.000000",
+        "operator_notes": "Manual drive the course naturally. Include slow and normal passes over lines, cones, and ramp.",
+        "profile": "record_manual_full_course",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "True",
+        "run_name": "manual_course_rerun_7",
+        "speed_conversions": "",
+        "topic_count": "63",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/full_perception.txt",
+        "topics": "",
+        "wait_for_auto": "False"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 196,
+            "max": 277.0,
+            "mean": 144.5867,
+            "min": 10.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 194,
+              "min_range_m": 0.0,
+              "t_s": 4.052
+            },
+            {
+              "finite_ranges": 188,
+              "min_range_m": 0.0,
+              "t_s": 4.36
+            },
+            {
+              "finite_ranges": 195,
+              "min_range_m": 0.0,
+              "t_s": 4.54
+            },
+            {
+              "finite_ranges": 198,
+              "min_range_m": 0.0,
+              "t_s": 5.896
+            },
+            {
+              "finite_ranges": 197,
+              "min_range_m": 0.0,
+              "t_s": 6.412
+            }
+          ],
+          "finite_ranges": {
+            "count": 196,
+            "max": 339.0,
+            "mean": 258.4643,
+            "min": 157.0
+          },
+          "messages": 196,
+          "min_range_m": {
+            "count": 196,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 752,
+            "max": 35.0,
+            "mean": 0.5572,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.3806,
+              "t_s": 115.512
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.3806,
+              "t_s": 115.571
+            },
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5157,
+              "t_s": 114.93
+            },
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5612,
+              "t_s": 114.758
+            },
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5823,
+              "t_s": 114.684
+            }
+          ],
+          "finite_ranges": {
+            "count": 752,
+            "max": 178.0,
+            "mean": 63.8125,
+            "min": 0.0
+          },
+          "messages": 752,
+          "min_range_m": {
+            "count": 736,
+            "max": 9.5823,
+            "mean": 2.574,
+            "min": 0.6899
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 776,
+            "max": 35.0,
+            "mean": 0.3621,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.2931,
+              "t_s": 117.566
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.3806,
+              "t_s": 115.524
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.3806,
+              "t_s": 115.614
+            },
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5157,
+              "t_s": 114.93
+            },
+            {
+              "finite_ranges": 4,
+              "min_range_m": 9.5612,
+              "t_s": 114.754
+            }
+          ],
+          "finite_ranges": {
+            "count": 776,
+            "max": 165.0,
+            "mean": 60.2216,
+            "min": 0.0
+          },
+          "messages": 776,
+          "min_range_m": {
+            "count": 759,
+            "max": 9.5612,
+            "mean": 2.6516,
+            "min": 0.6899
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {
+            "zed_camera_center->zed_left_camera_frame": 13,
+            "zed_camera_center->zed_right_camera_frame": 19
+          },
+          "first_bag_s": 1.367,
+          "first_stamp_s": 0.823,
+          "last_bag_s": 136.745,
+          "last_stamp_s": 126.569,
+          "messages": 510,
+          "top_child_frames": {
+            "base_link": 152,
+            "left_wheel_link": 168,
+            "odom": 158,
+            "right_wheel_link": 168,
+            "zed_left_camera_frame": 13,
+            "zed_right_camera_frame": 19
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 168,
+            "base_link->right_wheel_link": 168,
+            "map->odom": 158,
+            "odom->base_link": 152,
+            "zed_camera_center->zed_left_camera_frame": 13,
+            "zed_camera_center->zed_right_camera_frame": 19
+          },
+          "top_parent_frames": {
+            "base_link": 336,
+            "map": 158,
+            "odom": 152,
+            "zed_camera_center": 32
+          },
+          "transform_count": 678
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 1.798,
+          "first_stamp_s": -192.42,
+          "last_bag_s": 1.798,
+          "last_stamp_s": -189.085,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 63,
+        "missing_at_start": [
+          "/cmd_vel",
+          "/motor_speed",
+          "/autonomous_mode",
+          "/local_ekf/odom",
+          "/global_ekf/odom",
+          "/pose",
+          "/gps_fix",
+          "/gps_waypoint/health",
+          "/gps_waypoint/debug",
+          "/sick_scansegment_xd/imu",
+          "/sick_scansegment_xd/imu_inflated",
+          "/scan_fullframe",
+          "/scan_pca_filtered_clear",
+          "/scan_pca_filtered_points",
+          "/terrain/grade_map",
+          "/pca/surface_normal",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/line_costmap",
+          "/line_detection/line_pixels",
+          "/line_detection/diagnostics",
+          "/line_detection/debug/raw",
+          "/line_detection/debug/mask",
+          "/line_detection/debug/overlay",
+          "/lines_pointcloud",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/map_padded",
+          "/local_costmap/costmap",
+          "/local_costmap/costmap_raw",
+          "/global_costmap/costmap",
+          "/global_costmap/costmap_raw",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_update",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel",
+          "/cmd_vel_nav",
+          "/autonomous_mode",
+          "/global_ekf/odom",
+          "/zed/zed_node/depth/depth_info",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/plan",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/compute_path_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/encoders": "autonav_interfaces/msg/Encoders",
+        "/follow_path/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/global_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/line_costmap": "nav_msgs/msg/OccupancyGrid",
+        "/line_detection/debug/mask": "sensor_msgs/msg/Image",
+        "/line_detection/debug/overlay": "sensor_msgs/msg/Image",
+        "/line_detection/debug/raw": "sensor_msgs/msg/Image",
+        "/line_detection/diagnostics": "std_msgs/msg/String",
+        "/line_detection/line_pixels": "std_msgs/msg/Int32MultiArray",
+        "/line_points": "autonav_interfaces/msg/LinePoints",
+        "/lines_pointcloud": "sensor_msgs/msg/PointCloud2",
+        "/local_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/local_ekf/odom": "nav_msgs/msg/Odometry",
+        "/map": "nav_msgs/msg/OccupancyGrid",
+        "/map_padded": "nav_msgs/msg/OccupancyGrid",
+        "/motor_speed": "std_msgs/msg/String",
+        "/navigate_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/plan": "nav_msgs/msg/Path",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage",
+        "/trajectories": "visualization_msgs/msg/MarkerArray",
+        "/transformed_global_plan": "nav_msgs/msg/Path",
+        "/unsmoothed_plan": "nav_msgs/msg/Path",
+        "/zed/zed_node/depth/depth_registered": "sensor_msgs/msg/Image",
+        "/zed/zed_node/rgb/color/rect/image": "sensor_msgs/msg/Image"
+      },
+      "video": {
+        "duration_s": 148.103,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/manual_course_rerun_7.MOV",
+        "present": true,
+        "size_mb": 174.55,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bag_backups/camera_line_detection_rerun",
+      "bag_metadata": {
+        "duration_s": 126.161,
+        "message_count": 45497,
+        "present": true,
+        "topic_count": 47
+      },
+      "category": "full_perception",
+      "cmd_vel": {},
+      "costmaps": {
+        "/global_costmap/costmap": {
+          "first_nonzero_s": 1.444,
+          "hard_cells": {
+            "count": 113,
+            "max": 9720.0,
+            "mean": 9720.0,
+            "min": 9720.0
+          },
+          "max_value": 100,
+          "messages": 113,
+          "nonzero_cells": {
+            "count": 113,
+            "max": 9774.0,
+            "mean": 9774.0,
+            "min": 9774.0
+          }
+        },
+        "/line_costmap": {
+          "first_nonzero_s": null,
+          "hard_cells": {
+            "count": 1093,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "max_value": 0,
+          "messages": 1093,
+          "nonzero_cells": {
+            "count": 1093,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/local_costmap/costmap": {
+          "first_nonzero_s": 4.493,
+          "hard_cells": {
+            "count": 598,
+            "max": 719.0,
+            "mean": 719.0,
+            "min": 719.0
+          },
+          "max_value": 100,
+          "messages": 598,
+          "nonzero_cells": {
+            "count": 598,
+            "max": 2155.0,
+            "mean": 2155.0,
+            "min": 2155.0
+          }
+        },
+        "/map": {
+          "first_nonzero_s": 0.832,
+          "hard_cells": {
+            "count": 85,
+            "max": 83.0,
+            "mean": 83.0,
+            "min": 83.0
+          },
+          "max_value": 100,
+          "messages": 85,
+          "nonzero_cells": {
+            "count": 85,
+            "max": 83.0,
+            "mean": 83.0,
+            "min": 83.0
+          }
+        },
+        "/map_padded": {
+          "first_nonzero_s": 0.772,
+          "hard_cells": {
+            "count": 1,
+            "max": 7100.0,
+            "mean": 7100.0,
+            "min": 7100.0
+          },
+          "max_value": 100,
+          "messages": 1,
+          "nonzero_cells": {
+            "count": 1,
+            "max": 7100.0,
+            "mean": 7100.0,
+            "min": 7100.0
+          }
+        },
+        "/terrain/grade_map": {
+          "first_nonzero_s": 0.25,
+          "hard_cells": {
+            "count": 819,
+            "max": 99.0,
+            "mean": 18.4908,
+            "min": 2.0
+          },
+          "max_value": 100,
+          "messages": 819,
+          "nonzero_cells": {
+            "count": 819,
+            "max": 328.0,
+            "mean": 221.2515,
+            "min": 139.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 3572,
+        "last_left_rpm": 0,
+        "last_right_rpm": 0,
+        "left_count_delta": -1860578,
+        "right_count_delta": -197472986
+      },
+      "images": {
+        "/line_detection/debug/mask": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "encoding": {
+            "mono8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 15.7771,
+            "mean": 15.7771,
+            "min": 15.7771
+          },
+          "messages": 449,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.714
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.726
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.237
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.243
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.252
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/overlay": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0533,
+            "mean": 0.0533,
+            "min": 0.0533
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 124.3133,
+            "mean": 124.3133,
+            "min": 124.3133
+          },
+          "messages": 484,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.296
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.543
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.781
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.919
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.095
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/raw": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0598,
+            "mean": 0.0598,
+            "min": 0.0598
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 125.3346,
+            "mean": 125.3346,
+            "min": 125.3346
+          },
+          "messages": 478,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 4.883
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.119
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.288
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.432
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 5.689
+            }
+          ],
+          "width": 960
+        }
+      },
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {
+          "candidate_points": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cluster_rejects": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "confirmed_points": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cuda_detect_ms": {
+            "count": 453,
+            "max": 135.829,
+            "mean": 42.0178,
+            "min": 13.8311
+          },
+          "debug_publish_ms": {
+            "count": 453,
+            "max": 146.287,
+            "mean": 38.1604,
+            "min": 9.2621
+          },
+          "depth_fill_hits": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "depth_rejects": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "filtered_pixels": {
+            "count": 453,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          },
+          "geometry_rejects": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_clusters": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_components": {
+            "count": 453,
+            "max": 3.0,
+            "mean": 3.0,
+            "min": 3.0
+          },
+          "out_of_bounds": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projected_output_count": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projection_ms": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "raw_pixels": {
+            "count": 453,
+            "max": 2595.0,
+            "mean": 2595.0,
+            "min": 2595.0
+          },
+          "roi_rejects": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "temporal_update_ms": {
+            "count": 453,
+            "max": 0.7596,
+            "mean": 0.006,
+            "min": 0.0026
+          },
+          "tf_latest_fallbacks": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "tf_lookup_ms": {
+            "count": 453,
+            "max": 149.901,
+            "mean": 131.0831,
+            "min": 125.179
+          },
+          "tf_wait_failures": {
+            "count": 453,
+            "max": 1.0,
+            "mean": 1.0,
+            "min": 1.0
+          },
+          "total_callback_ms": {
+            "count": 453,
+            "max": 356.594,
+            "mean": 230.7419,
+            "min": 158.961
+          },
+          "transform_rejects": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "yaw_gated_frames": {
+            "count": 453,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "diagnostic_reason_counts": {
+          "stamped TF unavailable": 453
+        },
+        "diagnostic_samples": [
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 63.0734,
+              "debug_publish_ms": 35.9093,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003041,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 128.386,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 243.288,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 4.568
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 39.233,
+              "debug_publish_ms": 10.4875,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.002944,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 125.783,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 183.121,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 6.466
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 16.4865,
+              "debug_publish_ms": 33.1098,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.002945,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 128.971,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 186.215,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 6.489
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 30.7402,
+              "debug_publish_ms": 27.9515,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.0032,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.107,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 193.066,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 6.504
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 15.1987,
+              "debug_publish_ms": 18.706,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.002944,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.543,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 169.574,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 6.506
+          }
+        ],
+        "line_pixels": {
+          "first_nonzero_s": 4.098,
+          "max_pixel_count": 2592,
+          "messages": 506,
+          "pixel_count": {
+            "count": 506,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {
+            "odom": 363
+          },
+          "max_point_count": 0,
+          "messages": 363,
+          "point_count": {
+            "count": 363,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        }
+      },
+      "name": "camera_line_detection_rerun",
+      "odometry": {
+        "/odom": {
+          "count": 476,
+          "duration_s": 124.235,
+          "euclidean_delta_m": 0.0,
+          "mean_abs_angular_radps": 0.0,
+          "mean_abs_linear_mps": 0.0,
+          "path_length_m": 0.0,
+          "start_frame_forward_m": 0.0,
+          "start_frame_lateral_m": 0.0,
+          "yaw_delta_deg": 0.0
+        }
+      },
+      "physical_measurement": {},
+      "plans": {
+        "/plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/transformed_global_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/unsmoothed_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        }
+      },
+      "pointclouds": {
+        "/lines_pointcloud": {
+          "first_nonzero_s": null,
+          "messages": 499,
+          "points": {
+            "count": 499,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 18.053,
+          "messages": 1506,
+          "points": {
+            "count": 1506,
+            "max": 272.0,
+            "mean": 38.824,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/autonav/logs/real_robot_calibration/camera_line_detection_rerun/bag",
+        "bag_profile": "full_perception",
+        "command_line": "./run_on_robot.sh perception_static_sweep",
+        "command_mode": "none",
+        "created_utc": "2026-05-30T13:40:17.671250+00:00",
+        "description": "Record full perception data while the robot is stationary or manually crept through representative line/cone/ramp views.",
+        "expected_scripted_duration_s": "manual_stop",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "37b181206bb0",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "0.000",
+        "max_abs_command_speed_mps": "0.000000",
+        "operator_notes": "Stationary or hand-crept views of tape, cones, ramp, shadows, legal gaps, and illegal narrow gaps.",
+        "profile": "perception_static_sweep",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "True",
+        "run_name": "camera_line_detection_rerun",
+        "speed_conversions": "",
+        "topic_count": "63",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/full_perception.txt",
+        "topics": "",
+        "wait_for_auto": "False"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 1049,
+            "max": 197.0,
+            "mean": 144.6044,
+            "min": 58.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 181,
+              "min_range_m": 0.0,
+              "t_s": 2.924
+            },
+            {
+              "finite_ranges": 176,
+              "min_range_m": 0.0,
+              "t_s": 3.029
+            },
+            {
+              "finite_ranges": 177,
+              "min_range_m": 0.0,
+              "t_s": 3.376
+            },
+            {
+              "finite_ranges": 176,
+              "min_range_m": 0.0,
+              "t_s": 3.449
+            },
+            {
+              "finite_ranges": 178,
+              "min_range_m": 0.0,
+              "t_s": 3.555
+            }
+          ],
+          "finite_ranges": {
+            "count": 1049,
+            "max": 261.0,
+            "mean": 198.0486,
+            "min": 123.0
+          },
+          "messages": 1049,
+          "min_range_m": {
+            "count": 1049,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 1423,
+            "max": 24.0,
+            "mean": 0.1012,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 2,
+              "min_range_m": 10.0143,
+              "t_s": 71.128
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 10.0517,
+              "t_s": 71.061
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 10.0601,
+              "t_s": 70.913
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 10.077,
+              "t_s": 70.993
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 10.077,
+              "t_s": 71.021
+            }
+          ],
+          "finite_ranges": {
+            "count": 1423,
+            "max": 97.0,
+            "mean": 17.2621,
+            "min": 0.0
+          },
+          "messages": 1423,
+          "min_range_m": {
+            "count": 906,
+            "max": 10.077,
+            "mean": 5.1293,
+            "min": 0.7413
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 1471,
+            "max": 24.0,
+            "mean": 0.0816,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.0193,
+              "t_s": 71.516
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.0193,
+              "t_s": 71.607
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 10.0517,
+              "t_s": 71.064
+            },
+            {
+              "finite_ranges": 3,
+              "min_range_m": 10.0601,
+              "t_s": 70.907
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 10.077,
+              "t_s": 70.978
+            }
+          ],
+          "finite_ranges": {
+            "count": 1471,
+            "max": 84.0,
+            "mean": 14.07,
+            "min": 0.0
+          },
+          "messages": 1471,
+          "min_range_m": {
+            "count": 867,
+            "max": 10.077,
+            "mean": 5.1687,
+            "min": 0.7413
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {},
+          "first_bag_s": 0.779,
+          "first_stamp_s": 0.66,
+          "last_bag_s": 125.837,
+          "last_stamp_s": 116.062,
+          "messages": 821,
+          "top_child_frames": {
+            "left_wheel_link": 318,
+            "odom": 503,
+            "right_wheel_link": 318
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 318,
+            "base_link->right_wheel_link": 318,
+            "map->odom": 503
+          },
+          "top_parent_frames": {
+            "base_link": 636,
+            "map": 503
+          },
+          "transform_count": 1139
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 0.811,
+          "first_stamp_s": -1142.283,
+          "last_bag_s": 3.906,
+          "last_stamp_s": -1137.979,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 63,
+        "missing_at_start": [
+          "/cmd_vel_nav",
+          "/encoders",
+          "/motor_speed",
+          "/autonomous_mode",
+          "/joy",
+          "/odom",
+          "/global_ekf/odom",
+          "/sick_scansegment_xd/imu",
+          "/sick_scansegment_xd/imu_inflated",
+          "/scan_pca_filtered",
+          "/terrain/grade_map",
+          "/pca/surface_normal",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/line_points",
+          "/line_costmap",
+          "/line_detection/line_pixels",
+          "/line_detection/diagnostics",
+          "/line_detection/debug/raw",
+          "/line_detection/debug/mask",
+          "/line_detection/debug/overlay",
+          "/lines_pointcloud",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/map_padded",
+          "/local_costmap/costmap",
+          "/local_costmap/costmap_raw",
+          "/global_costmap/costmap",
+          "/global_costmap/costmap_raw",
+          "/plan",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel",
+          "/cmd_vel_nav",
+          "/autonomous_mode",
+          "/local_ekf/odom",
+          "/global_ekf/odom",
+          "/pose",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/plan",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/compute_path_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/encoders": "autonav_interfaces/msg/Encoders",
+        "/follow_path/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/global_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/line_costmap": "nav_msgs/msg/OccupancyGrid",
+        "/line_detection/debug/mask": "sensor_msgs/msg/Image",
+        "/line_detection/debug/overlay": "sensor_msgs/msg/Image",
+        "/line_detection/debug/raw": "sensor_msgs/msg/Image",
+        "/line_detection/diagnostics": "std_msgs/msg/String",
+        "/line_detection/line_pixels": "std_msgs/msg/Int32MultiArray",
+        "/line_points": "autonav_interfaces/msg/LinePoints",
+        "/lines_pointcloud": "sensor_msgs/msg/PointCloud2",
+        "/local_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/map": "nav_msgs/msg/OccupancyGrid",
+        "/map_padded": "nav_msgs/msg/OccupancyGrid",
+        "/motor_speed": "std_msgs/msg/String",
+        "/navigate_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/plan": "nav_msgs/msg/Path",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage",
+        "/trajectories": "visualization_msgs/msg/MarkerArray",
+        "/transformed_global_plan": "nav_msgs/msg/Path",
+        "/unsmoothed_plan": "nav_msgs/msg/Path"
+      },
+      "video": {
+        "duration_s": 122.768,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/camera_line_detection_rerun.MOV",
+        "present": true,
+        "size_mb": 146.17,
+        "width": 1920
+      }
+    },
+    {
+      "bag_dir": "/Users/cole/autonav_bag_backups/camera_line_detection_rerun_2feet_stationary",
+      "bag_metadata": {
+        "duration_s": 56.834,
+        "message_count": 26438,
+        "present": true,
+        "topic_count": 45
+      },
+      "category": "full_perception",
+      "cmd_vel": {},
+      "costmaps": {
+        "/global_costmap/costmap": {
+          "first_nonzero_s": 1.114,
+          "hard_cells": {
+            "count": 66,
+            "max": 9720.0,
+            "mean": 9720.0,
+            "min": 9720.0
+          },
+          "max_value": 100,
+          "messages": 66,
+          "nonzero_cells": {
+            "count": 66,
+            "max": 9774.0,
+            "mean": 9774.0,
+            "min": 9774.0
+          }
+        },
+        "/line_costmap": {
+          "first_nonzero_s": null,
+          "hard_cells": {
+            "count": 691,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "max_value": 0,
+          "messages": 691,
+          "nonzero_cells": {
+            "count": 691,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/local_costmap/costmap": {
+          "first_nonzero_s": 1.403,
+          "hard_cells": {
+            "count": 418,
+            "max": 719.0,
+            "mean": 719.0,
+            "min": 719.0
+          },
+          "max_value": 100,
+          "messages": 418,
+          "nonzero_cells": {
+            "count": 418,
+            "max": 2155.0,
+            "mean": 2155.0,
+            "min": 2155.0
+          }
+        },
+        "/map_padded": {
+          "first_nonzero_s": 1.216,
+          "hard_cells": {
+            "count": 1,
+            "max": 7100.0,
+            "mean": 7100.0,
+            "min": 7100.0
+          },
+          "max_value": 100,
+          "messages": 1,
+          "nonzero_cells": {
+            "count": 1,
+            "max": 7100.0,
+            "mean": 7100.0,
+            "min": 7100.0
+          }
+        },
+        "/terrain/grade_map": {
+          "first_nonzero_s": 2.267,
+          "hard_cells": {
+            "count": 700,
+            "max": 11.0,
+            "mean": 5.6457,
+            "min": 3.0
+          },
+          "max_value": 100,
+          "messages": 700,
+          "nonzero_cells": {
+            "count": 700,
+            "max": 226.0,
+            "mean": 205.8014,
+            "min": 194.0
+          }
+        }
+      },
+      "decode_errors": {},
+      "encoders": {
+        "count": 1837,
+        "last_left_rpm": 0,
+        "last_right_rpm": 0,
+        "left_count_delta": 205,
+        "right_count_delta": -202
+      },
+      "images": {
+        "/line_detection/debug/mask": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "encoding": {
+            "mono8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 15.7771,
+            "mean": 15.7771,
+            "min": 15.7771
+          },
+          "messages": 274,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.0619,
+            "mean": 0.0619,
+            "min": 0.0619
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 1.815
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 1.972
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 2.35
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 2.373
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.851
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/overlay": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0533,
+            "mean": 0.0533,
+            "min": 0.0533
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 124.3133,
+            "mean": 124.3133,
+            "min": 124.3133
+          },
+          "messages": 277,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.18
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.19
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.192
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.204
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.207
+            }
+          ],
+          "width": 960
+        },
+        "/line_detection/debug/raw": {
+          "bright_ratio_ge_220": {
+            "count": 200,
+            "max": 0.0598,
+            "mean": 0.0598,
+            "min": 0.0598
+          },
+          "encoding": {
+            "bgr8": 200
+          },
+          "frame_ids": {
+            "zed_left_camera_frame_optical": 200
+          },
+          "height": 540,
+          "luma_max": {
+            "count": 200,
+            "max": 255.0,
+            "mean": 255.0,
+            "min": 255.0
+          },
+          "luma_mean": {
+            "count": 200,
+            "max": 125.3346,
+            "mean": 125.3346,
+            "min": 125.3346
+          },
+          "messages": 279,
+          "nonzero_ratio": {
+            "count": 200,
+            "max": 0.9982,
+            "mean": 0.9982,
+            "min": 0.9982
+          },
+          "sampled": 200,
+          "top_frame_diffs": [
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.3
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.353
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.368
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.385
+            },
+            {
+              "mean_abs_luma_diff": 0.0,
+              "t_s": 3.386
+            }
+          ],
+          "width": 960
+        }
+      },
+      "lidar_line_detection": {
+        "diagnostic_reason_counts": {},
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {},
+          "max_point_count": 0,
+          "messages": 0,
+          "point_count": {
+            "count": 0
+          }
+        }
+      },
+      "line_detection": {
+        "diagnostic_numeric_stats": {
+          "candidate_points": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cluster_rejects": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "confirmed_points": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "cuda_detect_ms": {
+            "count": 260,
+            "max": 109.955,
+            "mean": 29.9814,
+            "min": 12.7548
+          },
+          "debug_publish_ms": {
+            "count": 260,
+            "max": 84.6735,
+            "mean": 25.3772,
+            "min": 8.3091
+          },
+          "depth_fill_hits": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "depth_rejects": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "filtered_pixels": {
+            "count": 260,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          },
+          "geometry_rejects": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_clusters": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "kept_components": {
+            "count": 260,
+            "max": 3.0,
+            "mean": 3.0,
+            "min": 3.0
+          },
+          "out_of_bounds": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projected_output_count": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "projection_ms": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "raw_pixels": {
+            "count": 260,
+            "max": 2595.0,
+            "mean": 2595.0,
+            "min": 2595.0
+          },
+          "roi_rejects": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "temporal_update_ms": {
+            "count": 260,
+            "max": 0.077,
+            "mean": 0.0036,
+            "min": 0.0027
+          },
+          "tf_latest_fallbacks": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "tf_lookup_ms": {
+            "count": 260,
+            "max": 136.699,
+            "mean": 131.1755,
+            "min": 125.173
+          },
+          "tf_wait_failures": {
+            "count": 260,
+            "max": 1.0,
+            "mean": 1.0,
+            "min": 1.0
+          },
+          "total_callback_ms": {
+            "count": 260,
+            "max": 334.853,
+            "mean": 197.8472,
+            "min": 156.303
+          },
+          "transform_rejects": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "yaw_gated_frames": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "diagnostic_reason_counts": {
+          "stamped TF unavailable": 260
+        },
+        "diagnostic_samples": [
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 29.5831,
+              "debug_publish_ms": 22.0594,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003616,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 126.097,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 211.56,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 3.489
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 13.1181,
+              "debug_publish_ms": 14.7835,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003169,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 127.831,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 158.934,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 3.489
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 36.873,
+              "debug_publish_ms": 18.8295,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003713,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.031,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 190.027,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 3.499
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 26.2873,
+              "debug_publish_ms": 28.1462,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.003073,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 133.627,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 209.007,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 3.5
+          },
+          {
+            "data": {
+              "candidate_points": 0,
+              "cluster_rejects": 0,
+              "confirmed_points": 0,
+              "cuda_detect_ms": 20.7871,
+              "debug_publish_ms": 19.7618,
+              "depth_fill_hits": 0,
+              "depth_rejects": 0,
+              "filtered_pixels": 2592,
+              "geometry_rejects": 0,
+              "kept_clusters": 0,
+              "kept_components": 3,
+              "out_of_bounds": 0,
+              "projected_output_count": 0,
+              "projection_ms": 0,
+              "raw_pixels": 2595,
+              "reason": "stamped TF unavailable",
+              "roi_rejects": 0,
+              "temporal_update_ms": 0.00288,
+              "tf_latest_fallbacks": 0,
+              "tf_lookup_ms": 125.372,
+              "tf_wait_failures": 1,
+              "total_callback_ms": 167.044,
+              "transform_rejects": 0,
+              "yaw_gated_frames": 0
+            },
+            "t_s": 3.5
+          }
+        ],
+        "line_pixels": {
+          "first_nonzero_s": 1.678,
+          "max_pixel_count": 2592,
+          "messages": 267,
+          "pixel_count": {
+            "count": 267,
+            "max": 2592.0,
+            "mean": 2592.0,
+            "min": 2592.0
+          }
+        },
+        "line_points": {
+          "first_nonzero_s": null,
+          "frames": {
+            "odom": 260
+          },
+          "max_point_count": 0,
+          "messages": 260,
+          "point_count": {
+            "count": 260,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        }
+      },
+      "name": "camera_line_detection_rerun_2feet_stationary",
+      "odometry": {
+        "/odom": {
+          "count": 206,
+          "duration_s": 52.415,
+          "euclidean_delta_m": 0.0,
+          "mean_abs_angular_radps": 0.0,
+          "mean_abs_linear_mps": 0.0,
+          "path_length_m": 0.0,
+          "start_frame_forward_m": 0.0,
+          "start_frame_lateral_m": 0.0,
+          "yaw_delta_deg": 0.0
+        }
+      },
+      "physical_measurement": {},
+      "plans": {
+        "/plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/transformed_global_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        },
+        "/unsmoothed_plan": {
+          "length_m": {
+            "count": 0
+          },
+          "messages": 0,
+          "poses": {
+            "count": 0
+          }
+        }
+      },
+      "pointclouds": {
+        "/lines_pointcloud": {
+          "first_nonzero_s": null,
+          "messages": 271,
+          "points": {
+            "count": 271,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered_points": {
+          "first_nonzero_s": 2.291,
+          "messages": 886,
+          "points": {
+            "count": 886,
+            "max": 16.0,
+            "mean": 5.807,
+            "min": 0.0
+          }
+        }
+      },
+      "run_metadata": {
+        "allow_high_speed": "False",
+        "bag_path": "/autonav/logs/real_robot_calibration/camera_line_detection_rerun_2feet_stationary/bag",
+        "bag_profile": "full_perception",
+        "command_line": "./run_on_robot.sh perception_static_sweep",
+        "command_mode": "none",
+        "created_utc": "2026-05-30T13:45:32.553060+00:00",
+        "description": "Record full perception data while the robot is stationary or manually crept through representative line/cone/ramp views.",
+        "expected_scripted_duration_s": "manual_stop",
+        "git_branch": "autoresearch_path_nav_fix",
+        "git_commit": "37b181206bb0",
+        "hostname": "ubuntu",
+        "max_abs_command_speed_mph": "0.000",
+        "max_abs_command_speed_mps": "0.000000",
+        "operator_notes": "Stationary or hand-crept views of tape, cones, ramp, shadows, legal gaps, and illegal narrow gaps.",
+        "profile": "perception_static_sweep",
+        "raw_lidar_enabled": "False",
+        "record_until_interrupt": "True",
+        "run_name": "camera_line_detection_rerun_2feet_stationary",
+        "speed_conversions": "",
+        "topic_count": "63",
+        "topic_file": "/autonav/scripts/real_robot_calibration/topics/full_perception.txt",
+        "topics": "",
+        "wait_for_auto": "False"
+      },
+      "scans": {
+        "/scan_fullframe": {
+          "close_ranges_lt_1m": {
+            "count": 895,
+            "max": 183.0,
+            "mean": 169.6212,
+            "min": 160.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 200,
+              "min_range_m": 0.0,
+              "t_s": 2.059
+            },
+            {
+              "finite_ranges": 199,
+              "min_range_m": 0.0,
+              "t_s": 2.111
+            },
+            {
+              "finite_ranges": 204,
+              "min_range_m": 0.0,
+              "t_s": 2.208
+            },
+            {
+              "finite_ranges": 202,
+              "min_range_m": 0.0,
+              "t_s": 2.267
+            },
+            {
+              "finite_ranges": 198,
+              "min_range_m": 0.0,
+              "t_s": 2.307
+            }
+          ],
+          "finite_ranges": {
+            "count": 895,
+            "max": 212.0,
+            "mean": 202.7642,
+            "min": 193.0
+          },
+          "messages": 895,
+          "min_range_m": {
+            "count": 895,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          }
+        },
+        "/scan_pca_filtered": {
+          "close_ranges_lt_1m": {
+            "count": 909,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7429,
+              "t_s": 6.443
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7429,
+              "t_s": 9.854
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7459,
+              "t_s": 13.699
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7489,
+              "t_s": 6.244
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7508,
+              "t_s": 4.843
+            }
+          ],
+          "finite_ranges": {
+            "count": 909,
+            "max": 9.0,
+            "mean": 3.2332,
+            "min": 0.0
+          },
+          "messages": 909,
+          "min_range_m": {
+            "count": 885,
+            "max": 8.7508,
+            "mean": 6.9829,
+            "min": 6.3018
+          }
+        },
+        "/scan_pca_filtered_clear": {
+          "close_ranges_lt_1m": {
+            "count": 909,
+            "max": 0.0,
+            "mean": 0.0,
+            "min": 0.0
+          },
+          "closest_events": [
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7868,
+              "t_s": 39.205
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7868,
+              "t_s": 41.099
+            },
+            {
+              "finite_ranges": 1,
+              "min_range_m": 8.7868,
+              "t_s": 41.148
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.2609,
+              "t_s": 20.298
+            },
+            {
+              "finite_ranges": 2,
+              "min_range_m": 9.2609,
+              "t_s": 20.364
+            }
+          ],
+          "finite_ranges": {
+            "count": 909,
+            "max": 7.0,
+            "mean": 1.6216,
+            "min": 0.0
+          },
+          "messages": 909,
+          "min_range_m": {
+            "count": 579,
+            "max": 9.2609,
+            "mean": 7.5475,
+            "min": 6.3018
+          }
+        }
+      },
+      "tf": {
+        "/tf": {
+          "camera_pairs": {},
+          "first_bag_s": 1.275,
+          "first_stamp_s": 1.226,
+          "last_bag_s": 54.036,
+          "last_stamp_s": 44.925,
+          "messages": 266,
+          "top_child_frames": {
+            "left_wheel_link": 266,
+            "right_wheel_link": 266
+          },
+          "top_pairs": {
+            "base_link->left_wheel_link": 266,
+            "base_link->right_wheel_link": 266
+          },
+          "top_parent_frames": {
+            "base_link": 532
+          },
+          "transform_count": 532
+        },
+        "/tf_static": {
+          "camera_pairs": {
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "first_bag_s": 0.323,
+          "first_stamp_s": -1452.614,
+          "last_bag_s": 1.216,
+          "last_stamp_s": -1456.917,
+          "messages": 2,
+          "top_child_frames": {
+            "Caster_link": 1,
+            "base_footprint": 1,
+            "gps_footprint": 1,
+            "lidar_footprint": 1,
+            "nav_center": 1,
+            "zed_camera_center": 1,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame": 1,
+            "zed_right_camera_frame_optical": 1
+          },
+          "top_pairs": {
+            "base_link->Caster_link": 1,
+            "base_link->base_footprint": 1,
+            "base_link->gps_footprint": 1,
+            "base_link->lidar_footprint": 1,
+            "base_link->nav_center": 1,
+            "base_link->zed_camera_link": 1,
+            "zed_camera_center->zed_left_camera_frame": 1,
+            "zed_camera_center->zed_right_camera_frame": 1,
+            "zed_camera_link->zed_camera_center": 1,
+            "zed_left_camera_frame->zed_left_camera_frame_optical": 1,
+            "zed_right_camera_frame->zed_right_camera_frame_optical": 1
+          },
+          "top_parent_frames": {
+            "base_link": 6,
+            "zed_camera_center": 2,
+            "zed_camera_link": 1,
+            "zed_left_camera_frame": 1,
+            "zed_right_camera_frame": 1
+          },
+          "transform_count": 11
+        }
+      },
+      "topic_health": {
+        "expected_topic_count": 63,
+        "missing_at_start": [
+          "/cmd_vel_nav",
+          "/odom",
+          "/local_ekf/odom",
+          "/global_ekf/odom",
+          "/pose",
+          "/gps_fix",
+          "/gps_waypoint/health",
+          "/gps_waypoint/debug",
+          "/scan_pca_filtered",
+          "/scan_pca_filtered_clear",
+          "/scan_pca_filtered_points",
+          "/terrain/grade_map",
+          "/pca/surface_normal",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/line_points",
+          "/line_detection/line_pixels",
+          "/line_detection/diagnostics",
+          "/line_detection/debug/raw",
+          "/line_detection/debug/mask",
+          "/line_detection/debug/overlay",
+          "/lines_pointcloud",
+          "/lidar_line_points",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/map",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ],
+        "zero_count_expected_topics": [
+          "/parameter_events",
+          "/cmd_vel",
+          "/cmd_vel_nav",
+          "/autonomous_mode",
+          "/local_ekf/odom",
+          "/global_ekf/odom",
+          "/pose",
+          "/zed/zed_node/rgb/color/rect/image",
+          "/zed/zed_node/rgb/color/rect/camera_info",
+          "/zed/zed_node/depth/depth_registered",
+          "/zed/zed_node/depth/depth_info",
+          "/lidar_line_points",
+          "/lidar_line_costmap",
+          "/lidar_line_detection/diagnostics",
+          "/lidar_line_detection/debug/points",
+          "/map",
+          "/plan",
+          "/unsmoothed_plan",
+          "/local_plan",
+          "/trajectories",
+          "/transformed_global_plan",
+          "/goal_pose",
+          "/goal_update",
+          "/nav_goal",
+          "/evaluation",
+          "/navigate_to_pose/_action/status",
+          "/follow_path/_action/status",
+          "/compute_path_to_pose/_action/status",
+          "/electrical/voltage",
+          "/electrical/current",
+          "/electrical/power",
+          "/electrical/soc"
+        ]
+      },
+      "topic_types": {
+        "/autonomous_mode": "std_msgs/msg/Bool",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+        "/compute_path_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/encoders": "autonav_interfaces/msg/Encoders",
+        "/follow_path/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/global_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/joy": "sensor_msgs/msg/Joy",
+        "/line_costmap": "nav_msgs/msg/OccupancyGrid",
+        "/line_detection/debug/mask": "sensor_msgs/msg/Image",
+        "/line_detection/debug/overlay": "sensor_msgs/msg/Image",
+        "/line_detection/debug/raw": "sensor_msgs/msg/Image",
+        "/line_detection/diagnostics": "std_msgs/msg/String",
+        "/line_detection/line_pixels": "std_msgs/msg/Int32MultiArray",
+        "/line_points": "autonav_interfaces/msg/LinePoints",
+        "/lines_pointcloud": "sensor_msgs/msg/PointCloud2",
+        "/local_costmap/costmap": "nav_msgs/msg/OccupancyGrid",
+        "/map_padded": "nav_msgs/msg/OccupancyGrid",
+        "/motor_speed": "std_msgs/msg/String",
+        "/navigate_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
+        "/odom": "nav_msgs/msg/Odometry",
+        "/pca/surface_normal": "geometry_msgs/msg/Vector3Stamped",
+        "/plan": "nav_msgs/msg/Path",
+        "/scan_fullframe": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_clear": "sensor_msgs/msg/LaserScan",
+        "/scan_pca_filtered_points": "sensor_msgs/msg/PointCloud2",
+        "/sick_scansegment_xd/imu": "sensor_msgs/msg/Imu",
+        "/sick_scansegment_xd/imu_inflated": "sensor_msgs/msg/Imu",
+        "/terrain/grade_map": "nav_msgs/msg/OccupancyGrid",
+        "/tf": "tf2_msgs/msg/TFMessage",
+        "/tf_static": "tf2_msgs/msg/TFMessage",
+        "/trajectories": "visualization_msgs/msg/MarkerArray",
+        "/transformed_global_plan": "nav_msgs/msg/Path",
+        "/unsmoothed_plan": "nav_msgs/msg/Path"
+      },
+      "video": {
+        "duration_s": 59.6,
+        "height": 1080,
+        "path": "/Users/cole/Downloads/camera_line_detection_rerun_two_feet_stationary.MOV",
+        "present": true,
+        "size_mb": 71.24,
+        "width": 1920
+      }
+    }
+  ]
+}
