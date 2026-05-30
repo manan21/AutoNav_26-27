@@ -104,7 +104,7 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 2.0
+    failure_tolerance: 8.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
     controller_plugins: ["FollowPath"]
@@ -112,11 +112,11 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.1
-      # PHASEA A.2: 8.0 → 15.0 — covers transient inflation traversals
-      # so the controller does not declare itself stuck mid-line-cross
-      # and bounce into FollowPathRecovery on a 7 s cycle.
-      movement_time_allowance: 15.0
+      required_movement_radius: 0.03
+      # Path-following test tune: be patient with tiny starts/stops so
+      # MPPI keeps trying the valid path instead of quickly escalating
+      # into FollowPathRecovery / BackUp.
+      movement_time_allowance: 45.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -141,11 +141,11 @@ controller_server:
       # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
       # open-lane sim; 0.25 lets the optimizer actually explore/use the new
       # speed while preserving canonical 5 ft gap safety in regression.
-      vx_std: 0.25
+      vx_std: 0.35
       vy_std: 0.01
-      wz_std: 0.45
+      wz_std: 0.70
       vx_max: 0.50
-      vx_min: 0.0
+      vx_min: 0.04
       vy_max: 0.0
       wz_max: 1.0
       iteration_count: 1
@@ -155,7 +155,7 @@ controller_server:
       gamma: 0.015
       motion_model: "DiffDrive"
       visualize: false
-      retry_attempt_limit: 2
+      retry_attempt_limit: 5
       reset_period: 1.0
       regenerate_noises: false
       TrajectoryVisualizer:
@@ -179,12 +179,12 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
+        cost_weight: 10.0
         threshold_to_consider: 0.5
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.2
+        cost_weight: 1.6
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -193,7 +193,7 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0
+        cost_weight: 12.0
         max_path_occupancy_ratio: 0.12
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -202,7 +202,7 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0
+        cost_weight: 14.0
         offset_from_furthest: 4
         threshold_to_consider: 1.2
       PathAngleCritic:

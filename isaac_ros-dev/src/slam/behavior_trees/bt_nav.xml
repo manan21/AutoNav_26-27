@@ -65,7 +65,7 @@
               <!-- previous_path feeds prior tick's {path} so the bend fires when the path U-turns. -->
               <GoalBender input_goal="{live_goal}" output_goal="{nav_goal}"
                 previous_path="{path}"
-                bend_distance="0.8" angle_threshold="1.57" bend_angle="1.05"
+                bend_distance="0.8" angle_threshold="2.20" bend_angle="1.05"
                 min_lookahead_m="0.6"/>
               <!-- 8 retries × 0.5 s wait = ~4 s of patient retrying
                    before the BT escalates to the heavy RecoveryFallback
@@ -135,17 +135,14 @@
           <Sequence name="ForwardPathOK">
             <Inverter>
               <IsForwardBlocked path="{path}" goal="{nav_goal}"
-                angle_threshold="1.57" path_lookahead_index="5"
+                angle_threshold="2.20" path_lookahead_index="5"
                 min_lookahead_m="0.6"/>
             </Inverter>
-            <!-- 2 retries for FollowPath. If the progress_checker
-                 fires (no 10cm of motion in 15s — PHASEA A.2), we clear
-                 a 1 m radius around the robot (PHASEA A.5) and try the
-                 SAME path again before escalating. The around-robot
-                 clear is targeted: it frees the robot from transient
-                 inflation without wiping the line obstacles it was
-                 successfully avoiding. -->
-            <RecoveryNode number_of_retries="2" name="FollowPathRecovery">
+            <!-- Path-following test tune: give MPPI more chances before
+                 escalating to the outer recovery dance. Recovery waits
+                 briefly before clearing so transient controller misses do
+                 not immediately churn the local costmap. -->
+            <RecoveryNode number_of_retries="8" name="FollowPathRecovery">
               <!-- Keep planner updates fast, but do not replace the
                    FollowPath action for every same-corridor 3 Hz replan.
                    PathSignificantlyChanged compares route geometry across
@@ -155,9 +152,12 @@
               <PathSignificantlyChanged path="{path}" filtered_path="{controller_path}">
                 <FollowPath path="{controller_path}" controller_id="FollowPath"/>
               </PathSignificantlyChanged>
-              <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
-                service_name="local_costmap/clear_around_local_costmap"
-                reset_distance="1.0"/>
+              <Sequence name="FollowPathRetryPauseThenClear">
+                <Wait wait_duration="0.2"/>
+                <ClearCostmapAroundRobot name="ClearAroundRobot-Context"
+                  service_name="local_costmap/clear_around_local_costmap"
+                  reset_distance="1.0"/>
+              </Sequence>
             </RecoveryNode>
           </Sequence>
           <!-- Path is forward-blocked AND breadcrumb buffer still has
@@ -182,9 +182,7 @@
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <RoundRobin name="RecoveryActions">
-          <BackUp backup_dist="0.10" backup_speed="0.05"/>
-          <DriveOnHeading server_name="gradient_escape"
-            dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
+          <Wait wait_duration="1"/>
           <!-- LOCAL-only clear in the recovery dance. Global wipe was
                removed per sim spec: the global costmap accumulates
                distant obstacles via local_mirror_layer; wiping it makes
@@ -193,7 +191,9 @@
           <ClearCostmapAroundRobot name="ClearAroundRobot-Dance"
             service_name="local_costmap/clear_around_local_costmap"
             reset_distance="2.0"/>
-          <Wait wait_duration="1"/>
+          <DriveOnHeading server_name="gradient_escape"
+            dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
+          <BackUp backup_dist="0.10" backup_speed="0.05"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>
