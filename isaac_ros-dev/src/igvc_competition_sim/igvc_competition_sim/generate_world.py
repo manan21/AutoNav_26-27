@@ -192,7 +192,7 @@ def _robot_model(course: Course) -> str:
         <right_joint>Right_Wheel</right_joint>
         <wheel_separation>{track:.5f}</wheel_separation>
         <wheel_radius>{radius:.5f}</wheel_radius>
-        <topic>/cmd_vel</topic>
+        <topic>/cmd_vel_gazebo</topic>
         <odom_topic>/model/shogi/odometry</odom_topic>
         <tf_topic>/model/shogi/tf</tf_topic>
         <frame_id>odom</frame_id>

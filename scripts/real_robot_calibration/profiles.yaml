@@ -62,6 +62,37 @@
       ],
       "operator_notes": "Requires a long clear straightaway and physical e-stop coverage."
     },
+    "straight_distance_drift_low": {
+      "description": "Distance-gated straight-line drift test at 0.5 and 1 mph. Stops each segment from odometry distance and logs forward/lateral/heading drift.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "distance_odom_topic": "/odom",
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_0p5mph_3m", "duration_s": 22.0, "target_distance_m": 3.0, "linear_mph": 0.5, "angular_radps": 0.0},
+        {"label": "stop_after_3m", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_1mph_5m", "duration_s": 18.0, "target_distance_m": 5.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Use a marked straight lane. Measure the physical start/end line if possible; command_metrics.csv will log odom forward distance, lateral drift, heading drift, and overshoot."
+    },
+    "straight_distance_drift_high": {
+      "description": "Higher-speed distance-gated straight-line drift test at 2 and 3 mph. Requires explicit --allow-high-speed.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "requires_allow_high_speed": true,
+      "distance_odom_topic": "/odom",
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_2mph_6m", "duration_s": 12.0, "target_distance_m": 6.0, "linear_mph": 2.0, "angular_radps": 0.0},
+        {"label": "stop_after_6m", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_3mph_8m", "duration_s": 10.0, "target_distance_m": 8.0, "linear_mph": 3.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Requires a long marked straight lane and physical e-stop coverage. Skip if the lane is not clear enough for 3 mph."
+    },
     "accel_stop_response": {
       "description": "Command step changes to calibrate acceleration lag, command latency, and coastdown/stop response.",
       "bag_profile": "dynamics_light",

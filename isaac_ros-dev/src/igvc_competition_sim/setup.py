@@ -10,9 +10,13 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages",
          ["resource/" + package_name]),
-        ("share/" + package_name, ["package.xml"]),
+        ("share/" + package_name, ["package.xml", "README.md"]),
         ("share/" + package_name + "/config",
-         ["config/igvc_competition_compact.yaml"]),
+         [
+             "config/igvc_competition_compact.yaml",
+             "config/dynamics_calibration.yaml",
+             "config/dynamics_replay_profiles.yaml",
+         ]),
         ("share/" + package_name + "/launch",
          ["launch/igvc_competition.launch.py"]),
         ("share/" + package_name + "/worlds",
@@ -28,8 +32,11 @@ setup(
     entry_points={
         "console_scripts": [
             "generate_igvc_world = igvc_competition_sim.generate_world:main",
+            "igvc_calibrated_dynamics = igvc_competition_sim.calibrated_dynamics:main",
+            "igvc_calibration_report = igvc_competition_sim.calibration_report:main",
             "igvc_camera_bridge = igvc_competition_sim.camera_bridge:main",
             "igvc_course_monitor = igvc_competition_sim.course_monitor:main",
+            "igvc_dynamics_replay = igvc_competition_sim.dynamics_replay:main",
             "igvc_mission_runner = igvc_competition_sim.mission_runner:main",
             "igvc_run_analyzer = igvc_competition_sim.run_analyzer:main",
             "igvc_sensor_harness = igvc_competition_sim.sensor_harness:main",

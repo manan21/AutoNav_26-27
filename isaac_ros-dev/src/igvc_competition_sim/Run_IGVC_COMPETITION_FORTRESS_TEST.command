@@ -14,6 +14,8 @@ LINE_DETECTION_MODE="${LINE_DETECTION_MODE:-camera}"
 LAUNCH_GAZEBO="${LAUNCH_GAZEBO:-true}"
 GAZEBO_SERVER_ONLY="${GAZEBO_SERVER_ONLY:-true}"
 LAUNCH_BRIDGE="${LAUNCH_BRIDGE:-true}"
+USE_CALIBRATED_DYNAMICS="${USE_CALIBRATED_DYNAMICS:-true}"
+DYNAMICS_CALIBRATION="${DYNAMICS_CALIBRATION:-$ROS_WS/install/igvc_competition_sim/share/igvc_competition_sim/config/dynamics_calibration.yaml}"
 if [[ -z "${NAV2_PARAMS:-}" ]]; then
   if [[ "$LINE_DETECTION_MODE" == "lidar" ]]; then
     NAV2_PARAMS="$ROS_WS/install/slam/share/slam/config/nav2_params_lidar.yaml"
@@ -96,6 +98,8 @@ setsid ros2 launch igvc_competition_sim igvc_competition.launch.py \
   ground_truth_pca:="$GROUND_TRUTH_PCA" \
   line_detection_mode:="$LINE_DETECTION_MODE" \
   nav2_params:="$NAV2_PARAMS" \
+  use_calibrated_dynamics:="$USE_CALIBRATED_DYNAMICS" \
+  dynamics_calibration:="$DYNAMICS_CALIBRATION" \
   launch_gazebo:="$LAUNCH_GAZEBO" \
   gazebo_server_only:="$GAZEBO_SERVER_ONLY" \
   launch_bridge:="$LAUNCH_BRIDGE" &
@@ -109,11 +113,15 @@ ros2 bag record --include-hidden-topics \
   /tf \
   /tf_static \
   /model/shogi/odometry \
+  /igvc_sim/ground_truth_odom \
   /odom \
   /local_ekf/odom \
   /joint_states \
   /cmd_vel \
+  /cmd_vel_gazebo \
   /cmd_vel_nav \
+  /igvc_sim/dynamics_state \
+  /igvc_sim/dynamics_calibration \
   /autonomous_mode \
   /gps_fix \
   /gps_waypoint/health \

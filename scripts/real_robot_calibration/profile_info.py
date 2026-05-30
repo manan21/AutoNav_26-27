@@ -105,6 +105,14 @@ def validate_profile(name: str, config: dict[str, Any]) -> None:
         linear, angular = segment_velocity(segment)
         if not math.isfinite(linear) or not math.isfinite(angular):
             raise SystemExit(f"{name}: non-finite velocity in segment {segment.get('label', '<unnamed>')}")
+        if "target_distance_m" in segment:
+            target_distance_m = float(segment["target_distance_m"])
+            if not math.isfinite(target_distance_m) or target_distance_m <= 0.0:
+                raise SystemExit(f"{name}: invalid target_distance_m in segment {segment.get('label', '<unnamed>')}")
+            if abs(linear) < 1e-6:
+                raise SystemExit(f"{name}: target_distance_m requires non-zero linear speed in segment {segment.get('label', '<unnamed>')}")
+            if abs(angular) > 1e-6:
+                raise SystemExit(f"{name}: target_distance_m straight-drift segments must use angular_radps=0.0")
 
 
 def git_value(args: list[str]) -> str:

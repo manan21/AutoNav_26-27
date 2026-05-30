@@ -21,6 +21,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _package_share(package: str) -> str:
@@ -40,6 +41,14 @@ def _default_world() -> str:
         _package_share("igvc_competition_sim"),
         "worlds",
         "igvc_competition_compact.sdf",
+    )
+
+
+def _default_dynamics_calibration() -> str:
+    return os.path.join(
+        _package_share("igvc_competition_sim"),
+        "config",
+        "dynamics_calibration.yaml",
     )
 
 
@@ -202,6 +211,26 @@ def _harness_process(context, *args, **kwargs):
     ]
 
 
+def _calibrated_dynamics_process(context, *args, **kwargs):
+    return [
+        Node(
+            package="igvc_competition_sim",
+            executable="igvc_calibrated_dynamics",
+            name="igvc_calibrated_dynamics",
+            output="screen",
+            parameters=[{
+                "use_sim_time": True,
+                "calibration_config": LaunchConfiguration(
+                    "dynamics_calibration"),
+                "enabled": ParameterValue(
+                    LaunchConfiguration("use_calibrated_dynamics"),
+                    value_type=bool,
+                ),
+            }],
+        )
+    ]
+
+
 def _detection_process(context, *args, **kwargs):
     mode = _line_detection_mode(context)
     return [
@@ -235,7 +264,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         arguments=[
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
-            "/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist",
+            "/cmd_vel_gazebo@geometry_msgs/msg/Twist]gz.msgs.Twist",
             "/model/shogi/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             "/igvc_sim/zed/image@sensor_msgs/msg/Image[gz.msgs.Image",
             "/igvc_sim/zed/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
@@ -318,6 +347,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("gazebo_server_only", default_value="true"),
         DeclareLaunchArgument("launch_bridge", default_value="true"),
         DeclareLaunchArgument("launch_nav", default_value="true"),
+        DeclareLaunchArgument("use_calibrated_dynamics", default_value="true"),
+        DeclareLaunchArgument(
+            "dynamics_calibration",
+            default_value=_default_dynamics_calibration(),
+        ),
         DeclareLaunchArgument("ground_truth_pca", default_value="false"),
         DeclareLaunchArgument(
             "line_detection_mode",
@@ -340,6 +374,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         OpaqueFunction(function=_gazebo_process),
         bridge,
+        OpaqueFunction(function=_calibrated_dynamics_process),
         OpaqueFunction(function=_camera_bridge_process),
         OpaqueFunction(function=_robot_state_publisher),
         OpaqueFunction(function=_harness_process),

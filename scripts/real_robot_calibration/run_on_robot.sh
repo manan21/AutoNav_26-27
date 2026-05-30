@@ -242,6 +242,7 @@ if [ "$COMMAND_MODE" = "scripted" ]; then
   COMMAND_ARGS=(
     --profiles "$PROFILES_FILE" \
     --profile "$PROFILE" \
+    --metrics-file "$RUN_DIR/command_metrics.csv" \
   )
   if [ "$ALLOW_HIGH_SPEED" -eq 1 ]; then
     COMMAND_ARGS+=(--allow-high-speed)

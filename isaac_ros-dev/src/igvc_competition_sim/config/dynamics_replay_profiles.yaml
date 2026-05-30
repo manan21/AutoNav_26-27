@@ -1,0 +1,52 @@
+schema_version: 1
+defaults:
+  command_rate_hz: 20.0
+  zero_hold_s: 2.0
+  final_zero_hold_s: 2.0
+
+profiles:
+  straight_distance_drift_low_2:
+    description: "Sim replay of the surviving real straight-distance test. Lateral drift is not a flat-ground tuning target."
+    source_run: "straight_distance_drift_low_2"
+    segments:
+      - {label: "settle_zero", duration_s: 2.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "straight_0p5mph_3m", duration_s: 15.1728, linear_mph: 0.5, angular_radps: 0.0}
+      - {label: "stop_after_3m", duration_s: 4.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "straight_1mph_5m", duration_s: 10.3618, linear_mph: 1.0, angular_radps: 0.0}
+      - {label: "final_stop", duration_s: 4.0, linear_mps: 0.0, angular_radps: 0.0}
+
+  arc_ladder_1:
+    description: "Sim replay of the real forward-arc ladder."
+    source_run: "arc_ladder_1"
+    segments:
+      - {label: "settle_zero", duration_s: 2.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_0p5mph_pos_0p3", duration_s: 7.0, linear_mph: 0.5, angular_radps: 0.3}
+      - {label: "stop_1", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_0p5mph_neg_0p3", duration_s: 7.0, linear_mph: 0.5, angular_radps: -0.3}
+      - {label: "stop_2", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_1mph_pos_0p3", duration_s: 7.0, linear_mph: 1.0, angular_radps: 0.3}
+      - {label: "stop_3", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_1mph_neg_0p3", duration_s: 7.0, linear_mph: 1.0, angular_radps: -0.3}
+      - {label: "stop_4", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_1mph_pos_0p6", duration_s: 6.0, linear_mph: 1.0, angular_radps: 0.6}
+      - {label: "stop_5", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "arc_1mph_neg_0p6", duration_s: 6.0, linear_mph: 1.0, angular_radps: -0.6}
+      - {label: "final_stop", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+
+  in_place_yaw_ladder_1:
+    description: "Sim replay of the real in-place yaw ladder."
+    source_run: "in_place_yaw_ladder_1"
+    segments:
+      - {label: "settle_zero", duration_s: 2.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_pos_0p3", duration_s: 6.0, linear_mps: 0.0, angular_radps: 0.3}
+      - {label: "stop_after_pos_0p3", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_neg_0p3", duration_s: 6.0, linear_mps: 0.0, angular_radps: -0.3}
+      - {label: "stop_after_neg_0p3", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_pos_0p6", duration_s: 6.0, linear_mps: 0.0, angular_radps: 0.6}
+      - {label: "stop_after_pos_0p6", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_neg_0p6", duration_s: 6.0, linear_mps: 0.0, angular_radps: -0.6}
+      - {label: "stop_after_neg_0p6", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_pos_1p0", duration_s: 5.0, linear_mps: 0.0, angular_radps: 1.0}
+      - {label: "stop_after_pos_1p0", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}
+      - {label: "yaw_neg_1p0", duration_s: 5.0, linear_mps: 0.0, angular_radps: -1.0}
+      - {label: "final_stop", duration_s: 3.0, linear_mps: 0.0, angular_radps: 0.0}

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import math
 import sys
 import time
 from pathlib import Path
@@ -25,6 +27,20 @@ class AutoModeLost(RuntimeError):
     pass
 
 
+def yaw_from_quaternion(q: Any) -> float:
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def normalize_angle(angle: float) -> float:
+    while angle > math.pi:
+        angle -= 2.0 * math.pi
+    while angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
 def describe_profile(profile_name: str, profile: dict[str, Any]) -> None:
     duration = duration_seconds(profile)
     print(f"Profile: {profile_name}")
@@ -37,9 +53,16 @@ def describe_profile(profile_name: str, profile: dict[str, Any]) -> None:
         print(f"Operator notes: {profile['operator_notes']}")
     for idx, segment in enumerate(iter_segments(profile), start=1):
         linear, angular = segment_velocity(segment)
+        duration_s = float(segment.get("duration_s", 0.0))
+        if "target_distance_m" in segment:
+            target = float(segment["target_distance_m"])
+            odom_topic = str(segment.get("distance_odom_topic", profile.get("distance_odom_topic", "/odom")))
+            timing = f"target={target:.2f}m, max={duration_s:.1f}s, odom={odom_topic}"
+        else:
+            timing = f"{duration_s:.1f}s"
         print(
             f"  {idx:02d}. {segment.get('label', 'segment')}: "
-            f"{float(segment.get('duration_s', 0.0)):.1f}s, "
+            f"{timing}, "
             f"linear={linear:.3f} m/s ({linear / MPH_TO_MPS:.2f} mph), "
             f"angular={angular:.3f} rad/s"
         )
@@ -48,6 +71,7 @@ def describe_profile(profile_name: str, profile: dict[str, Any]) -> None:
 def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[str, Any], defaults: dict[str, Any]) -> int:
     import rclpy
     from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from std_msgs.msg import Bool
@@ -62,11 +86,24 @@ def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[s
         def __init__(self) -> None:
             super().__init__("real_robot_calibration_cmd_runner")
             self.auto_mode: bool | None = None
+            self.latest_odom: dict[str, dict[str, float]] = {}
             self.pub = self.create_publisher(Twist, "/cmd_vel", 10)
             self.create_subscription(Bool, "/autonomous_mode", self._on_auto, reliable_qos)
+            self.create_subscription(Odometry, "/odom", lambda msg: self._on_odom("/odom", msg), reliable_qos)
+            self.create_subscription(Odometry, "/local_ekf/odom", lambda msg: self._on_odom("/local_ekf/odom", msg), reliable_qos)
 
         def _on_auto(self, msg: Bool) -> None:
             self.auto_mode = bool(msg.data)
+
+        def _on_odom(self, topic: str, msg: Odometry) -> None:
+            pose = msg.pose.pose
+            self.latest_odom[topic] = {
+                "x": float(pose.position.x),
+                "y": float(pose.position.y),
+                "yaw": yaw_from_quaternion(pose.orientation),
+                "stamp_s": float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9,
+                "received_s": time.monotonic(),
+            }
 
         def publish_cmd(self, linear: float, angular: float) -> None:
             msg = Twist()
@@ -90,6 +127,147 @@ def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[s
                     print("Waiting for /autonomous_mode=true. Toggle AUTO with Xbox X when safe.")
                     last_print = now
             raise TimeoutError("Timed out waiting for /autonomous_mode=true; no motion commanded")
+
+        def wait_for_odom(self, odom_topic: str, timeout_s: float = 5.0) -> dict[str, float]:
+            deadline = time.monotonic() + timeout_s
+            last_print = 0.0
+            while rclpy.ok() and time.monotonic() < deadline:
+                rclpy.spin_once(self, timeout_sec=0.1)
+                sample = self.latest_odom.get(odom_topic)
+                if sample is not None:
+                    return sample.copy()
+                now = time.monotonic()
+                if now - last_print > 2.0:
+                    print(f"Waiting for odometry on {odom_topic}...")
+                    last_print = now
+            raise TimeoutError(f"Timed out waiting for odometry on {odom_topic}")
+
+        def displacement_metrics(
+            self,
+            *,
+            label: str,
+            odom_topic: str,
+            start: dict[str, float],
+            current: dict[str, float],
+            linear: float,
+            angular: float,
+            target_distance_m: float,
+            max_duration_s: float,
+            elapsed_s: float,
+            reached: bool,
+        ) -> dict[str, float | str | bool]:
+            dx = current["x"] - start["x"]
+            dy = current["y"] - start["y"]
+            start_yaw = start["yaw"]
+            cos_yaw = math.cos(start_yaw)
+            sin_yaw = math.sin(start_yaw)
+            raw_forward = dx * cos_yaw + dy * sin_yaw
+            direction = 1.0 if linear >= 0.0 else -1.0
+            forward_m = raw_forward * direction
+            lateral_m = -dx * sin_yaw + dy * cos_yaw
+            heading_drift_rad = normalize_angle(current["yaw"] - start_yaw)
+            return {
+                "segment": label,
+                "odom_topic": odom_topic,
+                "reached": reached,
+                "target_distance_m": target_distance_m,
+                "max_duration_s": max_duration_s,
+                "elapsed_s": elapsed_s,
+                "command_linear_mps": linear,
+                "command_angular_radps": angular,
+                "forward_m": forward_m,
+                "lateral_m": lateral_m,
+                "euclidean_m": math.hypot(dx, dy),
+                "heading_drift_rad": heading_drift_rad,
+                "heading_drift_deg": math.degrees(heading_drift_rad),
+                "overshoot_m": forward_m - target_distance_m,
+                "start_x": start["x"],
+                "start_y": start["y"],
+                "start_yaw_rad": start_yaw,
+                "end_x": current["x"],
+                "end_y": current["y"],
+                "end_yaw_rad": current["yaw"],
+                "odom_elapsed_s": current["stamp_s"] - start["stamp_s"],
+            }
+
+        def publish_until_distance(
+            self,
+            label: str,
+            target_distance_m: float,
+            max_duration_s: float,
+            linear: float,
+            angular: float,
+            rate_hz: float,
+            *,
+            require_auto: bool,
+            odom_topic: str,
+        ) -> dict[str, float | str | bool]:
+            period_s = 1.0 / max(rate_hz, 1.0)
+            start = self.wait_for_odom(odom_topic)
+            started_s = time.monotonic()
+            end_time = started_s + max_duration_s
+            next_print = 0.0
+            current = start
+            reached = False
+            metrics = self.displacement_metrics(
+                label=label,
+                odom_topic=odom_topic,
+                start=start,
+                current=current,
+                linear=linear,
+                angular=angular,
+                target_distance_m=target_distance_m,
+                max_duration_s=max_duration_s,
+                elapsed_s=0.0,
+                reached=False,
+            )
+            while rclpy.ok() and time.monotonic() < end_time:
+                rclpy.spin_once(self, timeout_sec=0.0)
+                if require_auto and self.auto_mode is False:
+                    raise AutoModeLost("AUTO turned false; stopping scripted profile")
+                current = self.latest_odom.get(odom_topic, current)
+                elapsed_s = time.monotonic() - started_s
+                metrics = self.displacement_metrics(
+                    label=label,
+                    odom_topic=odom_topic,
+                    start=start,
+                    current=current,
+                    linear=linear,
+                    angular=angular,
+                    target_distance_m=target_distance_m,
+                    max_duration_s=max_duration_s,
+                    elapsed_s=elapsed_s,
+                    reached=False,
+                )
+                if float(metrics["forward_m"]) >= target_distance_m:
+                    reached = True
+                    metrics["reached"] = True
+                    break
+                self.publish_cmd(linear, angular)
+                now = time.monotonic()
+                if now >= next_print:
+                    print(
+                        f"{label}: forward={float(metrics['forward_m']):.3f}/{target_distance_m:.3f}m "
+                        f"lateral={float(metrics['lateral_m']):+.3f}m "
+                        f"heading={float(metrics['heading_drift_deg']):+.2f}deg "
+                        f"linear={linear:.3f} m/s ({linear / MPH_TO_MPS:.2f} mph)",
+                        flush=True,
+                    )
+                    next_print = now + 1.0
+                time.sleep(period_s)
+            self.publish_cmd(0.0, 0.0)
+            metrics["reached"] = reached
+            print(
+                f"{label} complete: reached={reached} "
+                f"forward={float(metrics['forward_m']):.3f}m "
+                f"lateral={float(metrics['lateral_m']):+.3f}m "
+                f"heading={float(metrics['heading_drift_deg']):+.2f}deg "
+                f"overshoot={float(metrics['overshoot_m']):+.3f}m",
+                flush=True,
+            )
+            if not reached:
+                raise TimeoutError(f"{label}: target distance {target_distance_m:.3f}m not reached within {max_duration_s:.1f}s")
+            return metrics
 
         def publish_for(
             self,
@@ -127,6 +305,37 @@ def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[s
     zero_hold_s = float(args.zero_hold_s or defaults.get("zero_hold_s", 2.0))
     auto_timeout_s = float(args.auto_timeout_s or defaults.get("auto_timeout_s", 60.0))
     require_auto = bool(profile.get("wait_for_auto", False))
+    metrics_file = Path(args.metrics_file) if args.metrics_file else None
+    metrics_handle = None
+    metrics_writer = None
+    metric_fields = [
+        "segment",
+        "odom_topic",
+        "reached",
+        "target_distance_m",
+        "max_duration_s",
+        "elapsed_s",
+        "command_linear_mps",
+        "command_angular_radps",
+        "forward_m",
+        "lateral_m",
+        "euclidean_m",
+        "heading_drift_rad",
+        "heading_drift_deg",
+        "overshoot_m",
+        "start_x",
+        "start_y",
+        "start_yaw_rad",
+        "end_x",
+        "end_y",
+        "end_yaw_rad",
+        "odom_elapsed_s",
+    ]
+    if metrics_file is not None:
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        metrics_handle = metrics_file.open("w", encoding="utf-8", newline="")
+        metrics_writer = csv.DictWriter(metrics_handle, fieldnames=metric_fields)
+        metrics_writer.writeheader()
 
     try:
         print()
@@ -140,9 +349,27 @@ def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[s
             label = str(segment.get("label", "segment"))
             duration_s = float(segment["duration_s"])
             linear, angular = segment_velocity(segment)
-            node.publish_for(label, duration_s, linear, angular, rate_hz, require_auto=require_auto)
+            if "target_distance_m" in segment:
+                odom_topic = str(segment.get("distance_odom_topic", profile.get("distance_odom_topic", "/odom")))
+                metrics = node.publish_until_distance(
+                    label,
+                    float(segment["target_distance_m"]),
+                    duration_s,
+                    linear,
+                    angular,
+                    rate_hz,
+                    require_auto=require_auto,
+                    odom_topic=odom_topic,
+                )
+                if metrics_writer is not None:
+                    metrics_writer.writerow(metrics)
+                    metrics_handle.flush()
+            else:
+                node.publish_for(label, duration_s, linear, angular, rate_hz, require_auto=require_auto)
         print("Scripted profile complete. Publishing stop commands.")
         node.publish_zero_for(zero_hold_s, rate_hz)
+        if metrics_file is not None:
+            print(f"Distance metrics: {metrics_file}")
         return 0
     except KeyboardInterrupt:
         print("Interrupted. Publishing stop commands.")
@@ -157,6 +384,8 @@ def run_ros_profile(args: argparse.Namespace, profile_name: str, profile: dict[s
         node.publish_zero_for(zero_hold_s, rate_hz)
         return 1
     finally:
+        if metrics_handle is not None:
+            metrics_handle.close()
         node.destroy_node()
         rclpy.shutdown()
 
@@ -170,6 +399,7 @@ def main() -> int:
     parser.add_argument("--command-rate-hz", type=float)
     parser.add_argument("--zero-hold-s", type=float)
     parser.add_argument("--auto-timeout-s", type=float)
+    parser.add_argument("--metrics-file", type=Path)
     args = parser.parse_args()
 
     config = load_config(args.profiles)

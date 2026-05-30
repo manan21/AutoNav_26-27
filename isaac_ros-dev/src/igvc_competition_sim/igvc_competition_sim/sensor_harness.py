@@ -85,6 +85,9 @@ class IgvcSensorHarness(Node):
         self.declare_parameter("ground_truth_line_spacing_m", 0.05)
         self.declare_parameter("ground_truth_line_lateral_spacing_m", 0.025)
         self.declare_parameter("gps_noise_std_m", 0.05)
+        self.declare_parameter("publish_ground_truth_odom", True)
+        self.declare_parameter(
+            "ground_truth_odom_topic", "/igvc_sim/ground_truth_odom")
 
         course_path = str(self.get_parameter("course_config").value).strip()
         self.course: Course = load_course(course_path or None)
@@ -122,6 +125,15 @@ class IgvcSensorHarness(Node):
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
         self.local_odom_pub = self.create_publisher(
             Odometry, "/local_ekf/odom", 10)
+        self.ground_truth_odom_pub = (
+            self.create_publisher(
+                Odometry,
+                str(self.get_parameter("ground_truth_odom_topic").value),
+                10,
+            )
+            if bool(self.get_parameter("publish_ground_truth_odom").value)
+            else None
+        )
         self.gps_pub = self.create_publisher(NavSatFix, "/gps_fix", sensor_qos)
         self.joint_pub = self.create_publisher(JointState, "/joint_states", 10)
         self.autonomous_pub = self.create_publisher(
@@ -326,6 +338,20 @@ class IgvcSensorHarness(Node):
             msg.twist.twist.linear.x = self.applied_v
             msg.twist.twist.angular.z = self.applied_w
             publisher.publish(msg)
+        if self.ground_truth_odom_pub is not None:
+            msg = Odometry()
+            msg.header.stamp = stamp
+            msg.header.frame_id = "odom"
+            msg.child_frame_id = "base_link"
+            msg.pose.pose.position.x = self.base_x
+            msg.pose.pose.position.y = self.base_y
+            msg.pose.pose.orientation.x = qx
+            msg.pose.pose.orientation.y = qy
+            msg.pose.pose.orientation.z = qz
+            msg.pose.pose.orientation.w = qw
+            msg.twist.twist.linear.x = self.applied_v
+            msg.twist.twist.angular.z = self.applied_w
+            self.ground_truth_odom_pub.publish(msg)
 
     def _publish_gps(self) -> None:
         stamp = self.get_clock().now().to_msg()

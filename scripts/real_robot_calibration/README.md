@@ -11,6 +11,7 @@ cd ~/code/git/AutoNav_25-26/scripts/real_robot_calibration
 ./run_remote.sh --list
 ./run_remote.sh record_manual_full_course
 ./run_remote.sh straight_speed_ladder_low
+./run_remote.sh straight_distance_drift_low
 ./run_remote.sh record_manual_full_course --run-name manual_course_slow_pass_1
 ```
 
@@ -18,6 +19,7 @@ High-speed profiles require an explicit acknowledgement:
 
 ```bash
 ./run_remote.sh straight_speed_ladder_high --allow-high-speed
+./run_remote.sh straight_distance_drift_high --allow-high-speed
 ./run_remote.sh arc_ladder_high --allow-high-speed
 ```
 
@@ -49,6 +51,8 @@ the real control node to publish `/autonomous_mode=true`, then command
 - `perception_static_sweep`: full recording for stationary or hand-crept views of tape, cones, ramp, shadows, and narrow gaps.
 - `straight_speed_ladder_low`: straight 0.25, 0.5, and 1 mph commands.
 - `straight_speed_ladder_high`: straight 2 and 3 mph commands; requires `--allow-high-speed`.
+- `straight_distance_drift_low`: odom-distance-gated straight runs, 3 m at 0.5 mph and 5 m at 1 mph.
+- `straight_distance_drift_high`: odom-distance-gated straight runs, 6 m at 2 mph and 8 m at 3 mph; requires `--allow-high-speed`.
 - `accel_stop_response`: 0.5 and 1 mph step/stop response.
 - `accel_stop_response_high`: 2 mph step/stop response; requires `--allow-high-speed`.
 - `in_place_yaw_ladder`: ±0.3, ±0.6, and ±1.0 rad/s in-place turns.
@@ -83,6 +87,7 @@ Each run directory also contains:
 - `missing_topics_at_start.txt`
 - `rosbag_record.log`
 - `command_profile.log` for scripted profiles
+- `command_metrics.csv` for scripted profiles that compute run metrics, including straight-distance drift rows
 
 The suite runs inside tmux by default so Wi-Fi drops do not kill the bag. Detach
 with `Ctrl-b d`. On the real Jetson, recording runs inside the `koopa-kingdom`

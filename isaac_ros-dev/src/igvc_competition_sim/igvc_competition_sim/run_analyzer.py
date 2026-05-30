@@ -43,6 +43,10 @@ def analyze_bag(bag_dir: Path) -> dict[str, Any]:
     wanted = {
         "/clock",
         "/odom",
+        "/igvc_sim/ground_truth_odom",
+        "/cmd_vel_gazebo",
+        "/igvc_sim/dynamics_state",
+        "/igvc_sim/dynamics_calibration",
         "/goal_pose",
         "/goal_update",
         "/nav_goal",
