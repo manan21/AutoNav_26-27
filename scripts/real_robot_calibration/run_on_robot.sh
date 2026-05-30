@@ -15,11 +15,31 @@ Usage:
   run_on_robot.sh PROFILE [options]
 
 Options:
-  --base-dir DIR            Bag root, default: /tmp/autonav_bags/practice_course
+  --base-dir DIR            Bag root, default: persistent auto-selected path
   --allow-high-speed        Permit profiles marked high-speed
   --raw-lidar               Add /cloud_all_fields_fullframe
   --run-name NAME           Override timestamped run name
 EOF
+}
+
+default_base_dir() {
+  # Preferred container mount from env/docker/run-container.sh. This keeps bags
+  # outside the git checkout on the Jetson host.
+  if [ -d /autonav_bags ] && [ -w /autonav_bags ]; then
+    printf '%s\n' "/autonav_bags/practice_course"
+    return
+  fi
+
+  # Backward-compatible fallback for already-running robot containers. /autonav
+  # is the host AutoNav_25-26 checkout bind-mounted into koopa-kingdom, so this
+  # survives power cycles, branch switches, and `git reset --hard`.
+  if [ -d /autonav ] && [ -w /autonav ]; then
+    printf '%s\n' "/autonav/logs/real_robot_calibration"
+    return
+  fi
+
+  # Native Jetson execution path. This is intentionally outside AutoNav_25-26.
+  printf '%s\n' "$HOME/autonav_bags/practice_course"
 }
 
 source_setup() {
@@ -50,7 +70,7 @@ fi
 PROFILE=$1
 shift
 
-BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-/tmp/autonav_bags/practice_course}
+BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-$(default_base_dir)}
 ALLOW_HIGH_SPEED=0
 RAW_LIDAR=0
 RUN_NAME=""

@@ -75,8 +75,17 @@ Speed conversions used by the profiles:
 Bags are written on the Jetson under:
 
 ```text
-/tmp/autonav_bags/practice_course/<profile>_<YYYYMMDD_HHMMSS>/bag
+/autonav_bags/practice_course/<profile>_<YYYYMMDD_HHMMSS>/bag
 ```
+
+`/autonav_bags` is a host-backed Docker mount created by
+`env/docker/run-container.sh`, so bags survive robot power cycles, branch
+switches, and `git reset --hard` in `AutoNav_25-26`. If the robot container was
+started before that mount existed, the suite falls back to
+`/autonav/logs/real_robot_calibration`, which is also persistent across power
+cycles and normal git branch/reset operations. Native, non-container runs use
+`~/autonav_bags/practice_course`. Override the root explicitly with
+`--base-dir DIR` or `AUTONAV_CALIB_BASE_DIR`.
 
 Each run directory also contains:
 
@@ -92,8 +101,10 @@ Each run directory also contains:
 The suite runs inside tmux by default so Wi-Fi drops do not kill the bag. Detach
 with `Ctrl-b d`. On the real Jetson, recording runs inside the `koopa-kingdom`
 container so custom AutoNav message types are available to `ros2 bag record`.
-`/tmp` is mounted through to the host, so the bag path above is visible from the
-normal SSH shell.
+The preferred `/autonav_bags` root is mounted from the Jetson host and is
+visible from the normal SSH shell as `~/autonav_bags`. The fallback
+`/autonav/logs/real_robot_calibration` is visible from the normal SSH shell as
+`~/AutoNav_25-26/logs/real_robot_calibration`.
 
 ## Stopping a Run
 

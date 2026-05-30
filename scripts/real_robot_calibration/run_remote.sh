@@ -13,7 +13,7 @@ Usage:
 
 Options:
   --robot HOST              SSH target, default: jetson
-  --base-dir DIR            Robot bag root, default: /tmp/autonav_bags/practice_course
+  --base-dir DIR            Robot bag root, default: persistent auto-selected path
   --remote-suite-dir DIR    Robot staging dir, default: ~/AutoNav_25-26/scripts/real_robot_calibration
   --session NAME            tmux session name, default: autonav_calib_bag
   --run-name NAME           Override timestamped run name on the robot
@@ -48,9 +48,6 @@ BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-}
 REMOTE_SUITE_DIR=${AUTONAV_CALIB_REMOTE_SUITE_DIR:-}
 SESSION=${AUTONAV_CALIB_TMUX_SESSION:-autonav_calib_bag}
 RUN_NAME=""
-if [ -z "$BASE_DIR" ]; then
-  BASE_DIR='/tmp/autonav_bags/practice_course'
-fi
 if [ -z "$REMOTE_SUITE_DIR" ]; then
   REMOTE_SUITE_DIR='~/AutoNav_25-26/scripts/real_robot_calibration'
 fi
@@ -118,7 +115,10 @@ q() {
 LOCAL_GIT_BRANCH=$(git -C "$SCRIPT_DIR" branch --show-current 2>/dev/null || true)
 LOCAL_GIT_COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short=12 HEAD 2>/dev/null || true)
 
-RUN_ON_ROBOT_ARGS="$(q "$PROFILE") --base-dir $(q "$BASE_DIR")"
+RUN_ON_ROBOT_ARGS="$(q "$PROFILE")"
+if [ -n "$BASE_DIR" ]; then
+  RUN_ON_ROBOT_ARGS+=" --base-dir $(q "$BASE_DIR")"
+fi
 if [ "$ALLOW_HIGH_SPEED" -eq 1 ]; then
   RUN_ON_ROBOT_ARGS+=" --allow-high-speed"
 fi
@@ -139,7 +139,11 @@ python3 "$SCRIPT_DIR/cmd_profile_runner.py" "${DRY_RUN_ARGS[@]}"
 echo
 echo "Robot: $ROBOT"
 echo "Remote suite dir: $REMOTE_SUITE_DIR"
-echo "Remote bag root: $BASE_DIR"
+if [ -n "$BASE_DIR" ]; then
+  echo "Remote bag root: $BASE_DIR"
+else
+  echo "Remote bag root: auto persistent (/autonav_bags, /autonav/logs/real_robot_calibration, or ~/autonav_bags)"
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo
