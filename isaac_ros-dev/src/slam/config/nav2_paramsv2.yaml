@@ -21,8 +21,8 @@ bt_navigator:
     # recovery without ever reaching the controller.
     default_server_timeout: 1000
     wait_for_service_timeout: 1000
-    default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
-    default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
+    default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/src/slam/behavior_trees/bt_nav.xml"
+    default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/src/slam/behavior_trees/bt_nav.xml"
 
     # FollowPath churn gate. The planner can replan at 3 Hz, but
     # FollowPath only needs a fresh action goal when the route geometry
@@ -35,6 +35,7 @@ bt_navigator:
     path_significantly_changed.start_delta_threshold_m: 0.25
     path_significantly_changed.length_delta_threshold_m: 0.50
     path_significantly_changed.force_update_period_s: 0.5
+    path_significantly_changed.empty_path_hold_period_s: 1.0
 
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node

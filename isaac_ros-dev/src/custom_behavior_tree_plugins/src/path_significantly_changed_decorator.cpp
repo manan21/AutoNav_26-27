@@ -41,6 +41,9 @@ public:
     if (!node_->has_parameter("path_significantly_changed.force_update_period_s")) {
       node_->declare_parameter("path_significantly_changed.force_update_period_s", 0.5);
     }
+    if (!node_->has_parameter("path_significantly_changed.empty_path_hold_period_s")) {
+      node_->declare_parameter("path_significantly_changed.empty_path_hold_period_s", 1.0);
+    }
   }
 
   static BT::PortsList providedPorts() {
@@ -69,6 +72,36 @@ public:
       "path_significantly_changed.length_delta_threshold_m").as_double();
     const double force_update_period = node_->get_parameter(
       "path_significantly_changed.force_update_period_s").as_double();
+    const double empty_path_hold_period = node_->get_parameter(
+      "path_significantly_changed.empty_path_hold_period_s").as_double();
+
+    const auto last_status = child_node_->status();
+
+    if (new_path.poses.empty()) {
+      if (has_filtered_path_ && child_started_ &&
+          last_status == BT::NodeStatus::RUNNING && empty_path_hold_period > 0.0)
+      {
+        const auto now = node_->now();
+        if (!has_empty_path_hold_time_) {
+          empty_path_start_time_ = now;
+          has_empty_path_hold_time_ = true;
+        }
+
+        const double held_for = (now - empty_path_start_time_).seconds();
+        if (held_for <= empty_path_hold_period) {
+          setOutput("filtered_path", filtered_path_);
+          return child_node_->executeTick();
+        }
+      }
+
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "PathSignificantlyChanged: refusing to tick FollowPath with an empty path");
+      resetChildState();
+      return BT::NodeStatus::FAILURE;
+    }
+
+    has_empty_path_hold_time_ = false;
 
     const bool force_update =
       has_last_update_time_ && force_update_period > 0.0 &&
@@ -77,8 +110,6 @@ public:
     const bool significantly_changed = force_update || pathDiffers(
       new_path, filtered_path_, rms_threshold, max_point_delta,
       start_delta_threshold, length_delta_threshold, n_compare);
-
-    const auto last_status = child_node_->status();
 
     if (significantly_changed || !child_started_ || !has_filtered_path_ ||
         last_status == BT::NodeStatus::IDLE) {
@@ -105,10 +136,7 @@ public:
   // to re-tick the child — FollowPath would never get a fresh action
   // goal and the robot would stop.
   void halt() override {
-    child_started_ = false;
-    has_filtered_path_ = false;
-    has_last_update_time_ = false;
-    filtered_path_ = nav_msgs::msg::Path{};
+    resetChildState();
     BT::DecoratorNode::halt();
   }
 
@@ -119,6 +147,19 @@ private:
   bool has_filtered_path_ = false;
   rclcpp::Time last_update_time_{0, 0, RCL_ROS_TIME};
   bool has_last_update_time_ = false;
+  rclcpp::Time empty_path_start_time_{0, 0, RCL_ROS_TIME};
+  bool has_empty_path_hold_time_ = false;
+
+  void resetChildState() {
+    if (child_node_->status() != BT::NodeStatus::IDLE) {
+      child_node_->halt();
+    }
+    child_started_ = false;
+    has_filtered_path_ = false;
+    has_last_update_time_ = false;
+    has_empty_path_hold_time_ = false;
+    filtered_path_ = nav_msgs::msg::Path{};
+  }
 
   static bool pathDiffers(const nav_msgs::msg::Path & a,
                           const nav_msgs::msg::Path & b,

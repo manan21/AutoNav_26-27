@@ -1,7 +1,7 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAV_PATH="${SCRIPT_DIR}/../src/slam/config/nav2_paramsv2.yaml"
-BT_PATH="${SCRIPT_DIR}/../install/slam/share/slam/behavior_trees/bt_nav.xml"
+BT_PATH="${SCRIPT_DIR}/../src/slam/behavior_trees/bt_nav.xml"
 
 ros2 launch nav2_bringup navigation_launch.py \
   params_file:=$NAV_PATH \
