@@ -7,6 +7,8 @@ IMAGE_TAG="dev:koopa-kingdom"
 CONTAINER_NAME="koopa-kingdom"
 HOST_WORKDIR="$HOME/AutoNav_25-26"
 CONTAINER_WORKDIR="/autonav"
+HOST_BAG_ROOT="${AUTONAV_HOST_BAG_ROOT:-$HOME/autonav_bags}"
+CONTAINER_BAG_ROOT="${AUTONAV_CONTAINER_BAG_ROOT:-/autonav_bags}"
 ENTRYPOINT="/usr/local/bin/scripts/entrypoint.sh"
 SCRIPT_DIR="$(dirname ${BASH_SOURCE[0]})"
 
@@ -251,7 +253,9 @@ fi
 
 
 # MOUNTS & WORKING DIRECTORY
+mkdir -p "${HOST_BAG_ROOT}"
 DOCKER_ARGS+=("-v" "${HOST_WORKDIR}:${CONTAINER_WORKDIR}")
+DOCKER_ARGS+=("-v" "${HOST_BAG_ROOT}:${CONTAINER_BAG_ROOT}")
 DOCKER_ARGS+=("-v" "/etc/localtime:/etc/localtime:ro")
 DOCKER_ARGS+=("--workdir=${CONTAINER_WORKDIR}/isaac_ros-dev")
 DOCKER_ARGS+=("-v" "$SCRIPT_DIR/entrypoint_additions:/usr/local/bin/scripts/entrypoint_additions")
@@ -396,6 +400,7 @@ fi
 # CREATE NEW CONTAINER
 echo "Starting new container: $CONTAINER_NAME"
 echo "Mounting: ${HOST_WORKDIR} → ${CONTAINER_WORKDIR}"
+echo "Mounting bags: ${HOST_BAG_ROOT} → ${CONTAINER_BAG_ROOT}"
 
 docker run -d \
     --runtime nvidia \

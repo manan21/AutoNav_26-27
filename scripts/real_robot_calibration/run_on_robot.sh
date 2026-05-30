@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PROFILES_FILE="$SCRIPT_DIR/profiles.yaml"
 STATE_DIR=${AUTONAV_CALIB_STATE_DIR:-$HOME/.autonav_real_robot_calibration}
 ACTIVE_FILE="$STATE_DIR/active_run.env"
@@ -14,11 +15,31 @@ Usage:
   run_on_robot.sh PROFILE [options]
 
 Options:
-  --base-dir DIR            Bag root, default: /tmp/autonav_bags/practice_course
+  --base-dir DIR            Bag root, default: persistent auto-selected path
   --allow-high-speed        Permit profiles marked high-speed
   --raw-lidar               Add /cloud_all_fields_fullframe
   --run-name NAME           Override timestamped run name
 EOF
+}
+
+default_base_dir() {
+  # Preferred container mount from env/docker/run-container.sh. This keeps bags
+  # outside the git checkout on the Jetson host.
+  if [ -d /autonav_bags ] && [ -w /autonav_bags ]; then
+    printf '%s\n' "/autonav_bags/practice_course"
+    return
+  fi
+
+  # Backward-compatible fallback for already-running robot containers. /autonav
+  # is the host AutoNav_25-26 checkout bind-mounted into koopa-kingdom, so this
+  # survives power cycles, branch switches, and `git reset --hard`.
+  if [ -d /autonav ] && [ -w /autonav ]; then
+    printf '%s\n' "/autonav/logs/real_robot_calibration"
+    return
+  fi
+
+  # Native Jetson execution path. This is intentionally outside AutoNav_25-26.
+  printf '%s\n' "$HOME/autonav_bags/practice_course"
 }
 
 source_setup() {
@@ -49,7 +70,7 @@ fi
 PROFILE=$1
 shift
 
-BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-/tmp/autonav_bags/practice_course}
+BASE_DIR=${AUTONAV_CALIB_BASE_DIR:-$(default_base_dir)}
 ALLOW_HIGH_SPEED=0
 RAW_LIDAR=0
 RUN_NAME=""
@@ -88,12 +109,20 @@ done
 BASE_DIR="${BASE_DIR/#\~/$HOME}"
 
 source_setup /opt/ros/humble/setup.bash
+source_setup "$REPO_ROOT/isaac_ros-dev/install/setup.bash"
+source_setup "/autonav/isaac_ros-dev/install/setup.bash"
 source_setup "$HOME/AutoNav_25-26/isaac_ros-dev/install/setup.bash"
 source_setup "$HOME/code/git/AutoNav_25-26/isaac_ros-dev/install/setup.bash"
 source_setup "/workspaces/isaac_ros-dev/install/setup.bash"
 
 if ! command -v ros2 >/dev/null 2>&1; then
   echo "ros2 not found. Source the robot ROS environment before running this script." >&2
+  exit 1
+fi
+
+if ! ros2 interface show autonav_interfaces/msg/Encoders >/dev/null 2>&1; then
+  echo "autonav_interfaces/msg/Encoders is not available in the ROS environment." >&2
+  echo "Source the AutoNav workspace install before recording; otherwise /encoders cannot be recorded." >&2
   exit 1
 fi
 
