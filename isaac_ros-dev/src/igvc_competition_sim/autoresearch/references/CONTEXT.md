@@ -137,5 +137,53 @@ DEFERRED until the sim env is available:
   stalled) -> the 3-run gate is essential. While failing, rank candidates by PROGRESS (distance reached,
   fewer violations, better clearance, completion) since fitness is gate-gated. Primary targets: eliminate the
   stuck-stall, raise speed, keep margin off boundaries/potholes.
-- 2026-05-30 exp1 (in progress): vx_std 0.25->0.40 (the config comment notes 0.25 made MPPI dawdle at
-  ~0.2 m/s; raise it to use the 0.5 cap -> faster, more decisive, less stall).
+- 2026-05-30 exp1 KEEP (commit d5901a95): MPPI vx_std 0.25->0.40. Baseline stalled mid-course & timed
+  out; with 0.40 the robot completed all 4 waypoints in 2/2 runs (eliminated the blocking_stop). Trade:
+  more jitter (rev ~80 vs 26) + more tape/pothole clipping. Completion is the prerequisite gain. KEPT.
+- 2026-05-30 exp2 DISCARD: wz_std 0.45->0.30. Reduced angular jitter variance (0.07-0.10 vs 0.27) BUT
+  hurt reliability: 2/3 completed, one run logged pfs=122 (massive PathFootprintSafe-reject struggle) +
+  one stalled. Narrower angular sampling -> can't turn out of tight spots -> rejects pile up. Reverted.
+- 2026-05-30 exp3 DISCARD: PathAlignCritic 8->14. WORSENED tape crossings (one run crossed right_boundary
+  1-5) and one run barely moved. DIAGNOSTIC: tracking the planned path tighter made boundary clipping
+  worse => the PLANNER's path itself routes too close to the right boundary; the controller isn't the
+  cause. Reverted.
+- 2026-05-30 exp4 DISCARD: Smac cost_penalty 3->6. Made it WORSE: 1/3 completed, 2 runs stalled
+  (blocking_stop). Higher penalty -> planner too reluctant to commit through the cost field -> stalls.
+  Reverted.
+
+## Synthesis / root causes (after baseline + 4 experiments)
+1. **High run-to-run variance** (same config: one run finishes, another stalls). This is itself a
+   reliability problem for competition AND it makes single-knob keep/discard noisy. Mitigations: use >=3
+   runs per candidate (done); investigate the source (MPPI sampling noise? costmap timing? EKF?).
+2. **The robot is on a knife's edge between STALLING and CROSSING TAPE.** Changes that reduce crossings
+   (tighter tracking, more planner penalty) increase stalls, and vice versa. This points to the
+   line-costmap representation + planner/controller interaction, not any single gain. Likely the line
+   halo geometry (line_layer inflation/inscribed/cost_scaling, A8) + planner clearance need co-tuning,
+   or the controller needs a stability fix.
+3. **POTHOLE DETECTION GAP (qualification blocker).** White-circle potholes are crossed in EVERY run.
+   They are ~0.6 m circles; the camera line detector's cluster gates (min_length 0.40, max_width 0.60,
+   min_aspect 1.50) reject low-aspect blobs, so potholes are NEVER put in the costmap -> never avoided.
+   Courses with potholes (compact, dense, ramp) CANNOT produce a clean run until this is fixed. Fix
+   options: add blob/pothole detection, or relax the line cluster gates to accept circular marks
+   (watch false positives), or a dedicated pothole detector. THIS IS THE #1 PRIORITY for qualification.
+4. **Planner routes too close to the right boundary** (exp3 diagnostic) -- the user's exact "paths
+   planned too close to inflation" complaint. cost_penalty alone (exp4) backfired (stalls); the line
+   keep-out (A8 inscribed/inflation) likely needs widening *together with* keeping the robot moving.
+5. **Speed**: ~0.39-0.42 m/s over the first 44 ft (< 0.447 = 1 mph min). The robot slows for the early
+   barrel/pothole; raising vx_std alone didn't fix it.
+
+## Prioritized next experiments (the loop should continue with these)
+P1. Pothole detection: relax line_detector cluster gates (min_aspect 1.5->~1.0, raise max_width) OR add
+    a circular-mark detector; verify potholes appear in /line_costmap; watch for false-positive lines.
+    (Rebuild autonav_detection after config edit -- copy-mode install.)
+P2. Line keep-out co-tuning (A8): line_layer inscribed_radius 0.05->~0.15 AND cost_scaling 1.8->~2.5 so
+    the planner routes off boundaries WITHOUT closing the 5 ft gaps; pair with keeping vx_std 0.40 so it
+    doesn't stall. Test on tight_gaps (no potholes) where a clean run is achievable.
+P3. Variance reduction: try MPPI temperature/gamma, batch_size up, or noise settings; measure completion
+    consistency over 5 runs.
+P4. Validate C-ii on sparse_lines (no potholes): confirm global_clear_events>0 and that camera-confirmed
+    clearing prevents stale-line phantom blocks under EKF drift.
+P5. Speed: once clean-ish, push vx_max/velocity_smoother + PreferForward to raise the first-44ft average.
+
+NOTE: a clean GATE pass is only achievable tonight on the NO-pothole courses (tight_gaps, sparse_lines)
+until P1 lands. Recommend running the loop primarily on tight_gaps next.
