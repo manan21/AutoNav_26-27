@@ -303,10 +303,16 @@ local_costmap:
         observation_persistence_ms: 8000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
-        line_clear_angle_min_rad: -0.40
-        line_clear_angle_max_rad: 0.40
-        line_clear_range_min_m: 1.20
-        line_clear_range_max_m: 4.50
+        # C-ii (auto_camera, UNVALIDATED in sim): widen the view-gated clear
+        # cone toward the real ZED horizontal FOV (1.918862 rad total, pitched
+        # down 0.349 rad) so the line layer actually emits FREE across what the
+        # camera sees, which then propagates to the global line memory via
+        # line_memory_mirror_layer. Keep a small near blind-spot guard (0.8 m).
+        # The global mirror cone (+/-0.96) is >= this cone so all FREE is accepted.
+        line_clear_angle_min_rad: -0.85
+        line_clear_angle_max_rad: 0.85
+        line_clear_range_min_m: 0.80
+        line_clear_range_max_m: 5.00
         max_persisted_points: 12000
         # Camera line detections are dense enough to form continuous tape
         # geometry. Keep exact tape cells lethal, then publish a traversable
@@ -471,10 +477,24 @@ global_costmap:
         # a second footprint-radius hard centerline band that can close a
         # legal 5 ft passage.
         min_occupied_value_to_mirror: 1
-        # Strict accumulator mode for line memory: line cells promoted
-        # from the local line-only costmap stay in global for the
-        # whole run and are not cleared by later FREE cells.
-        allow_decrease: false
+        # C-ii (auto_camera, UNVALIDATED in sim): camera-confirmed global line
+        # clearing for EKF-drift robustness. Line memory persists everywhere by
+        # default, but when the local line layer publishes FREE in a cell that
+        # the camera is currently re-observing (within the front cone below),
+        # that FREE propagates here and clears the remembered line cell. Because
+        # the master costmap is rebuilt each cycle, clearing this layer's own
+        # accumulated cell is sufficient to clear the master at a line-only cell;
+        # overwrite_master stays FALSE so a line halo can never lower a real PCA
+        # obstacle that shares the cell (max-merge upward, owned-clear downward).
+        # Cone ~ ZED half-HFOV (1.918862 rad total) and detector ground range.
+        # Must be >= the local line_layer view-gate cone so every FREE cell the
+        # line layer emits is accepted here.
+        allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -0.96
+        decrease_angle_max_rad: 0.96
+        decrease_range_min_m: 0.0
+        decrease_range_max_m: 5.0
         overwrite_master: false
         track_unknown_space: true
 
@@ -544,7 +564,14 @@ planner_server:
       # The line/cone fields carry clearance preferences. Keep the penalty
       # moderate so Smac still uses the guaranteed 5 ft passage when that is
       # the only legal route.
-      cost_penalty: 2.0
+      # C-iii (auto_camera, UNVALIDATED in sim): raised 2.0 -> 3.0 so A* prefers
+      # lower-cost (more clearance) cells and routes the centerline farther from
+      # the inflation field by construction. This reduces PathFootprintSafe
+      # rejects / breadcrumb-reverse fallbacks (paths planned too close to
+      # inflation). Soft preference only -- does not change lethal topology, so
+      # the guaranteed 5 ft passage remains usable. The loop tunes this (A2)
+      # alongside global inflation (A1) and MPPI CostCritic weights (A4).
+      cost_penalty: 3.0
       # Keep the default penalty so in-place rotations are used only when the
       # lattice needs them for obstacle avoidance, not as cheap shortcuts.
       rotation_penalty: 5.0

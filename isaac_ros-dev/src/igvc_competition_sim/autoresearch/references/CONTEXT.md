@@ -80,11 +80,48 @@ DONE + VERIFIED on host:
   Frozen `robot:` block byte-identical across all 5. Re-run: `python3 autoresearch/lib/validate_course.py
   autoresearch/courses/*.yaml`. (Necessary, not sufficient — route feasibility confirmed on first sim baseline.)
 
-DEFERRED until the sim env is available (so they are built+tested for real, not blind):
-- Executable harness `evaluate.py` / `lib/{run_one.sh,reaper.sh,metrics.py,fitness.py}` — fully specified
-  in `program.md`. The run-backend is pluggable per the unblock choice above.
-- Phase-0 wall-clock calibration + tier auto-sizing; baseline; the C-ii / C-iii experiments; the loop.
+- **Executable harness built + scoring path VALIDATED** (user chose "build now, validate later"):
+  - `lib/metrics.py` (self-contained rosbag2 parser: clock-mapped traversal time, recovery counts from
+    exact /rosout strings + behavior action statuses, cmd_vel jitter/stuck, course-geometry clearance,
+    score JSON + mission.log) and `lib/fitness.py` (3/3 reliability gate + speed-weighted fitness +
+    report card / RESULT line) are **unit-tested** by `lib/selftest_metrics.py` against a synthetic
+    rosbag2 (16/16 asserts pass). `evaluate.py --score-existing` end-to-end-tested (gate FAIL on a mixed
+    candidate, correct run_log row). Re-run: `python3 lib/selftest_metrics.py`.
+  - `lib/run_one.sh` (headless launch + superset bag + setsid group-cleanup + reaper, pluggable paths)
+    and `lib/reaper.sh`: syntax-checked + arg/file-validation tested; **the live sim-run path is
+    UNVALIDATED** (no runnable sim here).
+
+- **C-ii implemented (config-only) in nav2_params_camera.yaml** -- UNVALIDATED in sim:
+  `line_memory_mirror_layer` now `allow_decrease:true` + `decrease_only_in_front:true` + cone
+  +/-0.96 rad / 0-5 m; local `line_layer` clear cone widened to +/-0.85 rad / 0.8-5 m.
+  **Verified by reading `local_mirror_layer.cpp`**: keeping `overwrite_master:false` is correct and
+  safer -- the master is rebuilt each cycle, so clearing this layer's own accumulated cell (via the
+  allow_decrease path, lines 525-528) is sufficient to free a line-ONLY master cell, while the
+  master-write max-merge (lines 592-595) still prevents a line halo from erasing a real PCA obstacle at
+  a shared cell. So NO C++ change was needed (the Plan's "budget a C++ iteration" precaution is resolved).
+  KPI to confirm on first sim run: `global_clear_events > 0` on sparse_lines AND no PCA obstacle erosion.
+
+- **C-iii implemented in nav2_params_camera.yaml** -- UNVALIDATED in sim: Smac `cost_penalty` 2.0 -> 3.0
+  (route the centerline farther from inflation by construction -> fewer PathFootprintSafe rejects /
+  breadcrumb fallbacks). Soft preference only; lethal topology unchanged so the 5 ft passage stays usable.
+
+DEFERRED until the sim env is available:
+- Phase-0 wall-clock calibration + tier auto-sizing; the baseline; running the keep/discard loop;
+  validating C-ii (`global_clear_events`) and C-iii (`pathfootprint_rejects`/`breadcrumb`/time down,
+  0 violations); costmap-based metrics (executed_lethal_clear / plan_inscribed_clear / global_clear_events)
+  wired from the FROZEN scripts/analyze_*.py.
+
+## How to run once a sim is available
+1. Get a runnable sim (see BLOCKER). Build the ws once: `cd isaac_ros-dev && colcon build --symlink-install`.
+2. Gates: `python3 .../autoresearch/lib/check_footprint.py` and `... validate_course.py courses/*.yaml`.
+3. Smoke: `python3 .../autoresearch/evaluate.py --course compact_baseline --runs 1 --tier 1`
+   (confirm a RESULT line + no orphaned gz/ros: `pgrep -fa 'gz sim|controller_server'` empty).
+4. Baseline (Tier-2 x3 on compact_baseline), then follow `program.md`'s loop. C-ii/C-iii are already the
+   working-tree's first changes -- baseline them, then keep/discard per the gate.
 
 ## Iteration log
 (_baseline + each kept/discarded experiment recorded here in the AUTORESEARCH_PATH.md style once the loop runs._)
-- 2026-05-30 setup: branch + scaffold + 5 validated courses + footprint check. Loop blocked on sim env.
+- 2026-05-30 setup: branch + scaffold + 5 validated courses + footprint check (PASS).
+- 2026-05-30 harness: metrics.py + fitness.py built and self-tested (16/16); evaluate.py/run_one.sh/reaper.sh
+  built (sim-run path unvalidated). C-ii (config-only line clearing) + C-iii (cost_penalty 3.0) implemented,
+  UNVALIDATED. Loop run still blocked on a runnable sim env.
