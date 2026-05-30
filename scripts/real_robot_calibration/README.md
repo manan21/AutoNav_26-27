@@ -13,6 +13,8 @@ cd ~/code/git/AutoNav_25-26/scripts/real_robot_calibration
 ./run_remote.sh straight_speed_ladder_low
 ./run_remote.sh straight_distance_drift_low
 ./run_remote.sh record_manual_full_course --run-name manual_course_slow_pass_1
+./run_remote.sh camera_line_static_canon --run-name camera_line_static_canon_1
+./run_remote.sh nav_debug_driveway_gap --run-name nav_debug_driveway_gap_1
 ```
 
 High-speed profiles require an explicit acknowledgement:
@@ -49,16 +51,49 @@ the real control node to publish `/autonomous_mode=true`, then command
 - `record_manual_full_course`: full perception/planning recording while you manually drive.
 - `closed_loop_observe`: full recording while RViz/Nav2 controls the robot.
 - `perception_static_sweep`: full recording for stationary or hand-crept views of tape, cones, ramp, shadows, and narrow gaps.
+- `camera_line_static_canon`: strict static white-tape camera projection validation.
+- `camera_line_motion_creep`: strict 0.25 mph approach over/near white tape.
+- `nav_debug_driveway_gap`: strict autonomous Nav2 debug recording for tape/obstacle gaps, plans, costmaps, and recovery.
+- `costmap_memory_yaw_sweep`: strict yaw sweep to test global costmap memory for lines and obstacles.
+- `pca_obstacle_memory_manual`: strict manual PCA obstacle persistence/smearing capture; usually run with `--raw-lidar`.
+- `gps_nav_observe`: strict GPS/RViz/Nav2 closed-loop observation.
 - `straight_speed_ladder_low`: straight 0.25, 0.5, and 1 mph commands.
 - `straight_speed_ladder_high`: straight 2 and 3 mph commands; requires `--allow-high-speed`.
 - `straight_distance_drift_low`: odom-distance-gated straight runs, 3 m at 0.5 mph and 5 m at 1 mph.
 - `straight_distance_drift_high`: odom-distance-gated straight runs, 6 m at 2 mph and 8 m at 3 mph; requires `--allow-high-speed`.
+- `straight_distance_level_10m_1mph`: level-ground 10 m odom scale/drift test at 1 mph.
 - `accel_stop_response`: 0.5 and 1 mph step/stop response.
 - `accel_stop_response_high`: 2 mph step/stop response; requires `--allow-high-speed`.
 - `in_place_yaw_ladder`: ±0.3, ±0.6, and ±1.0 rad/s in-place turns.
 - `arc_ladder`: 0.5 and 1 mph arcs at ±0.3 and ±0.6 rad/s.
 - `arc_ladder_high`: 2 mph arcs at ±0.3 rad/s; requires `--allow-high-speed`.
 - `ramp_ladder`: 0.25, 0.5, and 1 mph straight ramp passes.
+- `ramp_ladder_full_perception`: strict ramp dynamics plus perception transfer capture.
+
+## Canon Field-Test Roadmap
+
+Run the canon profiles in this order when collecting the remaining simulation
+transfer bags. For every run: start phone video, say the run name, say the
+video time, then wave in front of the ZED and lidar.
+
+P0 mission-critical perception and planning:
+
+1. `camera_line_static_canon`: stationary white tape at about 2 ft, 4 ft, and 8 ft; include diagonal tape plus sun/shadow if available. Confirm line pixels become `/line_points` and `/line_costmap` cells.
+2. `camera_line_motion_creep`: slow 0.25 mph approach toward/near tape. Confirm motion does not collapse projection due to TF/depth sync failures.
+3. `nav_debug_driveway_gap`: recreate tape plus wall/cone false-gap issue, start recording, then place the RViz goal. Confirm `/plan`, costmaps, line costmap, obstacle sources, and recovery behavior are recorded.
+
+P1 costmap memory and obstacle persistence:
+
+4. `costmap_memory_yaw_sweep`: place visible tape and a cone/wall in front, then yaw away and back. Confirm global costmap line/obstacle memory persists until properly cleared.
+5. `pca_obstacle_memory_manual --raw-lidar`: manually drive past cones/walls as they enter, leave, and re-enter lidar view. Use this for PCA persistence and local-costmap smearing analysis.
+
+P2 dynamics, ramp, and GPS transfer:
+
+6. `straight_distance_level_10m_1mph`: run on level measured ground in both directions with separate run names.
+7. `in_place_yaw_ladder`: rerun only after `/odom`, `/local_ekf/odom`, `/encoders`, and `/tf` are confirmed present.
+8. `arc_ladder`: repeat on level ground for turn-radius and yaw-under-translation calibration.
+9. `ramp_ladder_full_perception`: capture speed loss, IMU pitch/grade, perception continuity, and costmaps on a competition-style ramp.
+10. `gps_nav_observe`: run GPS/RViz waypoint navigation over a small course section to capture GPS, plans, recovery, and average-speed behavior.
 
 Speed conversions used by the profiles:
 
@@ -131,6 +166,10 @@ when explicitly needed:
 ```bash
 ./run_remote.sh perception_static_sweep --raw-lidar
 ```
+
+`topics/canon_full.txt` is the stricter simulation-transfer profile. Profiles
+using it set `strict_required_topics: true`, so the script aborts before
+recording if required ZED, TF, odom, line, and costmap topics are missing.
 
 ## Important Safety Notes
 

@@ -58,6 +58,11 @@ Selected videos:
 - Generated durable outputs:
   - `docs/GAZEBO_CANON_OFFLINE_REPORT.md`
   - `docs/gazebo_canon_offline_report.json`
+- Field-test roadmap added in `docs/REAL_ROBOT_FIELD_TEST_ROADMAP.md`.
+- Real-robot calibration suite now includes strict `canon_full` topic capture
+  plus named profiles for camera-line projection, Nav2 gap debug, costmap
+  memory, PCA obstacle memory, level-ground straight distance, ramp full
+  perception, and GPS/Nav2 observation.
 
 ## Findings
 
@@ -115,6 +120,9 @@ Selected videos:
 - Fix or validate the camera line projection path before trusting sim-based
   line avoidance. Real bags show segmentation pixels without 3-D line points
   when TF/depth sync fails.
+- Collect the P0/P1/P2 field-test roadmap, starting with
+  `camera_line_static_canon`, `camera_line_motion_creep`, and
+  `nav_debug_driveway_gap`.
 - Add an autonomous nav debug dataset with `/plan`, `/unsmoothed_plan`,
   `/transformed_global_plan`, local/global costmaps, line costmap, obstacle
   sources, TF, odom, and all line detector diagnostics. The selected manual

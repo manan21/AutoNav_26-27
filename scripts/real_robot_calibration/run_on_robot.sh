@@ -136,6 +136,7 @@ fi
 BAG_PROFILE=$(python3 "$SCRIPT_DIR/profile_info.py" --profiles "$PROFILES_FILE" --profile "$PROFILE" --field bag_profile)
 COMMAND_MODE=$(python3 "$SCRIPT_DIR/profile_info.py" --profiles "$PROFILES_FILE" --profile "$PROFILE" --field command_mode)
 RECORD_UNTIL_INTERRUPT=$(python3 "$SCRIPT_DIR/profile_info.py" --profiles "$PROFILES_FILE" --profile "$PROFILE" --field record_until_interrupt)
+STRICT_REQUIRED=$(python3 "$SCRIPT_DIR/profile_info.py" --profiles "$PROFILES_FILE" --profile "$PROFILE" --field strict_required_topics)
 TOPIC_FILE="$SCRIPT_DIR/topics/$BAG_PROFILE.txt"
 REQUIRED_TOPIC_FILE="$SCRIPT_DIR/required_topics/$BAG_PROFILE.txt"
 
@@ -154,11 +155,15 @@ BAG_LOG="$RUN_DIR/rosbag_record.log"
 COMMAND_LOG="$RUN_DIR/command_profile.log"
 TOPIC_SNAPSHOT="$RUN_DIR/topic_list_at_start.txt"
 MISSING_TOPICS="$RUN_DIR/missing_topics_at_start.txt"
+MISSING_REQUIRED_TOPICS="$RUN_DIR/missing_required_topics_at_start.txt"
 METADATA="$RUN_DIR/run_metadata.txt"
 
 mkdir -p "$RUN_DIR" "$STATE_DIR"
 cp "$PROFILES_FILE" "$RUN_DIR/profiles.yaml"
 cp "$TOPIC_FILE" "$RUN_DIR/topics.txt"
+if [ -f "$REQUIRED_TOPIC_FILE" ]; then
+  cp "$REQUIRED_TOPIC_FILE" "$RUN_DIR/required_topics.txt"
+fi
 
 mapfile -t TOPICS < <(grep -Ev '^[[:space:]]*(#|$)' "$TOPIC_FILE")
 if [ "$RAW_LIDAR" -eq 1 ]; then
@@ -189,10 +194,22 @@ for topic in "${TOPICS[@]}"; do
     echo "$topic" >>"$MISSING_TOPICS"
   fi
 done
+: >"$MISSING_REQUIRED_TOPICS"
+if [ -f "$REQUIRED_TOPIC_FILE" ]; then
+  while IFS= read -r topic; do
+    topic="${topic%%#*}"
+    topic="$(echo "$topic" | xargs)"
+    [ -z "$topic" ] && continue
+    if ! grep -Fx "$topic" "$TOPIC_SNAPSHOT" >/dev/null 2>&1; then
+      echo "$topic" >>"$MISSING_REQUIRED_TOPICS"
+    fi
+  done <"$REQUIRED_TOPIC_FILE"
+fi
 
 echo "Run name: $RUN_NAME"
 echo "Profile: $PROFILE"
 echo "Bag profile: $BAG_PROFILE"
+echo "Strict required topics: $STRICT_REQUIRED"
 echo "Bag path: $BAG_PATH"
 echo "Metadata: $METADATA"
 echo
@@ -205,6 +222,16 @@ if [ -s "$MISSING_TOPICS" ]; then
   echo "Topics not visible at recorder start; rosbag may still capture them if they appear later:"
   sed 's/^/  /' "$MISSING_TOPICS"
   echo
+fi
+if [ -s "$MISSING_REQUIRED_TOPICS" ]; then
+  echo "Required topics missing at recorder start:"
+  sed 's/^/  /' "$MISSING_REQUIRED_TOPICS"
+  echo
+  if [ "$STRICT_REQUIRED" = "true" ]; then
+    echo "Strict required-topic preflight failed; not starting rosbag." >&2
+    echo "Run directory: $RUN_DIR" >&2
+    exit 3
+  fi
 fi
 
 echo "Disk status for bag root:"
@@ -240,7 +267,18 @@ cleanup() {
   publish_zero
   rm -f "$ACTIVE_FILE"
   if [ -d "$BAG_PATH" ]; then
-    "$SCRIPT_DIR/verify_bag.sh" "$BAG_PATH" --required-topic-file "$REQUIRED_TOPIC_FILE" || true
+    VERIFY_ARGS=("$BAG_PATH")
+    if [ -f "$REQUIRED_TOPIC_FILE" ]; then
+      VERIFY_ARGS+=(--required-topic-file "$REQUIRED_TOPIC_FILE")
+      if [ "$STRICT_REQUIRED" = "true" ]; then
+        VERIFY_ARGS+=(--strict)
+      fi
+    fi
+    if ! "$SCRIPT_DIR/verify_bag.sh" "${VERIFY_ARGS[@]}"; then
+      if [ "$STRICT_REQUIRED" = "true" ] && [ "$exit_status" -eq 0 ]; then
+        exit_status=1
+      fi
+    fi
   fi
   echo "Run directory: $RUN_DIR"
   exit "$exit_status"

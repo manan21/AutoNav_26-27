@@ -1,0 +1,16 @@
+/tf
+/tf_static
+/cmd_vel
+/autonomous_mode
+/odom
+/local_ekf/odom
+/scan_fullframe
+/zed/zed_node/rgb/color/rect/image
+/zed/zed_node/depth/depth_registered
+/zed/zed_node/rgb/color/rect/camera_info
+/line_detection/line_pixels
+/line_detection/diagnostics
+/line_points
+/line_costmap
+/local_costmap/costmap
+/global_costmap/costmap

@@ -31,6 +31,70 @@
       "record_until_interrupt": true,
       "operator_notes": "Stationary or hand-crept views of tape, cones, ramp, shadows, legal gaps, and illegal narrow gaps."
     },
+    "camera_line_static_canon": {
+      "description": "Strict static camera-line projection validation with raw ZED, TF, line pixels, /line_points, and /line_costmap.",
+      "bag_profile": "canon_full",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "strict_required_topics": true,
+      "operator_notes": "Stationary views of white tape at about 2 ft, 4 ft, and 8 ft. Include diagonal tape plus sun/shadow if available."
+    },
+    "camera_line_motion_creep": {
+      "description": "Strict moving camera-line projection validation during a slow 0.25 mph approach.",
+      "bag_profile": "canon_full",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "strict_required_topics": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "line_creep_0p25_mph", "duration_s": 20.0, "linear_mph": 0.25, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 3.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Point at white tape and toggle AUTO only when safe. Stop if the robot will cross tape unsafely."
+    },
+    "nav_debug_driveway_gap": {
+      "description": "Strict Nav2 autonomy debug capture for tape/obstacle gaps, false narrow gaps, plans, costmaps, and recovery behavior.",
+      "bag_profile": "canon_full",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "strict_required_topics": true,
+      "operator_notes": "Recreate the wall/obstacle plus tape gap issue. Start recording, then place the RViz goal and let Nav2 drive with e-stop coverage."
+    },
+    "costmap_memory_yaw_sweep": {
+      "description": "Strict line/obstacle global-costmap memory validation while rotating away from visible tape and obstacles.",
+      "bag_profile": "canon_full",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "strict_required_topics": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_pos_0p3_memory", "duration_s": 8.0, "linear_mps": 0.0, "angular_radps": 0.3},
+        {"label": "stop_after_pos", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "yaw_neg_0p3_memory", "duration_s": 8.0, "linear_mps": 0.0, "angular_radps": -0.3},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Place visible tape plus cone/wall in front. Verify global costmap memory while the robot rotates away and back."
+    },
+    "pca_obstacle_memory_manual": {
+      "description": "Strict manual PCA obstacle-memory and local-smearing capture; normally run with --raw-lidar.",
+      "bag_profile": "canon_full",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "strict_required_topics": true,
+      "operator_notes": "Manual drive past cones/walls so they enter lidar view, leave view, and re-enter. Prefer --raw-lidar for this profile."
+    },
+    "gps_nav_observe": {
+      "description": "Strict GPS/RViz/Nav2 closed-loop observation with plans, costmaps, GPS topics, and recovery behavior.",
+      "bag_profile": "canon_full",
+      "command_mode": "none",
+      "wait_for_auto": false,
+      "record_until_interrupt": true,
+      "strict_required_topics": true,
+      "operator_notes": "Use RViz or GPS waypoint navigation over a small course section while recording. Stop with Ctrl-C after the run."
+    },
     "straight_speed_ladder_low": {
       "description": "Straight-line low-speed response at maneuvering and 1 mph qualification threshold speeds.",
       "bag_profile": "dynamics_light",
@@ -92,6 +156,19 @@
         {"label": "final_stop", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0}
       ],
       "operator_notes": "Requires a long marked straight lane and physical e-stop coverage. Skip if the lane is not clear enough for 3 mph."
+    },
+    "straight_distance_level_10m_1mph": {
+      "description": "Level-ground 10 m straight-line odom scale/drift test at 1 mph.",
+      "bag_profile": "dynamics_light",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "distance_odom_topic": "/odom",
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "straight_1mph_10m", "duration_s": 35.0, "target_distance_m": 10.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 5.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Run on level measured ground in both directions as separate runs. Measure physical start/end distance and lateral drift."
     },
     "accel_stop_response": {
       "description": "Command step changes to calibrate acceleration lag, command latency, and coastdown/stop response.",
@@ -194,6 +271,23 @@
         {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
       ],
       "operator_notes": "Align carefully before toggling AUTO. Run one direction at a time; stop and reposition between passes if needed."
+    },
+    "ramp_ladder_full_perception": {
+      "description": "Strict ramp dynamics plus perception capture for sim transfer.",
+      "bag_profile": "canon_full",
+      "command_mode": "scripted",
+      "wait_for_auto": true,
+      "strict_required_topics": true,
+      "segments": [
+        {"label": "settle_zero", "duration_s": 2.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_0p25_mph", "duration_s": 10.0, "linear_mph": 0.25, "angular_radps": 0.0},
+        {"label": "stop_after_0p25", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_0p5_mph", "duration_s": 10.0, "linear_mph": 0.5, "angular_radps": 0.0},
+        {"label": "stop_after_0p5", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0},
+        {"label": "ramp_1_mph", "duration_s": 10.0, "linear_mph": 1.0, "angular_radps": 0.0},
+        {"label": "final_stop", "duration_s": 4.0, "linear_mps": 0.0, "angular_radps": 0.0}
+      ],
+      "operator_notes": "Align carefully before toggling AUTO. Captures ZED, lidar/PCA, IMU, GPS, costmaps, and line detector continuity on the ramp."
     }
   }
 }

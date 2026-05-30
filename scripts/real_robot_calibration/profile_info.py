@@ -166,6 +166,7 @@ def write_metadata(
         f"command_mode: {profile.get('command_mode', 'none')}",
         f"wait_for_auto: {bool(profile.get('wait_for_auto', False))}",
         f"record_until_interrupt: {bool(profile.get('record_until_interrupt', False))}",
+        f"strict_required_topics: {bool(profile.get('strict_required_topics', False))}",
         f"expected_scripted_duration_s: {duration if duration is not None else 'manual_stop'}",
         f"max_abs_command_speed_mps: {max_abs_speed_mps(profile):.6f}",
         f"max_abs_command_speed_mph: {max_abs_speed_mps(profile) / MPH_TO_MPS:.3f}",
@@ -203,6 +204,7 @@ def main() -> int:
         "operator_notes",
         "record_until_interrupt",
         "requires_allow_high_speed",
+        "strict_required_topics",
         "wait_for_auto",
     ])
     parser.add_argument("--write-metadata", type=Path)
@@ -240,7 +242,10 @@ def main() -> int:
             value = duration_seconds(profile)
             print("manual_stop" if value is None else f"{value:.3f}")
         else:
-            value = profile.get(args.field, False if args.field.startswith(("requires", "record", "wait")) else "")
+            value = profile.get(
+                args.field,
+                False if args.field.startswith(("requires", "record", "strict", "wait")) else "",
+            )
             if isinstance(value, bool):
                 print("true" if value else "false")
             else:
