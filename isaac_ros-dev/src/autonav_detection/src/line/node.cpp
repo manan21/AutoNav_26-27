@@ -90,7 +90,7 @@ public:
 
 		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
 		// in cuda.cu; now plumbed through line_detector.yaml).
-		this->declare_parameter("brightness_threshold", 220.0);  // 0-255 grayscale
+		this->declare_parameter("brightness_threshold", 230.0);  // 0-255 grayscale
 		this->declare_parameter("half_window_size", 3);          // window = 2N+1
 		this->declare_parameter("sigma_threshold", 5.0);         // local stddev cap
 		this->declare_parameter("mew_threshold", 200.0);         // local mean floor
@@ -334,7 +334,7 @@ private:
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
 	bool    tf_use_latest_ = false;
-	double  brightness_threshold_ = 220.0;
+	double  brightness_threshold_ = 230.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;
 	float   mew_threshold_ = 200.0f;
