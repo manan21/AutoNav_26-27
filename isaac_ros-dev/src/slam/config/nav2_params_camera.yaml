@@ -152,7 +152,7 @@ controller_server:
       iteration_count: 1
       prune_distance: 1.2
       transform_tolerance: 0.5
-      temperature: 0.3
+      temperature: 0.6
       gamma: 0.015
       motion_model: "DiffDrive"
       visualize: false
