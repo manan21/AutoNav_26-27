@@ -190,7 +190,15 @@ controller_server:
         cost_power: 1
         cost_weight: 1.6
         critical_cost: 300.0
-        consider_footprint: true
+        # Experiment A (branch fix/lines_again_no_bt): footprint check
+        # disabled. MPPI was freezing on clear-path tests — hypothesis
+        # is that line-detector lethals near the robot's start pose
+        # were making every trajectory evaluate to collision cost with
+        # consider_footprint:true, and we removed the BT recovery that
+        # would have cleared the costmap. With this off, MPPI scores
+        # trajectories against the costmap center-point only (much
+        # looser collision check) and should always emit motion.
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 0.6
         inflation_layer_name: "inflation_layer"
