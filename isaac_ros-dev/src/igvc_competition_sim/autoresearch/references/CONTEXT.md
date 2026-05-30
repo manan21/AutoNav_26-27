@@ -196,3 +196,31 @@ until P1 lands. Recommend running the loop primarily on sparse_lines next.
   is the CLOSEST-to-clean course: ~2 targeted fixes (boundary clearance at those 2 spots via line keep-out
   P2 + raise early speed P5) from the first GATE PASS. Camera line detection confirmed working
   (/line_points ~1300/run). Start the next session here.
+
+## 1-hour loop (2026-05-30 07:31-08:31) — focus: sparse_lines toward first clean gate pass
+KEY INSIGHT: the boundary crossings + slow speed were both caused by MPPI HEADING JITTER (rev ~80,
+ang_var ~0.28) sweeping the rotated footprint onto tape and wasting forward progress. Also confirmed
+/odom == ground_truth EXACTLY in this sim (NO injected EKF drift) -> the crossings are real, AND C-ii
+(camera clearing for drift) cannot be exercised until sensor_harness injects odom drift (sim-fidelity gap).
+- exp5 line_layer inscribed 0.05->0.15: DISCARD (no change to crossings while jitter was high -> proved
+  margin isn't the issue, jitter is).
+- exp6 MPPI iteration_count 1->2: DISCARD (0/3 complete -- 2x compute can't sustain 20 Hz on this CPU,
+  controller lags and stalls).
+- **exp7 MPPI temperature 0.3->0.6: KEEP (commit 9544c15e).** Smoother control: jitter HALVED
+  (rev ~80->45, ang_var 0.28->0.08), 3/3 complete, **first-44ft SPEED CHECK now PASSES**, tape crossings
+  cut from 3-4 to a SINGLE one (internal_no_cross_far). Biggest single win of the session.
+- exp8 inscribed 0.15 ON TOP of temp 0.6: DISCARD (didn't clear internal_no_cross_far; borderline speed
+  0.444 + one stall). The internal-line clip is course-geometry-tight (its bottom y=0.30 sits close to the
+  center path to the y=0 finish) + likely late line detection; needs targeted work, not a blunt keep-out.
+- tight_gaps generalization (best config temp0.6+vx_std0.40): COMPLETES 2/2 with the same reduced jitter
+  (rev ~50) -> the kept changes GENERALIZE (no regression on the narrow course). Remaining boundary
+  clipping there is the harder-course version of the same clearance issue (consistent, not overfit).
+
+CURRENT BEST CONFIG (committed/pushed): bring-up + C-ii/C-iii + exp1 (vx_std 0.40) + exp7 (temperature 0.6).
+On sparse_lines: completes 3/3, speed passes, ONE marginal crossing left (internal_no_cross_far). On
+tight_gaps: completes 2/2. Net vs baseline: from "stalls/times out, never finishes" to "reliably finishes,
+speed-legal, near-clean."
+## Next (resume here): (1) internal_no_cross_far -- check line-detection latency for that segment + try a
+small targeted clearance only there / verify Smac footprint-collision is using the line lethal cells;
+(2) cross-course clearance for tight_gaps; (3) inject odom drift in sensor_harness to actually exercise
+C-ii; (4) pothole detection (P1, still the hard qualification blocker on pothole courses).
