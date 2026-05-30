@@ -185,5 +185,14 @@ P4. Validate C-ii on sparse_lines (no potholes): confirm global_clear_events>0 a
     clearing prevents stale-line phantom blocks under EKF drift.
 P5. Speed: once clean-ish, push vx_max/velocity_smoother + PreferForward to raise the first-44ft average.
 
-NOTE: a clean GATE pass is only achievable tonight on the NO-pothole courses (tight_gaps, sparse_lines)
-until P1 lands. Recommend running the loop primarily on tight_gaps next.
+NOTE: a clean GATE pass is only achievable on the NO-pothole courses (tight_gaps, sparse_lines)
+until P1 lands. Recommend running the loop primarily on sparse_lines next.
+
+- 2026-05-30 sparse_lines eval (best config vx_std 0.40, 3 runs): **COMPLETES 3/3 reliably** (no stalls
+  on the wide pothole-free lane). All 3 still gate-FAIL on TWO CONSISTENT issues: (a) first_44ft speed
+  ~0.375-0.397 (< 0.447), (b) crosses the SAME two boundaries every run: right_boundary_2 (early) +
+  internal_no_cross_far (x~36). Consistent (low-variance) crossings => the planned path routes too close
+  at those specific spots => directly tunable (NOT the chaotic knife's-edge of compact). So sparse_lines
+  is the CLOSEST-to-clean course: ~2 targeted fixes (boundary clearance at those 2 spots via line keep-out
+  P2 + raise early speed P5) from the first GATE PASS. Camera line detection confirmed working
+  (/line_points ~1300/run). Start the next session here.
