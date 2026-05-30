@@ -10,7 +10,6 @@ from .dynamics_config import as_bool, as_float, clamp, default_calibration_path,
 try:
     import rclpy
     from rclpy.executors import ExternalShutdownException
-    from rclpy.exceptions import RCLError
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile
     from geometry_msgs.msg import Twist
@@ -19,6 +18,13 @@ except ImportError as exc:  # pragma: no cover - ROS runtime only.
     raise SystemExit(
         "igvc_calibrated_dynamics must run in a sourced ROS 2 Humble environment"
     ) from exc
+
+# RCLError was added to rclpy after Humble; fall back when absent (matches the
+# pattern already in dynamics_replay.py). auto_camera env-compat fix.
+try:
+    from rclpy.exceptions import RCLError
+except ImportError:
+    RCLError = Exception
 
 
 def _stamp_to_float(stamp) -> float:

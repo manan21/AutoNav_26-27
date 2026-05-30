@@ -11,7 +11,6 @@ from .lidar_geometry import raycast_cylinders
 try:
     import rclpy
     from rclpy.executors import ExternalShutdownException
-    from rclpy.exceptions import RCLError
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from builtin_interfaces.msg import Time
@@ -33,6 +32,13 @@ except ImportError as exc:  # pragma: no cover - ROS runtime only.
     raise SystemExit(
         "igvc_sensor_harness must run in a sourced ROS 2 Humble environment"
     ) from exc
+
+# RCLError was added to rclpy after Humble; fall back when absent (matches the
+# pattern already in dynamics_replay.py). auto_camera env-compat fix.
+try:
+    from rclpy.exceptions import RCLError
+except ImportError:
+    RCLError = Exception
 
 
 MULTISCAN_LAYERS = 16

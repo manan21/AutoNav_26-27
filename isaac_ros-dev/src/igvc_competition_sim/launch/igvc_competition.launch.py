@@ -96,10 +96,15 @@ def _gazebo_process(context, *args, **kwargs):
     server_args = ["-s"] if server_only else []
     gz = shutil.which("gz")
     ign = shutil.which("ign")
-    if gz:
-        cmd = [gz, "sim", *server_args, "-r", world]
-    elif ign:
+    # Prefer Ignition Fortress (`ign gazebo`). On hosts that also ship the
+    # legacy Gazebo Classic `gz` tool (gz-tools 11, /usr/bin/gz), `gz sim` is
+    # NOT a valid command and exits immediately with "Invalid arguments", so
+    # `ign` MUST take precedence. Garden+/Harmonic hosts (unified `gz sim`, no
+    # `ign`) fall through to `gz sim`. (auto_camera env-portability fix.)
+    if ign:
         cmd = [ign, "gazebo", *server_args, "-r", world]
+    elif gz:
+        cmd = [gz, "sim", *server_args, "-r", world]
     else:
         cmd = ["ign", "gazebo", *server_args, "-r", world]
     return [ExecuteProcess(cmd=cmd, output="screen")]

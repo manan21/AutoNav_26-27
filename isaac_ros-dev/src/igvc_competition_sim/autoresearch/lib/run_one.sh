@@ -19,7 +19,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/../../../../../.." && pwd)"   # .../AutoNav_25-26
+REPO="$(cd "$HERE/../../../../.." && pwd)"   # .../AutoNav_25-26
 ROS_WS="${ROS_WS:-$REPO/isaac_ros-dev}"
 SRC="$ROS_WS/src"
 NAV2_PARAMS_SRC="${NAV2_PARAMS_SRC:-$SRC/slam/config/nav2_params_camera.yaml}"

@@ -253,6 +253,13 @@ def generate_world(course: Course) -> str:
     <plugin filename='ignition-gazebo-physics-system' name='ignition::gazebo::systems::Physics'/>
     <plugin filename='ignition-gazebo-user-commands-system' name='ignition::gazebo::systems::UserCommands'/>
     <plugin filename='ignition-gazebo-scene-broadcaster-system' name='ignition::gazebo::systems::SceneBroadcaster'/>
+    <!-- Sensors system: REQUIRED for the rgbd camera to render. When a world
+         lists explicit system <plugin> tags, gz-sim loads ONLY those, so the
+         camera produces no images without this (line detection sees nothing).
+         auto_camera env-compat fix. -->
+    <plugin filename='ignition-gazebo-sensors-system' name='ignition::gazebo::systems::Sensors'>
+      <render_engine>ogre2</render_engine>
+    </plugin>
     <light name='sun' type='directional'>
       <pose>0 0 20 0 0 0</pose>
       <diffuse>0.8 0.8 0.75 1</diffuse>
