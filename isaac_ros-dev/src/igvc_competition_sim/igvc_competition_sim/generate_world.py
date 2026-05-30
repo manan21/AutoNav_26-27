@@ -58,13 +58,21 @@ def _tape_model(name: str,
     yaw = math.atan2(dy, dx)
     cx = 0.5 * (start[0] + end[0])
     cy = 0.5 * (start[1] + end[1])
-    return _box_visual_model(
-        name,
-        (cx, cy, 0.011, 0.0, 0.0, yaw),
-        (length, width_m, 0.012),
-        (0.98, 0.98, 0.98, 1.0),
-        collide=False,
-    )
+    # Emissive white so the tape renders near-saturated (~230) like real white
+    # IGVC tape in sunlight -- the real-tuned line detector (brightness 220 /
+    # mew 200) needs this; do NOT lower the detector thresholds to match a dim
+    # render. auto_camera sim-fidelity fix.
+    return f"""
+    <model name='{_clean_name(name)}'>
+      <static>1</static>
+      <pose>{cx:.4f} {cy:.4f} 0.011 0 0 {yaw:.6f}</pose>
+      <link name='link'>
+        <visual name='visual'>
+          <geometry><box><size>{length:.4f} {width_m:.4f} 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
+        </visual>
+      </link>
+    </model>"""
 
 
 def _cylinder_model(name: str,

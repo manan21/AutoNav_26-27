@@ -51,89 +51,81 @@
     </model>
     <model name='left_boundary_0'>
       <static>1</static>
-      <pose>4.5000 2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>4.5000 2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_0'>
       <static>1</static>
-      <pose>4.5000 -2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>4.5000 -2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_1'>
       <static>1</static>
-      <pose>13.5000 2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>13.5000 2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_1'>
       <static>1</static>
-      <pose>13.5000 -2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>13.5000 -2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_2'>
       <static>1</static>
-      <pose>22.5000 2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>22.5000 2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_2'>
       <static>1</static>
-      <pose>22.5000 -2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>22.5000 -2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='left_boundary_3'>
       <static>1</static>
-      <pose>31.5000 2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>31.5000 2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
     <model name='right_boundary_3'>
       <static>1</static>
-      <pose>31.5000 -2.4384 0.0110 0.000000 0.000000 0.000000</pose>
+      <pose>31.5000 -2.4384 0.011 0 0 0.000000</pose>
       <link name='link'>
-        
         <visual name='visual'>
-          <geometry><box><size>9.0000 0.0762 0.0120</size></box></geometry>
-          <material><ambient>0.98 0.98 0.98 1.0</ambient><diffuse>0.98 0.98 0.98 1.0</diffuse><specular>0.05 0.05 0.05 1</specular></material>
+          <geometry><box><size>9.0000 0.0762 0.012</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse><specular>0.05 0.05 0.05 1</specular><emissive>0.9 0.9 0.9 1</emissive></material>
         </visual>
       </link>
     </model>
