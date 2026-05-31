@@ -1743,6 +1743,14 @@ void LineDetectorNode::publishDebugImages(
 	if (need_mask) {
 		cv::Mat mask;
 		cv::threshold(gray_image, mask, brightness_threshold_, 255, cv::THRESH_BINARY);
+		const int roi_min_y = std::clamp(
+			static_cast<int>(
+				std::round(static_cast<double>(mask.rows) * roi_min_y_fraction_)),
+			0,
+			mask.rows);
+		if (roi_min_y > 0) {
+			mask.rowRange(0, roi_min_y).setTo(0);
+		}
 		_debug_mask_image_pub->publish(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::MONO8, mask).toImageMsg());
 	}
@@ -1821,7 +1829,7 @@ void LineDetectorNode::line_service(
 	// Detect lines
 	lines::LinePixelDetectionStats pixel_stats;
 	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image,
-				brightness_threshold_, half_window_size_,
+				brightness_threshold_, roi_min_y_fraction_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
 				debug_image_write_enabled_, &pixel_stats);
 	int2* line_points = line_pair.first;
@@ -1981,7 +1989,7 @@ void LineDetectorNode::line_callback()
 	try {
 		const auto detect_start = std::chrono::steady_clock::now();
 		line_pair = lines::detect_line_pixels(cv_ptr->image,
-				brightness_threshold_, half_window_size_,
+				brightness_threshold_, roi_min_y_fraction_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
 				debug_image_write_enabled_, &pixel_stats);
 		stats.cuda_detect_ms = elapsed_ms(detect_start);

@@ -1,5 +1,6 @@
 #include "autonav_detection/detection.hpp"
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace
@@ -192,6 +193,7 @@ std::pair<int2 *, int *> filter_line_components(
  */
 std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                                                   double brightness_threshold,
+                                                  double roi_min_y_fraction,
                                                   int    half_window,
                                                   float  sigma_threshold,
                                                   float  mew_threshold,
@@ -244,6 +246,15 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     // get mask
     cv::Mat mask;
     cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
+    const int roi_min_y = std::clamp(
+        static_cast<int>(
+            std::round(static_cast<double>(height) *
+                       std::clamp(roi_min_y_fraction, 0.0, 1.0))),
+        0,
+        height);
+    if (roi_min_y > 0) {
+        mask.rowRange(0, roi_min_y).setTo(0);
+    }
 
     RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
 

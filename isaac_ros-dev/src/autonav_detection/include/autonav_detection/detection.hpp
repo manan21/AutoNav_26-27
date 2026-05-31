@@ -28,12 +28,14 @@ struct LinePixelDetectionStats {
     int kept_components = 0;
 };
 
-// Tunables: brightness_threshold gates the pre-mask; half_window /
-// sigma_threshold / mew_threshold drive the CERIAS kernel. Defaults are
-// the historical compile-time values (220 / 3 / 5.0 / 200.0). All four
-// live in line_detector.yaml and are wired through node.cpp.
+// Tunables: brightness_threshold gates the pre-mask; roi_min_y_fraction
+// zeros upper image rows before CUDA; half_window / sigma_threshold /
+// mew_threshold drive the CERIAS kernel. Defaults are the historical
+// compile-time values (220 / 0.0 / 3 / 5.0 / 200.0). All live in
+// line_detector.yaml and are wired through node.cpp.
 std::pair<int2*, int*> detect_line_pixels(const cv::Mat & image,
                                           double brightness_threshold = 220.0,
+                                          double roi_min_y_fraction = 0.0,
                                           int    half_window = 3,
                                           float  sigma_threshold = 5.0f,
                                           float  mew_threshold = 200.0f,
