@@ -197,6 +197,12 @@ GOAL_REPUBLISH_HEARTBEAT_S: float = 0.2
 # ────────────────────────────────────────────────────────────────────
 GOAL_POSE_HEARTBEAT_S: float = 60.0
 
+# New waypoint actions can be accepted before bt_navigator has fully published
+# the terminal status for the previous NavigateToPose action. A short first
+# /goal_pose delay prevents the new leg from being consumed by the old action's
+# final tick, after which /goal_update alone cannot start a fresh action.
+INITIAL_GOAL_POSE_DELAY_S: float = 0.45
+
 # ────────────────────────────────────────────────────────────────────
 # CONTROLLER-CHATTER-SENSITIVE — heading resync cadence. Each resync
 # event corrects accumulated EKF yaw bias (which is map↔odom-adjacent
@@ -462,6 +468,7 @@ class GpsHandlerNode(Node):
         self.declare_parameter("tf_timeout_s", TF_TIMEOUT_S)
         self.declare_parameter("nav2_settle_radius_m", NAV2_SETTLE_RADIUS_M)
         self.declare_parameter("require_nav2_settle_before_success", True)
+        self.declare_parameter("initial_goal_pose_delay_s", INITIAL_GOAL_POSE_DELAY_S)
         self.declare_parameter("nav2_base_frame", "nav_center")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("odom_frame", "odom")
@@ -513,6 +520,9 @@ class GpsHandlerNode(Node):
         )
         self._require_nav2_settle_before_success: bool = bool(
             self.get_parameter("require_nav2_settle_before_success").value
+        )
+        self._initial_goal_pose_delay_s: float = float(
+            self.get_parameter("initial_goal_pose_delay_s").value
         )
         self._nav2_base_frame: str = str(
             self.get_parameter("nav2_base_frame").value
@@ -1697,6 +1707,14 @@ class GpsHandlerNode(Node):
             # so all of them must come from one atomic read.
             odom_x, odom_y = self._last_odom_xy or (0.0, 0.0)
 
+        now_pub_s = self._now_s()
+        if (
+            active.last_published_goal_map is None
+            and self._initial_goal_pose_delay_s > 0.0
+            and now_pub_s - active.started_ros_s < self._initial_goal_pose_delay_s
+        ):
+            return
+
         # ── LOCAL (map-frame) goal fast path ─────────────────────────
         # For LOCAL goals the (x,y) is *already* in map frame; skip the
         # GPS-only world→odom→map projection + smoother pipeline and
@@ -1810,7 +1828,6 @@ class GpsHandlerNode(Node):
         # the handler the displacement it needs to bootstrap.
         # Post-bootstrap, the rate limit kicks in and replan churn
         # is suppressed as designed.
-        now_pub_s = self._now_s()
         last_map = active.last_published_goal_map
         last_t = active.last_published_t_s
         if last_map is not None and last_t is not None:
