@@ -134,10 +134,9 @@ private:
   double line_clear_range_max_m_;
   int max_persisted_points_;
   // Line-specific inflation, baked into stampPoints so this layer can
-  // produce a different inflation radius than the global obstacle
-  // inflation_layer. The plugin order in nav2_paramsv2.yaml puts
-  // line_layer AFTER inflation_layer so the inflation_layer's larger
-  // obstacle radius doesn't re-inflate line cells.
+  // produce a line-only costmap topic for memory mirrors. The global
+  // mirror consumes this already-inflated line-only topic after stock
+  // obstacle inflation so tape keeps a narrower halo than PCA obstacles.
   double inflation_radius_;
   double cost_scaling_factor_;
   // Cells within this distance of a line are pinned to
@@ -165,6 +164,7 @@ private:
   rclcpp::Subscription<autonav_interfaces::msg::LinePoints>::SharedPtr line_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
   std::string line_topic_;
+  std::string costmap_topic_;
 
   // Debug clear: Y on the controller publishes std_msgs/Empty here.
   // On receipt this layer drops persisted_points_ within clear_radius_
@@ -199,6 +199,8 @@ private:
     rclcpp::Time stamp;
   };
   std::unordered_map<std::uint64_t, PersistentPoint> persisted_points_;
+  rclcpp::Time last_nonempty_points_time_;
+  bool have_nonempty_points_time_ = false;
   // Guards persisted_points_ across the subscription thread (linePointCallback
   // persists on receipt for "lines can never be lost" reliability) and the
   // costmap-update thread (updateCosts stamps from persisted_points_, also

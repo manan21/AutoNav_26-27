@@ -1749,15 +1749,18 @@ class HudWindow(QMainWindow):
             # first, slam_toolbox starves of scans, never produces
             # /pose or the map→odom TF, and the Nav2 lifecycle
             # stalls at "Activating planner_server."
-            # LINE DETECT also goes before SLAM so the line-pixel
+            # CAMERA LINE DETECT also goes before SLAM so the line-pixel
             # stream is producing by the time the nav2 / line_layer
             # plugins come up — same reasoning as PCA above.
             ("PCA DETECT", ["PCA DETECT"], "./config/run-pca.sh"),
-            ("LINE DETECT", ["LINE DETECT"], "./config/run-lines.sh"),
+            ("CAMERA LINE DETECT", ["CAMERA LINE DETECT"],
+             "./config/run-lines.sh"),
+            ("LIDAR LINE DETECT", ["LIDAR LINE DETECT"], "./config/run-lidar-lines.sh"),
             ("SLAM", ["SLAM"], "ros2 launch slam slam.launch.py"),
             ("NAV2", ["NAV2"], "./config/run-nav2.sh"),
             ("Power PCB", ["Power PCB"], "./config/run-electrical.sh"),
         ]
+        self._launch_all_excluded = {"LIDAR LINE DETECT"}
 
         self._launch_nav_buttons = []  # same tuple format as _nav_buttons
         self._launch_states = {}   # label -> False | 'starting' | True
@@ -1784,7 +1787,8 @@ class HudWindow(QMainWindow):
             "NAV2":      90.0,
             "GPS":       300.0,  # outdoor GPS lock can take minutes
             "Power PCB": 30.0,
-            "LINE DETECT": 45.0,
+            "CAMERA LINE DETECT": 45.0,
+            "LIDAR LINE DETECT": 45.0,
             "PCA DETECT": 45.0,
         }
 
@@ -2530,7 +2534,10 @@ class HudWindow(QMainWindow):
         virt_label = QLabel("Virtual Devices")
         virt_label.setStyleSheet(group_label_style + " margin-top: 6px;")
         status_col.addWidget(virt_label)
-        virtual_names = ["SLAM", "CONTROL", "NAV2", "LINE DETECT", "PCA DETECT"]
+        virtual_names = [
+            "SLAM", "CONTROL", "NAV2", "CAMERA LINE DETECT",
+            "PCA DETECT", "LIDAR LINE DETECT",
+        ]
         for name in virtual_names:
             _add_status_row(name, status_col)
 
@@ -3847,7 +3854,10 @@ class HudWindow(QMainWindow):
         self._odom_canvas.draw_idle()
         self._update_selection()
         if send:
-            args = f"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"
+            # Quote the coord pair so negative values (e.g. x=-1.302)
+            # survive send_goal.sh's flag parser. The script splits a
+            # single whitespace-bearing positional back into x/y.
+            args = f'"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"'
             self._run_one_shot_script(
                 label="Send Goal",
                 script="./config/send_goal.sh",
@@ -3977,10 +3987,25 @@ class HudWindow(QMainWindow):
         label so the terminal display shows the output. The Popen is
         kept in _process_objects so _poll_process_output reaps it when
         it exits.
+
+        If a prior process under the same label is still running, kill
+        it first. For ``Send GPS`` this lets send_GPS_waypoint.sh's
+        SIGINT trap issue ``ros2 action cancel`` against the running
+        /navigate_to_waypoint goal, so the next goal is accepted clean
+        instead of arriving as a preempt and looking like the prior
+        "failed". Same logic applies to Send Goal.
         """
         if not self._container_connected:
             self._gui_log_msg(f"Cannot run {label}: container not connected")
             return
+
+        prior = self._process_objects.get(label)
+        if prior is not None and prior.poll() is None:
+            self._gui_log_msg(f"{label}: cancelling prior goal before resend")
+            kill_thread = self._kill_process(prior, label)
+            if kill_thread is not None:
+                kill_thread.join(timeout=3.0)
+            self._process_objects.pop(label, None)
 
         # Shell-safe arg pass-through. The args string is appended
         # verbatim to the script invocation inside the docker exec
@@ -5612,6 +5637,8 @@ class HudWindow(QMainWindow):
     def _launch_all_in_sequence(self):
         """Queue all devices that aren't already on or starting."""
         for label, _keys, _cmd in self._launch_devices:
+            if label in getattr(self, '_launch_all_excluded', set()):
+                continue
             state = self._launch_states.get(label, False)
             if not state:  # not on, not starting
                 self._toggle_device(label)
@@ -7452,7 +7479,7 @@ class HudWindow(QMainWindow):
         practice.
         """
         return {
-            'LINE DETECT': [
+            'CAMERA LINE DETECT': [
                 'autonav_detection line_detector',
                 'autonav_detection/line_detector',
             ],

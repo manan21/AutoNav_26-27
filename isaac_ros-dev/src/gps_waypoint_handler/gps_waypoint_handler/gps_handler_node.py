@@ -2200,6 +2200,27 @@ class GpsHandlerNode(Node):
             # (it was disabled by the prior goal's cancel/preempt).
             self._publisher_disabled = False
 
+        # Eager initial publish — don't wait up to 1 second for the
+        # next ``_publisher_tick``. Without this the leg has a
+        # publish-silent window between goal acceptance and the first
+        # timer tick; with the PHASEA A.3 "only the first publish of a
+        # leg goes to /goal_pose, everything after to /goal_update"
+        # rule, a missed first tick is a missed goal. When the stack
+        # is running without detection nodes the publish-silent window
+        # is enough for bt_navigator to never receive the goal at all
+        # (the symptom: robot accepts the action but doesn't move).
+        # publisher_tick is idempotent — internal locks + the
+        # last_published_goal_map sentinel make the very-next timer
+        # tick observe first_pub=False and route through /goal_update,
+        # so this eager call doesn't double-publish to /goal_pose.
+        try:
+            self._publisher_tick()
+        except Exception as exc:
+            self.get_logger().warn(
+                f"eager initial publisher_tick raised: {exc}; "
+                f"falling back to timer-driven first publish"
+            )
+
         # Feedback loop @ FEEDBACK_HZ.
         period = 1.0 / max(self._feedback_hz, 0.5)
         try:

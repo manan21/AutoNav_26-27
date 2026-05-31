@@ -2,21 +2,40 @@ bt_navigator:
   ros__parameters:
     use_sim_time: False
     global_frame: map
-    robot_base_frame: base_link
+    # nav_center = body geometric center (shogi.urdf: fixed child of
+    # base_link at +0.225 m forward). Driving every NAV2 frame off
+    # nav_center spawns /plan at the body center and pins the controller's
+    # tracked point to the body center — killing the corner-cut feedback
+    # where the path used to originate at the drive axle (base_link)
+    # 22.5 cm behind the body.
+    robot_base_frame: nav_center
     # Use the EKF-fused odom (wheel + SICK IMU) so behavior-tree
     # conditions (IsStuck, GoalUpdated staleness checks, etc.) reason
     # about smoothed velocity/pose, not raw wheel encoder readings.
     odom_topic: /local_ekf/odom
     bt_loop_duration: 10
-    default_server_timeout: 60
+    # Action goal acknowledgements can exceed 60 ms on the Jetson while
+    # costmaps are resizing/publishing dense line layers. A too-small
+    # timeout makes the BT abort ComputePath/BackUp/Wait before those
+    # servers have actually rejected anything, so the robot enters
+    # recovery without ever reaching the controller.
+    default_server_timeout: 1000
     wait_for_service_timeout: 1000
-    default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
-    default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/install/slam/share/slam/behavior_trees/bt_nav.xml"
+    default_nav_to_pose_bt_xml: "/autonav/isaac_ros-dev/src/slam/behavior_trees/bt_nav.xml"
+    default_nav_through_poses_bt_xml: "/autonav/isaac_ros-dev/src/slam/behavior_trees/bt_nav.xml"
 
-    # PHASEB — PathSignificantlyChanged decorator tuning. Tweak live with:
-    #   ros2 param set /bt_navigator path_significantly_changed.rms_threshold_m 0.15
-    path_significantly_changed.rms_threshold_m: 0.10   # First-N-pose RMS (m) above which child re-fires.
-    path_significantly_changed.compare_n_poses: 10     # Number of leading poses to RMS-compare.
+    # FollowPath churn gate. The planner can replan at 3 Hz, but
+    # FollowPath only needs a fresh action goal when the route geometry
+    # materially changes or the bounded TTL expires. This preserves fast
+    # global replanning while avoiding controller action replacement on
+    # every same-corridor path refresh.
+    path_significantly_changed.rms_threshold_m: 0.15
+    path_significantly_changed.compare_n_poses: 20
+    path_significantly_changed.max_point_delta_m: 0.30
+    path_significantly_changed.start_delta_threshold_m: 0.25
+    path_significantly_changed.length_delta_threshold_m: 0.50
+    path_significantly_changed.force_update_period_s: 0.5
+    path_significantly_changed.empty_path_hold_period_s: 1.0
 
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
@@ -68,6 +87,8 @@ bt_navigator:
       - nav2_is_battery_charging_condition_bt_node
       - autonav_goal_bender_bt_node
       - autonav_path_significantly_changed_bt_node   # PHASEB
+      - autonav_is_forward_blocked_bt_node            # breadcrumb dispatch
+      - autonav_path_footprint_safe_bt_node           # runtime global footprint path gate
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -84,7 +105,7 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 2.0
+    failure_tolerance: 8.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
     controller_plugins: ["FollowPath"]
@@ -92,11 +113,11 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.1
-      # PHASEA A.2: 8.0 → 15.0 — covers transient inflation traversals
-      # so the controller does not declare itself stuck mid-line-cross
-      # and bounce into FollowPathRecovery on a 7 s cycle.
-      movement_time_allowance: 15.0
+      required_movement_radius: 0.03
+      # Path-following test tune: be patient with tiny starts/stops so
+      # MPPI keeps trying the valid path instead of quickly escalating
+      # into FollowPathRecovery / BackUp.
+      movement_time_allowance: 45.0
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -108,85 +129,91 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 6.28319
-    # DWB Local Planner — aggressive path-lock tuning.
-    # PathDist and PathAlign weights pushed 2-3x over Nav2 defaults so the
-    # cost penalty for ANY deviation off /plan dominates trajectory
-    # selection. ObstacleFootprint boosted to make even brushing inflated
-    # cost regions expensive. PathAlign.forward_point_distance is non-zero
-    # so alignment is scored from a point ~32 cm ahead of base_link — this
-    # is what stops corner-cutting (with FPD=0 the alignment is from
-    # base_link itself which lets shortcuts score acceptably).
+    # MPPI is the active local controller for the lidar-line course. RPP
+    # could only follow or veto a global path; MPPI samples local controls
+    # against the footprint-aware costmap so it can choose a safer turn when
+    # the global path is close but locally improvable.
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: False
-      min_vel_x: 0.0
-      min_vel_y: 0.0
-      # Raised from 0.55 -> 1.5 m/s by operator request: the platform
-      # can sustain it and we want faster transit to far GPS waypoints.
-      # Operator confirms they'll stay near the robot during testing.
-      max_vel_x: 1.5
-      max_vel_y: 0.0
-      # Restored to 0.65 after a 0.40 cap left the robot unable to
-      # finish rotating to face new goal poses — the controller would
-      # rotate in place indefinitely without ever transitioning to
-      # forward motion, which also starved gps_handler's bootstrap of
-      # the translational displacement it needs. Smoothing the
-      # per-resync turn step has to come from reducing the frequency
-      # of goal updates (gps_handler republish thresholds) rather
-      # than capping the controller's rotation rate.
-      max_vel_theta: 0.65
-      min_speed_xy: 0.0
-      max_speed_xy: 1.5
-      # ──────────────────────────────────────────────────────────────
-      # CONTROLLER-CHATTER-SENSITIVE — min_speed_theta=0.15 prevents
-      # DWB from sampling near-zero angular trajectories that, paired
-      # with a jittering goal, produce yaw chatter in place. Lowering
-      # it has reintroduced in-place wobble.
-      # ──────────────────────────────────────────────────────────────
-      min_speed_theta: 0.15
-      acc_lim_x: 2.5
-      acc_lim_y: 0.0
-      acc_lim_theta: 0.9
-      decel_lim_x: -2.5
-      decel_lim_y: 0.0
-      decel_lim_theta: -0.9
-      vx_samples: 20
-      vy_samples: 5
-      vtheta_samples: 24
-      sim_time: 1.2            # short horizon reduces turn overcommit when camera-visible line evidence drops out
-      linear_granularity: 0.05
-      angular_granularity: 0.025
-      transform_tolerance: 0.2
-      xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.05
-      short_circuit_trajectory_evaluation: True
-      stateful: True
-      # Body-center path tracking. PathAlign/GoalAlign sample at
-      # base_link + FPD*heading; FPD=0.225 m = midpoint of the robot's
-      # X-extent (-0.32..+0.77 in shogi.urdf), so the geometric body
-      # center is what gets locked onto the path/goal. PathDist/GoalDist
-      # dropped — they sample at base_link (rear axle) and would force
-      # the body off-center.
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign"]
-      BaseObstacle.scale: 0.08
-      PathAlign.scale: 64.0
-      # forward_point_distance: 0.29 m — the geometric midpoint along
-      # the robot X-axis between the rear drive wheels (at X=0 in
-      # shogi.urdf) and the front caster (at X=+0.577). DWB samples a
-      # virtual point this far ahead of each trajectory's endpoint in
-      # the heading direction and scores alignment against /plan there.
-      # Sitting near the diff-drive pivot axis (rear-wheel axle line)
-      # plus a small lookahead matches the kinematic center of rotation
-      # for this rear-drive + front-caster layout, which keeps body
-      # off-tracking minimal during turns.
-      PathAlign.forward_point_distance: 0.29
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.29
-      PathDist.scale: 96.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 56
+      model_dt: 0.05
+      batch_size: 1200
+      # Pair with vx_max. Raising the cap to 0.50 without widening this
+      # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
+      # open-lane sim; 0.25 lets the optimizer actually explore/use the new
+      # speed while preserving canonical 5 ft gap safety in regression.
+      vx_std: 0.35
+      vy_std: 0.01
+      wz_std: 0.70
+      vx_max: 0.50
+      vx_min: 0.04
+      vy_max: 0.0
+      wz_max: 1.0
+      iteration_count: 1
+      prune_distance: 1.2
+      transform_tolerance: 0.5
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "DiffDrive"
+      visualize: false
+      retry_attempt_limit: 5
+      reset_period: 1.0
+      regenerate_noises: false
+      TrajectoryVisualizer:
+        trajectory_step: 8
+        time_step: 4
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.2
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
+        threshold_to_consider: 0.5
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 1.6
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.6
+        inflation_layer_name: "inflation_layer"
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 12.0
+        max_path_occupancy_ratio: 0.12
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 5
+        use_path_orientations: true
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        offset_from_furthest: 4
+        threshold_to_consider: 1.2
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        forward_preference: true
 
 local_costmap:
   local_costmap:
@@ -194,32 +221,37 @@ local_costmap:
       update_frequency: 15.0
       publish_frequency: 15.0
       global_frame: odom
-      robot_base_frame: base_link
+      robot_base_frame: nav_center
       use_sim_time: False
       rolling_window: true
       width: 6
       height: 6
       resolution: 0.05
-      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
-      footprint_padding: 0.0
-      plugins: ["obstacle_layer", "inflation_layer", "line_layer"]
+      # Footprint expressed in nav_center frame (was base_link with
+      # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
+      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
+      # Match the BT/global footprint safety margin so MPPI evaluates the
+      # same padded body the bag analysis enforces.
+      footprint_padding: 0.05
+      # Keep stock Nav2 inflation local to PCA obstacle cells. Camera and
+      # LiDAR line layers run after obstacle inflation so tape costs stay
+      # narrow enough to avoid boxing the robot at the start pose.
+      plugins: ["obstacle_layer", "inflation_layer", "line_layer", "lidar_line_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         # Source = PCA-filtered 2-D LaserScan (autonav_detection::
         # grade_detector → pointcloud_to_laserscan in slam.launch.py).
         # The 3-D /scan_pca_filtered_points is collapsed once, upstream,
-        # into /scan_pca_filtered so SLAM and this layer see the same
-        # 2-D representation. Every return in this scan is an obstacle
+        # into /scan_pca_filtered for local obstacle marking. SLAM itself
+        # still consumes the raw /scan_fullframe LaserScan. Every return
+        # in the PCA-filtered scan is an obstacle
         # (ground / ramp already filtered by PCA grade classification).
-        # Two observation sources to split marking and clearing FOVs:
-        #   mark_scan  → /scan_pca_filtered       (180°, marking only)
-        #   clear_scan → /scan_pca_filtered_clear (160°, clearing only)
-        # The outer 10° wedge on each side marks obstacles but doesn't
-        # raytrace-clear them — the lidar's beam density / accuracy
-        # falls off at the FOV edges, so we don't let those edge rays
-        # claim "this cell is free." Stored marks in that wedge persist
-        # until the local rolling window drops them.
+        # Two observation sources over the same trusted central 140°:
+        #   mark_scan  → /scan_pca_filtered       (marking only)
+        #   clear_scan → /scan_pca_filtered_clear (clearing only)
+        # Edge-FOV PCA points are deliberately excluded; during turns
+        # they smear obstacle marks wide enough to block the robot.
         observation_sources: mark_scan clear_scan
 
         mark_scan:
@@ -241,7 +273,7 @@ local_costmap:
           marking: False
           clearing: True
           data_type: "LaserScan"
-          inf_is_valid: false
+          inf_is_valid: true
           # raytrace-clear free space all the way out to the lidar's
           # full reach. Marking ranges unused (marking: False).
           raytrace_max_range: 25.0
@@ -253,32 +285,73 @@ local_costmap:
         plugin: "line_layer::LineLayer"
         enabled: True
         line_topic: "/line_points"
-        transform_tolerance: 0.2
+        costmap_topic: "/line_costmap"
+        transform_tolerance: 0.5
         max_message_age_ms: 750
         # With view-gated clearing, this is the time a stale line must be
-        # in the camera clearing cone before it is forgotten. Lines outside
-        # the current view stay remembered and continue feeding /line_costmap.
-        observation_persistence_ms: 1500
+        # in the camera clearing cone before it is forgotten. Keep this short
+        # enough that one bad near-field detection cannot pin the robot.
+        observation_persistence_ms: 3000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
-        line_clear_angle_min_rad: -0.55
-        line_clear_angle_max_rad: 0.55
-        line_clear_range_min_m: 0.6
-        line_clear_range_max_m: 5.0
+        line_clear_angle_min_rad: -0.40
+        line_clear_angle_max_rad: 0.40
+        line_clear_range_min_m: 0.40
+        line_clear_range_max_m: 4.50
         max_persisted_points: 12000
+        # Camera-line costs are narrow but planner-blocking. The small
+        # radius avoids boxing the robot in, while the slow decay keeps the
+        # visible halo above PathFootprintSafe's threshold so Smac cannot
+        # route the footprint across lines.
+        inflation_radius: 0.25
+        inscribed_radius: 0.02
+        cost_scaling_factor: 1.0
+        clearing: True
+        rolling_window: True
+        publish_costmap: True
+
+      lidar_line_layer:
+        plugin: "line_layer::LineLayer"
+        enabled: True
+        line_topic: "/lidar_line_points"
+        costmap_topic: "/lidar_line_costmap"
+        transform_tolerance: 0.5
+        max_message_age_ms: 750
+        # LiDAR tape memory is finite but view-gated: stale cells clear only
+        # after they are inside the lidar clearing cone long enough to count
+        # as positively re-observed free space. Outside that cone, tape stays
+        # stamped in local/global memory instead of aging out while unseen.
+        observation_persistence_ms: 5000
+        observation_persistence_resolution_m: 0.10
+        clear_lines_only_in_view: true
+        line_clear_angle_min_rad: -0.95
+        line_clear_angle_max_rad: 0.95
+        line_clear_range_min_m: 0.2
+        line_clear_range_max_m: 6.0
+        max_persisted_points: 2000
+        # LiDAR line detections are sparse obstacle-filtered points, not a
+        # continuous wall. Keep the lethal geometry exact, then publish a
+        # non-lethal preference field that encourages clearance without
+        # closing the IGVC-required 5 ft passage beside obstacles.
+        inflation_radius: 0.25
+        # The 253 band is intentionally small. A wide inscribed band consumes
+        # too much of the narrow legal gap before the planner ever considers
+        # soft costs.
+        inscribed_radius: 0.05
+        # Match camera-line behavior: narrow line halo, slow enough decay
+        # that the planner cannot treat the visible line band as traversable.
+        cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
         publish_costmap: True
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
-        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full 1.10 m inflation_radius, so tight
-        # IGVC gates still plan. Both local_costmap and global_costmap
-        # share the same value by intent (see global_costmap comment).
-        cost_scaling_factor: 3.0
-        inflation_radius: 1.40
+        # PCA/cone stay-away cost. The lidar line layer runs after this layer
+        # and uses its own narrower local halo; global planning receives
+        # lidar tape memory before global inflation.
+        cost_scaling_factor: 3.2
+        inflation_radius: 0.25
 
       always_send_full_costmap: True
 
@@ -288,11 +361,24 @@ global_costmap:
       update_frequency: 3.0
       publish_frequency: 2.0
       global_frame: map
-      robot_base_frame: base_link
+      # nav_center: planner's start pose for every replan is looked up as
+      # map → nav_center, so /plan spawns at the body geometric center
+      # instead of the drive axle (was base_link). Eliminates the inward
+      # corner-cut from continuous replanning around the axle offset.
+      robot_base_frame: nav_center
       use_sim_time: False
-      footprint: "[ [0.77, 0.41], [0.77, -0.41], [-0.32, -0.41], [-0.32, 0.41] ]"
-      footprint_padding: 0.0
-      resolution: 0.10
+      # Footprint expressed in nav_center frame (symmetric ±0.545 x,
+      # ±0.41 y) — see local_costmap footprint note.
+      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
+      # Plan with a small real-world clearance margin. The 5 ft IGVC gap is
+      # wide enough for this padding, and the previous unpadded global
+      # footprint allowed Smac to publish centerlines that the body still
+      # carried over the tape.
+      footprint_padding: 0.05
+      # Match the Smac Lattice primitive grid. The installed differential
+      # drive primitive set below is generated for 5 cm cells; using a
+      # different global resolution invalidates its discrete state graph.
+      resolution: 0.05
       # static_layer drives the global costmap geometry from /map_padded, which is a dynamic bounding box covering robot footprint + goal + plan. The width/height/origin below are only the pre-first-/map_padded fallback.
       width: 6
       height: 6
@@ -302,21 +388,26 @@ global_costmap:
       # No detector topic is consumed directly by the global costmap.
       # The contributors are:
       #   static_layer            → /map_padded → geometry only (all cells UNKNOWN; no SLAM data, no LETHAL corridor walls). map_padder still grows/shrinks the bounding box toward goals.
-      #   local_mirror_layer      → /local_costmap/costmap → persistent obstacle memory. FREE cells may clear stored obstacles only inside the current forward lidar-clearing sector.
-      #   line_memory_mirror_layer → /line_costmap → persistent line-only memory promoted from the local line layer. Whatever survived in the local line costmap keeps living in global after it rolls out of local view.
-      # Inflation matches the local (1.10 m) so the planner respects the same clearance the controller's local view uses.
-      # line_memory_mirror_layer is intentionally placed AFTER
-      # inflation_layer so the already-inflated local line costs from
-      # /line_costmap are copied into global without being inflated a
-      # second time.
-      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer"]
+      #   local_mirror_layer      → /local_costmap/costmap → persistent PCA obstacle memory. It masks /line_costmap and /lidar_line_costmap cells, then mirrors only local lethal obstacle marks so local inflation is not copied into global and inflated again.
+      #   line_memory_mirror_layer → /line_costmap → persistent camera-line
+      #     memory promoted from the local camera line layer.
+      #   lidar_line_memory_mirror_layer → /lidar_line_costmap → persistent
+      #     lidar tape memory. It runs after stock global inflation and mirrors
+      #     the line layer's exact lethal tape cells plus non-lethal soft halo
+      #     directly, instead of letting stock inflation create a footprint-wide
+      #     hard centerline band around tape. This preserves the IGVC 5 ft legal
+      #     passage while still preferring clearance in wider lanes.
+      # PCA obstacle memory is inflated by the stock global inflation layer.
+      plugins: ["static_layer", "local_mirror_layer", "inflation_layer", "line_memory_mirror_layer", "lidar_line_memory_mirror_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True
         map_topic: "/map_padded"
         first_map_only: false
-        # Treat UNKNOWN cells in /map_padded as FREE_SPACE for the planner — Dijkstra can route through. (Default Nav2 maps -1 to NO_INFORMATION; with allow_unknown:true the planner still works, but FREE keeps the cost surface cleaner.)
+        # Treat UNKNOWN cells in /map_padded as FREE_SPACE for Smac. Default
+        # Nav2 maps -1 to NO_INFORMATION; with allow_unknown:true the planner
+        # still works, but FREE keeps the cost surface cleaner.
         trinary_costmap: false
         unknown_cost_value: -1
 
@@ -324,11 +415,22 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /local_costmap/costmap
+        exclude_topics: ["/line_costmap", "/lidar_line_costmap"]
+        exclude_threshold: 1
+        # Mirror only true lethal obstacle cells from the combined local
+        # costmap. Non-lethal local inflation around cones is deliberately
+        # ignored so PCA obstacles and tape/lines both seed the global
+        # inflation_layer once, instead of cones receiving an extra
+        # mirrored local inflation component.
+        min_occupied_value_to_mirror: 100
         # Accumulate obstacle marks globally, but accept FREE/lower-cost
         # clears only where the robot is currently looking. The local
         # rolling costmap publishes FREE cells across its whole 6x6 m
         # window; without this gate, those unobserved rear/side cells erase
         # global memory just because they are inside the rolling window.
+        # Line-layer masks keep the combined local costmap from copying tape
+        # cells through the PCA obstacle memory path; lidar tape memory is
+        # mirrored separately below.
         allow_decrease: true
         decrease_only_in_front: true
         decrease_angle_min_rad: -1.2217
@@ -341,21 +443,47 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /line_costmap
-        # Strict accumulator mode for line memory: line cells promoted
-        # from the local line-only costmap stay in global for the
-        # whole run and are not cleared by later FREE cells.
-        allow_decrease: false
+        # Accumulate camera-line memory globally, but accept lower-cost
+        # clears only in the same conservative camera clearing cone used by
+        # the local line layer. Lines outside current FOV stay stamped.
+        min_occupied_value_to_mirror: 1
+        allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -0.40
+        decrease_angle_max_rad: 0.40
+        decrease_range_min_m: 0.40
+        decrease_range_max_m: 4.50
+        track_unknown_space: true
+
+      lidar_line_memory_mirror_layer:
+        plugin: "local_mirror_layer::LocalMirrorLayer"
+        enabled: True
+        source_topic: /lidar_line_costmap
+        # Mirror the line-only costmap's full hard/soft field. Exact tape
+        # cells remain lethal, the line layer's small inscribed band remains
+        # near-hard, and its wider halo stays traversable soft cost. Because
+        # this layer runs after stock global inflation, tape does not receive
+        # a second footprint-radius hard centerline band that can close a
+        # legal 5 ft passage.
+        min_occupied_value_to_mirror: 1
+        # Accept lower-cost clears only where the lidar line layer itself
+        # would clear stale tape. Outside current lidar FOV, global tape
+        # memory remains stamped.
+        allow_decrease: true
+        decrease_only_in_front: true
+        decrease_angle_min_rad: -0.95
+        decrease_angle_max_rad: 0.95
+        decrease_range_min_m: 0.2
+        decrease_range_max_m: 6.0
         track_unknown_space: true
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 5.0 → 3.0 (post-cone-strike tune): widens the effective
-        # stay-away radius from ~0.55 m to ~0.75 m around any obstacle
-        # without consuming the full 1.10 m inflation_radius, so tight
-        # IGVC gates still plan. Both local_costmap and global_costmap
-        # share the same value by intent (see global_costmap comment).
-        cost_scaling_factor: 3.0
-        inflation_radius: 1.30
+        # Stock global inflation for PCA/cone obstacles. Lidar tape is mirrored
+        # after this layer using the line layer's own hard/soft field so the
+        # planner can still use IGVC-minimum 5 ft passages.
+        cost_scaling_factor: 3.2
+        inflation_radius: 0.25
       always_send_full_costmap: True
 
 map_server:
@@ -379,10 +507,25 @@ planner_server:
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 2.0
-      use_astar: true
+      # Use a footprint-aware SE2 lattice for the rectangular differential
+      # drive robot. SmacPlanner2D produced centerline paths that were too
+      # close to lethal lidar-line cells and left the controller to reject
+      # them later.
+      plugin: "nav2_smac_planner/SmacPlannerLattice"
+      tolerance: 0.5
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
+      # The line/cone fields carry clearance preferences. Keep the penalty
+      # moderate so Smac still uses the guaranteed 5 ft passage when that is
+      # the only legal route.
+      cost_penalty: 4.0
+      # Keep the default penalty so in-place rotations are used only when the
+      # lattice needs them for obstacle avoidance, not as cheap shortcuts.
+      rotation_penalty: 5.0
+      allow_reverse_expansion: false
 
 smoother_server:
   ros__parameters:
@@ -399,7 +542,7 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape", "breadcrumb_reverse"]
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
@@ -412,20 +555,88 @@ behavior_server:
       plugin: "nav2_behaviors/AssistedTeleop"
     gradient_escape:
       plugin: "gradient_escape::GradientEscape"
+    breadcrumb_reverse:
+      plugin: "breadcrumb::BreadcrumbReverse"
     global_frame: odom
-    robot_base_frame: base_link
+    # Stay on nav_center for footprint/costmap consistency with the local
+    # costmap. Spin/BackUp/DriveOnHeading still command angular velocity
+    # against base_link kinematics (the diff-drive rotation center is the
+    # axle), but the footprint-collision check during simulate_ahead_time
+    # uses nav_center so it matches the published footprint.
+    robot_base_frame: nav_center
     transform_tolerance: 0.1
     use_sim_time: False
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
-    # GradientEscape parameters
+    # GradientEscape parameters.
+    # sample_radius 0.15 → 0.80: must reach across the obstacle/line
+    # soft-cost halo. At 0.15 m every sample was inside the inflation
+    # field with nearly identical cost, so the gradient was
+    # indistinguishable and escape direction was arbitrary.
+    # cost_threshold 127 → 200: a robot stuck near a wall typically reads
+    # cost in the 150-250 range (inflated but not lethal). 127 was below
+    # the steady-state cost the robot lives in during normal driving, so
+    # the SUCCESS check almost never tripped before timeout.
     gradient_escape.escape_speed: 0.1
-    gradient_escape.cost_threshold: 127.0
-    gradient_escape.sample_radius: 0.15
+    gradient_escape.cost_threshold: 200.0
+    gradient_escape.sample_radius: 0.80
     gradient_escape.num_samples: 16
     gradient_escape.timeout: 15.0
+    # BreadcrumbReverse parameters. Targets the most recent breadcrumb
+    # on /breadcrumb_tail; arrival tolerance matches the buffer's
+    # consume_tolerance_m so the buffer pops the crumb as the robot
+    # arrives. timeout 5 s caps a single ~10 cm reverse step; the BT's
+    # outer fallback runs us again next cycle if more crumbs remain.
+    # lethal_cost_threshold queries the global costmap (which retains
+    # rear lidar marks via local_mirror_layer) before committing.
+    breadcrumb_reverse.reverse_speed: 0.10
+    breadcrumb_reverse.max_angular_speed: 0.50
+    breadcrumb_reverse.arrival_tolerance_m: 0.05
+    breadcrumb_reverse.lethal_cost_threshold: 253.0
+    breadcrumb_reverse.timeout: 5.0
+    breadcrumb_reverse.breadcrumb_topic: "/breadcrumb_tail"
+    breadcrumb_reverse.global_costmap_topic: "global_costmap/costmap_raw"
+    # Sim-ported tunings (Phase 3a):
+    #   max_crumbs_per_session: hard cap on crumbs consumed across the
+    #     BT's ReactiveFallback loop. Once hit the plugin returns FAILED
+    #     and the BT falls through to Wait → next RateController tick →
+    #     GoalBender (bend away from the costmap).
+    #   session_reset_s: idle gap before the count resets. Keep this above
+    #     the 3 Hz RateController tick so separate breadcrumb attempts in
+    #     the same dead-end are counted as one session.
+    #   bonus_crumb_after_forward: after a successful pop, peek at /plan;
+    #     if its first useful waypoint is solidly forward (err <
+    #     forward_threshold_deg), pop ONE MORE crumb to give the
+    #     controller margin from the costmap halo before handing back.
+    #   forward_threshold_deg: tighter than the BT's angle_threshold so
+    #     the bonus-crumb chain only fires on a clear forward plan, not
+    #     a near-perpendicular wobble.
+    #   min_lookahead_m: closest-point + scan-forward lookahead distance
+    #     for the plan-direction check (same as IsForwardBlocked).
+    breadcrumb_reverse.max_crumbs_per_session: 15
+    breadcrumb_reverse.session_reset_s: 2.0
+    breadcrumb_reverse.bonus_crumb_after_forward: true
+    breadcrumb_reverse.forward_threshold_deg: 60.0
+    breadcrumb_reverse.min_lookahead_m: 0.6
+    breadcrumb_reverse.plan_topic: "/plan"
+
+# Standalone breadcrumb buffer node. Drops a pose every stride_m of
+# forward travel into a ring of buffer_size. Pops the most recent crumb
+# when the robot's odom pose returns within consume_tolerance_m of it
+# while reversing (vx < -min_forward_vx_m).
+breadcrumb_buffer:
+  ros__parameters:
+    stride_m: 0.10
+    buffer_size: 10
+    min_forward_vx: 0.05
+    consume_tolerance_m: 0.05
+    odom_frame: "odom"
+    # Local EKF output — matches the source that publishes odom→base_link
+    # TF, so drop poses align with breadcrumb_reverse's TF-based pose
+    # lookup. Change for sim if the EKF topic is named differently.
+    odom_topic: "/local_ekf/odom"
 
 robot_state_publisher:
   ros__parameters:
@@ -449,8 +660,8 @@ velocity_smoother:
     scale_velocities: False
     feedback: "OPEN_LOOP"
     # ────────────────────────────────────────────────────────────────
-    # 0.26 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
-    # despite DWB allowing max_vel_x=1.5 upstream. Two distinct
+    # 0.50 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
+    # matching the MPPI vx_max above. Two distinct
     # constraints meet at this value — touching either side has cost:
     #
     # CONTROLLER-CHATTER-SENSITIVE upper bound: raising max_velocity[0]
@@ -458,7 +669,7 @@ velocity_smoother:
     #   because the controller overshoots whenever the goal updates,
     #   and this clamp is the only thing keeping the overshoot inside
     #   a few cm. Raise only after diagnosing the chatter chain end-
-    #   to-end (goal updates → DWB sampling → smoother cap). max_accel
+    #   to-end (goal updates → MPPI sampling → smoother cap). max_accel
     #   / max_decel below are paired with this clamp.
     #
     # OSCILLATION-SENSITIVE lower bound: lowering below ~0.20 m/s
@@ -469,9 +680,9 @@ velocity_smoother:
     #   against a moving target → map-catching-up snap → stall.
     # ────────────────────────────────────────────────────────────────
     # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
-    # GPS-waypoint runs; drop to 0.25 m/s for in-house lab tests near
-    # people / equipment.
-    max_velocity: [0.25, 0.0, 1.0]
+    # GPS-waypoint and AutoNav runs; drop to 0.25 m/s for in-house lab
+    # tests near people / equipment.
+    max_velocity: [0.50, 0.0, 1.0]
     min_velocity: [-0.25, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]

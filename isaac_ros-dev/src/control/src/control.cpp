@@ -44,6 +44,15 @@ class ControlNode : public rclcpp::Node {
         this->declare_parameter("turn_slowdown_start_angular_rad_s", 0.20);
         this->declare_parameter("turn_slowdown_full_angular_rad_s", 0.65);
         this->declare_parameter("turn_slowdown_min_linear_scale", 0.40);
+        // Autonomous motor deadband compensation. Nav2's small nonzero
+        // /cmd_vel commands are still valid motion requests, but the
+        // RoboteQ + drivetrain can sit below static-friction threshold.
+        // Compensation is applied per wheel after cmd_vel->wheel-speed
+        // conversion and grade compensation. Exact zero stays exact
+        // zero so stop/watchdog behavior is unchanged.
+        this->declare_parameter("auto_deadband_comp_enabled", true);
+        this->declare_parameter("auto_deadband_min_motor_arg", 6.5);
+        this->declare_parameter("auto_deadband_apply_below_motor_arg", 6.5);
 
         // serial ports test
         this->declare_parameter(
@@ -676,6 +685,28 @@ class ControlNode : public rclcpp::Node {
         }
     }
 
+    double compensate_auto_deadband(double motor_arg) {
+        if (!std::isfinite(motor_arg)) return 0.0;
+        if (!this->get_parameter("auto_deadband_comp_enabled").as_bool()) {
+            return motor_arg;
+        }
+
+        const double abs_arg = std::abs(motor_arg);
+        if (abs_arg < 1e-6) return 0.0;
+
+        const double min_arg = std::max(
+            0.0,
+            this->get_parameter("auto_deadband_min_motor_arg").as_double());
+        const double apply_below = std::max(
+            0.0,
+            this->get_parameter("auto_deadband_apply_below_motor_arg").as_double());
+        if (min_arg <= 0.0 || apply_below <= 0.0 || abs_arg >= apply_below) {
+            return motor_arg;
+        }
+
+        return std::copysign(std::max(abs_arg, min_arg), motor_arg);
+    }
+
 
     void publish_encoder_data() {
         autonav_interfaces::msg::Encoders encoder_msg;
@@ -749,7 +780,11 @@ class ControlNode : public rclcpp::Node {
                // grade_comp_min_downhill_multiplier.
                const double forward_cmd = 0.5 * (left_wheel_speed + right_wheel_speed);
                const double mult = grade_speed_multiplier(forward_cmd);
-               motors.move(right_wheel_speed * 40 * mult, left_wheel_speed * 40 * mult);
+               const double right_motor_arg =
+                   compensate_auto_deadband(right_wheel_speed * 40 * mult);
+               const double left_motor_arg =
+                   compensate_auto_deadband(left_wheel_speed * 40 * mult);
+               motors.move(right_motor_arg, left_motor_arg);
            }
         }
 

@@ -213,15 +213,12 @@ def generate_launch_description():
     # heights count. -0.10 m → 1.50 m covers everything from just below
     # the wheels to ~1.5 m above the chassis, which is more than enough
     # for any AutoNav obstacle. angle_increment 0.0087 rad ≈ 0.5°.
-    # Asymmetric marking vs clearing FOV: mark anything the lidar sees
-    # in the full 180° forward view, but only clear (raytrace-free) the
-    # central 160° (±80°). The outer 10° wedge on each side is "trust
-    # the sensor's hits, don't trust its claim that a cell is free" —
-    # the lidar's beam density / angular accuracy is worst at the
-    # extremes, so we don't let those rays raytrace-clear stored marks.
+    # Mark and clear only the central 140° (±70°). The previous 180°
+    # marking scan trusted edge-FOV PCA points that smear the local
+    # costmap during turns and can box in the robot.
     # Two converters share the same input pointcloud:
-    #   /scan_pca_filtered      → 180°, marking source
-    #   /scan_pca_filtered_clear→ 160°, clearing source
+    #   /scan_pca_filtered      → 140°, marking source
+    #   /scan_pca_filtered_clear→ 140°, clearing source
     # The local obstacle_layer in nav2_paramsv2.yaml lists both as
     # observation_sources, with marking/clearing flags split.
     pca_pc2_to_scan = Node(
@@ -234,8 +231,8 @@ def generate_launch_description():
             'target_frame':   'base_link',
             'min_height':     -0.10,
             'max_height':      1.50,
-            'angle_min':      -1.5708,   # -90° (full 180° marking)
-            'angle_max':       1.5708,   # +90°
+            'angle_min':      -1.2217,   # -70° (140° marking)
+            'angle_max':       1.2217,   # +70°
             'angle_increment': 0.0087,
             'scan_time':       0.1,
             'range_min':       0.30,

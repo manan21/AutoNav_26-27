@@ -1,8 +1,10 @@
 #ifndef LOCAL_MIRROR_LAYER_HPP_
 #define LOCAL_MIRROR_LAYER_HPP_
 
+#include <cstddef>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_costmap_2d/layer.hpp"
@@ -21,7 +23,8 @@ namespace local_mirror_layer
 // lower incoming costs may clear stored marks only when allow_decrease
 // is true and the cell passes the configured robot-relative clearing
 // gate. matchSize is overridden to preserve cells when the host costmap
-// resizes.
+// resizes. Optional exclusion masks let a combined source costmap omit
+// cells that should enter the host through a separate layer instead.
 class LocalMirrorLayer : public nav2_costmap_2d::CostmapLayer
 {
 public:
@@ -55,10 +58,17 @@ public:
 
 private:
   void mapCallback(nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+  void exclusionCallback(
+    std::size_t index,
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
   void clearCallback(std_msgs::msg::Empty::ConstSharedPtr msg);
   // Map an OccupancyGrid cell value (-1 / 0 / 1-100) to a costmap_2d
   // internal cost (0 / 1-254 / 255).
   static unsigned char interpretCost(int8_t occ_val);
+  bool excludedByMask(
+    double wx,
+    double wy,
+    const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> & masks) const;
   bool decreaseAllowedAt(
     double wx, double wy,
     double robot_x, double robot_y, double robot_yaw,
@@ -76,14 +86,21 @@ private:
   double decrease_angle_max_rad_;
   double decrease_range_min_m_;
   double decrease_range_max_m_;
+  std::vector<std::string> exclude_topics_;
+  int exclude_threshold_;
+  // Ignore occupied source cells below this OccupancyGrid value. FREE cells
+  // still flow through allow_decrease clearing; UNKNOWN still means no opinion.
+  int min_occupied_value_to_mirror_;
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr sub_;
+  std::vector<rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr> exclude_subs_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr clear_sub_;
   // Buffered most-recent message. Mutex guards swap. Same mutex also
   // protects pending_clear_, which is set by clearCallback and consumed
   // (then re-zeroed) at the start of updateCosts.
   std::mutex msg_mtx_;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_msg_;
+  std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> latest_exclude_msgs_;
   bool has_new_msg_;
   bool pending_clear_;
 

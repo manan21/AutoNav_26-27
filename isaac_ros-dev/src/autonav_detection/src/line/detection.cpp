@@ -165,7 +165,7 @@ std::pair<int2 *, int *> filter_line_components(
         filtered_points[i] = kept_points[i];
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
         rclcpp::get_logger("lines"),
         "Filtered line pixels from %d to %d using %d kept connected components",
         count, *filtered_count, kept_components);
@@ -215,7 +215,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     
     int height = gray_img.rows;
     int width = gray_img.cols;
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "input image r x c : %d x %d ", height, width);
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "input image r x c : %d x %d ", height, width);
 
     // Validate image dimensions
     if (height <= 0 || width <= 0 || height > 10000 || width > 10000) {
@@ -245,7 +245,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     cv::Mat mask;
     cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
 
     // Pre-allocate persistent CUDA buffers (one-time at startup; the
     // ensure() call is a no-op on subsequent frames as long as the
@@ -279,7 +279,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     Npp32f * integral    = g_line_bufs.integral;
     Npp64f * integral_sq = g_line_bufs.integral_sq;
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Integral images computed, uploading float input + mask");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Integral images computed, uploading float input + mask");
 
     // Convert grayscale to float on host, then upload.
     cv::Mat gray_float;
@@ -348,7 +348,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernel");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernel");
 
     // Launch kernel
     cerias_kernel(
@@ -382,7 +382,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Kernel executed successfully");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Kernel executed successfully");
 
     // Copy results back. counter and output are device pointers into
     // the persistent buffer set; only the host-side return arrays
@@ -402,7 +402,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
     if (stats) {
         stats->raw_pixels = *counter_return;
     }
@@ -479,7 +479,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
     // Device buffers are persistent (see g_line_bufs) — no cleanup
     // here. Host-side return arrays are owned by the caller.
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Done, returning results");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Done, returning results");
 
     return std::make_pair(output_return, counter_return);
 }
@@ -496,7 +496,7 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
     int width = gray_img.cols;
     int height = gray_img.rows;
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Computing integral image for %dx%d image", width, height);
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Computing integral image for %dx%d image", width, height);
 
     // Validate dimensions
     if (width <= 0 || height <= 0 || width > 10000 || height > 10000) {
@@ -545,7 +545,7 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
     size_t nsqrstep = (width + 1) * sizeof(Npp64f);
     NppiSize roi = { width, height };
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Calling nppiSqrIntegral_8u32f64f_C1R");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Calling nppiSqrIntegral_8u32f64f_C1R");
 
     NppStatus status = nppiSqrIntegral_8u32f64f_C1R(
         device_input_img,
@@ -564,7 +564,7 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
         throw std::runtime_error(error_msg);
     }
 
-    RCLCPP_INFO(rclcpp::get_logger("lines"), "Integral image computed successfully");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Integral image computed successfully");
 
     return std::make_pair(result, result_sq);
 }

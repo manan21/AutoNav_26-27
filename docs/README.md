@@ -56,7 +56,7 @@ From here, everything is point-and-click — no manual `ros2 launch` needed.
 The HUD launches and monitors every device on the robot. The container does the ROS2 work; the GUI runs natively on the Jetson and talks to the container over DDS + `docker exec`.
 
 - **Launch buttons** — toggle each subsystem in queue order: Pre-SLAM, Camera, Lidar, GPS, PCA DETECT, CAMERA LINE DETECT, LIDAR LINE DETECT (opt-in), SLAM, NAV2, Power PCB. See `docs/LAUNCH_STACK.md` for the full order and dependency notes.
-- **Status dots** — red = off, yellow = starting, green = ready (each script emits `[GUI_READY] <Label>` after a fixed 5 s pacing timer).
+- **Status dots** — red = off, yellow = starting, green = ready (most `run-*.sh` scripts emit `[GUI_READY] <Label>` after a fixed 0.5 s pacing timer; SLAM waits longer so `map_padder` can receive the first map before NAV2 starts).
 - **Terminal viewer** — click any device to stream its live stdout/stderr.
 - **Sensor plots** — live odom, IMU, GPS, costmap previews.
 
@@ -100,6 +100,15 @@ colcon build --symlink-install
 source install/setup.bash       # only needed when adding a new package
 ```
 
+If the active branch uses MPPI (`nav2_mppi_controller::MPPIController`) and the container cannot find `nav2_mppi_controller`, rebuild the dev image only:
+
+```bash
+cd ~/AutoNav_25-26
+./env/docker/build_koopa-dev.sh
+```
+
+`ros-humble-nav2-mppi-controller` belongs in the higher-level dev Dockerfile so this does not require rebuilding the slow `autonav:koopa-kingdom` base image.
+
 If fewer than 22 packages build, your submodules are likely empty — commonly `pointcloud_to_laserscan` and `zed-ros2-wrapper`. Run:
 ```bash
 git submodule update --init
@@ -123,11 +132,14 @@ First address = source on the Jetson. Second = destination. Trailing slash matte
 # Other docs in this folder
 
 - [`HUMAN-WRITTEN-README.md`](./HUMAN-WRITTEN-README.md) — high-level human-written tour of the robot and the repo.
+- [`AUTONOMY_DECISION_LOG.md`](./AUTONOMY_DECISION_LOG.md) — durable record of autonomy design decisions, experiment results, failed approaches, and reversals.
 - [`LAUNCH_STACK.md`](./LAUNCH_STACK.md) — order, dependencies, and pacing of the GUI launch panel buttons.
 - [`MANUAL_INSTRUCTIONS.md`](./MANUAL_INSTRUCTIONS.md) — three tiers of manual control (GUI → manual ROS2 launch → laptop-direct fallback) in order of preference.
 - [`SENSORS.md`](./SENSORS.md) — hardware, topics, frames, and gotchas for the SICK LiDAR, ZED camera, GPS, wheel encoders, and Power PCB.
 - [`PACKAGES.md`](./PACKAGES.md) — per-package reference for every ROS2 package under `isaac_ros-dev/src/`.
 - [`HYPERPARAMETER.md`](./HYPERPARAMETER.md) — tunable knobs across the autonomy stack, with safety legend and YAML inventory.
+- [`IGVC_COMPETITION_RULES.md`](./IGVC_COMPETITION_RULES.md) — competition rules that should constrain robot, Nav2, perception, and simulation changes.
+- [`IGVC_FORTRESS_SIM.md`](./IGVC_FORTRESS_SIM.md) — active ROS Humble + Gazebo Fortress competition simulation and runner.
 - [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) — quick triage + full chronological fix log + keyword index for past bugs.
 
 # Helpful Background Documentation

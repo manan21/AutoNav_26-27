@@ -18,6 +18,14 @@ control_node:
     turn_slowdown_start_angular_rad_s: 0.20   # |angular.z| at or below this -> no linear slowdown
     turn_slowdown_full_angular_rad_s: 0.65    # |angular.z| at or above this -> full slowdown applied
     turn_slowdown_min_linear_scale: 0.40      # forward cmd bottoms out at 40% during hardest turns
+    # Autonomous motor deadband compensation. Nav2 may command small
+    # nonzero /cmd_vel values that are valid trajectory requests but
+    # below the drivetrain's static-friction threshold. Keep exact zero
+    # as zero; lift small nonzero wheel commands to the minimum motor
+    # argument that should produce real movement.
+    auto_deadband_comp_enabled: true
+    auto_deadband_min_motor_arg: 6.5           # move() arg; stepSize=10 -> 65 per-mille RoboteQ throttle
+    auto_deadband_apply_below_motor_arg: 6.5   # only lift nonzero wheel args below this magnitude
 
     # \/ ------------------PHASE D grade compensation (gravity-vector approach)
     # Reads the IMU's body-frame X accelerometer (= gravity projection
@@ -35,20 +43,20 @@ control_node:
     # uphill boost. Bench-tested on a tilt block 2026-05-18: nose-down
     # gives negative accel.x (damping), nose-up gives positive (boost).
     imu_a_fwd_sign: 1.0
-    grade_comp_enabled: false                   # Phase D active by default — tilt-block bench-tested 2026-05-18
+    grade_comp_enabled: false                   # Phase D disabled by default; enable for deliberate tilt/ramp tests
     # Bounded linear pitch-to-multiplier map. Runaway impossible by
     # construction: any pitch beyond ±grade_comp_max_deg clamps to the
-    # ±max_pct bound. Defaults yield multiplier ∈ [0.90, 1.10] for ANY
+    # ±max_pct bound. Defaults yield multiplier ∈ [0.70, 2.00] for ANY
     # IMU input.
     grade_comp_max_deg: 10.0                   # angle at which we hit max effect
     # Sized for the realistic IGVC physics: 90 lb robot, 15 % grade
     # produces ~13.4 lbf of gravity opposing forward motion. To
     # MAINTAIN cruise velocity uphill the motors need ~2.5x-4x the
     # level-ground throttle (lower bound for grass, higher for paved).
-    # 2.0 (cap = 3.0x multiplier) targets the asphalt-to-mowed-grass
-    # band; raise to 3.0 (cap = 4.0x) if the robot still slows on
+    # 1.0 (cap = 2.0x multiplier) is the current conservative default;
+    # raise to 2.0-3.0 (cap = 3.0x-4.0x) if the robot still slows on
     # the actual ramp with payload.
-    grade_comp_max_uphill_pct: 1.0             # max boost = 3.00x at +10 deg or steeper
+    grade_comp_max_uphill_pct: 1.0             # max boost = 2.00x at +10 deg or steeper
     # Downhill: gravity assists, so heavy damping isn't usually
     # needed. 0.30 (floor = 0.70x) gives meaningful brake authority
     # without freewheeling. Raise toward 0.65 (floor = 0.35x) if the

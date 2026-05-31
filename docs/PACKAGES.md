@@ -2,7 +2,7 @@
 
 A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are split into multiple boxes so each section stays scannable.
 
-> Heads up: a few entries in the source tree aren't load-bearing. `autonav_supervisor/` is an empty stub (no `package.xml`). `autonav_sim/` is a legacy sibling of `sim/` — the active simulation is `sim` (per `./config/run-sim.sh`); `autonav_sim` is kept around but not in active use. `pointcloud_to_laserscan/` is a vendored upstream package documented for reference only. See [`docs/LAUNCH_STACK.md`](./LAUNCH_STACK.md) for what actually runs.
+> Heads up: a few entries in the source tree aren't load-bearing. `autonav_supervisor/` is an empty stub (no `package.xml`). The old Gazebo Classic `sim/` and `autonav_sim/` packages are retired with `COLCON_IGNORE`; the active Gazebo target is `igvc_competition_sim` on ROS Humble + Gazebo Fortress. `pointcloud_to_laserscan/` is a vendored upstream package documented for reference only. See [`docs/LAUNCH_STACK.md`](./LAUNCH_STACK.md) for what actually runs.
 
 ## Table of contents
 
@@ -10,6 +10,7 @@ A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are 
 - [autonav_detection](#autonav_detection)
   - [`line_detector` executable](#line_detector-executable)
   - [`grade_detector` executable](#grade_detector-executable)
+  - [`lidar_line_detector` executable](#lidar_line_detector-executable)
 - [autonav_electrical_publisher](#autonav_electrical_publisher)
 - [autonav_interfaces](#autonav_interfaces)
 - [autonav_sim](#autonav_sim)
@@ -25,6 +26,7 @@ A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are 
 - [custom_behavior_tree_plugins](#custom_behavior_tree_plugins)
 - [gps_handler](#gps_handler)
 - [gps_waypoint_handler](#gps_waypoint_handler)
+- [igvc_competition_sim](#igvc_competition_sim)
 - [imu_cov_inflator](#imu_cov_inflator)
 - [line_layer](#line_layer)
 - [local_mirror_layer](#local_mirror_layer)
@@ -36,7 +38,7 @@ A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are 
 - [slam](#slam)
   - [Overview](#overview)
   - [Launch files and configs](#launch-files-and-configs)
-  - [Behavior trees and the dormant GPS path](#behavior-trees-and-the-dormant-gps-path)
+  - [Behavior trees and the GPS fusion path](#behavior-trees-and-the-gps-fusion-path)
 - [zed_components](#zed_components)
 - [zed_debug](#zed_debug)
 - [zed_ros2](#zed_ros2)
@@ -62,14 +64,14 @@ ROS2 testing harness with an RQT GUI for running, recording, and replaying autom
 
 ## autonav_detection
 
-Two perception executables that share one ament_cmake package: a CUDA-accelerated white-line detector and a pure-C++/Eigen LiDAR PCA grade detector. Built with C++17 + CUDA (Ampere SM 87 for Jetson Orin Nano).
+Three perception executables share one ament_cmake package: a CUDA-accelerated camera white-line detector, a pure-C++/Eigen LiDAR PCA grade detector, and a SICK RSSI/reflector lidar-line detector. Built with C++17 + CUDA (Ampere SM 87 for Jetson Orin Nano).
 
 **Top-level files:**
 
 | | |
 |---|---|
-| **Launch** | `launch/detection.launch.py` (toggle each detector with `enable_line` / `enable_grade`) |
-| **Configs** | `config/line_detector.yaml`, `config/grade_detector.yaml` |
+| **Launch** | `launch/detection.launch.py` (toggle each detector with `enable_line` / `enable_grade` / `enable_lidar_line`) |
+| **Configs** | `config/line_detector.yaml`, `config/grade_detector.yaml`, `config/lidar_line_detector.yaml` |
 | **Build** | `ament_cmake` with CUDA enabled; `grade_detector` is force-built `-O3 -DNDEBUG -Wno-class-memaccess` (per-cell PCA is ~50–100× slower without `-O3`) |
 
 ### `line_detector` executable
@@ -92,12 +94,25 @@ LiDAR PCA pipeline that classifies traversable ground vs. ramps/slopes and publi
 | | |
 |---|---|
 | **Subscribes** | `/cloud_all_fields_fullframe` (`PointCloud2`) from `sick_scan_xd` |
-| **Publishes** | `/scan_pca_filtered_points` (`PointCloud2`, xyz only) → Nav2 `ObstacleLayer` |
+| **Publishes** | `/scan_pca_filtered_points` (`PointCloud2`, xyz only) → `pointcloud_to_laserscan` converters → Nav2 `ObstacleLayer` |
 | **Debug topics** | `/terrain/grade_map` (`OccupancyGrid`), `/pca/surface_normal` (`Vector3Stamped`) |
 | **Sources** | `src/grade/pca_node.cpp`, `pca_pipeline.cpp` |
 | **Tunables** | 16.7° traversable cap, 1.5° noise margin, 89° PCA validity cap, 0.3 m DBSCAN eps, 0.1 m grid cells over ±8 m |
 
 > **Heads up:** Pipeline must complete in <60 ms per scan (project rule). Slope math runs in **sensor frame** — do not introduce IMU/world-up. Front-arc-only mode drops 50% of the cloud and is on by default; turn off only for debugging.
+
+### `lidar_line_detector` executable
+
+SICK MultiScan retroreflective tape detector. It uses reflector/RSSI returns, gates them to the floor in `base_link`, clusters tape-like marks, optionally completes sparse ground-only clusters into short local segments, and publishes line points for the lidar line costmap layer.
+
+| | |
+|---|---|
+| **Subscribes** | `/cloud_all_fields_fullframe` (`PointCloud2`) from `sick_scan_xd` |
+| **Publishes** | `/lidar_line_points` (`autonav_interfaces/msg/LinePoints`), `/lidar_line_detection/debug/points`, `/lidar_line_detection/diagnostics` |
+| **Sources** | `src/lidar_line/node.cpp` |
+| **Tunables** | Ground gate, reflector/intensity thresholds, clustering, voxel output, and segment completion in `config/lidar_line_detector.yaml` |
+
+> **Heads up:** Segment completion runs only after the base-link ground-height gate and only inside accepted clusters. It is intended to fill sparse floor tape, not bridge separate obstacles or raised cone reflectors.
 
 ---
 
@@ -143,7 +158,7 @@ Custom ROS2 message and service definitions used across the project. Pure interf
 
 ## autonav_sim
 
-**Legacy** Gazebo simulation assets — predecessor of the active [`sim`](#sim) package. Same shape (robot URDFs, custom Gazebo models, world files), but nothing in the live launch path references it: `./config/run-sim.sh` calls `ros2 launch sim launch_sim.launch.py`, not `autonav_sim`.
+**Retired Gazebo Classic assets.** This package has `COLCON_IGNORE`; use [`igvc_competition_sim`](#igvc_competition_sim) for the active ROS Humble + Gazebo Fortress simulation.
 
 | | |
 |---|---|
@@ -152,7 +167,25 @@ Custom ROS2 message and service definitions used across the project. Pure interf
 | **Models** | IGVC road sections + a resized `construction_barrel` |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** Kept around for reference / rollback, not in active use. Safe to delete in a future cleanup branch — verified no inbound references from active launch scripts or build configs.
+> **Heads up:** Kept around for reference / rollback, not in active use. It is intentionally ignored by colcon.
+
+---
+
+## igvc_competition_sim
+
+Active Gazebo Fortress IGVC competition simulation. It runs the Humble robot stack against a compact, deterministic IGVC-style course and publishes robot-compatible synthetic sensor topics for lidar-line, PCA obstacle, GPS waypoint, costmap, BT, planner, controller, and scoring tests.
+
+| | |
+|---|---|
+| **Simulator** | Gazebo Fortress through `gz sim` / `ign gazebo` with `ros_gz_bridge` |
+| **Launch** | `launch/igvc_competition.launch.py` |
+| **Run script** | `Run_IGVC_COMPETITION_FORTRESS_TEST.command` |
+| **Course source** | `config/igvc_competition_compact.yaml` |
+| **World** | `worlds/igvc_competition_compact.sdf`, generated by `generate_igvc_world` |
+| **Executables** | `igvc_sensor_harness`, `igvc_course_monitor`, `igvc_mission_runner`, `generate_igvc_world` |
+| **Build** | `ament_python` |
+
+> **Heads up:** Gazebo provides the world/physics target, while `igvc_sensor_harness` publishes the robot-facing SICK-style point cloud, PCA obstacle source, GPS fix, odom/TF, map, and joint states. That keeps the simulation connected to the working lidar-line regression model instead of relying on generic Gazebo lidar returns for reflective tape.
 
 ---
 
@@ -247,19 +280,23 @@ Bridges Xbox joystick + autonomy commands to the motor controller. Manages mode 
 
 ## custom_behavior_tree_plugins
 
-Custom Nav2 BT plugins that extend recovery behavior when the robot is stuck.
+Custom Nav2 behavior and BT plugins that extend planning validation, forward/reverse dispatch, and recovery behavior.
 
 | Plugin | What it does |
 |---|---|
-| `gradient_escape` | Samples the local costmap in N directions (default 16), drives at 0.1 m/s toward the lowest-cost cell until cost drops below ~127/254. Returns SUCCESS on escape, FAILED after 15 s. Exposed as a Nav2 `Behavior` (DriveOnHeading action type). |
-| `goal_bender` | When the goal is behind the robot (angle > 1.57 rad), inserts an intermediate waypoint ahead-and-offset toward the goal so the robot arcs back instead of pivoting in place. Pass-through if the goal is already in front. |
+| `gradient_escape` | Samples the local costmap in N directions (default 16), drives at 0.1 m/s toward the lowest-cost cell until cost drops below the configured threshold. Returns SUCCESS on escape, FAILED after timeout. Exposed as a Nav2 `Behavior` through the `DriveOnHeading` action type. |
+| `breadcrumb_reverse` | Nav2 behavior that reverses to the most recent breadcrumb from `/breadcrumb_tail` when the global path leads behind the robot. Checks the global costmap before committing to a rearward move. |
+| `goal_bender` | Bends a behind-the-robot goal or U-turn path toward a forward intermediate point so the robot arcs back instead of pivoting in place. |
+| `is_forward_blocked` | BT condition used by `bt_nav.xml` to decide whether the current path leads forward enough for `FollowPath`, or whether the robot should spend a breadcrumb first. |
+| `path_footprint_safe` | BT condition that checks each path pose's padded rectangular `nav_center` footprint against `/global_costmap/costmap_raw` and rejects paths that overlap lethal global cells before MPPI can execute them. |
+| `path_significantly_changed` | Dormant decorator retained for experiments; the active `bt_nav.xml` no longer wraps `FollowPath` with it because MPPI should receive each fresh safe path directly. |
 
 | | |
 |---|---|
-| **Wired in** | `slam/behavior_trees/bt_nav.xml` — both registered in the recovery fallback |
-| **Build** | `ament_cmake`; produces `gradient_escape_core` (Nav2 behavior) and `autonav_goal_bender_bt_node` (BT factory) |
+| **Wired in** | `slam/behavior_trees/bt_nav.xml` and `nav2_paramsv2.yaml` plugin lists |
+| **Build** | `ament_cmake`; produces Nav2 behavior libraries and BT factory plugins including `gradient_escape_core`, `breadcrumb_reverse_core`, `autonav_goal_bender_bt_node`, `autonav_is_forward_blocked_bt_node`, `autonav_path_footprint_safe_bt_node`, and `autonav_path_significantly_changed_bt_node` |
 
-> **Heads up:** These activate inside Nav2 when planning fails or the robot has made insignificant progress.
+> **Heads up:** The active lidar-line stack relies on `PathFootprintSafe` as a hard gate: Smac Lattice should already produce footprint-aware paths, but this BT check prevents a bad path from reaching MPPI if the raw global costmap says the body would overlap tape or an obstacle.
 
 ---
 
@@ -329,24 +366,25 @@ See the [2026-05-11 TROUBLESHOOTING entry](./TROUBLESHOOTING.md#2026-05-11--sick
 
 ## line_layer
 
-Nav2 costmap plugin (not a node) that paints detected line points into the costmap as lethal obstacles.
+Nav2 costmap plugin (not a node) that paints detected line points into the costmap as lethal obstacle seeds plus a configurable soft halo.
 
 | | |
 |---|---|
 | **Plugin manifest** | `line_layer.xml` (exports `line_layer::LineLayer`, base `nav2_costmap_2d::Layer`) |
 | **Sources** | `src/line_layer.cpp`, headers `include/line_layer/{line_layer.hpp, line_buffer.hpp}` |
 | **Library output** | `line_layer_core` |
-| **Subscribes** | `/line_points` (`autonav_interfaces/msg/LinePoints`) from `autonav_detection` |
-| **Loaded by** | Nav2 costmap config (referenced from `nav2_paramsv2.yaml` plugin list) |
+| **Subscribes** | Configured `line_topic` (`/line_points` for camera lines or `/lidar_line_points` for LiDAR tape) |
+| **Publishes** | Optional line-only costmap topic such as `/line_costmap` or `/lidar_line_costmap` |
+| **Loaded by** | Nav2 costmap config (active lidar-line profile enables only `lidar_line_layer` in `nav2_paramsv2.yaml`) |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** Plugin, not node. Uses a thread-safe `LineBuffer<T>` template; the mutex is named `the_great_line_guardian_`.
+> **Heads up:** Plugin, not node. Exact line cells are lethal; the line layer's own halo is intentionally narrower than stock obstacle inflation. In the active profile, local lidar-line memory is temporary manual-clear-only (`observation_persistence_ms: -1`) so the robot cannot forget detected tape while paused.
 
 ---
 
 ## local_mirror_layer
 
-Nav2 `costmap_2d` plugin that subscribes to a source `OccupancyGrid` (typically the local costmap) and accumulates its cells into the host costmap via **max-merge**. Cells persist across host-costmap resizes — this is what lets the global costmap retain line/obstacle paste-ins as the robot drives the local rolling window past them.
+Nav2 `costmap_2d` plugin that subscribes to a source `OccupancyGrid` and accumulates selected cells into the host costmap via **max-merge**. Cells persist across host-costmap resizes — this is what lets the global costmap retain line/obstacle paste-ins as the robot drives the local rolling window past them.
 
 | | |
 |---|---|
@@ -357,6 +395,11 @@ Nav2 `costmap_2d` plugin that subscribes to a source `OccupancyGrid` (typically 
 | **Loaded by** | `nav2_paramsv2.yaml` — listed in the global costmap's `plugins:` array |
 
 > **Heads up:** Plugin, not node. The accumulate-on-resize behavior is the load-bearing part — competition runs depend on the global costmap not losing line obstacles as the local rolling window scrolls.
+
+In the active lidar-line profile there are two important mirror paths:
+
+- `local_mirror_layer` consumes `/local_costmap/costmap`, masks `/line_costmap` and `/lidar_line_costmap`, and mirrors only lethal PCA obstacle seeds. This prevents cones from receiving a second copy of local soft inflation before global inflation.
+- `lidar_line_memory_mirror_layer` consumes `/lidar_line_costmap` directly and mirrors exact lethal tape cells before the global inflation layer. This makes Smac Lattice treat tape as a physical footprint-blocking obstacle while avoiding double-inflated local halos.
 
 ---
 
@@ -378,14 +421,13 @@ Pads the SLAM map outward so the robot, path, goal, or obstacles can live outsid
 
 ## odom_handler
 
-Wheel-odometry driver. Reads encoder counts over serial, integrates differential-drive kinematics, publishes `/odom` and broadcasts `odom → base_link` TF.
+Wheel-odometry driver. Reads encoder counts over serial, integrates differential-drive kinematics, and publishes wheel odometry on `/odom`. It does **not** publish `odom → base_link` in the active build; `ekf_local` owns that TF.
 
 | | |
 |---|---|
 | **Executables** | `wheel_odometry` (raw poller, no ROS) and `wheel_odometry_publisher` (the actual ROS node `wheelodom_publisher`) |
-| **Hardware** | `/dev/ttyACM0` @ 115200 baud |
 | **Subscribes** | `/encoders` (`autonav_interfaces/msg/Encoders`) |
-| **Publishes** | `/odom` (`nav_msgs/msg/Odometry`); broadcasts `odom → base_link` TF at ~5 Hz |
+| **Publishes** | `/odom` (`nav_msgs/msg/Odometry`) for `ekf_local` |
 | **Constants** | `wheel_base_ = 0.6858 m`, `wheel_radius_ = 0.12946 m`, `ticks_per_revolution_ = 81923` |
 | **Vendored** | `serialib.{cpp,hpp}` (duplicated from `gps_handler`); `src/reference.py` is scratch |
 | **Build** | `ament_cmake` |
@@ -426,7 +468,7 @@ Vendored upstream SICK driver for the MultiScan-100 LiDAR. Talks UDP over Ethern
 
 ## sim
 
-Gazebo simulation package — robot URDFs, custom Gazebo models, world files, RViz configs. Invoked by `./isaac_ros-dev/config/run-sim.sh` (`ros2 launch sim launch_sim.launch.py world:="src/sim/worlds/autonav_igvc_course.world"`).
+**Retired Gazebo Classic package.** This package has `COLCON_IGNORE`; use [`igvc_competition_sim`](#igvc_competition_sim) for the active ROS Humble + Gazebo Fortress simulation.
 
 | | |
 |---|---|
@@ -438,7 +480,7 @@ Gazebo simulation package — robot URDFs, custom Gazebo models, world files, RV
 | **Models** | IGVC road sections (`igvc_asphalt`, `igvc_straightroad`, `igvc_curvedroad`, `igvc_bendedroad`, `igvc_mirrorbendedroad`, `igvc_potholeroad`) plus a resized `construction_barrel` |
 | **Build** | `ament_cmake` |
 
-> **Heads up:** `package.xml` is half-stubbed (`TODO: Package description`, `MY NAME` maintainer) — needs filling in. There's a legacy sibling, [`autonav_sim`](#autonav_sim), with overlapping content but no inbound references; this `sim` package is the one that actually launches.
+> **Heads up:** Kept around for reference / rollback, not in active use. It is intentionally ignored by colcon.
 
 ---
 
@@ -448,7 +490,7 @@ Navigation backbone. Owns the launch files, configs, and behavior trees that wir
 
 ### Overview
 
-Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correction; fuses IMU + wheel odom in the local EKF for the smooth `odom → base_link` chain at 30 Hz.
+Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correction; fuses SICK IMU + wheel odom in the local EKF for the smooth `odom → base_link` chain at 30 Hz. The same launch also converts PCA obstacle points into `/scan_pca_filtered` and `/scan_pca_filtered_clear` for Nav2's local obstacle layer.
 
 | | |
 |---|---|
@@ -460,7 +502,7 @@ Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correctio
 
 | File | What it brings up |
 |---|---|
-| `slam.launch.py` | **Active.** `ekf_local` + `slam_toolbox` + `map_padder` + a `sleep 5 && echo "[GUI_READY] SLAM"` ExecuteProcess. Also declares the `enable_gps_fusion` arg (default `false`) — flipping to `true` brings up `ekf_global` + `navsat_transform_node` inline |
+| `slam.launch.py` | **Active.** `ekf_local` + delayed `slam_toolbox` + PCA PointCloud2-to-LaserScan converters + `map_padder` + a delayed `[GUI_READY] SLAM` ExecuteProcess. Also declares the `enable_gps_fusion` arg (default `false`) — flipping to `true` brings up `ekf_global` + `navsat_transform_node` inline |
 | `nav.launch.py` | Nav2 standalone, `nav2_paramsv2.yaml`, `bt_2.xml` |
 | `nav_lc.launch.py` | Minimal lifecycle manager for loop-closure testing |
 | `dual_ekf_navsat.launch.py` | Standalone variant of the global-EKF + `navsat_transform_node` path. Superseded for normal use by the gated branch inside `slam.launch.py`; kept for isolation testing |
@@ -469,14 +511,14 @@ Routes `/scan_fullframe` (LiDAR) → `slam_toolbox` → `map → odom` correctio
 
 | File | Role |
 |---|---|
-| `nav2_paramsv2.yaml` | Active Nav2 params |
+| `nav2_paramsv2.yaml` | Active Nav2 params: `nav_center` base frame, Smac Lattice global planner, MPPI local controller, lidar-line/PCA costmap memory |
 | `nav2_params.yaml` | Older Nav2 (legacy) |
-| `slam.yaml` | `slam_toolbox`; subscribes to `/scan_fullframe`, 0.05 m resolution, 30 s sliding window |
-| `ekf_local.yaml` | Local EKF: 30 Hz, world_frame=odom, fuses two IMUs (`imu1/data`, `imu2/data`) + wheel odom |
+| `slam.yaml` | `slam_toolbox`; subscribes to `/scan_fullframe`, 0.10 m resolution, scan matching enabled |
+| `ekf_local.yaml` | Local EKF: 30 Hz, world_frame=odom, fuses wheel odom + `/sick_scansegment_xd/imu_inflated` |
 | `ekf_local_sim.yaml` | Sim variant of ekf_local |
 | `ekf_global.yaml` | Global EKF (configured but currently disabled) |
 | `dual_ekf_navsat_params.yaml` | Future GPS-fusion config |
-| `mapper_params_online_async.yaml` | `slam_toolbox` mapper specifics |
+| `mapper_params_online_async.yaml` | Legacy slam_toolbox mapper params; not loaded by the active `slam.launch.py` |
 
 ### Behavior trees and the GPS fusion path
 

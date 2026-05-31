@@ -5,18 +5,10 @@
 
 #include <cmath>
 
+#include "breadcrumb/forward_blocked_check.hpp"
+
 namespace gradient_escape
 {
-
-namespace
-{
-inline double wrap_pi(double a)
-{
-  while (a >  M_PI) a -= 2.0 * M_PI;
-  while (a < -M_PI) a += 2.0 * M_PI;
-  return a;
-}
-}  // namespace
 
 GoalBender::GoalBender(
   const std::string & name,
@@ -29,6 +21,17 @@ GoalBender::GoalBender(
   auto node = config.blackboard->get<rclcpp::Node::SharedPtr>("node");
   nav_goal_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>(
     "/nav_goal", rclcpp::QoS(1).reliable());
+
+  // Track breadcrumb-buffer emptiness so the bend logic can fire even
+  // when the goal is in front, provided breadcrumb-reverse has nothing
+  // left to spend. Latched / transient-local so we pick up the most
+  // recent buffer state on subscription.
+  breadcrumb_sub_ = node->create_subscription<nav_msgs::msg::Path>(
+    "/breadcrumb_tail",
+    rclcpp::QoS(1).transient_local(),
+    [this](const nav_msgs::msg::Path::SharedPtr msg) {
+      breadcrumb_buffer_empty_.store(msg->poses.empty());
+    });
 }
 
 BT::NodeStatus GoalBender::tick()
@@ -42,10 +45,12 @@ BT::NodeStatus GoalBender::tick()
   double angle_thresh = 1.57;   // ~90 deg
   double bend_angle = 1.05;     // ~60 deg
   int    path_lookahead_idx = 5;
+  double min_lookahead_m = 0.6;
   getInput("bend_distance", bend_dist);
   getInput("angle_threshold", angle_thresh);
   getInput("bend_angle", bend_angle);
   getInput("path_lookahead_index", path_lookahead_idx);
+  getInput("min_lookahead_m", min_lookahead_m);
 
   auto tf_buffer =
     config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
@@ -54,7 +59,7 @@ BT::NodeStatus GoalBender::tick()
   geometry_msgs::msg::TransformStamped tf;
   try {
     tf = tf_buffer->lookupTransform(
-      "map", "base_link", tf2::TimePointZero);
+      "map", "nav_center", tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
     setOutput("output_goal", goal);
     if (nav_goal_pub_) nav_goal_pub_->publish(goal);
@@ -68,46 +73,40 @@ BT::NodeStatus GoalBender::tick()
   const double gx = goal.pose.position.x;
   const double gy = goal.pose.position.y;
 
-  const double rel_goal = wrap_pi(std::atan2(gy - ry, gx - rx) - ryaw);
-  const bool goal_behind = std::abs(rel_goal) > angle_thresh;
-
   nav_msgs::msg::Path prev_path;
-  const bool have_path =
-    getInput("previous_path", prev_path) && prev_path.poses.size() >= 2;
-  bool path_behind = false;
-  if (have_path) {
-    const int idx = std::min(
-      static_cast<int>(prev_path.poses.size()) - 1,
-      std::max(1, path_lookahead_idx));
-    const double lx = prev_path.poses[idx].pose.position.x;
-    const double ly = prev_path.poses[idx].pose.position.y;
-    const double rel_look =
-      wrap_pi(std::atan2(ly - ry, lx - rx) - ryaw);
-    path_behind = std::abs(rel_look) > angle_thresh;
-  }
+  getInput("previous_path", prev_path);
+  // Pure-pursuit lookahead (sim-validated) when min_lookahead_m > 0,
+  // else legacy fixed-index.
+  const auto fb = (min_lookahead_m > 0.0)
+    ? breadcrumb::computeForwardBlockedLookahead(
+        rx, ry, ryaw, gx, gy, prev_path, angle_thresh, min_lookahead_m)
+    : breadcrumb::computeForwardBlocked(
+        rx, ry, ryaw, gx, gy, prev_path, angle_thresh, path_lookahead_idx);
 
-  // Bend ONLY when both the real goal AND the previous path are
-  // behind the robot. Other cases:
-  //   - goal in front, path in front  -> pass through (normal nav)
-  //   - goal in front, path behind    -> pass through; the backup-
-  //                                       recovery BT node handles
-  //                                       breadcrumb backtracking,
-  //                                       not us.
-  //   - goal behind, path in front    -> pass through; planner has
-  //                                       already found a forward
-  //                                       route.
-  if (!(goal_behind && path_behind)) {
+  // Bend trigger:
+  //   * goal AND path both behind                  → forward-bend (always)
+  //   * path behind, goal in front, no breadcrumbs → forward-bend (turn around)
+  //   * path in front (or no path yet)             → pass through
+  //   * path behind, goal in front, breadcrumbs    → pass through; the
+  //                                                  breadcrumb-reverse
+  //                                                  behavior handles this.
+  const bool buffer_empty = breadcrumb_buffer_empty_.load();
+  const bool bend_now =
+    fb.path_valid &&
+    fb.path_behind &&
+    (fb.goal_behind || buffer_empty);
+
+  if (!bend_now) {
     setOutput("output_goal", goal);
     if (nav_goal_pub_) nav_goal_pub_->publish(goal);
     return BT::NodeStatus::SUCCESS;
   }
 
-  // Forward-bend: place an intermediate goal bend_distance metres
-  // away, offset by bend_angle from the robot heading toward the
-  // side the real goal is on. Yields a forward-only plan that turns
-  // toward the real goal incrementally — exactly what DWB in
-  // forward-only mode (min_vel_x: 0.0) can follow.
-  const double offset = (rel_goal >= 0.0) ? bend_angle : -bend_angle;
+  // Forward-bend: place an intermediate goal bend_distance metres away,
+  // offset by bend_angle from the robot heading toward the side the real
+  // goal is on. Yields a forward-only plan that turns toward the real
+  // goal incrementally so the forward-only controller can follow it.
+  const double offset = (fb.rel_goal >= 0.0) ? bend_angle : -bend_angle;
   const double heading = ryaw + offset;
 
   geometry_msgs::msg::PoseStamped bent;
@@ -127,8 +126,11 @@ BT::NodeStatus GoalBender::tick()
   if (nav_goal_pub_) nav_goal_pub_->publish(bent);
 
   RCLCPP_INFO(node->get_logger(),
-    "GoalBender: goal+path both behind -> forward bend to (%.1f, %.1f)",
-    bent.pose.position.x, bent.pose.position.y);
+    "GoalBender: bending -> (%.1f, %.1f) [goal_behind=%d path_behind=%d crumbs_empty=%d]",
+    bent.pose.position.x, bent.pose.position.y,
+    static_cast<int>(fb.goal_behind),
+    static_cast<int>(fb.path_behind),
+    static_cast<int>(buffer_empty));
 
   return BT::NodeStatus::SUCCESS;
 }

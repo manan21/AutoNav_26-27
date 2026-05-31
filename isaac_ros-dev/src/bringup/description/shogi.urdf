@@ -122,4 +122,11 @@
     <child link="left_wheel_link" />
     <axis xyz="1 0 0" />
   </joint>
+
+  <link name="nav_center" />
+  <joint name="nav_center_joint" type="fixed">
+    <origin xyz="0.225 0 0" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="nav_center" />
+  </joint>
 </robot>

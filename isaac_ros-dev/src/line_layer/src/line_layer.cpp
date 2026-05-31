@@ -55,6 +55,7 @@ template class LineBuffer<std::shared_ptr<autonav_interfaces::msg::LinePoints>>;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 using nav2_costmap_2d::NO_INFORMATION;
+using nav2_costmap_2d::FREE_SPACE;
 
 //#define DEBUG_
 //#define DEBUG_2
@@ -98,6 +99,7 @@ LineLayer::LineLayer()
   cost_scaling_factor_(5.0),
   inscribed_radius_(0.30),
   inflation_kernel_resolution_(0.0),
+  costmap_topic_("/line_costmap"),
   clear_topic_("/local_mirror_layer/clear"),
   clear_radius_(3.0),
   latest_robot_x_(0.0),
@@ -116,6 +118,7 @@ LineLayer::onInitialize()
   auto node = node_.lock(); 
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("line_topic", rclcpp::ParameterValue("line_points"));
+  declareParameter("costmap_topic", rclcpp::ParameterValue("/line_costmap"));
   declareParameter("rolling_window", rclcpp::ParameterValue(false));
   declareParameter("publish_costmap", rclcpp::ParameterValue(false));
   declareParameter("clearing", rclcpp::ParameterValue(true));
@@ -136,6 +139,7 @@ LineLayer::onInitialize()
   declareParameter("clear_radius", rclcpp::ParameterValue(3.0));
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "line_topic", line_topic_);
+  node->get_parameter(name_ + "." + "costmap_topic", costmap_topic_);
   node->get_parameter(name_ + "." + "rolling_window", rolling_window_);
   node->get_parameter(name_ + "." + "publish_costmap", publish_costmap_);
   node->get_parameter(name_ + "." + "clearing", clearing_);
@@ -163,7 +167,6 @@ LineLayer::onInitialize()
   if (inscribed_radius_ > inflation_radius_) {
     inscribed_radius_ = inflation_radius_;
   }
-  observation_persistence_ms_ = std::max<int64_t>(0, observation_persistence_ms_);
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
   line_clear_range_min_m_ = std::max(0.0, line_clear_range_min_m_);
   line_clear_range_max_m_ = std::max(line_clear_range_min_m_, line_clear_range_max_m_);
@@ -173,8 +176,12 @@ LineLayer::onInitialize()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
 
-  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(line_topic_, 1,
-    std::bind(&LineLayer::linePointCallback, this, std::placeholders::_1));
+  rclcpp::SubscriptionOptions line_sub_options;
+  line_sub_options.callback_group = callback_group_;
+  line_sub_ = node->create_subscription<autonav_interfaces::msg::LinePoints>(
+    line_topic_, 1,
+    std::bind(&LineLayer::linePointCallback, this, std::placeholders::_1),
+    line_sub_options);
 
   // Clear-request subscription. Bind to callback_group_ — the costmap's
   // dedicated executor only spins callbacks on this group; subscriptions
@@ -188,10 +195,11 @@ LineLayer::onInitialize()
     clear_sub_options);
 
   if (publish_costmap_) {
-    costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>("/line_costmap", 1);
+    costmap_pub_ = node->create_publisher<nav_msgs::msg::OccupancyGrid>(costmap_topic_, 1);
   }
 
   
+  setDefaultValue(FREE_SPACE);
 
   matchSize();
 
@@ -214,6 +222,33 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       line->points = message->points;
 
       buffer_.buffer(line);
+
+      if (message->points.empty() && clearing_ && observation_persistence_ms_ > 0 &&
+        !clear_lines_only_in_view_)
+      {
+        auto node = node_.lock();
+        if (node) {
+          const rclcpp::Time now = node->now();
+          const rclcpp::Duration max_age =
+            rclcpp::Duration::from_nanoseconds(
+              observation_persistence_ms_ * 1000000LL);
+          bool cleared = false;
+          {
+            std::lock_guard<std::mutex> lock(persisted_points_mutex_);
+            const bool ttl_elapsed =
+              observation_persistence_ms_ <= 0 ||
+              !have_nonempty_points_time_ ||
+              (now - last_nonempty_points_time_) > max_age;
+            if (ttl_elapsed && !persisted_points_.empty()) {
+              persisted_points_.clear();
+              cleared = true;
+            }
+          }
+          if (cleared) {
+            need_recalculation_ = true;
+          }
+        }
+      }
 
       // Persist on receipt — lines must be as reliable as obstacle marks,
       // so we don't depend on updateCosts catching the message before
@@ -303,7 +338,7 @@ bool LineLayer::hasObservationPersistence() const
   if (max_persisted_points_ == 0) {
     return false;
   }
-  return !clearing_ || observation_persistence_ms_ > 0;
+  return !clearing_ || observation_persistence_ms_ != 0;
 }
 
 std::uint64_t LineLayer::persistenceKey(double x, double y) const
@@ -370,6 +405,8 @@ void LineLayer::rememberPersistentPoints(
       it->second = PersistentPoint{point, stamp};
     }
   }
+  last_nonempty_points_time_ = stamp;
+  have_nonempty_points_time_ = true;
 
   while (
     max_persisted_points_ > 0 &&
@@ -406,10 +443,13 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
   std::lock_guard<std::mutex> lock(persisted_points_mutex_);
 
   const rclcpp::Duration max_age =
-    rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL);
+    observation_persistence_ms_ > 0
+    ? rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL)
+    : rclcpp::Duration::from_nanoseconds(0);
   points.reserve(persisted_points_.size());
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
-    const bool expired = (now - it->second.stamp) > max_age;
+    const bool expired =
+      observation_persistence_ms_ > 0 && (now - it->second.stamp) > max_age;
     const bool can_clear =
       !clear_lines_only_in_view_ ||
       linePointInClearView(it->second.point, robot_x, robot_y, robot_yaw, have_pose);
@@ -436,9 +476,9 @@ void LineLayer::buildInflationKernel(double resolution)
   // Match nav2_costmap_2d::InflationLayer's exact formula so line
   // inflation visually matches obstacle inflation. Cells within
   // `inscribed_radius_` of the center are pinned to
-  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL —
-  // LETHAL is reserved for the exact line cell so this layer doesn't
-  // re-trigger the global inflation_layer below it in plugin order).
+  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL).
+  // LETHAL is reserved for the exact line cell so stock Nav2 inflation
+  // can expand the true line obstacle footprint exactly once.
   // Past that radius, exponential decay from INSCRIBED toward zero.
   // Without this, a raw exp(-k*dist) from the center fell off so
   // sharply that the visible halo was ~0.30 m, not the configured
@@ -477,6 +517,8 @@ void LineLayer::matchSize()
   // geometry. After this call, costmap_ is freshly zeroed -- every
   // line cell we previously stamped is gone.
   nav2_costmap_2d::CostmapLayer::matchSize();
+  setDefaultValue(FREE_SPACE);
+  resetMaps();
 
   // persisted_points_ stores every observed line in world (map-frame)
   // coordinates, keyed by quantized world position. We re-stamp every
@@ -576,8 +618,10 @@ void LineLayer::publishCostmap() {
   msg->header.stamp = node_.lock()->now();
   msg->info.width = size_x_;
   msg->info.height = size_y_;
+  msg->info.resolution = resolution_;
   msg->info.origin.position.x = origin_x_;
   msg->info.origin.position.y = origin_y_;
+  msg->info.origin.orientation.w = 1.0;
   msg->data.resize(size_x_ * size_y_);
   for (unsigned int i = 0; i < size_x_ * size_y_; ++i) {
     unsigned char cost = costmap_[i];
