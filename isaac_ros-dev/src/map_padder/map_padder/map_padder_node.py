@@ -137,6 +137,19 @@ class MapPadder(Node):
         # planner returns "goal off global costmap" when GoalBender
         # produces a bent target outside the unbent /goal_pose corridor.
         self.create_subscription(PoseStamped, '/nav_goal', self._on_goal, 10)
+        # /goal_update carries in-mission goal corrections from
+        # gps_handler_node — only the first publish of a leg goes to
+        # /goal_pose; subsequent updates flow through /goal_update so
+        # the BT's GoalUpdater absorbs them without canceling the
+        # FollowPath action. Without subscribing here, map_padder only
+        # learns about goal moves when GoalBender re-publishes
+        # /nav_goal, which is gated on the BT actively ticking
+        # (1 Hz inside the RateController, and skipped while a recovery
+        # branch is running). For far GPS waypoints that arrive mid-leg
+        # this leaves the corridor stranded at the previous goal until
+        # GoalBender next ticks; subscribing directly extends the
+        # corridor immediately on the /goal_update publish.
+        self.create_subscription(PoseStamped, '/goal_update', self._on_goal, 10)
         self.create_subscription(Path, plan_topic, self._on_plan, 10)
         self.create_timer(0.5, self._plan_throttle_tick)
 
