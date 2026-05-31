@@ -47,7 +47,9 @@ from typing import Deque, List, Optional, Tuple
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from action_msgs.msg import GoalStatus
+from nav2_msgs.action import NavigateToPose
+from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import (
     MutuallyExclusiveCallbackGroup,
@@ -409,6 +411,16 @@ class _ActiveGoal:
     # FollowPath. The timer is still stamped on every heartbeat-due tick
     # so we never roll back into a /goal_pose republish mid-leg.
     last_goal_pose_t_s: float = 0.0
+    # Direct Nav2 NavigateToPose handoff state. /goal_pose remains a
+    # visualization/compatibility topic; this action is now the load-
+    # bearing trigger that starts bt_navigator planning.
+    nav2_goal_sent: bool = False
+    nav2_goal_accepted: Optional[bool] = None
+    nav2_goal_handle: Optional[object] = None
+    nav2_result_future: Optional[object] = None
+    nav2_done_status: Optional[int] = None
+    nav2_failure_reason: str = ""
+    nav2_cancel_requested: bool = False
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
     # valid raw GPS sample — they can't be set at goal acceptance
@@ -739,6 +751,12 @@ class GpsHandlerNode(Node):
         self._theta_history: deque = deque()
 
         # ── Action server ───────────────────────────────────────────
+        self._nav2_client = ActionClient(
+            self,
+            NavigateToPose,
+            "/navigate_to_pose",
+            callback_group=self._action_cbg,
+        )
         self._action_server = ActionServer(
             self,
             NavigateToWaypoint,
@@ -1591,6 +1609,165 @@ class GpsHandlerNode(Node):
 
     # ── /goal_pose republish — gated on active goal (§5.12) ────────
 
+    @staticmethod
+    def _nav2_status_name(status: int) -> str:
+        names = {
+            GoalStatus.STATUS_UNKNOWN: "UNKNOWN",
+            GoalStatus.STATUS_ACCEPTED: "ACCEPTED",
+            GoalStatus.STATUS_EXECUTING: "EXECUTING",
+            GoalStatus.STATUS_CANCELING: "CANCELING",
+            GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+            GoalStatus.STATUS_CANCELED: "CANCELED",
+            GoalStatus.STATUS_ABORTED: "ABORTED",
+        }
+        return names.get(int(status), f"STATUS_{int(status)}")
+
+    def _on_nav2_goal_response(
+        self,
+        waypoint_handle: ServerGoalHandle,
+        future,
+    ) -> None:
+        """Capture direct /navigate_to_pose acceptance/rejection."""
+        try:
+            nav2_goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                active = self._active
+                if active is not None and active.handle is waypoint_handle:
+                    active.nav2_goal_accepted = False
+                    active.nav2_failure_reason = (
+                        f"NavigateToPose send failed: {exc}"
+                    )
+            return
+
+        with self._lock:
+            active = self._active
+            if active is None or active.handle is not waypoint_handle:
+                return
+            active.nav2_goal_handle = nav2_goal_handle
+            active.nav2_goal_accepted = bool(nav2_goal_handle.accepted)
+            if not nav2_goal_handle.accepted:
+                active.nav2_failure_reason = "NavigateToPose goal rejected"
+                return
+            active.nav2_result_future = nav2_goal_handle.get_result_async()
+            active.nav2_result_future.add_done_callback(
+                lambda done: self._on_nav2_result(waypoint_handle, done)
+            )
+
+    def _on_nav2_result(self, waypoint_handle: ServerGoalHandle, future) -> None:
+        """Capture terminal Nav2 action status for the waypoint loop."""
+        try:
+            result_msg = future.result()
+            status = int(result_msg.status)
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                active = self._active
+                if active is not None and active.handle is waypoint_handle:
+                    active.nav2_done_status = GoalStatus.STATUS_ABORTED
+                    active.nav2_failure_reason = (
+                        f"NavigateToPose result failed: {exc}"
+                    )
+            return
+
+        with self._lock:
+            active = self._active
+            if active is None or active.handle is not waypoint_handle:
+                return
+            active.nav2_done_status = status
+            if status != GoalStatus.STATUS_SUCCEEDED:
+                active.nav2_failure_reason = (
+                    f"NavigateToPose finished with "
+                    f"{self._nav2_status_name(status)}"
+                )
+
+    def _dispatch_nav2_goal_once(
+        self,
+        active: "_ActiveGoal",
+        msg: PoseStamped,
+    ) -> None:
+        """Send the first valid leg pose through Nav2's action server."""
+        with self._lock:
+            if self._active is None or self._active.handle is not active.handle:
+                return
+            if self._active.nav2_goal_sent:
+                return
+            self._active.nav2_goal_sent = True
+
+        if not self._nav2_client.server_is_ready():
+            with self._lock:
+                if self._active is not None and self._active.handle is active.handle:
+                    self._active.nav2_goal_accepted = False
+                    self._active.nav2_failure_reason = (
+                        "/navigate_to_pose action server not ready"
+                    )
+            return
+
+        goal = NavigateToPose.Goal()
+        goal.pose = msg
+        try:
+            future = self._nav2_client.send_goal_async(goal)
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                if self._active is not None and self._active.handle is active.handle:
+                    self._active.nav2_goal_accepted = False
+                    self._active.nav2_failure_reason = (
+                        f"NavigateToPose send failed: {exc}"
+                    )
+            return
+        future.add_done_callback(
+            lambda done: self._on_nav2_goal_response(active.handle, done)
+        )
+
+    def _cancel_nav2_goal(self, active: Optional["_ActiveGoal"]) -> None:
+        """Best-effort async cancel of the direct Nav2 action goal."""
+        if active is None or active.nav2_goal_handle is None:
+            return
+        if active.nav2_done_status is not None:
+            return
+        try:
+            active.nav2_cancel_requested = True
+            active.nav2_goal_handle.cancel_goal_async()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"NavigateToPose cancel failed: {exc}")
+
+    def _nav2_failure_for_active(
+        self,
+        active: "_ActiveGoal",
+    ) -> Optional[Tuple[int, str]]:
+        """Return waypoint terminal status/reason if Nav2 failed."""
+        with self._lock:
+            if self._active is None or self._active.handle is not active.handle:
+                return None
+            accepted = self._active.nav2_goal_accepted
+            done_status = self._active.nav2_done_status
+            reason = self._active.nav2_failure_reason
+
+        if accepted is False:
+            return (
+                NavigateToWaypoint.Result.STATUS_NAV2_REJECTED,
+                reason or "NavigateToPose goal rejected",
+            )
+        if done_status in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_UNKNOWN):
+            return (
+                NavigateToWaypoint.Result.STATUS_ABORTED,
+                reason
+                or f"NavigateToPose finished with "
+                f"{self._nav2_status_name(done_status)}",
+            )
+        if done_status == GoalStatus.STATUS_CANCELED:
+            with self._lock:
+                intentional = (
+                    self._active is not None
+                    and self._active.handle is active.handle
+                    and self._active.nav2_cancel_requested
+                )
+            if not intentional:
+                return (
+                    NavigateToWaypoint.Result.STATUS_ABORTED,
+                    reason or "NavigateToPose was canceled externally",
+                )
+        return None
+
     def _publish_local_map_goal(
         self,
         active: "_ActiveGoal",
@@ -1626,7 +1803,15 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.y = qy
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
-        self._goal_pub.publish(msg)
+
+        now_pub_s = self._now_s()
+        first_pub = active.last_published_goal_map is None
+        if first_pub:
+            self._dispatch_nav2_goal_once(active, msg)
+            self._goal_pub.publish(msg)
+            active.last_goal_pose_t_s = now_pub_s
+        else:
+            self._goal_update_pub.publish(msg)
 
         with self._lock:
             if self._active is not None and self._active.handle is active.handle:
@@ -1635,6 +1820,7 @@ class GpsHandlerNode(Node):
                 # ``current_goal_in_map`` feedback works.
                 self._active.last_published_goal_world = (gx_map, gy_map)
                 self._active.last_published_goal_map = (gx_map, gy_map)
+                self._active.last_published_t_s = now_pub_s
 
     def _publisher_tick(self) -> None:
         if self._active is None or self._publisher_disabled:
@@ -1831,6 +2017,7 @@ class GpsHandlerNode(Node):
             > GOAL_POSE_HEARTBEAT_S
         )
         if first_pub:
+            self._dispatch_nav2_goal_once(active, msg)
             self._goal_pub.publish(msg)
             active.last_goal_pose_t_s = now_pub_s
         else:
@@ -2242,6 +2429,14 @@ class GpsHandlerNode(Node):
                         NavigateToWaypoint.Result.STATUS_CANCELED,
                         "client canceled",
                     )
+                nav2_failure = self._nav2_failure_for_active(active)
+                if nav2_failure is not None:
+                    nav2_status, nav2_reason = nav2_failure
+                    return self._terminate(
+                        goal_handle,
+                        nav2_status,
+                        nav2_reason,
+                    )
 
                 with self._lock:
                     ekf_xy = self._ekf.pos_xy
@@ -2423,6 +2618,9 @@ class GpsHandlerNode(Node):
                 self._smoothed_candidate = None
                 self._dist_history.clear()
                 self._publisher_disabled = True
+
+        if active is not None and active.handle is goal_handle:
+            self._cancel_nav2_goal(active)
 
         result = NavigateToWaypoint.Result()
         result.terminal_status = int(status)

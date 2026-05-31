@@ -43,11 +43,11 @@ from tf2_ros import Buffer, TransformListener, TransformException
 LETHAL = np.int8(100)
 UNKNOWN = np.int8(-1)
 
-# Maximum output grid side, in cells. At 0.10 m resolution that's 160 m
+# Maximum output grid side, in cells. At 0.05 m resolution that's 160 m
 # (525 ft) — comfortably covers a 500 ft competition course with margin.
-# Memory at MAX² × 1 byte = 2.56 MB per published grid. The _grid_buf
+# Memory at MAX² × 1 byte = 10.24 MB per published grid. The _grid_buf
 # allocated once in __init__ is sized to this.
-MAX_GRID_SIDE = 1600
+MAX_GRID_SIDE = 3200
 
 
 class MapPadder(Node):
@@ -56,7 +56,7 @@ class MapPadder(Node):
         super().__init__('map_padder')
 
         self.declare_parameter('tile_size_m', 1.0)
-        self.declare_parameter('output_resolution', 0.10)
+        self.declare_parameter('output_resolution', 0.05)
         self.declare_parameter('input_topic', '/map')
         self.declare_parameter('output_topic', '/map_padded')
         self.declare_parameter('goal_topic', '/goal_pose')
