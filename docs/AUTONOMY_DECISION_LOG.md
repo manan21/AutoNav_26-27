@@ -376,6 +376,28 @@ Why:
 Next check:
 - Live robot A/B on a straight or gently curved course with `/cmd_vel_nav`, `/cmd_vel`, `/local_ekf/odom`, and `/plan` recorded. Watch for reduced angular sign-flip amplitude without repeated recoveries or command gaps.
 
+### 2026-05-31 - Recover When Planner Starts In Inflated Footprint Contact
+
+Status: Accepted
+Area: Nav2 behavior tree, costmaps, recovery behavior
+Related commits: pending
+Evidence: Operator report that planning can stop completely when the robot footprint barely touches inflated line/obstacle cost.
+
+Decision:
+- Increase line and obstacle inflation radii from `0.25 m` to `0.30 m`.
+- Keep lethal/inscribed line bands unchanged so the extra margin is a soft preference halo, not a wider hard wall.
+- Change planning recovery to try movement before passive clear/wait: `breadcrumb_reverse`, stock `BackUp`, `inflation_backout`, `gradient_escape`, then local clear/wait.
+- Reorder the outer recovery round-robin the same way so contact with inflated cost triggers an escape attempt before waiting.
+
+Why:
+- Smac Lattice can refuse to seed a path when the current footprint starts in high cost; waiting and clearing alone leaves the robot stationary in the same bad pose.
+- Breadcrumb reverse uses a known previous pose and does not depend on a fresh global plan, making it the preferred first escape when the robot has driven into inflated cost.
+- Stock `BackUp` still checks the current footprint before moving; `inflation_backout` is the bounded last-resort reverse that ignores that current-pose veto for 0.20 m.
+- The slightly larger inflation radius gives the planner/controller more warning distance while preserving the narrow hard line geometry.
+
+Next check:
+- Place the footprint barely into line/cone inflation and confirm `/plan` failure immediately produces reverse or gradient escape motion, then replanning resumes without a full stop.
+
 ## Open Items To Track
 
 - Add randomized obstacle course variants while preserving the fixed 5 ft canonical course.

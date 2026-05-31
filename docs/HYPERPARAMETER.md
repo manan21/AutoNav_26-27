@@ -168,22 +168,23 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 | `local_costmap.local_costmap.publish_frequency` | 🟡 | `15.0` Hz | Local costmap broadcast rate | |
 | `local_costmap.local_costmap.resolution` | 🟡 | `0.05` m | Local cell size | MPPI and line-layer clearance depend on this; coarsening reduces narrow-gap fidelity |
 | `local_costmap.local_costmap.width` / `height` | 🟡 | `6` m × `6` m | Rolling window size | **Must equal 2× `map_padder.local_window_radius_m`** so global mirrors local cleanly |
-| `local_costmap.local_costmap.footprint_padding` | 🟡 | `0.03` m | Local controller footprint margin | Global padding is intentionally larger (`0.05` m) so unsafe paths are rejected before MPPI |
+| `local_costmap.local_costmap.footprint_padding` | 🟡 | `0.05` m | Local controller footprint margin | Matches the global footprint margin so MPPI scores the same body envelope |
 | `local_costmap.obstacle_layer.mark_scan.obstacle_max_range` | 🟡 | `2.5` m | Lidar marking range | Short — line obstacles only mark when close |
 | `local_costmap.obstacle_layer.clear_scan.raytrace_max_range` | 🟡 | `25.0` m | Lidar clearing raytrace range | Long — clears all the way to SICK reach |
-| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `-1` | Manual-clear-only LiDAR-line memory | Temporary tape-test behavior so the robot cannot forget a detected line while paused |
-| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.10` m | High-cost band around LiDAR line points | Wider than exact point cells, narrow enough not to box in the start pose |
-| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.80` m | Outer LiDAR-line halo | Softly pushes MPPI/Smac away from sparse tape detections |
-| `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Exponential decay of PCA obstacle inflation cost | Pair with global |
-| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Max distance from PCA obstacle for stock inflation | Matched to global so cones and tape are not artificially imbalanced |
+| `local_costmap.lidar_line_layer.observation_persistence_ms` | 🟡 | `5000` ms | View-gated LiDAR-line memory | Long enough to retain tape memory while the robot is nearby |
+| `local_costmap.lidar_line_layer.inscribed_radius` | 🟡 | `0.05` m | High-cost band around LiDAR line points | Narrow enough not to close the IGVC 5 ft gap |
+| `local_costmap.line_layer.inflation_radius` | 🟡 | `0.30` m | Outer camera-line halo | Softly pushes MPPI/Smac away from tape without making lines footprint-wide obstacles |
+| `local_costmap.lidar_line_layer.inflation_radius` | 🟡 | `0.30` m | Outer LiDAR-line halo | Softly pushes MPPI/Smac away from sparse tape detections |
+| `local_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.2` | Exponential decay of PCA obstacle inflation cost | Pair with global |
+| `local_costmap.inflation_layer.inflation_radius` | 🟡 | `0.30` m | Max distance from PCA obstacle for stock inflation | Matched to global so cones and tape are not artificially imbalanced |
 | `global_costmap.global_costmap.update_frequency` | 🟡 | `3.0` Hz | Global regenerate rate | Conservative — global is mostly the paste from local |
 | `global_costmap.global_costmap.resolution` | 🔴 | `0.05` m | Global cell size | Must match the 5 cm Smac Lattice primitive file |
 | `global_costmap.global_costmap.footprint_padding` | 🟡 | `0.05` m | Planner/path gate footprint margin | Rejects paths that are centerline-clear but unsafe for the real body |
 | `global_costmap.local_mirror_layer.min_occupied_value_to_mirror` | 🟡 | `100` | Mirrors only lethal PCA obstacle seeds from local costmap | Prevents local soft inflation from being copied into global and inflated again |
 | `global_costmap.local_mirror_layer.exclude_topics` | 🟡 | `["/line_costmap", "/lidar_line_costmap"]` | Masks line-layer cells from obstacle memory mirroring | Prevents lidar lines from entering global through the wrong layer |
-| `global_costmap.lidar_line_memory_mirror_layer.allow_decrease` | 🟡 | `false` | Global LiDAR-line memory clearing policy | Manual-clear-only for the current tape-test behavior |
-| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `4.0` | Shared decay for PCA/cone and lidar tape seeds | **Must equal local** unless intentionally testing a planner/controller mismatch |
-| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `0.85` m | Shared global inflation radius | Applied once after PCA obstacle seeds and exact lidar tape seeds enter global |
+| `global_costmap.lidar_line_memory_mirror_layer.allow_decrease` | 🟡 | `true` | Global LiDAR-line memory clearing policy | Clears only inside the configured forward lidar clearing cone |
+| `global_costmap.inflation_layer.cost_scaling_factor` | 🟡 | `3.2` | Shared decay for PCA/cone seeds | **Must equal local** unless intentionally testing a planner/controller mismatch |
+| `global_costmap.inflation_layer.inflation_radius` | 🟡 | `0.30` m | Shared global obstacle inflation radius | Applied once after PCA obstacle seeds enter global |
 
 ---
 

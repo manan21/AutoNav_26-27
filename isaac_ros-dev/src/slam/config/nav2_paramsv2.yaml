@@ -298,11 +298,10 @@ local_costmap:
         line_clear_range_min_m: 0.40
         line_clear_range_max_m: 4.50
         max_persisted_points: 12000
-        # Camera-line costs are narrow but planner-blocking. The small
+        # Camera-line costs are narrow but planner-blocking. The modest
         # radius avoids boxing the robot in, while the slow decay keeps the
-        # visible halo above PathFootprintSafe's threshold so Smac cannot
-        # route the footprint across lines.
-        inflation_radius: 0.25
+        # visible halo expensive enough that Smac/MPPI prefer staying off lines.
+        inflation_radius: 0.30
         inscribed_radius: 0.02
         cost_scaling_factor: 1.0
         clearing: True
@@ -332,7 +331,7 @@ local_costmap:
         # continuous wall. Keep the lethal geometry exact, then publish a
         # non-lethal preference field that encourages clearance without
         # closing the IGVC-required 5 ft passage beside obstacles.
-        inflation_radius: 0.25
+        inflation_radius: 0.30
         # The 253 band is intentionally small. A wide inscribed band consumes
         # too much of the narrow legal gap before the planner ever considers
         # soft costs.
@@ -350,7 +349,7 @@ local_costmap:
         # and uses its own narrower local halo; global planning receives
         # lidar tape memory before global inflation.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.25
+        inflation_radius: 0.30
 
       always_send_full_costmap: True
 
@@ -482,7 +481,7 @@ global_costmap:
         # after this layer using the line layer's own hard/soft field so the
         # planner can still use IGVC-minimum 5 ft passages.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.25
+        inflation_radius: 0.30
       always_send_full_costmap: True
 
 map_server:
@@ -549,7 +548,7 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape", "breadcrumb_reverse"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape", "breadcrumb_reverse", "inflation_backout"]
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
@@ -564,6 +563,8 @@ behavior_server:
       plugin: "gradient_escape::GradientEscape"
     breadcrumb_reverse:
       plugin: "breadcrumb::BreadcrumbReverse"
+    inflation_backout:
+      plugin: "inflation_backout::InflationBackout"
     global_frame: odom
     # Stay on nav_center for footprint/costmap consistency with the local
     # costmap. Spin/BackUp/DriveOnHeading still command angular velocity

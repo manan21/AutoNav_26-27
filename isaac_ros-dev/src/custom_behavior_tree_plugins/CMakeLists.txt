@@ -69,6 +69,19 @@ target_include_directories(${breadcrumb_lib}
 
 ament_target_dependencies(${breadcrumb_lib} ${dep_pkgs})
 
+# === Behavior server plugin: InflationBackout ===
+
+set(inflation_backout_lib inflation_backout_core)
+add_library(${inflation_backout_lib} SHARED
+            src/inflation_backout.cpp)
+
+target_include_directories(${inflation_backout_lib}
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+ament_target_dependencies(${inflation_backout_lib} ${dep_pkgs})
+
 # === BT node plugin: GoalBender ===
 
 add_library(autonav_goal_bender_bt_node SHARED
@@ -143,6 +156,7 @@ ament_target_dependencies(breadcrumb_buffer ${dep_pkgs})
 
 install(TARGETS ${grad_lib}
                 ${breadcrumb_lib}
+                ${inflation_backout_lib}
                 autonav_goal_bender_bt_node
                 autonav_path_significantly_changed_bt_node
                 autonav_is_forward_blocked_bt_node
@@ -156,4 +170,5 @@ install(TARGETS breadcrumb_buffer
 
 pluginlib_export_plugin_description_file(nav2_core gradient_escape.xml)
 pluginlib_export_plugin_description_file(nav2_core breadcrumb_reverse.xml)
+pluginlib_export_plugin_description_file(nav2_core inflation_backout.xml)
 ament_package()

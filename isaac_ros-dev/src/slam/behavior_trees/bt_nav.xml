@@ -18,10 +18,9 @@
     4. If everything stalls, cycle through recoveries forever.
 
   Recovery sequence:
-    1. BackUp           — reverse out of tight spots
+    1. BreadcrumbReverse / BackUp — back out of inflated footprint contact
     2. GradientEscape   — follow costmap gradient away from high cost
-    3. Clear costmaps   — remove ghost obstacles
-    4. Wait 1 s         — let transient obstacles pass
+    3. Clear costmaps + Wait — remove ghost obstacles and let transients pass
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -34,11 +33,9 @@
              gives a ~333 ms worst-case staleness window at the planner,
              without the false-positive issues of an explicit
              IsPathValid check (which can fail-cascade into recovery on
-             a transient one-tick costmap blip). PathFootprintSafe below
-             densely validates planner outputs against the rectangular
-             nav_center footprint before FollowPath can execute them. Costs
-             at or above the configured threshold are treated as keepout, so
-             a sparse lattice path cannot skip between lethal/high-cost cells. -->
+             a transient one-tick costmap blip). If Smac refuses to plan
+             because the current footprint is already touching high cost,
+             PlanRecovery below backs the robot out before retrying. -->
         <RateController hz="3.0">
           <!--
             GoalUpdater intercepts in-mission goal corrections from
@@ -90,19 +87,30 @@
                      MPPI could produce /cmd_vel_nav, which made RViz show a
                      path while the BT fell through to recovery/BackUp. -->
                 <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
-                <Sequence name="PlanRecovery">
-                  <!-- LOCAL clear only (sim spec): wiping the entire
-                       global costmap erases distant lidar marks the
-                       robot needs to re-find its way back, and the
-                       planner immediately draws a straight line through
-                       the now-empty space. A 1 m around-robot clear
-                       handles the transient-inflation case without that
-                       memory loss. -->
-                  <ClearCostmapAroundRobot name="ClearAroundRobot-PlanRecovery"
-                    service_name="local_costmap/clear_around_local_costmap"
-                    reset_distance="1.0"/>
-                  <Wait wait_duration="0.5"/>
-                </Sequence>
+                <ReactiveFallback name="PlanRecoveryEscape">
+                  <!-- First try to reverse along breadcrumbs. This can move
+                       even when the planner start pose is too close to inflated
+                       line/obstacle cost for Smac to seed a path. -->
+                  <DriveOnHeading server_name="breadcrumb_reverse"
+                    dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
+                  <BackUp backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
+                  <BackUp server_name="inflation_backout"
+                    backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
+                  <DriveOnHeading server_name="gradient_escape"
+                    dist_to_travel="0.0" speed="0.1" time_allowance="8.0"/>
+                  <Sequence name="PlanRecoveryClearThenWait">
+                    <!-- LOCAL clear only (sim spec): wiping the entire
+                         global costmap erases distant lidar marks the
+                         robot needs to re-find its way back, and the
+                         planner immediately draws a straight line through
+                         the now-empty space. A 1 m around-robot clear
+                         handles transient inflation without that memory loss. -->
+                    <ClearCostmapAroundRobot name="ClearAroundRobot-PlanRecovery"
+                      service_name="local_costmap/clear_around_local_costmap"
+                      reset_distance="1.0"/>
+                    <Wait wait_duration="0.5"/>
+                  </Sequence>
+                </ReactiveFallback>
               </RecoveryNode>
             </Sequence>
           </GoalUpdater>
@@ -133,7 +141,13 @@
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <RoundRobin name="RecoveryActions">
-          <Wait wait_duration="1"/>
+          <DriveOnHeading server_name="breadcrumb_reverse"
+            dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
+          <BackUp backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
+          <BackUp server_name="inflation_backout"
+            backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
+          <DriveOnHeading server_name="gradient_escape"
+            dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
           <!-- LOCAL-only clear in the recovery dance. Global wipe was
                removed per sim spec: the global costmap accumulates
                distant obstacles via local_mirror_layer; wiping it makes
@@ -142,9 +156,7 @@
           <ClearCostmapAroundRobot name="ClearAroundRobot-Dance"
             service_name="local_costmap/clear_around_local_costmap"
             reset_distance="2.0"/>
-          <DriveOnHeading server_name="gradient_escape"
-            dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
-          <BackUp backup_dist="0.10" backup_speed="0.05"/>
+          <Wait wait_duration="1"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

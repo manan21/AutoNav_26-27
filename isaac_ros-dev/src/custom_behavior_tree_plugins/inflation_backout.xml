@@ -1,0 +1,5 @@
+<library path="inflation_backout_core">
+  <class type="inflation_backout::InflationBackout" base_class_type="nav2_core::Behavior">
+    <description>Short reverse escape that ignores current-footprint collision veto so the robot can back out of inflated cost contact.</description>
+  </class>
+</library>
