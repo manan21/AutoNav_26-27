@@ -11,6 +11,7 @@ GA leg is live:
   * /gps_waypoint/debug   arriving (gps_handler_node up)
   * TF map -> base_link   resolvable (robot is localized)
   * /navigate_to_waypoint action server reachable
+  * /navigate_to_pose action server reachable (Nav2 is ready to plan)
 
 Exits 1 on timeout, 2 on import / argparse error.
 
@@ -49,6 +50,7 @@ from tf2_ros import (
 
 from autonav_interfaces.action import NavigateToWaypoint
 from geometry_msgs.msg import Twist  # noqa: F401  (kept for future check additions)
+from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Bool, String
@@ -79,7 +81,12 @@ class PreCheck(Node):
         self._tf_buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self._tf_buf, self, spin_thread=False)
 
-        self._nav_client = ActionClient(self, NavigateToWaypoint, "/navigate_to_waypoint")
+        self._gps_nav_client = ActionClient(
+            self, NavigateToWaypoint, "/navigate_to_waypoint"
+        )
+        self._nav2_client = ActionClient(
+            self, NavigateToPose, "/navigate_to_pose"
+        )
 
         self.create_subscription(Bool, "/autonomous_mode", self._on_auto, RELIABLE_QOS)
         self.create_subscription(NavSatFix, "/gps_fix", self._on_gps, SENSOR_QOS)
@@ -108,8 +115,11 @@ class PreCheck(Node):
         except (LookupException, ConnectivityException, ExtrapolationException):
             return False
 
-    def action_ok(self) -> bool:
-        return self._nav_client.server_is_ready()
+    def gps_action_ok(self) -> bool:
+        return self._gps_nav_client.server_is_ready()
+
+    def nav2_action_ok(self) -> bool:
+        return self._nav2_client.server_is_ready()
 
 
 def report(name: str, ok: bool, detail: str = "") -> str:
@@ -165,7 +175,8 @@ def main() -> int:
             odom_ok = node.odom_seen
             debug_ok = node.debug_seen
             tf_ok = node.tf_ok()
-            action_ok = node.action_ok()
+            gps_action_ok = node.gps_action_ok()
+            nav2_action_ok = node.nav2_action_ok()
 
             checks = [
                 ("autonomous_mode == AUTO",
@@ -186,9 +197,12 @@ def main() -> int:
                 ("TF map -> base_link",
                  tf_ok,
                  "" if tf_ok else "transform unavailable"),
-                ("/navigate_to_waypoint action server",
-                 action_ok,
-                 "" if action_ok else "not discovered"),
+                ("/navigate_to_waypoint action server (GPS waypoint)",
+                 gps_action_ok,
+                 "" if gps_action_ok else "not discovered"),
+                ("/navigate_to_pose action server (Nav2)",
+                 nav2_action_ok,
+                 "" if nav2_action_ok else "not discovered"),
             ]
 
             now = time.monotonic()
