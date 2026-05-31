@@ -303,7 +303,13 @@ local_costmap:
         # in the camera clearing cone before it is forgotten. Keep this
         # cone conservative: do not clear the near ground blind spot right
         # in front of the robot, where the camera can no longer see a line.
-        observation_persistence_ms: 8000
+        observation_persistence_ms: 3000
+        # View-gated clearing prevents the rolling local costmap from erasing
+        # real tape that is outside the camera cone, but it used to keep
+        # expired blind-spot ghosts forever. This hard cap drops impossible
+        # stale marks while still preserving near-bumper tape long enough for
+        # the robot to drive past it at competition speed.
+        observation_absolute_max_age_ms: 8000
         observation_persistence_resolution_m: 0.10
         clear_lines_only_in_view: true
         # C-ii (auto_camera, UNVALIDATED in sim): widen the view-gated clear

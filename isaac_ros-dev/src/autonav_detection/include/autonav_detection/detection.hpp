@@ -28,6 +28,26 @@ struct LinePixelDetectionStats {
     int kept_components = 0;
 };
 
+struct LineColorMaskConfig {
+    bool enable_color_mask = true;
+    bool detect_white = true;
+    bool detect_yellow = true;
+    int white_value_min = 165;
+    int white_saturation_max = 110;
+    int yellow_hue_min = 12;
+    int yellow_hue_max = 45;
+    int yellow_saturation_min = 50;
+    int yellow_value_min = 90;
+    int morph_close_size = 5;
+    int morph_open_size = 0;
+    int min_component_pixels = 20;
+};
+
+cv::Mat build_line_candidate_mask(const cv::Mat & image,
+                                  double brightness_threshold,
+                                  const LineColorMaskConfig & config = LineColorMaskConfig(),
+                                  bool include_brightness_mask = true);
+
 // Tunables: brightness_threshold gates the pre-mask; half_window /
 // sigma_threshold / mew_threshold drive the CERIAS kernel. Defaults are
 // the historical compile-time values (220 / 3 / 5.0 / 200.0). All four
@@ -38,7 +58,8 @@ std::pair<int2*, int*> detect_line_pixels(const cv::Mat & image,
                                           float  sigma_threshold = 5.0f,
                                           float  mew_threshold = 200.0f,
                                           bool   debug_image_write_enabled = false,
-                                          LinePixelDetectionStats * stats = nullptr);
+                                          LinePixelDetectionStats * stats = nullptr,
+                                          const LineColorMaskConfig & color_config = LineColorMaskConfig());
 }
 std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img);
 

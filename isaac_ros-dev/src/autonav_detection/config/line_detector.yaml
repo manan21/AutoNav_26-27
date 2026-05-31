@@ -34,8 +34,8 @@
     rgb_depth_require_tf_ready: true   # Prefer the newest synchronized RGB/depth pair whose stamped odom→base_link TF is already in this detector's buffer; avoids future-extrapolation gaps in distributed sim.
     tf_lookup_timeout_ms: 100
     tf_wait_for_stamp_ms: 300         # Distributed sim can put RGB-D frames ~100-200 ms ahead of TF. Wait longer for stamped TF instead of using scatter-prone latest TF.
-    line_hold_timeout_ms: 8000        # Bridge RGB/depth/TF/geometry gaps without blanking /line_points and triggering replans.
-    motion_cache_hold_ms: 8000        # Same hold during yaw/TF misses so projection gaps do not clear the local costmap.
+    line_hold_timeout_ms: 2000        # Bridge brief RGB/depth/TF gaps without letting stale ghosts masquerade as fresh lines.
+    motion_cache_hold_ms: 2500        # Latest-TF emergency motion cache only; stamped-TF updates are not yaw-gated.
     line_memory_max_points: 12000     # cap confirmed output points
     odom_topic: "/local_ekf/odom"
 
@@ -74,17 +74,14 @@
     # adjacent pixel projections by 20-30 cm; 0.50 m forms one cluster.
     cluster_link_distance_m: 0.50
     temporal_voxel_size_m: 0.10
-    # First transformed hit confirms immediately so new lines reach the
-    # local costmap during turns instead of waiting for a second frame
-    # after yaw settles. Noise control now relies on the existing ROI,
-    # depth, ground, and geometry gates rather than temporal delay.
-    temporal_min_hits: 1
+    # Require two different synchronized RGB-D frames before confirming a
+    # voxel. getSynchronizedImages consumes selected frames, so this cannot
+    # be satisfied by reprocessing one stale frame.
+    temporal_min_hits: 2
     temporal_confirm_window_ms: 750
-    # Was 10 000 ms which kept ghosts around forever after one bad frame.
-    # 1500 ms == ~7 frames at 5 Hz: covers brief out-of-FOV periods
-    # (turning the robot, panning the camera) without persisting stale
-    # voxels long enough to confuse the planner.
-    confirmed_hold_ms: 8000
+    # Covers the camera's near-ground blind spot while keeping one-frame
+    # ghosts from blocking the planner for most of a recovery cycle.
+    confirmed_hold_ms: 2500
     yaw_rate_gate_rad_s: 0.6
     debug_image_publish_enabled: true
     debug_image_write_enabled: false
@@ -121,3 +118,20 @@
     # neighborhoods (cleaner lines only); ↓ admits dimmer near-line
     # surfaces. Range 0-255.
     mew_threshold: 200.0
+
+    # ── Semantic color candidates ─────────────────────────────────────────
+    # The CUDA CERIAS pass is still useful for clean white paint, but IGVC
+    # field lighting, dirty paint, and yellow lane markings need color-aware
+    # candidates before depth/ground/cluster validation.
+    color_mask_enabled: true
+    detect_white_lines: true
+    detect_yellow_lines: true
+    white_value_min: 165
+    white_saturation_max: 110
+    yellow_hue_min: 12
+    yellow_hue_max: 45
+    yellow_saturation_min: 50
+    yellow_value_min: 90
+    semantic_mask_close_px: 5
+    semantic_mask_open_px: 0
+    semantic_mask_min_component_px: 20

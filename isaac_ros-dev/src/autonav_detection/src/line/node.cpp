@@ -57,8 +57,8 @@ public:
 		this->declare_parameter("rgb_depth_require_tf_ready", true);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("tf_wait_for_stamp_ms", 125);
-		this->declare_parameter("line_hold_timeout_ms", 8000);
-		this->declare_parameter("motion_cache_hold_ms", 8000);
+		this->declare_parameter("line_hold_timeout_ms", 2000);
+		this->declare_parameter("motion_cache_hold_ms", 2500);
 		this->declare_parameter("line_memory_max_points", 12000);
 		this->declare_parameter("roi_min_y_fraction", 0.35);
 		this->declare_parameter("max_depth_m", 6.0);
@@ -77,9 +77,9 @@ public:
 		this->declare_parameter("cluster_min_aspect_ratio", 3.0);
 		this->declare_parameter("cluster_link_distance_m", 0.18);
 		this->declare_parameter("temporal_voxel_size_m", 0.10);
-		this->declare_parameter("temporal_min_hits", 1);
+		this->declare_parameter("temporal_min_hits", 2);
 		this->declare_parameter("temporal_confirm_window_ms", 750);
-		this->declare_parameter("confirmed_hold_ms", 8000);
+		this->declare_parameter("confirmed_hold_ms", 2500);
 		this->declare_parameter("odom_topic", "/local_ekf/odom");
 		this->declare_parameter("yaw_rate_gate_rad_s", 0.6);
 		this->declare_parameter("debug_image_publish_enabled", true);
@@ -91,12 +91,24 @@ public:
 		// cached confirmed lines instead of publishing misregistered points.
 		this->declare_parameter("tf_use_latest", false);
 
-		// CERIAS line-pixel detector knobs (previously hardcoded as #defines
-		// in cuda.cu; now plumbed through line_detector.yaml).
-		this->declare_parameter("brightness_threshold", 220.0);  // 0-255 grayscale
-		this->declare_parameter("half_window_size", 3);          // window = 2N+1
-		this->declare_parameter("sigma_threshold", 5.0);         // local stddev cap
-		this->declare_parameter("mew_threshold", 200.0);         // local mean floor
+			// CERIAS line-pixel detector knobs (previously hardcoded as #defines
+			// in cuda.cu; now plumbed through line_detector.yaml).
+			this->declare_parameter("brightness_threshold", 220.0);  // 0-255 grayscale
+			this->declare_parameter("half_window_size", 3);          // window = 2N+1
+			this->declare_parameter("sigma_threshold", 5.0);         // local stddev cap
+			this->declare_parameter("mew_threshold", 200.0);         // local mean floor
+			this->declare_parameter("color_mask_enabled", true);
+			this->declare_parameter("detect_white_lines", true);
+			this->declare_parameter("detect_yellow_lines", true);
+			this->declare_parameter("white_value_min", 165);
+			this->declare_parameter("white_saturation_max", 110);
+			this->declare_parameter("yellow_hue_min", 12);
+			this->declare_parameter("yellow_hue_max", 45);
+			this->declare_parameter("yellow_saturation_min", 50);
+			this->declare_parameter("yellow_value_min", 90);
+			this->declare_parameter("semantic_mask_close_px", 5);
+			this->declare_parameter("semantic_mask_open_px", 0);
+			this->declare_parameter("semantic_mask_min_component_px", 20);
 
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
@@ -141,11 +153,32 @@ public:
 		yaw_rate_gate_rad_s_ = std::max<double>(0.0, this->get_parameter("yaw_rate_gate_rad_s").as_double());
 		debug_image_publish_enabled_ = this->get_parameter("debug_image_publish_enabled").as_bool();
 		debug_image_write_enabled_ = this->get_parameter("debug_image_write_enabled").as_bool();
-		tf_use_latest_ = this->get_parameter("tf_use_latest").as_bool();
-		brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
-		half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
-		sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
-		mew_threshold_ = static_cast<float>(this->get_parameter("mew_threshold").as_double());
+			tf_use_latest_ = this->get_parameter("tf_use_latest").as_bool();
+			brightness_threshold_ = this->get_parameter("brightness_threshold").as_double();
+			half_window_size_ = std::max<int>(1, this->get_parameter("half_window_size").as_int());
+			sigma_threshold_ = static_cast<float>(this->get_parameter("sigma_threshold").as_double());
+			mew_threshold_ = static_cast<float>(this->get_parameter("mew_threshold").as_double());
+			color_mask_config_.enable_color_mask = this->get_parameter("color_mask_enabled").as_bool();
+			color_mask_config_.detect_white = this->get_parameter("detect_white_lines").as_bool();
+			color_mask_config_.detect_yellow = this->get_parameter("detect_yellow_lines").as_bool();
+			color_mask_config_.white_value_min =
+				static_cast<int>(this->get_parameter("white_value_min").as_int());
+			color_mask_config_.white_saturation_max =
+				static_cast<int>(this->get_parameter("white_saturation_max").as_int());
+			color_mask_config_.yellow_hue_min =
+				static_cast<int>(this->get_parameter("yellow_hue_min").as_int());
+			color_mask_config_.yellow_hue_max =
+				static_cast<int>(this->get_parameter("yellow_hue_max").as_int());
+			color_mask_config_.yellow_saturation_min =
+				static_cast<int>(this->get_parameter("yellow_saturation_min").as_int());
+			color_mask_config_.yellow_value_min =
+				static_cast<int>(this->get_parameter("yellow_value_min").as_int());
+			color_mask_config_.morph_close_size =
+				static_cast<int>(this->get_parameter("semantic_mask_close_px").as_int());
+			color_mask_config_.morph_open_size =
+				static_cast<int>(this->get_parameter("semantic_mask_open_px").as_int());
+			color_mask_config_.min_component_pixels =
+				std::max<int>(1, this->get_parameter("semantic_mask_min_component_px").as_int());
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -182,9 +215,23 @@ public:
 			confirmed_hold_ms_, yaw_rate_gate_rad_s_);
 		RCLCPP_INFO(this->get_logger(), "Debug image topics: %s", debug_image_publish_enabled_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Debug image writes: %s", debug_image_write_enabled_ ? "true" : "false");
-		RCLCPP_INFO(this->get_logger(),
-			"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
-			brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
+			RCLCPP_INFO(this->get_logger(),
+				"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
+				brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
+			RCLCPP_INFO(this->get_logger(),
+				"Semantic line mask: enabled=%s white=%s yellow=%s white(v>=%d,s<=%d) yellow(h=%d..%d,s>=%d,v>=%d) morph(close=%d,open=%d) min_cc=%d",
+				color_mask_config_.enable_color_mask ? "true" : "false",
+				color_mask_config_.detect_white ? "true" : "false",
+				color_mask_config_.detect_yellow ? "true" : "false",
+				color_mask_config_.white_value_min,
+				color_mask_config_.white_saturation_max,
+				color_mask_config_.yellow_hue_min,
+				color_mask_config_.yellow_hue_max,
+				color_mask_config_.yellow_saturation_min,
+				color_mask_config_.yellow_value_min,
+				color_mask_config_.morph_close_size,
+				color_mask_config_.morph_open_size,
+				color_mask_config_.min_component_pixels);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics
@@ -287,10 +334,12 @@ private:
 	std::mutex camera_params_lock;
 	std::mutex odom_lock;
 	
-	sensor_msgs::msg::Image::SharedPtr latest_img;
-	sensor_msgs::msg::Image::SharedPtr latest_depth_img;
-	std::deque<sensor_msgs::msg::Image::SharedPtr> image_buffer_;
-	std::deque<sensor_msgs::msg::Image::SharedPtr> depth_buffer_;
+		sensor_msgs::msg::Image::SharedPtr latest_img;
+		sensor_msgs::msg::Image::SharedPtr latest_depth_img;
+		std::deque<sensor_msgs::msg::Image::SharedPtr> image_buffer_;
+		std::deque<sensor_msgs::msg::Image::SharedPtr> depth_buffer_;
+		int64_t last_processed_camera_stamp_ns_ = 0;
+		int64_t last_processed_depth_stamp_ns_ = 0;
 	
 	tf2_ros::Buffer tf_buffer;
 	tf2_ros::TransformListener tf_listener;
@@ -311,8 +360,8 @@ private:
 	bool    rgb_depth_require_tf_ready_ = true;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t tf_wait_for_stamp_ms_ = 125;
-	int64_t line_hold_timeout_ms_ = 8000;
-	int64_t motion_cache_hold_ms_ = 8000;
+		int64_t line_hold_timeout_ms_ = 2000;
+		int64_t motion_cache_hold_ms_ = 2500;
 	int64_t line_memory_max_points_ = 20000;
 	double  roi_min_y_fraction_ = 0.35;
 	double  max_depth_m_ = 6.0;
@@ -331,18 +380,19 @@ private:
 	double  cluster_min_aspect_ratio_ = 3.0;
 	double  cluster_link_distance_m_ = 0.18;
 	double  temporal_voxel_size_m_ = 0.10;
-	int     temporal_min_hits_ = 1;
-	int64_t temporal_confirm_window_ms_ = 750;
-	int64_t confirmed_hold_ms_ = 8000;
+		int     temporal_min_hits_ = 2;
+		int64_t temporal_confirm_window_ms_ = 750;
+		int64_t confirmed_hold_ms_ = 2500;
 	double  yaw_rate_gate_rad_s_ = 0.6;
 	bool    debug_image_publish_enabled_ = true;
 	bool    debug_image_write_enabled_ = false;
 	bool    tf_use_latest_ = false;
-	double  brightness_threshold_ = 220.0;
-	int     half_window_size_ = 3;
-	float   sigma_threshold_ = 5.0f;
-	float   mew_threshold_ = 200.0f;
-	double  latest_yaw_rate_rad_s_ = 0.0;
+		double  brightness_threshold_ = 220.0;
+		int     half_window_size_ = 3;
+		float   sigma_threshold_ = 5.0f;
+		float   mew_threshold_ = 200.0f;
+		lines::LineColorMaskConfig color_mask_config_;
+		double  latest_yaw_rate_rad_s_ = 0.0;
 	bool    has_odom_ = false;
 	autonav_interfaces::msg::LinePoints last_valid_message_;
 	rclcpp::Time last_valid_detection_time_{0, 0, RCL_ROS_TIME};
@@ -465,11 +515,15 @@ private:
 	void publishConfirmedOrEmpty(
 		const std::vector<Eigen::Vector3d> & points,
 		const builtin_interfaces::msg::Time & stamp);
-	void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
-	std::vector<cv::Point> publishedDebugPixels() const;
-	void publishDebugImages(
-		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
-		const cv::Mat & gray_image,
+		void publishDiagnostics(const DetectionFrameStats & stats, const char * reason);
+		std::vector<cv::Point> publishedDebugPixels() const;
+		bool convertCameraImage(
+			const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+			cv::Mat & detection_image,
+			cv::Mat & gray_image);
+		void publishDebugImages(
+			const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+			const cv::Mat & gray_image,
 		const int2 * line_points,
 		int line_points_len,
 		const std::vector<CandidatePoint> & accepted_candidates,
@@ -505,6 +559,39 @@ void LineDetectorNode::odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg
 	std::lock_guard<std::mutex> lock(odom_lock);
 	latest_yaw_rate_rad_s_ = msg->twist.twist.angular.z;
 	has_odom_ = true;
+}
+
+bool LineDetectorNode::convertCameraImage(
+	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
+	cv::Mat & detection_image,
+	cv::Mat & gray_image)
+{
+	if (!camera_msg) {
+		return false;
+	}
+
+	try {
+		if (camera_msg->encoding == sensor_msgs::image_encodings::MONO8) {
+			auto mono_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::MONO8);
+			gray_image = mono_ptr->image;
+			detection_image = gray_image;
+			return !gray_image.empty() && gray_image.type() == CV_8UC1;
+		}
+
+		auto bgr_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::BGR8);
+		detection_image = bgr_ptr->image;
+		if (detection_image.empty() || detection_image.type() != CV_8UC3) {
+			return false;
+		}
+		cv::cvtColor(detection_image, gray_image, cv::COLOR_BGR2GRAY);
+		return !gray_image.empty() && gray_image.type() == CV_8UC1;
+	} catch (const cv_bridge::Exception & e) {
+		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+		return false;
+	} catch (const cv::Exception & e) {
+		RCLCPP_ERROR(this->get_logger(), "OpenCV image conversion exception: %s", e.what());
+		return false;
+	}
 }
 
 sensor_msgs::msg::PointCloud2 createPointCloud(
@@ -596,7 +683,7 @@ LineDetectorNode::SynchronizedImagePair LineDetectorNode::getSynchronizedImages(
 {
 	std::scoped_lock lock(callback_lock, depth_callback_lock);
 	if (image_buffer_.empty() || depth_buffer_.empty()) {
-		return {latest_img, latest_depth_img, false};
+		return {nullptr, nullptr, false};
 	}
 
 	const int64_t max_delta_ns = max_rgb_depth_delta_ms_ * 1000000LL;
@@ -651,26 +738,40 @@ LineDetectorNode::SynchronizedImagePair LineDetectorNode::getSynchronizedImages(
 		}
 	}
 
-	if (!best_image || !best_depth) {
-		if (!fallback_image || !fallback_depth) {
-			return {latest_img, latest_depth_img, false};
-		}
-		if (rgb_depth_require_tf_ready_) {
-			return {nullptr, nullptr, true};
-		}
-		best_image = fallback_image;
-		best_depth = fallback_depth;
-		best_image_index = fallback_image_index;
+		if (!best_image || !best_depth) {
+			if (!fallback_image || !fallback_depth) {
+				return {nullptr, nullptr, false};
+			}
+			if (rgb_depth_require_tf_ready_) {
+				return {nullptr, nullptr, true};
+			}
+			best_image = fallback_image;
+			best_depth = fallback_depth;
+			best_image_index = fallback_image_index;
 		best_depth_index = fallback_depth_index;
 	}
 
-	if (best_image_index > 0) {
-		image_buffer_.erase(image_buffer_.begin(), image_buffer_.begin() + best_image_index);
+	const int64_t best_image_ns = stamp_ns(best_image);
+	const int64_t best_depth_ns = stamp_ns(best_depth);
+	const bool repeated_pair =
+		best_image_ns == last_processed_camera_stamp_ns_ &&
+		best_depth_ns == last_processed_depth_stamp_ns_;
+
+	if (best_image_index < image_buffer_.size()) {
+		image_buffer_.erase(
+			image_buffer_.begin(), image_buffer_.begin() + best_image_index + 1);
 	}
-	if (best_depth_index > 0) {
-		depth_buffer_.erase(depth_buffer_.begin(), depth_buffer_.begin() + best_depth_index);
+	if (best_depth_index < depth_buffer_.size()) {
+		depth_buffer_.erase(
+			depth_buffer_.begin(), depth_buffer_.begin() + best_depth_index + 1);
 	}
 
+	if (repeated_pair) {
+		return {nullptr, nullptr, false};
+	}
+
+	last_processed_camera_stamp_ns_ = best_image_ns;
+	last_processed_depth_stamp_ns_ = best_depth_ns;
 	return {best_image, best_depth, false};
 }
 
@@ -1277,6 +1378,9 @@ LineDetectorNode::VoxelKey LineDetectorNode::voxelKeyForPoint(const Eigen::Vecto
 
 bool LineDetectorNode::isYawGated()
 {
+	if (!tf_use_latest_) {
+		return false;
+	}
 	std::lock_guard<std::mutex> lock(odom_lock);
 	return has_odom_ && std::abs(latest_yaw_rate_rad_s_) > yaw_rate_gate_rad_s_;
 }
@@ -1501,8 +1605,8 @@ void LineDetectorNode::publishDebugImages(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, raw_bgr).toImageMsg());
 	}
 	if (need_mask) {
-		cv::Mat mask;
-		cv::threshold(gray_image, mask, brightness_threshold_, 255, cv::THRESH_BINARY);
+		cv::Mat mask = lines::build_line_candidate_mask(
+			raw_bgr, brightness_threshold_, color_mask_config_);
 		_debug_mask_image_pub->publish(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::MONO8, mask).toImageMsg());
 	}
@@ -1557,28 +1661,19 @@ void LineDetectorNode::line_service(
 		return;
 	}
 
-	// Convert camera image to grayscale
-	cv_bridge::CvImagePtr cv_ptr;
-	try {
-		if (camera_msg->encoding == "bgra8" || camera_msg->encoding == "bgr8") {
-			cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::BGR8);
-			cv::Mat gray;
-			cv::cvtColor(cv_ptr->image, gray, cv::COLOR_BGR2GRAY);
-			cv_ptr->image = gray;
-		} else {
-			cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::MONO8);
-		}
-	} catch (cv_bridge::Exception& e) {
-		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+	cv::Mat detection_image;
+	cv::Mat gray_image;
+	if (!convertCameraImage(camera_msg, detection_image, gray_image)) {
 		return;
 	}
 
 	// Detect lines
 	lines::LinePixelDetectionStats pixel_stats;
-	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image,
+	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(detection_image,
 				brightness_threshold_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
-				debug_image_write_enabled_, &pixel_stats);
+				debug_image_write_enabled_, &pixel_stats,
+				color_mask_config_);
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
 
@@ -1645,25 +1740,16 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	// Convert to grayscale
-	cv_bridge::CvImagePtr cv_ptr;
-	try {
-		if (camera_msg->encoding == "bgra8" || camera_msg->encoding == "bgr8") {
-			cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::BGR8);
-			cv::Mat gray;
-			cv::cvtColor(cv_ptr->image, gray, cv::COLOR_BGR2GRAY);
-			cv_ptr->image = gray;
-		} else {
-			cv_ptr = cv_bridge::toCvCopy(camera_msg, sensor_msgs::image_encodings::MONO8);
-		}
-	} catch (cv_bridge::Exception& e) {
-		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+	cv::Mat detection_image;
+	cv::Mat gray_image;
+	if (!convertCameraImage(camera_msg, detection_image, gray_image)) {
 		republishConfirmedCache(depth_msg->header.stamp);
-		publish_timed_diagnostics("cv_bridge exception");
+		publish_timed_diagnostics("image conversion exception");
 		return;
 	}
 
-	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
+	if (gray_image.empty() || gray_image.type() != CV_8UC1 ||
+		detection_image.empty()) {
 		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
 		republishConfirmedCache(depth_msg->header.stamp);
 		publish_timed_diagnostics("invalid grayscale image");
@@ -1675,10 +1761,11 @@ void LineDetectorNode::line_callback()
 	lines::LinePixelDetectionStats pixel_stats;
 	try {
 		const auto detect_start = std::chrono::steady_clock::now();
-		line_pair = lines::detect_line_pixels(cv_ptr->image,
+		line_pair = lines::detect_line_pixels(detection_image,
 				brightness_threshold_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
-				debug_image_write_enabled_, &pixel_stats);
+				debug_image_write_enabled_, &pixel_stats,
+				color_mask_config_);
 		stats.cuda_detect_ms = elapsed_ms(detect_start);
 	} catch (const std::exception& e) {
 		RCLCPP_ERROR(this->get_logger(), "Line detection failed: %s", e.what());
@@ -1739,7 +1826,7 @@ void LineDetectorNode::line_callback()
 		}
 		const auto debug_start = std::chrono::steady_clock::now();
 		publishDebugImages(
-			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			camera_msg, gray_image, line_points, *line_points_len,
 			{}, publishedDebugPixels());
 		stats.debug_publish_ms = elapsed_ms(debug_start);
 		publish_timed_diagnostics(yaw_gated ? "yaw gated empty line detection" : "empty line detection");
@@ -1761,16 +1848,8 @@ void LineDetectorNode::line_callback()
 		return;
 	}
 
-	// Bypass BFS clustering. With the shape filter stripped (curves and
-	// T/L junctions aren't linear), all transformed candidates flow
-	// straight into temporal voxelization. updateTemporalConfidence
-	// already voxelizes at temporal_voxel_size_m (10 cm) so duplicates
-	// collapse there. Eliminates the BFS pass over 16k+ points per
-	// frame — was the main inline cost in line_callback that pinned
-	// publish rate to ~0.8 Hz.
-	std::vector<CandidatePoint> & clustered_points = transformed_points;
-	stats.candidate_points = static_cast<int>(transformed_points.size());
-	stats.kept_clusters = transformed_points.empty() ? 0 : 1;
+	std::vector<CandidatePoint> clustered_points =
+		filterLineClusters(transformed_points, stats);
 
 	const rclcpp::Time stamp(depth_msg->header.stamp);
 	const bool yaw_gated = isYawGated();
@@ -1802,7 +1881,7 @@ void LineDetectorNode::line_callback()
 	}
 	const auto debug_start = std::chrono::steady_clock::now();
 	publishDebugImages(
-		camera_msg, cv_ptr->image, line_points, *line_points_len,
+		camera_msg, gray_image, line_points, *line_points_len,
 		clustered_points, publishedDebugPixels());
 	stats.debug_publish_ms = elapsed_ms(debug_start);
 	publish_timed_diagnostics(

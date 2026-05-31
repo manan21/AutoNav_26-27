@@ -126,6 +126,7 @@ private:
   double transform_tolerance_;
   int64_t max_message_age_ms_;
   int64_t observation_persistence_ms_;
+  int64_t observation_absolute_max_age_ms_;
   double observation_persistence_resolution_m_;
   bool clear_lines_only_in_view_;
   double line_clear_angle_min_rad_;

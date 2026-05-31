@@ -1,5 +1,7 @@
 #include "autonav_detection/detection.hpp"
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace
@@ -7,15 +9,8 @@ namespace
 
 constexpr int kMinLineComponentPixels = 20;
 constexpr float kMinLineMajorAxisPx = 12.0F;
-// Image-space CC aspect gate. Was 4.0 which rejected T- and L-junctions:
-// when both arms of a T are bright and connected, the bounding rect of
-// all the pixels is roughly square (aspect ~2), failing the gate and
-// dropping the entire line into 0-1 trivial "kept components" with very
-// few of the original 16k+ bright pixels surviving. 2.0 admits T/L
-// junctions while still rejecting blob speckles (which are aspect ~1).
-// Round bright objects (cones, dots) are intentionally NOT this
-// detector's job — those are handled by the lidar/grade obstacle path.
-constexpr float kMinLineAspectRatio = 2.0F;
+constexpr float kMinLineAspectRatio = 1.8F;
+constexpr float kMaxCompactFillRatio = 0.48F;
 
 // Persistent CUDA device buffers reused across every detect_line_pixels
 // call. Previously each frame allocated and freed all seven buffers
@@ -93,6 +88,7 @@ std::pair<int2 *, int *> filter_line_components(
     int count,
     int width,
     int height,
+    int min_component_pixels,
     int * kept_component_count)
 {
     int *filtered_count = new int(0);
@@ -126,19 +122,29 @@ std::pair<int2 *, int *> filter_line_components(
     const int num_labels =
         cv::connectedComponentsWithStats(component_mask, labels, stats, centroids, 8, CV_32S);
 
-    // Area-only CC filter. Previously this looped (num_labels × W × H) to
-    // collect each component's pixels for a cv::minAreaRect aspect/major
-    // check — ~50 ms per frame on 540 × 960 with many small ground-
-    // speckle components. The aspect filter also rejected curved /
-    // T/L-shaped lines (the user explicitly noted this), so it served
-    // neither speed nor accuracy. Now: O(num_labels) iterations only,
-    // keep every component above kMinLineComponentPixels. Shape
-    // classification is the CUDA kernel's job upstream.
+    // O(num_labels) component filter. Keep elongated components and sparse
+    // components (curves / T / L junctions), reject compact filled blobs.
+    // A plain aspect-ratio gate rejects junctions; area-only admits glare.
     std::vector<uint8_t> keep_component(num_labels, 0);
     int kept_components = 0;
     for (int label = 1; label < num_labels; ++label) {
         const int area = stats.at<int>(label, cv::CC_STAT_AREA);
-        if (area < kMinLineComponentPixels) {
+        if (area < std::max(kMinLineComponentPixels, min_component_pixels)) {
+            continue;
+        }
+        const int bbox_w = stats.at<int>(label, cv::CC_STAT_WIDTH);
+        const int bbox_h = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+        const int major_axis = std::max(bbox_w, bbox_h);
+        const int minor_axis = std::max(1, std::min(bbox_w, bbox_h));
+        const float aspect =
+            static_cast<float>(major_axis) / static_cast<float>(minor_axis);
+        const float fill_ratio =
+            static_cast<float>(area) /
+            static_cast<float>(std::max(1, bbox_w * bbox_h));
+        const bool line_like =
+            major_axis >= kMinLineMajorAxisPx &&
+            (aspect >= kMinLineAspectRatio || fill_ratio <= kMaxCompactFillRatio);
+        if (!line_like) {
             continue;
         }
         keep_component[label] = 1;
@@ -179,6 +185,92 @@ std::pair<int2 *, int *> filter_line_components(
 
 }  // namespace
 
+cv::Mat lines::build_line_candidate_mask(
+    const cv::Mat & image,
+    double brightness_threshold,
+    const lines::LineColorMaskConfig & config,
+    bool include_brightness_mask)
+{
+    cv::Mat gray_img;
+    cv::Mat bgr_img;
+    if (image.channels() == 3) {
+        bgr_img = image;
+        cv::cvtColor(image, gray_img, cv::COLOR_BGR2GRAY);
+    } else if (image.channels() == 4) {
+        cv::cvtColor(image, bgr_img, cv::COLOR_BGRA2BGR);
+        cv::cvtColor(bgr_img, gray_img, cv::COLOR_BGR2GRAY);
+    } else {
+        gray_img = image;
+    }
+
+    cv::Mat candidate_mask = cv::Mat::zeros(gray_img.rows, gray_img.cols, CV_8UC1);
+    if (include_brightness_mask) {
+        cv::threshold(gray_img, candidate_mask, brightness_threshold, 255, cv::THRESH_BINARY);
+    }
+
+    if (config.enable_color_mask && !bgr_img.empty()) {
+        cv::Mat hsv;
+        cv::cvtColor(bgr_img, hsv, cv::COLOR_BGR2HSV);
+
+        if (config.detect_white) {
+            cv::Mat white_mask;
+            cv::inRange(
+                hsv,
+                cv::Scalar(0, 0, std::clamp(config.white_value_min, 0, 255)),
+                cv::Scalar(179, std::clamp(config.white_saturation_max, 0, 255), 255),
+                white_mask);
+            cv::bitwise_or(candidate_mask, white_mask, candidate_mask);
+        }
+
+        if (config.detect_yellow) {
+            cv::Mat yellow_mask;
+            const int hue_min = std::clamp(config.yellow_hue_min, 0, 179);
+            const int hue_max = std::clamp(config.yellow_hue_max, 0, 179);
+            const int sat_min = std::clamp(config.yellow_saturation_min, 0, 255);
+            const int val_min = std::clamp(config.yellow_value_min, 0, 255);
+            if (hue_min <= hue_max) {
+                cv::inRange(
+                    hsv,
+                    cv::Scalar(hue_min, sat_min, val_min),
+                    cv::Scalar(hue_max, 255, 255),
+                    yellow_mask);
+            } else {
+                cv::Mat low_mask;
+                cv::Mat high_mask;
+                cv::inRange(
+                    hsv,
+                    cv::Scalar(0, sat_min, val_min),
+                    cv::Scalar(hue_max, 255, 255),
+                    low_mask);
+                cv::inRange(
+                    hsv,
+                    cv::Scalar(hue_min, sat_min, val_min),
+                    cv::Scalar(179, 255, 255),
+                    high_mask);
+                cv::bitwise_or(low_mask, high_mask, yellow_mask);
+            }
+            cv::bitwise_or(candidate_mask, yellow_mask, candidate_mask);
+        }
+    }
+
+    const int close_size = std::max(0, config.morph_close_size);
+    if (close_size > 1) {
+        const int k = close_size | 1;
+        const cv::Mat kernel =
+            cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k));
+        cv::morphologyEx(candidate_mask, candidate_mask, cv::MORPH_CLOSE, kernel);
+    }
+    const int open_size = std::max(0, config.morph_open_size);
+    if (open_size > 1) {
+        const int k = open_size | 1;
+        const cv::Mat kernel =
+            cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k));
+        cv::morphologyEx(candidate_mask, candidate_mask, cv::MORPH_OPEN, kernel);
+    }
+
+    return candidate_mask;
+}
+
 // Error function and macro borrowed from 
 // https://github.com/jiekebo/CUDA-By-Example/blob/master/common/book.h
 
@@ -196,7 +288,8 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                                                   float  sigma_threshold,
                                                   float  mew_threshold,
                                                   bool   debug_image_write_enabled,
-                                                  lines::LinePixelDetectionStats * stats) {
+                                                  lines::LinePixelDetectionStats * stats,
+                                                  const lines::LineColorMaskConfig & color_config) {
     if (stats) {
         *stats = lines::LinePixelDetectionStats();
     }
@@ -241,7 +334,6 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         gray_img = gray_img.clone();
     }
 
-    // get mask
     cv::Mat mask;
     cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
 
@@ -402,10 +494,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         return std::make_pair(output_return, counter_return);
     }
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
-    if (stats) {
-        stats->raw_pixels = *counter_return;
-    }
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Detected %d CERIAS line pixels", *counter_return);
 
     int2 *output_return = new int2[std::max(1, *counter_return)];
 
@@ -426,11 +515,38 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         }
     }
 
+    cv::Mat combined_mask = cv::Mat::zeros(height, width, CV_8UC1);
+    for (int i = 0; i < *counter_return; ++i) {
+        const int x = output_return[i].x;
+        const int y = output_return[i].y;
+        if (0 <= x && x < width && 0 <= y && y < height) {
+            combined_mask.at<uint8_t>(y, x) = 255;
+        }
+    }
+    cv::Mat color_mask = lines::build_line_candidate_mask(
+        image, brightness_threshold, color_config, false);
+    cv::bitwise_or(combined_mask, color_mask, combined_mask);
+
+    std::vector<cv::Point> mask_points;
+    cv::findNonZero(combined_mask, mask_points);
+    int *combined_count = new int(static_cast<int>(mask_points.size()));
+    int2 *combined_points = new int2[std::max(1, *combined_count)];
+    for (int i = 0; i < *combined_count; ++i) {
+        combined_points[i].x = mask_points[i].x;
+        combined_points[i].y = mask_points[i].y;
+    }
+    if (stats) {
+        stats->raw_pixels = *combined_count;
+    }
+
     int kept_components = 0;
     auto filtered_results = filter_line_components(
-        output_return, *counter_return, width, height, &kept_components);
+        combined_points, *combined_count, width, height,
+        color_config.min_component_pixels, &kept_components);
     delete[] output_return;
     delete counter_return;
+    delete[] combined_points;
+    delete combined_count;
     output_return = filtered_results.first;
     counter_return = filtered_results.second;
     if (stats) {

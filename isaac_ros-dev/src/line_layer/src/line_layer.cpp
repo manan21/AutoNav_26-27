@@ -88,6 +88,7 @@ LineLayer::LineLayer()
   transform_tolerance_(0.2),
   max_message_age_ms_(750),
   observation_persistence_ms_(0),
+  observation_absolute_max_age_ms_(-1),
   observation_persistence_resolution_m_(0.10),
   clear_lines_only_in_view_(false),
   line_clear_angle_min_rad_(-0.55),
@@ -125,6 +126,7 @@ LineLayer::onInitialize()
   declareParameter("transform_tolerance", rclcpp::ParameterValue(0.2));
   declareParameter("max_message_age_ms", rclcpp::ParameterValue(750));
   declareParameter("observation_persistence_ms", rclcpp::ParameterValue(0));
+  declareParameter("observation_absolute_max_age_ms", rclcpp::ParameterValue(-1));
   declareParameter("observation_persistence_resolution_m", rclcpp::ParameterValue(0.10));
   declareParameter("clear_lines_only_in_view", rclcpp::ParameterValue(false));
   declareParameter("line_clear_angle_min_rad", rclcpp::ParameterValue(-0.55));
@@ -146,6 +148,7 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "transform_tolerance", transform_tolerance_);
   node->get_parameter(name_ + "." + "max_message_age_ms", max_message_age_ms_);
   node->get_parameter(name_ + "." + "observation_persistence_ms", observation_persistence_ms_);
+  node->get_parameter(name_ + "." + "observation_absolute_max_age_ms", observation_absolute_max_age_ms_);
   node->get_parameter(
     name_ + "." + "observation_persistence_resolution_m",
     observation_persistence_resolution_m_);
@@ -170,6 +173,9 @@ LineLayer::onInitialize()
   observation_persistence_resolution_m_ = std::max(0.01, observation_persistence_resolution_m_);
   line_clear_range_min_m_ = std::max(0.0, line_clear_range_min_m_);
   line_clear_range_max_m_ = std::max(line_clear_range_min_m_, line_clear_range_max_m_);
+  if (observation_absolute_max_age_ms_ == 0) {
+    observation_absolute_max_age_ms_ = -1;
+  }
   // Negative means unlimited, zero disables persistence, positive caps memory.
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
@@ -259,12 +265,25 @@ void LineLayer::linePointCallback(autonav_interfaces::msg::LinePoints::ConstShar
       // never holds the lock during the (potentially blocking) tf2 query.
       // If TF isn't ready, updateCosts retries with the buffered message.
       if (hasObservationPersistence()) {
-        auto transformed = transformPointsToGlobalFrame(*message);
-        if (transformed && !transformed->empty()) {
-          auto node = node_.lock();
-          if (node) {
+        auto node = node_.lock();
+        bool fresh_enough = true;
+        if (node && max_message_age_ms_ >= 0) {
+          const rclcpp::Time message_stamp(
+            message->header.stamp, node->get_clock()->get_clock_type());
+          const rclcpp::Duration max_age =
+            rclcpp::Duration::from_nanoseconds(max_message_age_ms_ * 1000000LL);
+          fresh_enough =
+            message_stamp.nanoseconds() == 0 || (node->now() - message_stamp) <= max_age;
+        }
+        if (fresh_enough) {
+          auto transformed = transformPointsToGlobalFrame(*message);
+          if (transformed && !transformed->empty() && node) {
             rememberPersistentPoints(*transformed, node->now());
           }
+        } else {
+          RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("nav_costmap_2d"), *node->get_clock(), 2000,
+            "line_layer skipped stale line message before persistence");
         }
       }
 
@@ -446,14 +465,21 @@ std::vector<geometry_msgs::msg::Vector3> LineLayer::activePersistentPoints(const
     observation_persistence_ms_ > 0
     ? rclcpp::Duration::from_nanoseconds(observation_persistence_ms_ * 1000000LL)
     : rclcpp::Duration::from_nanoseconds(0);
+  const rclcpp::Duration absolute_max_age =
+    observation_absolute_max_age_ms_ > 0
+    ? rclcpp::Duration::from_nanoseconds(observation_absolute_max_age_ms_ * 1000000LL)
+    : rclcpp::Duration::from_nanoseconds(0);
   points.reserve(persisted_points_.size());
   for (auto it = persisted_points_.begin(); it != persisted_points_.end(); ) {
     const bool expired =
       observation_persistence_ms_ > 0 && (now - it->second.stamp) > max_age;
+    const bool absolutely_expired =
+      observation_absolute_max_age_ms_ > 0 &&
+      (now - it->second.stamp) > absolute_max_age;
     const bool can_clear =
       !clear_lines_only_in_view_ ||
       linePointInClearView(it->second.point, robot_x, robot_y, robot_yaw, have_pose);
-    if (clearing_ && expired && can_clear) {
+    if (clearing_ && (absolutely_expired || (expired && can_clear))) {
       it = persisted_points_.erase(it);
       continue;
     }
@@ -771,13 +797,9 @@ LineLayer::updateBounds(
     need_recalculation_ = false;
     return;
   }
+  updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
 
   if (need_recalculation_) {
-    
-    updateOrigin(robot_x - getSizeInMetersX() / 2, robot_y - getSizeInMetersY() / 2);
-
-    
-
     last_min_x_ = *min_x;
     last_min_y_ = *min_y;
     last_max_x_ = *max_x;

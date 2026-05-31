@@ -10,10 +10,12 @@ if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 99)
 endif()
 
-# Default to C++14
+# Default to C++17. The plugin uses std::optional and must not depend on
+# a workspace-wide override to compile/load.
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_CXX_STANDARD 17)
 endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -47,6 +49,7 @@ add_library(${lib_name} SHARED
             src/line_layer.cpp
             )
 #include_directories(include)
+target_compile_features(${lib_name} PUBLIC cxx_std_17)
 
 target_include_directories(${lib_name}
   PUBLIC 
