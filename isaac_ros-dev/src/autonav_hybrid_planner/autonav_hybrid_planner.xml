@@ -1,0 +1,9 @@
+<library path="autonav_hybrid_planner_core">
+  <class name="autonav_hybrid_planner/LocalThenStraightPlanner"
+         type="autonav_hybrid_planner::LocalThenStraightPlanner"
+         base_class_type="nav2_core::GlobalPlanner">
+    <description>
+      Plans precisely inside a local horizon using a nested Nav2 planner, then appends a coarse straight segment to far goals.
+    </description>
+  </class>
+</library>

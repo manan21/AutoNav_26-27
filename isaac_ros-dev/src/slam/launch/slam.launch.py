@@ -281,7 +281,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'tile_size_m': 1.0,
-            'output_resolution': 0.10,
+            'output_resolution': 0.05,
             # Subscribe to SLAM's map topic and republish as /map_padded
             'input_topic': '/map',
             'output_topic': '/map_padded',

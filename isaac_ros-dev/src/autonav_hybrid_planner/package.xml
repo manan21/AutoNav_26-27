@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>autonav_hybrid_planner</name>
+  <version>1.0.0</version>
+  <description>Nav2 global planner that uses precise near-field planning and a coarse straight far-field segment.</description>
+  <maintainer email="nfikes@vt.edu">AutoNav</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>nav_msgs</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>tf2</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <nav2_core plugin="${prefix}/autonav_hybrid_planner.xml" />
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

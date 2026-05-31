@@ -503,29 +503,37 @@ map_saver:
 
 planner_server:
   ros__parameters:
-    expected_planner_frequency: 20.0
+    expected_planner_frequency: 5.0
     use_sim_time: False
     planner_plugins: ["GridBased"]
     GridBased:
-      # Use a footprint-aware SE2 lattice for the rectangular differential
-      # drive robot. SmacPlanner2D produced centerline paths that were too
-      # close to lethal lidar-line cells and left the controller to reject
-      # them later.
-      plugin: "nav2_smac_planner/SmacPlannerLattice"
-      tolerance: 0.5
-      allow_unknown: true
-      max_iterations: 1000000
-      max_on_approach_iterations: 1000
-      max_planning_time: 2.0
-      lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
-      # The line/cone fields carry clearance preferences. Keep the penalty
-      # moderate so Smac still uses the guaranteed 5 ft passage when that is
-      # the only legal route.
-      cost_penalty: 4.0
-      # Keep the default penalty so in-place rotations are used only when the
-      # lattice needs them for obstacle avoidance, not as cheap shortcuts.
-      rotation_penalty: 5.0
-      allow_reverse_expansion: false
+      # Far GPS goals do not need a footprint-aware SE2 search across the
+      # entire 20-30 m route. The hybrid planner keeps the expensive lattice
+      # search inside the local-costmap horizon, then appends a coarse straight
+      # segment to the far goal. As the robot drives, the 3 Hz BT replanner
+      # continually recomputes the next precise near-field segment.
+      plugin: "autonav_hybrid_planner/LocalThenStraightPlanner"
+      near_planner_plugin: "nav2_smac_planner/SmacPlannerLattice"
+      near_planner_name: "near_lattice"
+      local_horizon_m: 2.75
+      close_goal_distance_m: 3.0
+      far_path_spacing_m: 0.50
+      far_collision_check: false
+      near_lattice:
+        tolerance: 0.35
+        allow_unknown: true
+        max_iterations: 50000
+        max_on_approach_iterations: 1000
+        max_planning_time: 0.20
+        lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
+        # The line/cone fields carry clearance preferences. Keep the penalty
+        # moderate so Smac still uses the guaranteed 5 ft passage when that is
+        # the only legal route.
+        cost_penalty: 4.0
+        # Keep the default penalty so in-place rotations are used only when the
+        # lattice needs them for obstacle avoidance, not as cheap shortcuts.
+        rotation_penalty: 5.0
+        allow_reverse_expansion: false
 
 smoother_server:
   ros__parameters:
