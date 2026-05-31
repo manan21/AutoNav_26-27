@@ -57,7 +57,7 @@ public:
 		this->declare_parameter("line_hold_timeout_ms", 8000);
 		this->declare_parameter("motion_cache_hold_ms", 8000);
 		this->declare_parameter("line_memory_max_points", 12000);
-		this->declare_parameter("roi_min_y_fraction", 0.35);
+		this->declare_parameter("roi_min_y_fraction", 0.667);
 		this->declare_parameter("max_depth_m", 6.0);
 		this->declare_parameter("base_min_x_m", -0.25);
 		this->declare_parameter("base_max_x_m", 5.0);
@@ -363,7 +363,7 @@ private:
 	int64_t line_hold_timeout_ms_ = 8000;
 	int64_t motion_cache_hold_ms_ = 8000;
 	int64_t line_memory_max_points_ = 20000;
-	double  roi_min_y_fraction_ = 0.35;
+	double  roi_min_y_fraction_ = 0.667;
 	double  max_depth_m_ = 6.0;
 	double  base_min_x_m_ = -0.25;
 	double  base_max_x_m_ = 5.0;
@@ -1735,27 +1735,35 @@ void LineDetectorNode::publishDebugImages(
 	const std_msgs::msg::Header header = camera_msg->header;
 	const bool need_mask = _debug_mask_image_pub->get_subscription_count() > 0;
 	const bool need_overlay = _debug_overlay_image_pub->get_subscription_count() > 0;
+	auto zero_ignored_roi = [this](cv::Mat & image) {
+		if (image.empty()) {
+			return;
+		}
+		const int roi_min_y = std::clamp(
+			static_cast<int>(
+				std::round(static_cast<double>(image.rows) * roi_min_y_fraction_)),
+			0,
+			image.rows);
+		if (roi_min_y > 0) {
+			image.rowRange(0, roi_min_y).setTo(cv::Scalar::all(0));
+		}
+	};
 
 	if (_debug_raw_image_pub->get_subscription_count() > 0) {
+		zero_ignored_roi(raw_bgr);
 		_debug_raw_image_pub->publish(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, raw_bgr).toImageMsg());
 	}
 	if (need_mask) {
 		cv::Mat mask;
 		cv::threshold(gray_image, mask, brightness_threshold_, 255, cv::THRESH_BINARY);
-		const int roi_min_y = std::clamp(
-			static_cast<int>(
-				std::round(static_cast<double>(mask.rows) * roi_min_y_fraction_)),
-			0,
-			mask.rows);
-		if (roi_min_y > 0) {
-			mask.rowRange(0, roi_min_y).setTo(0);
-		}
+		zero_ignored_roi(mask);
 		_debug_mask_image_pub->publish(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::MONO8, mask).toImageMsg());
 	}
 	if (need_overlay) {
 		cv::Mat overlay = raw_bgr.clone();
+		zero_ignored_roi(overlay);
 		for (const auto & pixel : raw_pixels) {
 			const int x = pixel.x;
 			const int y = pixel.y;

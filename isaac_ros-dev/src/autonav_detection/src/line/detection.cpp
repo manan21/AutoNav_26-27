@@ -243,9 +243,6 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         gray_img = gray_img.clone();
     }
 
-    // get mask
-    cv::Mat mask;
-    cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
     const int roi_min_y = std::clamp(
         static_cast<int>(
             std::round(static_cast<double>(height) *
@@ -253,8 +250,16 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         0,
         height);
     if (roi_min_y > 0) {
-        mask.rowRange(0, roi_min_y).setTo(0);
+        // Crop before both the host-side mask and CUDA local-statistics
+        // image, so the ignored rows cannot affect thresholding,
+        // connected components, or windows straddling the ROI boundary.
+        gray_img = gray_img.clone();
+        gray_img.rowRange(0, roi_min_y).setTo(0);
     }
+
+    // get mask
+    cv::Mat mask;
+    cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
 
     RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
 
