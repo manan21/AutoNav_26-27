@@ -12,6 +12,15 @@ constexpr float kMinLineMajorAxisPx = 12.0F;
 constexpr float kMinLineAspectRatio = 1.8F;
 constexpr float kMaxCompactFillRatio = 0.48F;
 
+struct ImageComponentFilterConfig
+{
+    int min_component_pixels = kMinLineComponentPixels;
+    float min_major_axis_px = kMinLineMajorAxisPx;
+    float min_aspect_ratio = kMinLineAspectRatio;
+    float max_compact_fill_ratio = kMaxCompactFillRatio;
+    bool allow_sparse_components = true;
+};
+
 // Persistent CUDA device buffers reused across every detect_line_pixels
 // call. Previously each frame allocated and freed all seven buffers
 // (input image, mask, output, counter, integral inputs/outputs) — on
@@ -83,12 +92,12 @@ void LineDeviceBuffers::freeAll()
 
 LineDeviceBuffers g_line_bufs;
 
-std::pair<int2 *, int *> filter_line_components(
+std::pair<int2 *, int *> filter_line_components_with_config(
     const int2 *points,
     int count,
     int width,
     int height,
-    int min_component_pixels,
+    const ImageComponentFilterConfig &config,
     int * kept_component_count)
 {
     int *filtered_count = new int(0);
@@ -129,7 +138,7 @@ std::pair<int2 *, int *> filter_line_components(
     int kept_components = 0;
     for (int label = 1; label < num_labels; ++label) {
         const int area = stats.at<int>(label, cv::CC_STAT_AREA);
-        if (area < std::max(kMinLineComponentPixels, min_component_pixels)) {
+        if (area < std::max(kMinLineComponentPixels, config.min_component_pixels)) {
             continue;
         }
         const int bbox_w = stats.at<int>(label, cv::CC_STAT_WIDTH);
@@ -142,8 +151,10 @@ std::pair<int2 *, int *> filter_line_components(
             static_cast<float>(area) /
             static_cast<float>(std::max(1, bbox_w * bbox_h));
         const bool line_like =
-            major_axis >= kMinLineMajorAxisPx &&
-            (aspect >= kMinLineAspectRatio || fill_ratio <= kMaxCompactFillRatio);
+            major_axis >= config.min_major_axis_px &&
+            (aspect >= config.min_aspect_ratio ||
+             (config.allow_sparse_components &&
+              fill_ratio <= config.max_compact_fill_ratio));
         if (!line_like) {
             continue;
         }
@@ -181,6 +192,51 @@ std::pair<int2 *, int *> filter_line_components(
     }
 
     return std::make_pair(filtered_points, filtered_count);
+}
+
+std::pair<int2 *, int *> filter_line_components(
+    const int2 *points,
+    int count,
+    int width,
+    int height,
+    int min_component_pixels,
+    int * kept_component_count)
+{
+    ImageComponentFilterConfig config;
+    config.min_component_pixels = min_component_pixels;
+    return filter_line_components_with_config(
+        points, count, width, height, config, kept_component_count);
+}
+
+std::vector<int2> mask_to_points(const cv::Mat &mask)
+{
+    std::vector<cv::Point> mask_points;
+    cv::findNonZero(mask, mask_points);
+
+    std::vector<int2> points;
+    points.reserve(mask_points.size());
+    for (const auto &point : mask_points) {
+        int2 candidate{};
+        candidate.x = point.x;
+        candidate.y = point.y;
+        points.push_back(candidate);
+    }
+    return points;
+}
+
+void mark_points_on_mask(cv::Mat &mask, const int2 *points, int count)
+{
+    if (!points || count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        const int x = points[i].x;
+        const int y = points[i].y;
+        if (0 <= x && x < mask.cols && 0 <= y && y < mask.rows) {
+            mask.at<uint8_t>(y, x) = 255;
+        }
+    }
 }
 
 }  // namespace
@@ -516,37 +572,51 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     }
 
     cv::Mat combined_mask = cv::Mat::zeros(height, width, CV_8UC1);
-    for (int i = 0; i < *counter_return; ++i) {
-        const int x = output_return[i].x;
-        const int y = output_return[i].y;
-        if (0 <= x && x < width && 0 <= y && y < height) {
-            combined_mask.at<uint8_t>(y, x) = 255;
-        }
-    }
-    cv::Mat color_mask = lines::build_line_candidate_mask(
-        image, brightness_threshold, color_config, false);
-    cv::bitwise_or(combined_mask, color_mask, combined_mask);
+    mark_points_on_mask(combined_mask, output_return, *counter_return);
 
-    std::vector<cv::Point> mask_points;
-    cv::findNonZero(combined_mask, mask_points);
-    int *combined_count = new int(static_cast<int>(mask_points.size()));
-    int2 *combined_points = new int2[std::max(1, *combined_count)];
-    for (int i = 0; i < *combined_count; ++i) {
-        combined_points[i].x = mask_points[i].x;
-        combined_points[i].y = mask_points[i].y;
+    if (color_config.enable_color_mask && color_config.detect_yellow) {
+        lines::LineColorMaskConfig yellow_config = color_config;
+        yellow_config.detect_white = false;
+        yellow_config.detect_yellow = true;
+        yellow_config.morph_close_size = 0;
+
+        cv::Mat yellow_mask = lines::build_line_candidate_mask(
+            image, brightness_threshold, yellow_config, false);
+        std::vector<int2> yellow_points = mask_to_points(yellow_mask);
+        int yellow_kept_components = 0;
+        ImageComponentFilterConfig yellow_filter;
+        yellow_filter.min_component_pixels = std::max(
+            yellow_config.min_component_pixels,
+            yellow_config.yellow_supplement_min_component_pixels);
+        yellow_filter.min_major_axis_px = static_cast<float>(
+            yellow_config.yellow_supplement_min_major_axis_px);
+        yellow_filter.min_aspect_ratio = static_cast<float>(
+            yellow_config.yellow_supplement_min_aspect_ratio);
+        yellow_filter.allow_sparse_components = false;
+        auto yellow_filtered = filter_line_components_with_config(
+            yellow_points.data(), static_cast<int>(yellow_points.size()),
+            width, height, yellow_filter,
+            &yellow_kept_components);
+        mark_points_on_mask(combined_mask, yellow_filtered.first, *yellow_filtered.second);
+        RCLCPP_DEBUG(
+            rclcpp::get_logger("lines"),
+            "Supplemental yellow mask kept %d/%zu pixels in %d components",
+            *yellow_filtered.second, yellow_points.size(), yellow_kept_components);
+        delete[] yellow_filtered.first;
+        delete yellow_filtered.second;
     }
+
+    std::vector<int2> combined_points = mask_to_points(combined_mask);
     if (stats) {
-        stats->raw_pixels = *combined_count;
+        stats->raw_pixels = static_cast<int>(combined_points.size());
     }
 
     int kept_components = 0;
     auto filtered_results = filter_line_components(
-        combined_points, *combined_count, width, height,
+        combined_points.data(), static_cast<int>(combined_points.size()), width, height,
         color_config.min_component_pixels, &kept_components);
     delete[] output_return;
     delete counter_return;
-    delete[] combined_points;
-    delete combined_count;
     output_return = filtered_results.first;
     counter_return = filtered_results.second;
     if (stats) {

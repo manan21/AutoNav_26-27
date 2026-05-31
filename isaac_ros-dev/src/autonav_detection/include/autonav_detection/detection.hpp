@@ -30,17 +30,20 @@ struct LinePixelDetectionStats {
 
 struct LineColorMaskConfig {
     bool enable_color_mask = true;
-    bool detect_white = true;
-    bool detect_yellow = true;
+    bool detect_white = false;
+    bool detect_yellow = false;
     int white_value_min = 165;
     int white_saturation_max = 110;
-    int yellow_hue_min = 12;
-    int yellow_hue_max = 45;
-    int yellow_saturation_min = 50;
-    int yellow_value_min = 90;
-    int morph_close_size = 5;
-    int morph_open_size = 0;
+    int yellow_hue_min = 18;
+    int yellow_hue_max = 38;
+    int yellow_saturation_min = 110;
+    int yellow_value_min = 140;
+    int morph_close_size = 0;
+    int morph_open_size = 3;
     int min_component_pixels = 20;
+    int yellow_supplement_min_component_pixels = 120;
+    int yellow_supplement_min_major_axis_px = 45;
+    double yellow_supplement_min_aspect_ratio = 4.0;
 };
 
 cv::Mat build_line_candidate_mask(const cv::Mat & image,

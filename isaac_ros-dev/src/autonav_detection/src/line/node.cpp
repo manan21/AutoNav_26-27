@@ -98,17 +98,20 @@ public:
 			this->declare_parameter("sigma_threshold", 5.0);         // local stddev cap
 			this->declare_parameter("mew_threshold", 200.0);         // local mean floor
 			this->declare_parameter("color_mask_enabled", true);
-			this->declare_parameter("detect_white_lines", true);
-			this->declare_parameter("detect_yellow_lines", true);
+			this->declare_parameter("detect_white_lines", false);
+			this->declare_parameter("detect_yellow_lines", false);
 			this->declare_parameter("white_value_min", 165);
 			this->declare_parameter("white_saturation_max", 110);
-			this->declare_parameter("yellow_hue_min", 12);
-			this->declare_parameter("yellow_hue_max", 45);
-			this->declare_parameter("yellow_saturation_min", 50);
-			this->declare_parameter("yellow_value_min", 90);
-			this->declare_parameter("semantic_mask_close_px", 5);
-			this->declare_parameter("semantic_mask_open_px", 0);
+			this->declare_parameter("yellow_hue_min", 18);
+			this->declare_parameter("yellow_hue_max", 38);
+			this->declare_parameter("yellow_saturation_min", 110);
+			this->declare_parameter("yellow_value_min", 140);
+			this->declare_parameter("semantic_mask_close_px", 0);
+			this->declare_parameter("semantic_mask_open_px", 3);
 			this->declare_parameter("semantic_mask_min_component_px", 20);
+			this->declare_parameter("yellow_supplement_min_component_px", 120);
+			this->declare_parameter("yellow_supplement_min_major_axis_px", 45);
+			this->declare_parameter("yellow_supplement_min_aspect_ratio", 4.0);
 
 		std::string camera_topic = this->get_parameter("camera_topic").as_string();
 		std::string depth_camera_topic = this->get_parameter("depth_camera_topic").as_string();
@@ -179,6 +182,12 @@ public:
 				static_cast<int>(this->get_parameter("semantic_mask_open_px").as_int());
 			color_mask_config_.min_component_pixels =
 				std::max<int>(1, this->get_parameter("semantic_mask_min_component_px").as_int());
+			color_mask_config_.yellow_supplement_min_component_pixels =
+				std::max<int>(1, this->get_parameter("yellow_supplement_min_component_px").as_int());
+			color_mask_config_.yellow_supplement_min_major_axis_px =
+				std::max<int>(1, this->get_parameter("yellow_supplement_min_major_axis_px").as_int());
+			color_mask_config_.yellow_supplement_min_aspect_ratio =
+				std::max<double>(1.0, this->get_parameter("yellow_supplement_min_aspect_ratio").as_double());
 
 		RCLCPP_INFO(this->get_logger(), "Line Detection Config");
 		RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
@@ -219,7 +228,7 @@ public:
 				"CERIAS knobs: brightness=%.1f half_window=%d sigma<%.2f mew>%.1f",
 				brightness_threshold_, half_window_size_, sigma_threshold_, mew_threshold_);
 			RCLCPP_INFO(this->get_logger(),
-				"Semantic line mask: enabled=%s white=%s yellow=%s white(v>=%d,s<=%d) yellow(h=%d..%d,s>=%d,v>=%d) morph(close=%d,open=%d) min_cc=%d",
+				"Semantic line mask: enabled=%s white=%s yellow=%s white(v>=%d,s<=%d) yellow(h=%d..%d,s>=%d,v>=%d) morph(close=%d,open=%d) min_cc=%d yellow_cc>=%d yellow_axis>=%d yellow_aspect>=%.1f",
 				color_mask_config_.enable_color_mask ? "true" : "false",
 				color_mask_config_.detect_white ? "true" : "false",
 				color_mask_config_.detect_yellow ? "true" : "false",
@@ -231,7 +240,10 @@ public:
 				color_mask_config_.yellow_value_min,
 				color_mask_config_.morph_close_size,
 				color_mask_config_.morph_open_size,
-				color_mask_config_.min_component_pixels);
+				color_mask_config_.min_component_pixels,
+				color_mask_config_.yellow_supplement_min_component_pixels,
+				color_mask_config_.yellow_supplement_min_major_axis_px,
+				color_mask_config_.yellow_supplement_min_aspect_ratio);
 		RCLCPP_INFO(this->get_logger(), "==================================");
 
 		// Subscribe to camera topics

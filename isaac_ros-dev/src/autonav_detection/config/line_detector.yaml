@@ -120,18 +120,23 @@
     mew_threshold: 200.0
 
     # ── Semantic color candidates ─────────────────────────────────────────
-    # The CUDA CERIAS pass is still useful for clean white paint, but IGVC
-    # field lighting, dirty paint, and yellow lane markings need color-aware
-    # candidates before depth/ground/cluster validation.
+    # White tape stays on the CERIAS brightness/low-variance path. Broad HSV
+    # white masks over-detect sunlit pavement and then feed the line costmap.
+    # Yellow is opt-in for controlled tuning. When enabled, detection.cpp
+    # disables close-bridging for it and requires a larger, elongated image
+    # component before those pixels are merged with CERIAS pixels.
     color_mask_enabled: true
-    detect_white_lines: true
-    detect_yellow_lines: true
+    detect_white_lines: false
+    detect_yellow_lines: false
     white_value_min: 165
     white_saturation_max: 110
-    yellow_hue_min: 12
-    yellow_hue_max: 45
-    yellow_saturation_min: 50
-    yellow_value_min: 90
-    semantic_mask_close_px: 5
-    semantic_mask_open_px: 0
+    yellow_hue_min: 18
+    yellow_hue_max: 38
+    yellow_saturation_min: 110
+    yellow_value_min: 140
+    semantic_mask_close_px: 0
+    semantic_mask_open_px: 3
     semantic_mask_min_component_px: 20
+    yellow_supplement_min_component_px: 120
+    yellow_supplement_min_major_axis_px: 45
+    yellow_supplement_min_aspect_ratio: 4.0
