@@ -232,6 +232,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time':    LaunchConfiguration('use_sim_time'),
             'target_frame':   'base_link',
+            'queue_size':      1,
             'min_height':     -0.10,
             'max_height':      1.50,
             'angle_min':      -1.5708,   # -90° (full 180° marking)
@@ -256,6 +257,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time':    LaunchConfiguration('use_sim_time'),
             'target_frame':   'base_link',
+            'queue_size':      1,
             'min_height':     -0.10,
             'max_height':      1.50,
             'angle_min':      -1.2217,   # -70° (140° clearing range)
