@@ -363,7 +363,7 @@ private:
 	int64_t line_hold_timeout_ms_ = 8000;
 	int64_t motion_cache_hold_ms_ = 8000;
 	int64_t line_memory_max_points_ = 20000;
-	double  roi_min_y_fraction_ = 0.667;
+	double  roi_min_y_fraction_ = 0.45;
 	double  max_depth_m_ = 6.0;
 	double  base_min_x_m_ = -0.25;
 	double  base_max_x_m_ = 5.0;
