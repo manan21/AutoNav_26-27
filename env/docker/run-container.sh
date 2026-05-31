@@ -5,8 +5,10 @@ set -e # makes script exit on command failure
 # PARAMETERS
 IMAGE_TAG="dev:koopa-kingdom"
 CONTAINER_NAME="koopa-kingdom"
-HOST_WORKDIR="$HOME/AutoNav_25-26"
-CONTAINER_WORKDIR="/autonav"
+HOST_WORKDIR="${AUTONAV_HOST_WORKDIR:-$HOME/AutoNav_25-26}"
+CONTAINER_WORKDIR="${AUTONAV_CONTAINER_WORKDIR:-/autonav}"
+HOST_SIM_WORKDIR="${AUTONAV_SIM_SOURCE:-}"
+CONTAINER_SIM_WORKDIR="${AUTONAV_SIM_CONTAINER:-/autonav_sim}"
 HOST_BAG_ROOT="${AUTONAV_HOST_BAG_ROOT:-$HOME/autonav_bags}"
 CONTAINER_BAG_ROOT="${AUTONAV_CONTAINER_BAG_ROOT:-/autonav_bags}"
 ENTRYPOINT="/usr/local/bin/scripts/entrypoint.sh"
@@ -264,6 +266,14 @@ fi
 # MOUNTS & WORKING DIRECTORY
 mkdir -p "${HOST_BAG_ROOT}"
 DOCKER_ARGS+=("-v" "${HOST_WORKDIR}:${CONTAINER_WORKDIR}")
+if [[ -n "${HOST_SIM_WORKDIR}" ]]; then
+    if [[ ! -d "${HOST_SIM_WORKDIR}" ]]; then
+        echo "AUTONAV_SIM_SOURCE does not exist or is not a directory: ${HOST_SIM_WORKDIR}" >&2
+        exit 1
+    fi
+    DOCKER_ARGS+=("-v" "${HOST_SIM_WORKDIR}:${CONTAINER_SIM_WORKDIR}:rw")
+    DOCKER_ARGS+=("-e" "AUTONAV_SIM_CONTAINER=${CONTAINER_SIM_WORKDIR}")
+fi
 DOCKER_ARGS+=("-v" "${HOST_BAG_ROOT}:${CONTAINER_BAG_ROOT}")
 DOCKER_ARGS+=("-v" "/etc/localtime:/etc/localtime:ro")
 DOCKER_ARGS+=("--workdir=${CONTAINER_WORKDIR}/isaac_ros-dev")
@@ -409,6 +419,9 @@ fi
 # CREATE NEW CONTAINER
 echo "Starting new container: $CONTAINER_NAME"
 echo "Mounting: ${HOST_WORKDIR} → ${CONTAINER_WORKDIR}"
+if [[ -n "${HOST_SIM_WORKDIR}" ]]; then
+    echo "Mounting sim repo: ${HOST_SIM_WORKDIR} → ${CONTAINER_SIM_WORKDIR}"
+fi
 echo "Mounting bags: ${HOST_BAG_ROOT} → ${CONTAINER_BAG_ROOT}"
 
 docker run -d \
