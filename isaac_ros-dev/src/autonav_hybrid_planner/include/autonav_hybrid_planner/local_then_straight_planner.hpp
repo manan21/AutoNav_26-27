@@ -59,6 +59,16 @@ private:
 
   bool costIsBlocked(unsigned char cost) const;
 
+  // Footprint-aware start validity. SmacPlannerLattice rejects a start when any
+  // cell under the oriented robot footprint is lethal, not just the center
+  // cell, so the start-relaxation must use the same footprint test or it hands
+  // Smac a center-clear-but-footprint-lethal pose and planning still aborts.
+  bool footprintIsBlocked(double wx, double wy, double yaw) const;
+
+  bool lineIsBlocked(double x0, double y0, double x1, double y1) const;
+
+  static double quaternionToYaw(const geometry_msgs::msg::Quaternion & q);
+
   nav_msgs::msg::Path prependActualStart(
     nav_msgs::msg::Path path,
     const geometry_msgs::msg::PoseStamped & actual_start,

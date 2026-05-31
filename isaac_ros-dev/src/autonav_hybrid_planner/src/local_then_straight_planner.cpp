@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_util/node_utils.hpp"
@@ -240,12 +241,82 @@ bool LocalThenStraightPlanner::startCellIsBlocked(
   if (!costmap_) {
     return false;
   }
-  unsigned int mx = 0;
-  unsigned int my = 0;
-  if (!costmap_->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {
+  return footprintIsBlocked(
+    start.pose.position.x, start.pose.position.y, quaternionToYaw(start.pose.orientation));
+}
+
+double LocalThenStraightPlanner::quaternionToYaw(const geometry_msgs::msg::Quaternion & q)
+{
+  return std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+}
+
+bool LocalThenStraightPlanner::lineIsBlocked(
+  double x0, double y0, double x1, double y1) const
+{
+  const double resolution = costmap_->getResolution();
+  if (resolution <= 0.0) {
     return false;
   }
-  return costIsBlocked(costmap_->getCost(mx, my));
+  const double length = std::hypot(x1 - x0, y1 - y0);
+  const int steps = std::max(1, static_cast<int>(std::ceil(length / resolution)));
+  for (int i = 0; i <= steps; ++i) {
+    const double t = static_cast<double>(i) / static_cast<double>(steps);
+    const double wx = x0 + (x1 - x0) * t;
+    const double wy = y0 + (y1 - y0) * t;
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!costmap_->worldToMap(wx, wy, mx, my)) {
+      // Off the costmap: treat as unknown so an off-grid footprint edge does
+      // not spuriously block the start (Smac handles unknown via allow_unknown).
+      continue;
+    }
+    if (costIsBlocked(costmap_->getCost(mx, my))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool LocalThenStraightPlanner::footprintIsBlocked(double wx, double wy, double yaw) const
+{
+  if (!costmap_) {
+    return false;
+  }
+
+  // Use the same padded footprint Smac collision-checks against.
+  const std::vector<geometry_msgs::msg::Point> footprint =
+    costmap_ros_ ? costmap_ros_->getRobotFootprint() : std::vector<geometry_msgs::msg::Point>();
+
+  if (footprint.size() < 3) {
+    // Degenerate/circular footprint: fall back to a single-cell check.
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (!costmap_->worldToMap(wx, wy, mx, my)) {
+      return false;
+    }
+    return costIsBlocked(costmap_->getCost(mx, my));
+  }
+
+  const double cos_yaw = std::cos(yaw);
+  const double sin_yaw = std::sin(yaw);
+  auto to_world = [&](const geometry_msgs::msg::Point & p, double & ox, double & oy) {
+    ox = wx + p.x * cos_yaw - p.y * sin_yaw;
+    oy = wy + p.x * sin_yaw + p.y * cos_yaw;
+  };
+
+  // Check every edge of the oriented footprint polygon.
+  for (size_t i = 0; i < footprint.size(); ++i) {
+    double x0 = 0.0;
+    double y0 = 0.0;
+    double x1 = 0.0;
+    double y1 = 0.0;
+    to_world(footprint[i], x0, y0);
+    to_world(footprint[(i + 1) % footprint.size()], x1, y1);
+    if (lineIsBlocked(x0, y0, x1, y1)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 geometry_msgs::msg::PoseStamped LocalThenStraightPlanner::choosePlanningStart(
@@ -272,6 +343,7 @@ geometry_msgs::msg::PoseStamped LocalThenStraightPlanner::choosePlanningStart(
   const int max_radius_cells = static_cast<int>(std::ceil(start_search_radius_m_ / resolution));
   const int sx = static_cast<int>(start_mx);
   const int sy = static_cast<int>(start_my);
+  const double start_yaw = quaternionToYaw(start.pose.orientation);
 
   double best_dist_sq = std::numeric_limits<double>::infinity();
   int best_x = -1;
@@ -288,9 +360,13 @@ geometry_msgs::msg::PoseStamped LocalThenStraightPlanner::choosePlanningStart(
         if (mx < 0 || my < 0 || mx >= size_x || my >= size_y) {
           continue;
         }
-        const unsigned char cost = costmap_->getCost(
-          static_cast<unsigned int>(mx), static_cast<unsigned int>(my));
-        if (costIsBlocked(cost)) {
+        // The candidate must be clear for the whole oriented footprint, not
+        // just its center cell, otherwise Smac still rejects this start.
+        double cell_wx = 0.0;
+        double cell_wy = 0.0;
+        costmap_->mapToWorld(
+          static_cast<unsigned int>(mx), static_cast<unsigned int>(my), cell_wx, cell_wy);
+        if (footprintIsBlocked(cell_wx, cell_wy, start_yaw)) {
           continue;
         }
         const double dist_sq = static_cast<double>(dx * dx + dy * dy);
