@@ -39,7 +39,7 @@
     odom_topic: "/local_ekf/odom"
 
     # ── Geometry / stability gates ───────────────────────────────────────
-    roi_min_y_fraction: 0.667      # Ignore the top two thirds of the image; process only the lower third.
+    roi_min_y_fraction: 0.45       # Ignore the top 45%; process the lower 55% of the image.
     max_depth_m: 5.5
     base_min_x_m: 0.30
     base_max_x_m: 4.75

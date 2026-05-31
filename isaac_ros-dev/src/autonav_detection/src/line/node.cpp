@@ -57,7 +57,7 @@ public:
 		this->declare_parameter("line_hold_timeout_ms", 8000);
 		this->declare_parameter("motion_cache_hold_ms", 8000);
 		this->declare_parameter("line_memory_max_points", 12000);
-		this->declare_parameter("roi_min_y_fraction", 0.667);
+		this->declare_parameter("roi_min_y_fraction", 0.45);
 		this->declare_parameter("max_depth_m", 6.0);
 		this->declare_parameter("base_min_x_m", -0.25);
 		this->declare_parameter("base_max_x_m", 5.0);
