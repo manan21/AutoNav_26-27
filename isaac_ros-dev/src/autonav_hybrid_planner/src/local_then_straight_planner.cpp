@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nav2_costmap_2d/cost_values.hpp"
@@ -25,6 +27,73 @@ double distanceBetween(
   const double dy = b.pose.position.y - a.pose.position.y;
   return std::hypot(dx, dy);
 }
+
+bool pointInPolygon(double x, double y, const std::vector<std::pair<double, double>> & polygon)
+{
+  bool inside = false;
+  const size_t n = polygon.size();
+  if (n < 3) {
+    return false;
+  }
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    const double xi = polygon[i].first;
+    const double yi = polygon[i].second;
+    const double xj = polygon[j].first;
+    const double yj = polygon[j].second;
+    const bool crosses = ((yi > y) != (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// RAII helper that clears a set of costmap cells to FREE_SPACE on construction
+// and restores their original cost on destruction. The caller must hold the
+// costmap mutex for the guard's whole lifetime (see createPlan) so the
+// clear/plan/restore cycle is atomic with respect to the costmap update thread.
+class FootprintClearGuard
+{
+public:
+  FootprintClearGuard(
+    nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<unsigned int> & cells)
+  : costmap_(costmap)
+  {
+    if (!costmap_ || cells.empty()) {
+      return;
+    }
+    unsigned char * char_map = costmap_->getCharMap();
+    const unsigned int map_size = costmap_->getSizeInCellsX() * costmap_->getSizeInCellsY();
+    saved_.reserve(cells.size());
+    for (const unsigned int idx : cells) {
+      if (idx >= map_size) {
+        continue;
+      }
+      saved_.emplace_back(idx, char_map[idx]);
+      char_map[idx] = nav2_costmap_2d::FREE_SPACE;
+    }
+  }
+
+  ~FootprintClearGuard()
+  {
+    if (!costmap_ || saved_.empty()) {
+      return;
+    }
+    unsigned char * char_map = costmap_->getCharMap();
+    for (const auto & entry : saved_) {
+      char_map[entry.first] = entry.second;
+    }
+  }
+
+  FootprintClearGuard(const FootprintClearGuard &) = delete;
+  FootprintClearGuard & operator=(const FootprintClearGuard &) = delete;
+
+private:
+  nav2_costmap_2d::Costmap2D * costmap_;
+  std::vector<std::pair<unsigned int, unsigned char>> saved_;
+};
 
 }  // namespace
 
@@ -179,6 +248,28 @@ nav_msgs::msg::Path LocalThenStraightPlanner::createPlan(
     return empty;
   }
 
+  // The robot physically occupies its current footprint, so any lethal/inscribed
+  // cost under the body is stale (e.g. a detected line the robot is straddling).
+  // Clear those cells for the duration of this plan so a start footprint that
+  // touches cost can never abort planning ("Starting point in lethal space").
+  // Cost ahead of the robot is untouched, so the path stays footprint-aware.
+  //
+  // Hold the costmap mutex across index computation, clearing, the near-field
+  // plan, and restoration so the whole cycle is atomic with the costmap update
+  // thread. The mutex is recursive, so SmacPlannerLattice re-locking it
+  // internally is safe. Declaration order matters: the guard restores cells in
+  // its destructor before costmap_lock unlocks (locals destruct in reverse).
+  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> costmap_lock;
+  std::vector<unsigned int> footprint_cells;
+  if (costmap_) {
+    costmap_lock =
+      std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t>(*costmap_->getMutex());
+    footprint_cells = footprintCellIndices(
+      start.pose.position.x, start.pose.position.y,
+      quaternionToYaw(start.pose.orientation));
+  }
+  const FootprintClearGuard start_footprint_guard(costmap_, footprint_cells);
+
   const geometry_msgs::msg::PoseStamped planning_start = choosePlanningStart(start);
   const double goal_distance = distanceBetween(planning_start, goal);
   if (goal_distance < 1e-3) {
@@ -275,6 +366,66 @@ bool LocalThenStraightPlanner::lineIsBlocked(
     }
   }
   return false;
+}
+
+std::vector<unsigned int> LocalThenStraightPlanner::footprintCellIndices(
+  double wx, double wy, double yaw) const
+{
+  std::vector<unsigned int> cells;
+  if (!costmap_) {
+    return cells;
+  }
+
+  const std::vector<geometry_msgs::msg::Point> footprint =
+    costmap_ros_ ? costmap_ros_->getRobotFootprint() : std::vector<geometry_msgs::msg::Point>();
+
+  if (footprint.size() < 3) {
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    if (costmap_->worldToMap(wx, wy, mx, my)) {
+      cells.push_back(costmap_->getIndex(mx, my));
+    }
+    return cells;
+  }
+
+  const double cos_yaw = std::cos(yaw);
+  const double sin_yaw = std::sin(yaw);
+  std::vector<std::pair<double, double>> polygon;
+  polygon.reserve(footprint.size());
+  double min_x = std::numeric_limits<double>::infinity();
+  double min_y = std::numeric_limits<double>::infinity();
+  double max_x = -std::numeric_limits<double>::infinity();
+  double max_y = -std::numeric_limits<double>::infinity();
+  for (const auto & p : footprint) {
+    const double x = wx + p.x * cos_yaw - p.y * sin_yaw;
+    const double y = wy + p.x * sin_yaw + p.y * cos_yaw;
+    polygon.emplace_back(x, y);
+    min_x = std::min(min_x, x);
+    min_y = std::min(min_y, y);
+    max_x = std::max(max_x, x);
+    max_y = std::max(max_y, y);
+  }
+
+  int lo_x = 0;
+  int lo_y = 0;
+  int hi_x = 0;
+  int hi_y = 0;
+  costmap_->worldToMapEnforceBounds(min_x, min_y, lo_x, lo_y);
+  costmap_->worldToMapEnforceBounds(max_x, max_y, hi_x, hi_y);
+
+  for (int my = lo_y; my <= hi_y; ++my) {
+    for (int mx = lo_x; mx <= hi_x; ++mx) {
+      double cx = 0.0;
+      double cy = 0.0;
+      costmap_->mapToWorld(
+        static_cast<unsigned int>(mx), static_cast<unsigned int>(my), cx, cy);
+      if (pointInPolygon(cx, cy, polygon)) {
+        cells.push_back(
+          costmap_->getIndex(static_cast<unsigned int>(mx), static_cast<unsigned int>(my)));
+      }
+    }
+  }
+  return cells;
 }
 
 bool LocalThenStraightPlanner::footprintIsBlocked(double wx, double wy, double yaw) const

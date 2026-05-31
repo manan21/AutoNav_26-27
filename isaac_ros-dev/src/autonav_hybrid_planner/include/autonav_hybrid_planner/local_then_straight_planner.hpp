@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_core/global_planner.hpp"
@@ -66,6 +67,11 @@ private:
   bool footprintIsBlocked(double wx, double wy, double yaw) const;
 
   bool lineIsBlocked(double x0, double y0, double x1, double y1) const;
+
+  // Cells covered by the robot footprint at a world pose+yaw, used to clear
+  // stale cost the body is sitting on before planning so a start whose
+  // footprint touches cost can never abort the plan.
+  std::vector<unsigned int> footprintCellIndices(double wx, double wy, double yaw) const;
 
   static double quaternionToYaw(const geometry_msgs::msg::Quaternion & q);
 
