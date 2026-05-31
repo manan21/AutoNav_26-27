@@ -200,15 +200,23 @@ public:
 			depth_buffer_.push_back(msg);
 			trimImageBuffer(depth_buffer_);
 		};
+
+		auto camera_qos = rclcpp::QoS(rclcpp::KeepLast(5));
+		camera_qos.best_effort();
+		camera_qos.durability_volatile();
+		auto camera_info_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+		camera_info_qos.best_effort();
+		camera_info_qos.durability_volatile();
 		
 		_zed_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			camera_topic, 10, get_latest_msg);
+			camera_topic, camera_qos, get_latest_msg);
 
 		_zed_depth_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			depth_camera_topic, 10, get_latest_depth_msg);
+			depth_camera_topic, camera_qos, get_latest_depth_msg);
 
 		_camera_model_sub = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-			camera_info_topic, 1, std::bind(&LineDetectorNode::cameraInfoCallback, this, std::placeholders::_1));
+			camera_info_topic, camera_info_qos,
+			std::bind(&LineDetectorNode::cameraInfoCallback, this, std::placeholders::_1));
 
 		_odom_sub = this->create_subscription<nav_msgs::msg::Odometry>(
 			odom_topic, 10, std::bind(&LineDetectorNode::odomCallback, this, std::placeholders::_1));
