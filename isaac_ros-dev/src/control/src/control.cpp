@@ -36,14 +36,14 @@ class ControlNode : public rclcpp::Node {
         this->declare_parameter("controller_topic", "joy");
         this->declare_parameter("encoder_topic", "encoders");
         this->declare_parameter("path_planning_topic", "cmd_vel");
-        // Autonomous turn slowdown. Preserve the controller's commanded
-        // yaw rate, but reduce forward progress as |angular.z| rises so
-        // the robot does not overrun newly visible hazards during turns.
+        // Autonomous turn slowdown. Scale linear.x and angular.z together
+        // as turn demand rises, preserving the controller's turn radius while
+        // reducing the speed of the maneuver.
         // Live-tunable via `ros2 param set /control_node ...`.
         this->declare_parameter("turn_slowdown_enabled", true);
-        this->declare_parameter("turn_slowdown_start_angular_rad_s", 0.20);
-        this->declare_parameter("turn_slowdown_full_angular_rad_s", 0.65);
-        this->declare_parameter("turn_slowdown_min_linear_scale", 0.40);
+        this->declare_parameter("turn_slowdown_start_angular_rad_s", 0.35);
+        this->declare_parameter("turn_slowdown_full_angular_rad_s", 0.85);
+        this->declare_parameter("turn_slowdown_min_linear_scale", 0.60);
         // Autonomous motor deadband compensation. Nav2's small nonzero
         // /cmd_vel commands are still valid motion requests, but the
         // RoboteQ + drivetrain can sit below static-friction threshold.
@@ -852,10 +852,10 @@ class ControlNode : public rclcpp::Node {
                 }
             }
 
-            // Reduce forward progress during harder turns while keeping
-            // the commanded yaw rate untouched. Only applies to
-            // forward-driving autonomous commands; reverse and rotate-
-            // in-place behavior are intentionally left alone.
+            // Slow harder forward turns without changing curvature. Scaling
+            // linear.x alone makes the physical turn tighter than Nav2's
+            // planned command and can create left/right correction cycles.
+            // Reverse and rotate-in-place behavior are intentionally left alone.
             if (this->get_parameter("turn_slowdown_enabled").as_bool() &&
                 linear_move > 0.0f) {
                 const double start_angular = std::max(
@@ -870,21 +870,23 @@ class ControlNode : public rclcpp::Node {
                     1.0);
                 const double abs_angular = std::abs(static_cast<double>(angular_move));
 
-                double linear_scale = 1.0;
+                double motion_scale = 1.0;
                 if (abs_angular > start_angular) {
                     if (full_angular <= start_angular) {
-                        linear_scale = min_linear_scale;
+                        motion_scale = min_linear_scale;
                     } else {
                         const double blend = std::clamp(
                             (abs_angular - start_angular) / (full_angular - start_angular),
                             0.0,
                             1.0);
-                        linear_scale = 1.0 + blend * (min_linear_scale - 1.0);
+                        motion_scale = 1.0 + blend * (min_linear_scale - 1.0);
                     }
                 }
 
                 linear_move = static_cast<float>(
-                    static_cast<double>(linear_move) * linear_scale);
+                    static_cast<double>(linear_move) * motion_scale);
+                angular_move = static_cast<float>(
+                    static_cast<double>(angular_move) * motion_scale);
             }
 
             left_wheel_speed = linear_move - ( angular_move * (WHEEL_BASE/2));

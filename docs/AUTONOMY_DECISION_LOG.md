@@ -355,6 +355,27 @@ Do not repeat:
 Next check:
 - Pull and relaunch Nav2 on the Jetson, then verify live `/controller_server` `FollowPath.vx_max`, `FollowPath.vx_std`, `/velocity_smoother` `max_velocity`, and measured `/cmd_vel` during a straight open-lane run.
 
+### 2026-05-31 - Damp Side-To-Side Path-Following Rocking
+
+Status: Accepted
+Area: real robot, MPPI control, velocity smoothing, motor bridge
+Related commits: pending
+Evidence: Operator report that perception and planning are stable, but the robot rocks left/right while following the path.
+
+Decision:
+- Keep the 0.50 m/s forward cap.
+- Restore the less aggressive MPPI path-following tune: `vx_std=0.25`, `wz_std=0.45`, `vx_min=0.0`, lower path/follow/prefer-forward weights, and `retry_attempt_limit=2`.
+- Reduce velocity-smoother angular acceleration/deceleration to `+/-1.8 rad/s^2`.
+- Change `control_node` turn slowdown to scale `linear.x` and `angular.z` together, preserving Nav2's intended turn radius.
+
+Why:
+- Higher yaw sampling and path-follow weights can make MPPI over-correct around the centerline.
+- Linear-only slowdown changes curvature after Nav2 has optimized the command, making the physical robot turn tighter than the controller predicted.
+- Angular acceleration limiting damps rapid sign flips in `/cmd_vel.angular.z` without lowering the straight-line speed cap.
+
+Next check:
+- Live robot A/B on a straight or gently curved course with `/cmd_vel_nav`, `/cmd_vel`, `/local_ekf/odom`, and `/plan` recorded. Watch for reduced angular sign-flip amplitude without repeated recoveries or command gaps.
+
 ## Open Items To Track
 
 - Add randomized obstacle course variants while preserving the fixed 5 ft canonical course.

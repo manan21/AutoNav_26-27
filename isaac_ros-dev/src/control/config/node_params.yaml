@@ -10,14 +10,13 @@ control_node:
     controller_topic: "joy"
     encoder_topic: "encoders"
     path_planning_topic: "cmd_vel"
-    # Autonomous turn slowdown. Preserve the planner's angular.z, but
-    # reduce forward progress as turn demand rises so the robot advances
-    # less during hard turns and gives perception more time to react.
+    # Autonomous turn slowdown. Scale linear.x and angular.z together so
+    # harder turns run slower without changing the turn radius Nav2 chose.
     # Live-tunable via `ros2 param set /control_node ...`.
     turn_slowdown_enabled: true
-    turn_slowdown_start_angular_rad_s: 0.20   # |angular.z| at or below this -> no linear slowdown
-    turn_slowdown_full_angular_rad_s: 0.65    # |angular.z| at or above this -> full slowdown applied
-    turn_slowdown_min_linear_scale: 0.40      # forward cmd bottoms out at 40% during hardest turns
+    turn_slowdown_start_angular_rad_s: 0.35   # |angular.z| at or below this -> no slowdown
+    turn_slowdown_full_angular_rad_s: 0.85    # |angular.z| at or above this -> full slowdown applied
+    turn_slowdown_min_linear_scale: 0.60      # linear and angular cmds bottom out at 60%
     # Autonomous motor deadband compensation. Nav2 may command small
     # nonzero /cmd_vel values that are valid trajectory requests but
     # below the drivetrain's static-friction threshold. Keep exact zero

@@ -88,9 +88,12 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 | `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` m/s | Hard cap on reverse | Leave lower unless deliberately testing faster reverse/recovery motion |
 | `velocity_smoother.max_accel[0]` | 🟡 | `2.5` m/s² | Smoother linear accel cap | Higher → snappier ramp-up; retune with MPPI samples and chatter checks. |
 | `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
+| `velocity_smoother.max_accel[2]` | 🟡 | `1.8` rad/s² | Smoother angular accel cap | Lower → damps left/right yaw reversals; too low makes turns sluggish |
+| `velocity_smoother.max_decel[2]` | 🟡 | `-1.8` rad/s² | Smoother angular decel cap | Pair with angular max_accel |
 | `controller_server.controller_frequency` | 🟡 | `20.0` Hz | MPPI control tick rate | Higher → more responsive, more CPU |
 | `controller_server.FollowPath.vx_max` | ⚠️ | `0.50` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
 | `controller_server.FollowPath.vx_std` | ⚠️ | `0.25` m/s | MPPI forward sampling spread | Must be wide enough for MPPI to explore the intended cap; `0.12` still behaved like a ~0.20 m/s controller |
+| `controller_server.FollowPath.wz_std` | 🟡 | `0.45` rad/s | MPPI angular sampling spread | Higher → more aggressive yaw exploration, more rocking risk |
 | `controller_server.FollowPath.vx_min` | 🟡 | `0.0` m/s | MPPI reverse sampling cap | Current local controller is forward-only; reverse is handled by `breadcrumb_reverse` |
 | `controller_server.FollowPath.vy_max` | 🔴 | `0.0` m/s | Lateral sampling cap | Must remain zero for differential drive |
 | `controller_server.FollowPath.wz_max` | 🟡 | `1.0` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |
@@ -303,6 +306,10 @@ Autonomous deadband compensation is applied after `cmd_vel` is converted to per-
 
 | Parameter | Status | Default | Effect | Notes |
 |---|---|---|---|---|
+| `turn_slowdown_enabled` | 🟡 | `true` | Enables autonomous forward-turn slowdown | Scales linear.x and angular.z together so Nav2's turn radius is preserved |
+| `turn_slowdown_start_angular_rad_s` | 🟡 | `0.35` rad/s | Yaw-rate threshold where slowdown begins | Below this, commands pass through unchanged |
+| `turn_slowdown_full_angular_rad_s` | 🟡 | `0.85` rad/s | Yaw-rate threshold where full slowdown applies | Keep above start threshold |
+| `turn_slowdown_min_linear_scale` | 🟡 | `0.60` | Minimum scale for both linear.x and angular.z during forward turns | Lower slows hard turns more; do not scale linear-only |
 | `auto_deadband_comp_enabled` | ⚠️ | `true` | Enables autonomous-only minimum effective motor command | Does not affect manual joystick or exact zero stop commands |
 | `auto_deadband_min_motor_arg` | ⚠️ | `6.5` | Minimum `motors.move()` argument for each nonzero wheel command | Raise toward `7.5` if the robot still twitches; lower toward `5.5` if turns become too abrupt |
 | `auto_deadband_apply_below_motor_arg` | ⚠️ | `6.5` | Only commands below this magnitude are lifted | Keep equal to `auto_deadband_min_motor_arg` unless deliberately shaping the transition |

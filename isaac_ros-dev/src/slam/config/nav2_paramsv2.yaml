@@ -138,15 +138,14 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 1200
-      # Pair with vx_max. Raising the cap to 0.50 without widening this
-      # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
-      # open-lane sim; 0.25 lets the optimizer actually explore/use the new
-      # speed while preserving canonical 5 ft gap safety in regression.
-      vx_std: 0.35
+      # Pair with vx_max. 0.25 is wide enough for MPPI to use the 0.50 m/s
+      # cap, while avoiding the twitchier high-spread tune that over-corrects
+      # around the path centerline.
+      vx_std: 0.25
       vy_std: 0.01
-      wz_std: 0.70
+      wz_std: 0.45
       vx_max: 0.50
-      vx_min: 0.04
+      vx_min: 0.0
       vy_max: 0.0
       wz_max: 1.0
       iteration_count: 1
@@ -156,7 +155,7 @@ controller_server:
       gamma: 0.015
       motion_model: "DiffDrive"
       visualize: false
-      retry_attempt_limit: 5
+      retry_attempt_limit: 2
       reset_period: 1.0
       regenerate_noises: false
       TrajectoryVisualizer:
@@ -180,12 +179,12 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 10.0
+        cost_weight: 6.0
         threshold_to_consider: 0.5
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 1.6
+        cost_weight: 3.2
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -194,7 +193,7 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 12.0
+        cost_weight: 8.0
         max_path_occupancy_ratio: 0.12
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -203,7 +202,7 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 14.0
+        cost_weight: 8.0
         offset_from_furthest: 4
         threshold_to_consider: 1.2
       PathAngleCritic:
@@ -689,11 +688,13 @@ velocity_smoother:
     # ────────────────────────────────────────────────────────────────
     # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
     # GPS-waypoint and AutoNav runs; drop to 0.25 m/s for in-house lab
-    # tests near people / equipment.
+    # tests near people / equipment. Angular acceleration is intentionally
+    # softer than the Nav2 default so rapid left/right yaw reversals are
+    # damped before they reach the motor bridge.
     max_velocity: [0.50, 0.0, 1.0]
     min_velocity: [-0.25, 0.0, -1.0]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    max_accel: [2.5, 0.0, 1.8]
+    max_decel: [-2.5, 0.0, -1.8]
     # /local_ekf/odom is the EKF-fused output. Only matters if feedback
     # is switched away from OPEN_LOOP (the current setting at line above
     # ignores this topic).
