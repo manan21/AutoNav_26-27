@@ -7,6 +7,13 @@
 #   -r             relative mode: x/y are desired nav_center travel in meters,
 #                  yaw is relative to the current nav_center heading
 #   yaw_degrees    defaults to 0 (facing +x)
+#
+# Negative coordinates: getopts-style parsers would eat a leading "-1.302"
+# as an unknown flag. Two supported forms:
+#   ./send_goal.sh -r "-1.302 9.435"       # quote the pair as one arg
+#   ./send_goal.sh -r -- -1.302 9.435      # standard end-of-options sentinel
+# Bare negative numbers are also recognized in the parsing loop (see -[0-9]*
+# clause below). The GUI uses the quoted form via _exit_local_goal_mode.
 
 RELATIVE=false
 TRANSPORT=topic
@@ -18,6 +25,7 @@ usage() {
   echo "  --action       send direct /navigate_to_pose action goal"
   echo "  --feedback     show action feedback when using --action"
   echo "  -r             goal is relative to the robot's current pose"
+  echo "  For negative coords, quote them: $0 -r \"-1.302 9.435\""
 }
 
 while [ $# -gt 0 ]; do
@@ -46,6 +54,10 @@ while [ $# -gt 0 ]; do
       shift
       break
       ;;
+    -[0-9]*|-.[0-9]*)
+      # Negative numeric literal — treat as positional, not a flag.
+      break
+      ;;
     -*)
       echo "Unknown option: $1" >&2
       usage
@@ -56,6 +68,16 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# Allow the operator to pass the coordinate pair (and optional yaw) as a
+# single quoted positional, e.g. `-r "-1.302 9.435"`. Without this the
+# leading minus survives quoting through the shell intact but the script
+# only sees a single $1 = "-1.302 9.435". Split on whitespace so the rest
+# of the script can read $1/$2/$3 normally.
+if [ $# -eq 1 ] && [[ "$1" == *[[:space:]]* ]]; then
+  # shellcheck disable=SC2086
+  set -- $1
+fi
 
 if [ $# -lt 2 ]; then
   usage
@@ -193,13 +215,17 @@ PYEOF
   exit $?
 fi
 
-# Publish to /goal_pose with a long-lived publisher. Both bt_navigator
-# (which translates the topic into a NavigateToPose action) and
-# map_padder (which extends the global-costmap corridor toward the goal)
-# subscribe here — if map_padder misses the message, the goal lands in a
-# LETHAL region and the planner can't path into it. We therefore wait
-# for BOTH expected subscribers, then hold the publisher alive long
-# enough for RELIABLE delivery to ACK before tearing down.
+# Publish to /goal_pose with a long-lived publisher. bt_navigator is
+# the only required subscriber — it's what translates the topic into a
+# NavigateToPose action. map_padder also subscribes (to extend the
+# global-costmap corridor toward the goal), but it's not load-bearing
+# for kicking off NavigateToPose, and waiting on it can delay legitimate
+# publishes by the full WAIT_FOR_SUB_TIMEOUT_S when map_padder is slow
+# to match (which is also what the GPS handler hits on cold-start). If
+# map_padder isn't matched yet, it'll catch the next /map_padded
+# republish driven by the corridor's plan / robot motion — losing this
+# one message just means the corridor lags by one tick, not that the
+# planner can't path. We therefore wait for ONE subscriber only.
 python3 - "$X" "$Y" "$YAW_DEG" <<'PYEOF'
 import math, sys, time
 import rclpy
@@ -211,9 +237,9 @@ x = float(sys.argv[1])
 y = float(sys.argv[2])
 yaw_deg = float(sys.argv[3])
 
-# bt_navigator + map_padder. Raise if more /goal_pose subscribers are
-# added; partial delivery presents as silent path-planning failure.
-EXPECTED_SUB_COUNT = 2
+# bt_navigator only — the planner-trigger subscriber. map_padder is
+# best-effort: it'll catch up via /nav_goal or the next plan tick.
+EXPECTED_SUB_COUNT = 1
 WAIT_FOR_SUB_TIMEOUT_S = 10.0
 POST_PUBLISH_SPIN_S = 3.0
 

@@ -3854,7 +3854,10 @@ class HudWindow(QMainWindow):
         self._odom_canvas.draw_idle()
         self._update_selection()
         if send:
-            args = f"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"
+            # Quote the coord pair so negative values (e.g. x=-1.302)
+            # survive send_goal.sh's flag parser. The script splits a
+            # single whitespace-bearing positional back into x/y.
+            args = f'"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"'
             self._run_one_shot_script(
                 label="Send Goal",
                 script="./config/send_goal.sh",
@@ -3984,10 +3987,25 @@ class HudWindow(QMainWindow):
         label so the terminal display shows the output. The Popen is
         kept in _process_objects so _poll_process_output reaps it when
         it exits.
+
+        If a prior process under the same label is still running, kill
+        it first. For ``Send GPS`` this lets send_GPS_waypoint.sh's
+        SIGINT trap issue ``ros2 action cancel`` against the running
+        /navigate_to_waypoint goal, so the next goal is accepted clean
+        instead of arriving as a preempt and looking like the prior
+        "failed". Same logic applies to Send Goal.
         """
         if not self._container_connected:
             self._gui_log_msg(f"Cannot run {label}: container not connected")
             return
+
+        prior = self._process_objects.get(label)
+        if prior is not None and prior.poll() is None:
+            self._gui_log_msg(f"{label}: cancelling prior goal before resend")
+            kill_thread = self._kill_process(prior, label)
+            if kill_thread is not None:
+                kill_thread.join(timeout=3.0)
+            self._process_objects.pop(label, None)
 
         # Shell-safe arg pass-through. The args string is appended
         # verbatim to the script invocation inside the docker exec
