@@ -285,14 +285,14 @@ __global__ void __project_line_pixels_kernel(
 // dim3 block (16,16,1)
 // dim3 grid(COLS, ROWS)
 __global__ void __cerias_kernel (
-        float *gray_img,
+        const uint8_t *gray_u8,
         Npp32f *integral,
         Npp64f *integral_sq,
-        uint8_t *brightness_mask,
         int2 *output,
         int *counter,
         int width, int height,
         int half_window,
+        float brightness_threshold,
         float sigma_threshold,
         float mew_threshold
     )
@@ -301,8 +301,12 @@ __global__ void __cerias_kernel (
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
 
-    // coordinates not in brightness mask, pixel not in line
-    if (x >= width || y >= height || !brightness_mask[y * width + x])
+    // Brightness pre-gate computed on-GPU from the uploaded grayscale
+    // image (equivalent to the old host cv::threshold > brightness mask).
+    // Pixels at/below threshold are not line candidates. ROI rows are
+    // already zeroed on the host before upload, so they fail here too.
+    if (x >= width || y >= height ||
+        static_cast<float>(gray_u8[y * width + x]) <= brightness_threshold)
         return;
 
     // assemble the window
@@ -339,14 +343,14 @@ __global__ void __cerias_kernel (
 
 }
 
-extern "C" void cerias_kernel(float * gray_img,
+extern "C" void cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             uint8_t * mask,
                              int2 * output,
                              int * counter,
                              int width, int height,
                              int half_window,
+                             float brightness_threshold,
                              float sigma_threshold,
                              float mew_threshold)
 {
@@ -360,12 +364,12 @@ extern "C" void cerias_kernel(float * gray_img,
 
     __cerias_kernel<<<grid, block>>>(
 
-        gray_img,
+        gray_u8,
         integral, integral_sq,
-        mask,
         output, counter,
         width, height,
         half_window,
+        brightness_threshold,
         sigma_threshold,
         mew_threshold
 

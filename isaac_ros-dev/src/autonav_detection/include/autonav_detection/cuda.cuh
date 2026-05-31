@@ -13,29 +13,31 @@
 //
 // Per-pixel local statistics inside a (2 * half_window + 1)^2 window
 // computed from the integral images. A pixel passes the test (and gets
-// emitted as a line pixel) iff the local stddev < sigma_threshold AND
-// local mean > mew_threshold. Defaults are wired through node.cpp from
-// the line_detector.yaml config; they are not compile-time constants.
-__global__ void __cerias_kernel(float * gray_img,
+// emitted as a line pixel) iff it is brighter than brightness_threshold
+// AND its local stddev < sigma_threshold AND local mean > mew_threshold.
+// The brightness pre-gate reads the uploaded grayscale image directly on
+// the GPU; no host-side cv::threshold/mask upload is needed. Defaults are
+// wired through node.cpp from line_detector.yaml; not compile-time consts.
+__global__ void __cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             uint8_t * mask,
                              int2 * output,
                              int * counter,
                              int width, int height,
                              int half_window,
+                             float brightness_threshold,
                              float sigma_threshold,
                              float mew_threshold);
 
 
-extern "C" void cerias_kernel(float * gray_img,
+extern "C" void cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             uint8_t * mask,
                              int2 * output,
                              int * counter,
                              int width, int height,
                              int half_window,
+                             float brightness_threshold,
                              float sigma_threshold,
                              float mew_threshold);
 

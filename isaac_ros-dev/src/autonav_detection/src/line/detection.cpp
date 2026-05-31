@@ -35,8 +35,6 @@ struct LineDeviceBuffers
     Npp8u   *u8_input    = nullptr;
     Npp32f  *integral    = nullptr;
     Npp64f  *integral_sq = nullptr;
-    float   *float_input = nullptr;
-    uint8_t *mask        = nullptr;
     int2    *output      = nullptr;
     int     *counter     = nullptr;
 
@@ -60,14 +58,23 @@ bool LineDeviceBuffers::ensure(int new_w, int new_h)
                    int_cells * sizeof(Npp32f)) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&integral_sq),
                    int_cells * sizeof(Npp64f)) != cudaSuccess) { freeAll(); return false; }
-    if (cudaMalloc(reinterpret_cast<void**>(&float_input),
-                   total * sizeof(float)) != cudaSuccess) { freeAll(); return false; }
-    if (cudaMalloc(reinterpret_cast<void**>(&mask),
-                   total) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&output),
                    total * sizeof(int2)) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&counter),
                    sizeof(int)) != cudaSuccess) { freeAll(); return false; }
+
+    // Zero the integral buffers once, here. nppiSqrIntegral rewrites the
+    // full interior every frame and the zero top-row/left-column border
+    // never changes, so the previous per-frame memsets of these (~6 MB
+    // combined at 540x960) were redundant work on the hot path.
+    if (cudaMemset(integral, 0, int_cells * sizeof(Npp32f)) != cudaSuccess) {
+        freeAll();
+        return false;
+    }
+    if (cudaMemset(integral_sq, 0, int_cells * sizeof(Npp64f)) != cudaSuccess) {
+        freeAll();
+        return false;
+    }
 
     width = new_w;
     height = new_h;
@@ -79,8 +86,6 @@ void LineDeviceBuffers::freeAll()
     if (u8_input)    { cudaFree(u8_input);    u8_input    = nullptr; }
     if (integral)    { cudaFree(integral);    integral    = nullptr; }
     if (integral_sq) { cudaFree(integral_sq); integral_sq = nullptr; }
-    if (float_input) { cudaFree(float_input); float_input = nullptr; }
-    if (mask)        { cudaFree(mask);        mask        = nullptr; }
     if (output)      { cudaFree(output);      output      = nullptr; }
     if (counter)     { cudaFree(counter);     counter     = nullptr; }
     width = 0;
@@ -94,6 +99,7 @@ std::pair<int2 *, int *> filter_line_components(
     int count,
     int width,
     int height,
+    int roi_min_y,
     int * kept_component_count)
 {
     int *filtered_count = new int(0);
@@ -103,20 +109,28 @@ std::pair<int2 *, int *> filter_line_components(
         return std::make_pair(filtered_points, filtered_count);
     }
 
+    // Connected components only need to run over the ROI band. The top
+    // rows are zeroed before detection so the kernel never emits pixels
+    // there; scanning them in CC is wasted work (~45% of the image at the
+    // default roi_min_y_fraction). Restrict the labeling to
+    // [roi_y, height) and offset y coordinates accordingly.
+    const int roi_y = std::clamp(roi_min_y, 0, height - 1);
+    const int roi_h = height - roi_y;
+
     // Persist the component_mask between frames; only allocate on size
     // change. cv::Mat::zeros allocates fresh memory every frame; setTo(0)
-    // reuses the buffer. At 540x960 this is ~500 KB saved + a memset.
+    // reuses the buffer. The mask is sized to the ROI band only.
     static cv::Mat component_mask;
-    if (component_mask.rows != height || component_mask.cols != width ||
+    if (component_mask.rows != roi_h || component_mask.cols != width ||
         component_mask.type() != CV_8UC1) {
-        component_mask = cv::Mat::zeros(height, width, CV_8UC1);
+        component_mask = cv::Mat::zeros(roi_h, width, CV_8UC1);
     } else {
         component_mask.setTo(0);
     }
     for (int i = 0; i < count; ++i) {
         const int x = points[i].x;
-        const int y = points[i].y;
-        if (0 <= x && x < width && 0 <= y && y < height) {
+        const int y = points[i].y - roi_y;
+        if (0 <= x && x < width && 0 <= y && y < roi_h) {
             component_mask.at<uint8_t>(y, x) = 255;
         }
     }
@@ -150,8 +164,8 @@ std::pair<int2 *, int *> filter_line_components(
     kept_points.reserve(count);
     for (int i = 0; i < count; ++i) {
         const int x = points[i].x;
-        const int y = points[i].y;
-        if (0 <= x && x < width && 0 <= y && y < height) {
+        const int y = points[i].y - roi_y;
+        if (0 <= x && x < width && 0 <= y && y < roi_h) {
             const int label = labels.at<int>(y, x);
             if (label > 0 && keep_component[label]) {
                 kept_points.push_back(points[i]);
@@ -257,11 +271,13 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
         gray_img.rowRange(0, roi_min_y).setTo(0);
     }
 
-    // get mask
-    cv::Mat mask;
-    cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
+    // The brightness pre-mask is now applied on-GPU inside cerias_kernel
+    // directly from the uploaded grayscale image (see __get_integral_image,
+    // which uploads g_line_bufs.u8_input). No host-side cv::threshold or
+    // mask upload is needed — that removed a full-image host threshold and
+    // a W*H host->device copy per frame.
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Threshold complete, computing integral images");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Computing integral images");
 
     // Pre-allocate persistent CUDA buffers (one-time at startup; the
     // ensure() call is a no-op on subsequent frames as long as the
@@ -295,64 +311,18 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     Npp32f * integral    = g_line_bufs.integral;
     Npp64f * integral_sq = g_line_bufs.integral_sq;
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Integral images computed, uploading float input + mask");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Integral images computed, launching kernel");
 
-    // Convert grayscale to float on host, then upload.
-    cv::Mat gray_float;
-    gray_img.convertTo(gray_float, CV_32F);
-    if (gray_float.empty() || gray_float.data == nullptr) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"), "Float conversion failed");
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-
-    float   *input_image_device = g_line_bufs.float_input;
-    uint8_t *device_mask        = g_line_bufs.mask;
-    int2    *output             = g_line_bufs.output;
-    int     *counter            = g_line_bufs.counter;
-    const size_t total          = static_cast<size_t>(width) * height;
+    const uint8_t *device_gray = g_line_bufs.u8_input;  // uploaded by __get_integral_image
+    int2    *output            = g_line_bufs.output;
+    int     *counter           = g_line_bufs.counter;
 
     cudaError_t err;
 
-    err = cudaMemcpy(input_image_device, gray_float.ptr<float>(),
-                     total * sizeof(float), cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"),
-                     "cudaMemcpy failed for input image: %s",
-                     cudaGetErrorString(err));
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-
-    err = cudaMemcpy(device_mask, mask.ptr<uint8_t>(),
-                     total, cudaMemcpyHostToDevice);
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"),
-                     "cudaMemcpy failed for mask: %s",
-                     cudaGetErrorString(err));
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-
-    // Output buffer and counter must be zeroed every frame (they
-    // accumulate during the kernel).
-    err = cudaMemset(output, 0, total * sizeof(int2));
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"),
-                     "cudaMemset failed for output: %s",
-                     cudaGetErrorString(err));
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
-    }
-
+    // Only the counter needs zeroing each frame. The kernel writes the
+    // output array at atomically-assigned indices [0, counter) and the
+    // host reads back only that many entries, so the W*H*sizeof(int2)
+    // output buffer never needs a per-frame memset (~4 MB at 540x960).
     err = cudaMemset(counter, 0, sizeof(int));
     if (err != cudaSuccess) {
         RCLCPP_ERROR(rclcpp::get_logger("lines"),
@@ -366,14 +336,14 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
     RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernel");
 
-    // Launch kernel
+    // Launch kernel. Brightness gating happens on-GPU from device_gray.
     cerias_kernel(
-        input_image_device,
+        device_gray,
         integral, integral_sq,
-        device_mask,
         output, counter,
         width, height,
         half_window,
+        static_cast<float>(brightness_threshold),
         sigma_threshold,
         mew_threshold
     );
@@ -444,7 +414,7 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
 
     int kept_components = 0;
     auto filtered_results = filter_line_components(
-        output_return, *counter_return, width, height, &kept_components);
+        output_return, *counter_return, width, height, roi_min_y, &kept_components);
     delete[] output_return;
     delete counter_return;
     output_return = filtered_results.first;
@@ -467,6 +437,10 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
             cv::cvtColor(image, raw_bgr, cv::COLOR_GRAY2BGR);
         }
 
+        // The brightness mask is no longer materialized on the host in the
+        // hot path; recompute it here only for the debug dump.
+        cv::Mat mask;
+        cv::threshold(gray_img, mask, brightness_threshold, 255, cv::THRESH_BINARY);
         cv::imwrite(out_dir + "/line_mask.png", mask);
 
         cv::Mat lines_overlay = raw_bgr.clone();
@@ -543,17 +517,9 @@ std::pair<Npp32f *, Npp64f *> __get_integral_image(const cv::Mat &gray_img) {
         throw std::runtime_error(std::string("cudaMemcpy failed: ") + cudaGetErrorString(err));
     }
 
-    const size_t result_size = static_cast<size_t>(height + 1) * (width + 1) * sizeof(Npp32f);
-    err = cudaMemset(result, 0, result_size);
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("cudaMemset failed (integral): ") + cudaGetErrorString(err));
-    }
-
-    const size_t result_sq_size = static_cast<size_t>(height + 1) * (width + 1) * sizeof(Npp64f);
-    err = cudaMemset(result_sq, 0, result_sq_size);
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("cudaMemset failed (integral_sq): ") + cudaGetErrorString(err));
-    }
+    // The integral/integral_sq buffers are zeroed once in
+    // LineDeviceBuffers::ensure(); nppiSqrIntegral below rewrites the full
+    // interior and the zero border is invariant, so no per-frame memset.
 
     // set nsrcstep, ndststep, and roi
     size_t nsrcstep = width * sizeof(Npp8u);

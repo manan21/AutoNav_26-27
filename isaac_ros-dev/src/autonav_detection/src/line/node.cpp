@@ -1583,6 +1583,16 @@ void LineDetectorNode::publishDiagnostics(
 		<< "}";
 	msg.data = out.str();
 	_diagnostics_pub->publish(msg);
+
+	// Also surface the per-stage timing breakdown in the node log so the
+	// pipeline bottleneck is visible without echoing the diagnostics topic.
+	// Throttled to once per second to avoid spamming.
+	RCLCPP_INFO_THROTTLE(
+		get_logger(), *get_clock(), 1000,
+		"timing[ms]: total=%.1f detect=%.1f tf=%.1f ground_proj=%.1f proj=%.1f temporal=%.1f debug=%.1f | raw=%d filt=%d (reason=%s)",
+		stats.total_callback_ms, stats.cuda_detect_ms, stats.tf_lookup_ms,
+		stats.ground_projection_ms, stats.projection_ms, stats.temporal_update_ms,
+		stats.debug_publish_ms, stats.raw_pixels, stats.filtered_pixels, reason);
 }
 
 std::vector<cv::Point> LineDetectorNode::publishedDebugPixels() const
