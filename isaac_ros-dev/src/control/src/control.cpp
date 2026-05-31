@@ -11,6 +11,7 @@
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/int32.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -203,6 +204,11 @@ class ControlNode : public rclcpp::Node {
 
     // Speed publisher for DAQ logging
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speed_pub_;
+
+    // Direct manual-speed setpoint from the HUD's Manual Drive mode
+    // (1-9 keys → 5/10/15/.../45). Only honored when !autonomousMode
+    // so a stray publish can't muck with AUTO driving.
+    rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr manualSpeedSub;
 
     // Debounce for bumper speed changes (500ms between changes)
     std::chrono::steady_clock::time_point last_speed_change_time_{};
@@ -451,6 +457,24 @@ class ControlNode : public rclcpp::Node {
         motors.move(
             command.right_motor_speed * motors.getSpeed() * mult_manual,
             command.left_motor_speed * motors.getSpeed() * mult_manual);
+    }
+
+    // Direct manual-speed setpoint from /manual_speed_setpoint. The
+    // HUD's Manual Drive mode (1-9 keys) publishes a target gear here
+    // so the operator can snap to a known speed instead of waiting on
+    // the bumper ramp (200 ms per +1, ~9 s 0→45). Ignored under AUTO
+    // so a stray publish can't perturb nav2 driving.
+    void manual_speed_callback(const std_msgs::msg::Int32::SharedPtr msg){
+        if (autonomousMode) return;
+        constexpr int kSpeedMin = 0;
+        constexpr int kSpeedMax = 75;
+        const int target = std::clamp(static_cast<int>(msg->data),
+                                      kSpeedMin, kSpeedMax);
+        if (target != motors.getSpeed()) {
+            motors.setSpeed(target);
+            RCLCPP_INFO(this->get_logger(),
+                "manual speed setpoint: %d", target);
+        }
     }
 
     void estop_callback(const std_msgs::msg::String::SharedPtr msg){
@@ -916,6 +940,10 @@ class ControlNode : public rclcpp::Node {
 
 	    
         estop_sub_ = this->create_subscription<std_msgs::msg::String>("/estop", 10, std::bind(&ControlNode::estop_callback, this, std::placeholders::_1));
+
+        manualSpeedSub = this->create_subscription<std_msgs::msg::Int32>(
+            "/manual_speed_setpoint", 10,
+            std::bind(&ControlNode::manual_speed_callback, this, std::placeholders::_1));
 
 
         std::string leftMotorCommand = "!C 1 0\r";

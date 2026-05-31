@@ -20,7 +20,7 @@ try:
     from sensor_msgs.msg import Image, LaserScan, NavSatFix, Imu, PointCloud2, Joy
     from nav_msgs.msg import Odometry, OccupancyGrid, Path
     from geometry_msgs.msg import PoseWithCovarianceStamped
-    from std_msgs.msg import Float32, Int32MultiArray, Bool
+    from std_msgs.msg import Float32, Int32, Int32MultiArray, Bool
     try:
         from sensor_msgs_py import point_cloud2 as _pc2
         _HAS_PC2 = True
@@ -1109,7 +1109,7 @@ class HudWindow(QMainWindow):
         '#ffffff': '#000000',  # title text (full 6-char form)
         '#0f0':    '#0a8800',  # active green text
         '#0af':    '#0a5a9a',  # info blue
-        '#ff0':    '#a06000',  # yellow text status (dots use #ffff00 below)
+        '#ff0':    '#cc5500',  # yellow text status (dots use #ffff00 below)
         '#f44':    '#cc3030',  # red dot
         '#4f4':    '#0db000',  # green dot — distinct from #0f0 so reverse map is bijective
         '#111111': '#f5f5f5',  # mpl axes facecolor
@@ -1120,8 +1120,29 @@ class HudWindow(QMainWindow):
         super().__init__()
         self._ros_node = ros_node
         self.setWindowTitle('AutoNav HUD')
-        self.resize(1920, 720)
-        self.showFullScreen()
+        # Hard kiosk geometry instead of showFullScreen(). The panel is
+        # 1920x720 native; relying on Mutter's fullscreen state has been
+        # unreliable (top bar leaks, bottom clipped) and the display
+        # stack on the Jetson has been reporting a 1920x1080 virtual
+        # framebuffer of which only the top 720 rows reach the panel —
+        # so a 1080-tall fullscreen window loses its bottom 1/3.
+        # Frameless + X11BypassWindowManagerHint takes the window out
+        # from under the WM entirely; we place it at (0,0) at exact
+        # panel size so nothing the compositor does can shift it.
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.X11BypassWindowManagerHint
+        )
+        # Bypassing the WM means it won't size/place/focus the window for us.
+        # Lock size before show() so Qt's geometry path can't drift to the
+        # X server's misreported 1920x1080 framebuffer, then re-pin position
+        # and manually activate + take keyboard focus after show().
+        self.setFixedSize(1920, 720)
+        self.setGeometry(0, 0, 1920, 720)
+        self.show()
+        self.move(0, 0)
+        self.activateWindow()
+        self.raise_()
+        self.setFocus(Qt.ActiveWindowFocusReason)
         self.setCursor(Qt.BlankCursor)
 
         # GUI defaults to light theme. The widget tree is built in dark
@@ -1419,6 +1440,11 @@ class HudWindow(QMainWindow):
 
         # Container connection state
         self._container_connected = False
+        # Sticky "user explicitly disconnected" flag. The 5 Hz health
+        # check auto-connects whenever the container is up AND this flag
+        # is False; the user clicking Disconnect sets it True so we stop
+        # reconnecting until they click Connect again.
+        self._container_user_disconnected = False
         self._container_name = 'koopa-kingdom'
         self._container_workdir = '/autonav/isaac_ros-dev'
         self._container_user = 'admin'
@@ -1852,102 +1878,46 @@ class HudWindow(QMainWindow):
         )
 
         # --- One-shot script runners: send_goal.sh / send_GPS_waypoint.sh ---
-        # Each row is [label | QLineEdit args | Send button]. The button
-        # fires the script (wrapped for the container) with the args
-        # string appended; output is captured into _process_buffers
-        # under the label so it shows up in the terminal display when
-        # the device dot is selected (no dot is wired for these, so the
-        # operator selects via the existing dot UI — output is mostly
-        # informational anyway).
+        # Each is a single button that hands the operator into a temporary
+        # "goal pick" mode. In that mode arrow keys move a crosshair on
+        # the corresponding data-column plot (ODOM for local, GPS map for
+        # GPS); Enter fires the script with the picked coordinates and
+        # Esc cancels. See _enter_local_goal_mode / _enter_gps_goal_mode
+        # and the goal-mode branch in keyPressEvent.
         sep_send = QFrame()
         sep_send.setFrameShape(QFrame.HLine)
         sep_send.setStyleSheet("background-color: #444; border: none; max-height: 1px;")
         sep_send.setFixedHeight(1)
         launch_layout.addWidget(sep_send)
 
-        send_field_style = (
-            "QLineEdit {"
-            "  background-color: #1a1a1a; color: #dcdcdc;"
-            "  border: 1px solid #555; border-radius: 3px;"
-            "  padding: 4px 6px; font-size: 11px; font-family: monospace;"
-            "}"
-            "QLineEdit:focus { border: 1px solid #0af; }"
-        )
         send_btn_style = (
             "QPushButton {"
             "  background-color: #2a2a2a; color: #0af;"
             "  border: 1px solid #0af; border-radius: 4px;"
-            "  padding: 6px 8px; font-size: 11px;"
+            "  padding: 8px 8px; font-size: 11px;"
             "}"
             "QPushButton:hover { background-color: #3a3a3a; }"
             "QPushButton:pressed { background-color: #1a1a1a; }"
         )
-
-        # Selected-state style for the input fields: green border so
-        # the operator can see which row arrow-nav is on. Stored on
-        # self because _update_selection reads it.
-        self._send_field_base_style = send_field_style
-        self._send_field_sel_style = (
-            "QLineEdit {"
-            "  background-color: #1a2a1a; color: #dcdcdc;"
-            "  border: 2px solid #0f0; border-radius: 3px;"
-            "  padding: 3px 5px; font-size: 11px; font-family: monospace;"
-            "}"
-        )
         self._send_btn_base_style = send_btn_style
 
-        send_grid = QGridLayout()
-        send_grid.setSpacing(4)
-
-        lbl_goal = QLabel("Send Goal")
-        lbl_goal.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
-        self._send_goal_input = QLineEdit()
-        self._send_goal_input.setStyleSheet(send_field_style)
-        btn_send_goal = QPushButton("Send")
-        btn_send_goal.setStyleSheet(send_btn_style)
-        btn_send_goal.setFocusPolicy(Qt.NoFocus)
-        btn_send_goal.setFixedWidth(60)
-        btn_send_goal.clicked.connect(self._on_send_goal_clicked)
-        self._send_goal_input.returnPressed.connect(self._on_send_goal_clicked)
-        send_grid.addWidget(lbl_goal, 0, 0)
-        send_grid.addWidget(self._send_goal_input, 0, 1)
-        send_grid.addWidget(btn_send_goal, 0, 2)
-        # Arrow-key nav participation. Up/Down through these in col 0
-        # of the launch-page nav grid. Enter on the QLineEdit focuses
-        # it (for typing); Enter on the button submits. See
-        # _update_selection / keyPressEvent for the QLineEdit-aware
-        # paths.
+        btn_local_goal = QPushButton("Set Local Goal…")
+        btn_local_goal.setStyleSheet(send_btn_style)
+        btn_local_goal.setFocusPolicy(Qt.NoFocus)
+        btn_local_goal.clicked.connect(self._enter_local_goal_mode)
+        launch_layout.addWidget(btn_local_goal)
         self._launch_nav_buttons.append(
-            (self._send_goal_input, "Send Goal Args", send_field_style)
-        )
-        self._launch_nav_buttons.append(
-            (btn_send_goal, "Send", send_btn_style)
+            (btn_local_goal, "Set Local Goal…", send_btn_style)
         )
 
-        lbl_gps = QLabel("Send GPS")
-        lbl_gps.setStyleSheet("border: none; color: #dcdcdc; font-size: 11px;")
-        self._send_gps_input = QLineEdit()
-        self._send_gps_input.setStyleSheet(send_field_style)
-        btn_send_gps = QPushButton("Send")
-        btn_send_gps.setStyleSheet(send_btn_style)
-        btn_send_gps.setFocusPolicy(Qt.NoFocus)
-        btn_send_gps.setFixedWidth(60)
-        btn_send_gps.clicked.connect(self._on_send_gps_clicked)
-        self._send_gps_input.returnPressed.connect(self._on_send_gps_clicked)
-        send_grid.addWidget(lbl_gps, 1, 0)
-        send_grid.addWidget(self._send_gps_input, 1, 1)
-        send_grid.addWidget(btn_send_gps, 1, 2)
+        btn_gps_goal = QPushButton("Set GPS Goal…")
+        btn_gps_goal.setStyleSheet(send_btn_style)
+        btn_gps_goal.setFocusPolicy(Qt.NoFocus)
+        btn_gps_goal.clicked.connect(self._enter_gps_goal_mode)
+        launch_layout.addWidget(btn_gps_goal)
         self._launch_nav_buttons.append(
-            (self._send_gps_input, "Send GPS Args", send_field_style)
+            (btn_gps_goal, "Set GPS Goal…", send_btn_style)
         )
-        self._launch_nav_buttons.append(
-            (btn_send_gps, "Send", send_btn_style)
-        )
-
-        send_grid.setColumnStretch(0, 0)
-        send_grid.setColumnStretch(1, 1)
-        send_grid.setColumnStretch(2, 0)
-        launch_layout.addLayout(send_grid)
 
         launch_layout.addStretch()
 
@@ -2258,13 +2228,13 @@ class HudWindow(QMainWindow):
         lbl_git.setStyleSheet(group_label_style)
         dev_layout.addWidget(lbl_git)
 
-        self._dev_pull_btn = QPushButton("git pull")
+        self._dev_pull_btn = QPushButton("git sync")
         self._dev_pull_btn.setStyleSheet(dev_btn_compact)
         self._dev_pull_btn.setFocusPolicy(Qt.NoFocus)
         self._dev_pull_btn.clicked.connect(self._dev_git_pull)
         dev_layout.addWidget(self._dev_pull_btn)
         self._dev_nav_buttons.append(
-            (self._dev_pull_btn, "git pull", dev_btn_compact)
+            (self._dev_pull_btn, "git sync", dev_btn_compact)
         )
 
         # Branch switching is on its own sub-page (one click deeper) so
@@ -2352,12 +2322,12 @@ class HudWindow(QMainWindow):
         self._dev_branch_grid.setSpacing(4)
         branch_holder = QWidget()
         branch_holder.setLayout(self._dev_branch_grid)
-        branch_scroll = QScrollArea()
-        branch_scroll.setWidgetResizable(True)
-        branch_scroll.setWidget(branch_holder)
-        branch_scroll.setStyleSheet("QScrollArea { border: none; }")
-        branch_scroll.setMinimumHeight(280)
-        branches_layout.addWidget(branch_scroll, stretch=1)
+        self._branch_scroll = QScrollArea()
+        self._branch_scroll.setWidgetResizable(True)
+        self._branch_scroll.setWidget(branch_holder)
+        self._branch_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self._branch_scroll.setMinimumHeight(280)
+        branches_layout.addWidget(self._branch_scroll, stretch=1)
 
         # Back to Developer
         exit_branches_style = (
@@ -2765,6 +2735,29 @@ class HudWindow(QMainWindow):
         self._gps_map_img = None          # numpy RGB array
         self._gps_trail, = self._gps_ax.plot([], [], 'c-', linewidth=1, alpha=0.6)
         self._gps_dot, = self._gps_ax.plot([], [], 'ro', markersize=5, zorder=5)
+        # Goal-pick crosshair + banner. Hidden until the operator enters
+        # GPS goal-pick mode via the launch-page "Set GPS Goal" button.
+        # See _enter_gps_goal_mode / _exit_gps_goal_mode.
+        self._gps_goal_cross, = self._gps_ax.plot(
+            [], [], marker='+', color='#0ff', markersize=18,
+            markeredgewidth=2, linestyle='none', zorder=10,
+        )
+        self._gps_goal_cross.set_visible(False)
+        self._gps_goal_banner = self._gps_ax.text(
+            0.5, 0.02,
+            'GPS GOAL PICK · ←↑↓→ move · ENTER send · ESC cancel',
+            transform=self._gps_ax.transAxes, fontsize=7, color='#0ff',
+            ha='center', va='bottom', family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='#0ff', pad=2),
+        )
+        self._gps_goal_banner.set_visible(False)
+        self._gps_goal_readout = self._gps_ax.text(
+            0.98, 0.02, '', transform=self._gps_ax.transAxes,
+            fontsize=7, color='#0ff', ha='right', va='bottom',
+            family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='none', pad=2),
+        )
+        self._gps_goal_readout.set_visible(False)
         self._gps_canvas.setMinimumSize(50, 50)
         gps_layout.addWidget(self._gps_canvas, stretch=1)
 
@@ -2809,6 +2802,29 @@ class HudWindow(QMainWindow):
             ha='center', va='center', family='monospace',
         )
         self._odom_live_txt.set_visible(False)
+        # Goal-pick crosshair + banner. Hidden until the operator enters
+        # local goal-pick mode via the launch-page "Set Local Goal" button.
+        # See _enter_local_goal_mode / _exit_local_goal_mode.
+        self._odom_goal_cross, = self._odom_ax.plot(
+            [], [], marker='+', color='#0ff', markersize=18,
+            markeredgewidth=2, linestyle='none', zorder=10,
+        )
+        self._odom_goal_cross.set_visible(False)
+        self._odom_goal_banner = self._odom_ax.text(
+            0.5, 0.02,
+            'LOCAL GOAL PICK · ←↑↓→ move · ENTER send · ESC cancel',
+            transform=self._odom_ax.transAxes, fontsize=7, color='#0ff',
+            ha='center', va='bottom', family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='#0ff', pad=2),
+        )
+        self._odom_goal_banner.set_visible(False)
+        self._odom_goal_readout = self._odom_ax.text(
+            0.98, 0.02, '', transform=self._odom_ax.transAxes,
+            fontsize=7, color='#0ff', ha='right', va='bottom',
+            family='monospace',
+            bbox=dict(facecolor='#111111', alpha=0.85, edgecolor='none', pad=2),
+        )
+        self._odom_goal_readout.set_visible(False)
         self._odom_canvas.setMinimumSize(50, 50)
         enc_layout.addWidget(self._odom_canvas, stretch=1)
 
@@ -2968,6 +2984,17 @@ class HudWindow(QMainWindow):
             "QFrame#sensorCell {"
             "  border: 2px solid #0af;"
             "  background-color: #1a2a3a;"
+            "  border-radius: 3px;"
+            "}"
+        )
+        # Goal-pick border for the ODOM / GPS cell while the operator is
+        # placing a crosshair. Cyan to match the crosshair color and
+        # thicker than the nav-selection border so it's unmistakable
+        # even when the cell also happens to be the nav-selected one.
+        self._sensor_goal_style = (
+            "QFrame#sensorCell {"
+            "  border: 3px solid #0ff;"
+            "  background-color: #1a2a2a;"
             "  border-radius: 3px;"
             "}"
         )
@@ -3138,11 +3165,15 @@ class HudWindow(QMainWindow):
         self._process_poll_timer.timeout.connect(self._poll_process_output)
         self._process_poll_timer.start()
 
-        # Container health check — every 5 seconds
+        # Container health check — every 5 seconds. Also does the
+        # auto-connect job (see _check_container_health). Fire one early
+        # check ~1 s after startup so the operator doesn't have to wait
+        # the full 5 s tick for the first auto-connect attempt.
         self._container_health_timer = QTimer()
         self._container_health_timer.setInterval(5000)
         self._container_health_timer.timeout.connect(self._check_container_health)
         self._container_health_timer.start()
+        QTimer.singleShot(1000, self._check_container_health)
 
         # Duplicate-publisher detector — polls topics from config/
         # watched_topics.yaml at 0.1 Hz. Flags device dots red when
@@ -3229,6 +3260,16 @@ class HudWindow(QMainWindow):
         self._nav_last_row = [0, 0, 0, 0]
         self._scrub_mode = False  # True when actively scrubbing with arrows
         self._speed_mode = False  # True when selecting playback speed with arrows
+        # Goal-pick modes hijack arrow keys to move a crosshair on the
+        # ODOM / GPS data-column plot. Coordinates are stored as the
+        # target the operator is currently aiming at (map-frame x/y for
+        # local, lat/lon for GPS). See _enter_*_goal_mode handlers.
+        self._local_goal_mode = False
+        self._gps_goal_mode = False
+        self._local_goal_x = 0.0
+        self._local_goal_y = 0.0
+        self._gps_goal_lat = 0.0
+        self._gps_goal_lon = 0.0
 
         self._sel_frames_r = [' <', '< ']
         self._sel_frames_l = ['> ', ' >']
@@ -3258,15 +3299,25 @@ class HudWindow(QMainWindow):
         # over the layout; _position_auto_badge keeps it pinned to the
         # top-right on resize.
         self._auto_mode = False
+        # Status-pill styling for both themes. ON is a solid green pill
+        # with white text (high contrast, unmistakable). OFF is a ghost
+        # outline with no fill so it doesn't read as a "gray rectangle"
+        # against either dark or light backgrounds. Rgba() values are
+        # intentionally theme-agnostic — _recolor_widget_tree only
+        # translates #rrggbb literals, so we picked colors that read
+        # well in either theme rather than relying on the translate.
         self._auto_badge_on_style = (
-            "color: #0f0; font-size: 13px; font-weight: bold;"
-            " font-family: monospace; background-color: rgba(0, 40, 0, 200);"
-            " border: 1px solid #0f0; border-radius: 4px; padding: 3px 8px;"
+            "color: #ffffff; font-size: 12px; font-weight: bold;"
+            " font-family: monospace; letter-spacing: 1px;"
+            " background-color: #16a834;"
+            " border: none; border-radius: 10px; padding: 2px 10px;"
         )
         self._auto_badge_off_style = (
-            "color: #666; font-size: 13px; font-weight: bold;"
-            " font-family: monospace; background-color: rgba(20, 20, 20, 180);"
-            " border: 1px solid #444; border-radius: 4px; padding: 3px 8px;"
+            "color: #888888; font-size: 12px; font-weight: bold;"
+            " font-family: monospace; letter-spacing: 1px;"
+            " background-color: transparent;"
+            " border: none;"
+            " padding: 2px 10px;"
         )
         self._auto_badge = QLabel("AUTO OFF", central)
         self._auto_badge.setStyleSheet(self._auto_badge_off_style)
@@ -3280,6 +3331,22 @@ class HudWindow(QMainWindow):
         # event loop processes the show + first layout pass, when
         # parent.width() reflects the real geometry.
         QTimer.singleShot(0, self._position_auto_badge)
+
+        # Manual Drive mode — 'M' key toggles a green overlay and routes
+        # arrow keys to synthetic /joy messages (same path the Xbox stick
+        # uses, via control.cpp's tank-drive axes[1]/axes[3] mapping).
+        # Esc also exits. Held arrows are accumulated in _manual_keys;
+        # a 20 Hz timer publishes the resulting Joy. control.cpp gates
+        # /joy on !autonomousMode, so _toggle_manual_mode disengages
+        # AUTO on entry. All state is built lazily in _toggle_manual_mode
+        # / _build_manual_overlay.
+        self._manual_mode = False
+        self._manual_keys = set()
+        self._manual_overlay = None
+        self._MANUAL_STICK_MAG = 0.8   # axis magnitude when a direction key is held
+        self._manual_timer = QTimer(self)
+        self._manual_timer.setInterval(50)  # 20 Hz
+        self._manual_timer.timeout.connect(self._manual_tick)
 
         self._update_selection()
 
@@ -3739,35 +3806,175 @@ class HudWindow(QMainWindow):
                 break
         self._refresh_terminal_display()
 
-    def _on_send_goal_clicked(self):
-        """Run ./config/send_goal.sh with the args from the textfield."""
-        args = self._send_goal_input.text().strip()
-        # Hand focus back to the main window so arrow-key nav resumes
-        # instead of staying trapped inside the QLineEdit.
-        self._send_goal_input.clearFocus()
-        self.setFocus(Qt.OtherFocusReason)
-        self._run_one_shot_script(
-            label="Send Goal",
-            script="./config/send_goal.sh",
-            args=args,
-        )
+    # --- Goal-pick modes -------------------------------------------------
+    # Two operator-facing modes that hijack arrow keys to position a
+    # crosshair on a data-column plot. Each is entered by clicking a
+    # launch-page button; arrows nudge the target, Enter fires the
+    # corresponding script, Esc cancels. Local picks use 0.1 m so the
+    # operator can park within wheelbase tolerance; GPS picks use 1.0 m
+    # (lat/lon converted via the WGS84 small-step approx) since the
+    # waypoint radius soaks up sub-meter precision anyway.
+    _LOCAL_GOAL_STEP_M = 0.1
+    _GPS_GOAL_STEP_M = 1.0
 
-    def _on_send_gps_clicked(self):
-        """Run ./config/send_GPS_waypoint.sh with the args from the textfield.
-
-        Commas in the field (e.g. ``37.23028, -80.42502``) are normalized
-        to spaces so the script's positional <lat> <lon> [radius] parser
-        accepts the input as-pasted from a maps app.
-        """
-        raw = self._send_gps_input.text().strip()
-        args = re.sub(r'[,\s]+', ' ', raw).strip()
-        self._send_gps_input.clearFocus()
-        self.setFocus(Qt.OtherFocusReason)
-        self._run_one_shot_script(
-            label="Send GPS",
-            script="./config/send_GPS_waypoint.sh",
-            args=args,
+    def _enter_local_goal_mode(self):
+        """Show the local-goal crosshair on the ODOM plot and seed the
+        target at the robot's current map-frame pose."""
+        if self._gps_goal_mode:
+            self._exit_gps_goal_mode(send=False)
+        xs = self._odom_buf.get('x')
+        ys = self._odom_buf.get('y')
+        if not xs or not ys:
+            self._gui_log_msg(
+                "Set Local Goal: no odom yet — start the Local EKF first"
+            )
+            return
+        self._local_goal_x = float(xs[-1])
+        self._local_goal_y = float(ys[-1])
+        self._local_goal_mode = True
+        self._odom_goal_cross.set_data([self._local_goal_x], [self._local_goal_y])
+        self._odom_goal_cross.set_visible(True)
+        self._odom_goal_banner.set_visible(True)
+        self._odom_goal_readout.set_visible(True)
+        self._odom_goal_readout.set_text(
+            f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
         )
+        self._odom_canvas.draw_idle()
+        self._update_selection()
+
+    def _exit_local_goal_mode(self, send):
+        """Hide the crosshair. If `send`, fire send_goal.sh with the
+        picked map-frame x/y."""
+        if not self._local_goal_mode:
+            return
+        self._local_goal_mode = False
+        self._odom_goal_cross.set_visible(False)
+        self._odom_goal_banner.set_visible(False)
+        self._odom_goal_readout.set_visible(False)
+        self._odom_canvas.draw_idle()
+        self._update_selection()
+        if send:
+            args = f"{self._local_goal_x:.3f} {self._local_goal_y:.3f}"
+            self._run_one_shot_script(
+                label="Send Goal",
+                script="./config/send_goal.sh",
+                args=args,
+            )
+
+    def _move_local_goal(self, dx, dy):
+        """Nudge the local-goal crosshair by (dx, dy) meters in the map
+        frame and refresh the readout. If the new position falls outside
+        the current ODOM viewport, expand the limits immediately so the
+        crosshair stays visible without waiting for the next live tick."""
+        self._local_goal_x += dx
+        self._local_goal_y += dy
+        self._odom_goal_cross.set_data([self._local_goal_x], [self._local_goal_y])
+        self._odom_goal_readout.set_text(
+            f"x={self._local_goal_x:.2f}  y={self._local_goal_y:.2f}"
+        )
+        # Auto-pan/zoom so the crosshair is never off-screen between
+        # arrow presses. Margin sized for visible breathing room — the
+        # crosshair should clearly sit *inside* the viewport, not on
+        # the edge. The next live-tick redraw re-derives the bounds
+        # (also including the goal — see _redraw_plots) so any pad here
+        # gets normalized within ~100-200 ms.
+        x0, x1 = self._odom_ax.get_xlim()
+        y0, y1 = self._odom_ax.get_ylim()
+        margin = 2.0
+        gx, gy = self._local_goal_x, self._local_goal_y
+        new_x0 = min(x0, gx - margin)
+        new_x1 = max(x1, gx + margin)
+        new_y0 = min(y0, gy - margin)
+        new_y1 = max(y1, gy + margin)
+        if (new_x0, new_x1, new_y0, new_y1) != (x0, x1, y0, y1):
+            self._odom_ax.set_xlim(new_x0, new_x1)
+            self._odom_ax.set_ylim(new_y0, new_y1)
+        self._odom_canvas.draw_idle()
+
+    def _enter_gps_goal_mode(self):
+        """Show the GPS-goal crosshair on the GPS map and seed the target
+        at the latest fix. Refuses if no GPS fix is in the buffer."""
+        if self._local_goal_mode:
+            self._exit_local_goal_mode(send=False)
+        lats = self._gps_buf.get('lat')
+        lons = self._gps_buf.get('lon')
+        if not lats or not lons:
+            self._gui_log_msg(
+                "Set GPS Goal: no GPS fix yet — wait for a lock"
+            )
+            return
+        self._gps_goal_lat = float(lats[-1])
+        self._gps_goal_lon = float(lons[-1])
+        self._gps_goal_mode = True
+        self._gps_goal_cross.set_data([self._gps_goal_lon], [self._gps_goal_lat])
+        self._gps_goal_cross.set_visible(True)
+        self._gps_goal_banner.set_visible(True)
+        self._gps_goal_readout.set_visible(True)
+        self._gps_goal_readout.set_text(
+            f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
+        )
+        self._gps_canvas.draw_idle()
+        self._update_selection()
+
+    def _exit_gps_goal_mode(self, send):
+        """Hide the crosshair. If `send`, fire send_GPS_waypoint.sh with
+        the picked lat/lon."""
+        if not self._gps_goal_mode:
+            return
+        self._gps_goal_mode = False
+        self._gps_goal_cross.set_visible(False)
+        self._gps_goal_banner.set_visible(False)
+        self._gps_goal_readout.set_visible(False)
+        self._gps_canvas.draw_idle()
+        self._update_selection()
+        if send:
+            args = f"{self._gps_goal_lat:.7f} {self._gps_goal_lon:.7f}"
+            self._run_one_shot_script(
+                label="Send GPS",
+                script="./config/send_GPS_waypoint.sh",
+                args=args,
+            )
+
+    def _move_gps_goal(self, d_north_m, d_east_m):
+        """Nudge the GPS-goal crosshair by (north, east) meters and
+        refresh the readout. Uses a WGS84 small-step approximation.
+        Viewport is re-derived as a uniform square (in meters) around
+        the robot — extending only one axis stretches the satellite
+        tile because 1° of lon ≠ 1° of lat at this latitude."""
+        dlat = d_north_m / 111320.0
+        dlon = d_east_m / (
+            111320.0 * max(0.1, math.cos(math.radians(self._gps_goal_lat)))
+        )
+        self._gps_goal_lat += dlat
+        self._gps_goal_lon += dlon
+        self._gps_goal_cross.set_data([self._gps_goal_lon], [self._gps_goal_lat])
+        self._gps_goal_readout.set_text(
+            f"{self._gps_goal_lat:.6f}, {self._gps_goal_lon:.6f}"
+        )
+        # Recompute the GPS viewport: square radius in meters, centered
+        # on the robot, sized to include the crosshair plus a 5 m
+        # breathing-room buffer. Identical math to the live-tick
+        # redraw so the view doesn't snap when the next tick fires.
+        lats = self._gps_buf.get('lat')
+        lons = self._gps_buf.get('lon')
+        if lats and lons:
+            cur_lat = float(lats[-1])
+            cur_lon = float(lons[-1])
+            dnorth_m = (self._gps_goal_lat - cur_lat) * 111320.0
+            deast_m = (
+                (self._gps_goal_lon - cur_lon)
+                * 111320.0
+                * max(0.1, math.cos(math.radians(cur_lat)))
+            )
+            needed = max(abs(dnorth_m), abs(deast_m)) + 5.0
+            view_radius_m = max(_GPS_VIEW_RADIUS_M, needed)
+            view_dlat = view_radius_m / 111320.0
+            view_dlon = view_radius_m / (
+                111320.0 * max(0.1, math.cos(math.radians(cur_lat)))
+            )
+            self._gps_ax.set_xlim(cur_lon - view_dlon, cur_lon + view_dlon)
+            self._gps_ax.set_ylim(cur_lat - view_dlat, cur_lat + view_dlat)
+        self._gps_canvas.draw_idle()
 
     def _run_one_shot_script(self, label, script, args):
         """Fire-and-forget runner for the send_goal/send_GPS scripts.
@@ -3979,16 +4186,102 @@ class HudWindow(QMainWindow):
                 return True
         return False
 
+    def _dev_reclaim_repo_ownership(self, log=None):
+        """Best-effort passwordless-sudo chown of the host repo back to
+        the GUI's user. The Docker container (koopa-kingdom) runs as
+        root, so build artifacts and any files it touches end up
+        root-owned; the subsequent `git reset --hard` and `git clean
+        -fd` then fail with Permission denied for the non-root GUI
+        user. Returns True on success, False if sudo wasn't passwordless
+        or the chown errored — callers should continue either way and
+        let the real git error surface."""
+        try:
+            uid = os.geteuid()
+            gid = os.getegid()
+            r = subprocess.run(
+                ['sudo', '-n', 'chown', '-R', f'{uid}:{gid}',
+                 self._dev_host_repo],
+                capture_output=True, text=True, timeout=30,
+            )
+            if log is not None:
+                log(f"$ sudo -n chown -R {uid}:{gid} {self._dev_host_repo}")
+                if r.stderr.strip():
+                    log(r.stderr.strip())
+            return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            if log is not None:
+                log("[chown skipped] sudo chown timed out")
+            return False
+        except Exception as e:
+            if log is not None:
+                log(f"[chown skipped] {e}")
+            return False
+
+    def _dev_git_sync(self, log=None):
+        """Fast-forward the host repo to origin/<current-branch>.
+
+        Sequence: reclaim ownership (best-effort sudo chown) →
+        git pull --ff-only origin <branch> → submodule update
+        --init --recursive. Replaces the old reset --hard + clean -fd
+        flow, which kept tripping Permission denied on root-owned
+        artifacts left by the Docker container. --ff-only fails loudly
+        if the branch has diverged rather than rewriting history.
+
+        Returns (ok: bool, summary: str). When `log` is provided, every
+        sub-step's stdout/stderr is passed to it.
+        """
+        def _emit(msg):
+            if log is not None and msg:
+                log(msg)
+
+        rc_b, branch, err_b = self._dev_run_git(
+            ['branch', '--show-current'])
+        if rc_b != 0 or not branch:
+            return False, f"branch lookup failed: {err_b or 'detached HEAD'}"
+
+        # Reclaim ownership before pulling. Failure is silent — if
+        # passwordless sudo isn't configured, the git step below will
+        # surface the real Permission denied with a hint.
+        self._dev_reclaim_repo_ownership(log=log)
+
+        for step_args, step_timeout in (
+            (['pull', '--ff-only', 'origin', branch], 60),
+            (['submodule', 'update', '--init', '--recursive'], 120),
+        ):
+            _emit(f"$ git {' '.join(step_args)}")
+            rc, out, err = self._dev_run_git(step_args, timeout=step_timeout)
+            _emit(out)
+            _emit(err)
+            if rc != 0:
+                combined = f"{err}\n{out}"
+                msg = (err or out or 'unknown').splitlines()[-1]
+                if 'Permission denied' in combined:
+                    msg = (
+                        f"{msg}  (root-owned files in tree — run "
+                        f"`sudo chown -R $(id -u):$(id -g) "
+                        f"{self._dev_host_repo}` on the Jetson, or "
+                        f"enable passwordless sudo for chown)"
+                    )
+                elif 'Not possible to fast-forward' in combined or \
+                        'diverged' in combined.lower():
+                    msg = (
+                        f"{msg}  (branch diverged from origin — resolve "
+                        f"on the Jetson with `git status` / `git log`, "
+                        f"then re-sync)"
+                    )
+                return False, f"git {step_args[0]} failed: {msg}"
+
+        return True, f"pulled origin/{branch}"
+
     def _dev_git_pull(self):
-        self._dev_set_status("Running git pull --ff-only…", color='#ff0')
+        self._dev_set_status(
+            "Pulling origin/<branch>…", color='#ff0')
         QApplication.processEvents()
-        rc, out, err = self._dev_run_git(['pull', '--ff-only'], timeout=60)
-        if rc == 0:
-            summary = out.splitlines()[-1] if out else 'Up to date'
-            self._dev_set_status(f"Pull OK: {summary}", color='#0f0')
+        ok, summary = self._dev_git_sync()
+        if ok:
+            self._dev_set_status(f"Sync OK: {summary}", color='#0f0')
         else:
-            msg = (err or out or 'unknown error').splitlines()[-1]
-            self._dev_set_status(f"Pull failed: {msg}", color='#f44')
+            self._dev_set_status(f"Sync failed: {summary}", color='#f44')
         self._dev_update_branch_label()
         self._dev_refresh_branches()
 
@@ -4133,6 +4426,24 @@ class HudWindow(QMainWindow):
         self._branches_nav_buttons = head_entries + new_branch_entries + (
             [exit_entry] if exit_entry else []
         )
+
+        # _show_branches_page assigns self._nav_groups[0] = self._branches_nav_buttons
+        # BEFORE this method rebuilds the list, so the nav group ends up
+        # pointing at the old (pre-refresh) entries — arrow keys then only
+        # see Refresh + Back. Re-bind here so arrow nav reaches the
+        # branch buttons that were just added.
+        if (
+            hasattr(self, '_options_stack')
+            and self._options_stack.currentIndex() == 5
+            and hasattr(self, '_nav_groups')
+            and self._nav_groups
+        ):
+            self._nav_groups[0] = self._branches_nav_buttons
+            n = len(self._branches_nav_buttons)
+            if n and self._nav_col == 0:
+                self._nav_row = min(self._nav_row, n - 1)
+                self._nav_last_row[0] = self._nav_row
+                self._update_selection()
 
     def _dev_ahead_behind(self, branch):
         rc, out, _err = self._dev_run_git([
@@ -4425,19 +4736,16 @@ class HudWindow(QMainWindow):
                 # start step below will surface real issues.
                 log(f"[stop] {e}")
 
-            # 2. git pull --ff-only on the host repo.
+            # 2. Fast-forward pull host repo to origin/<branch>. Fails
+            #    loudly if the branch has diverged — the Jetson tree is
+            #    expected to be pristine (no local edits / commits).
             self._dev_ui_status(
-                "[2/5] git pull --ff-only…", color='#ff0')
-            log("$ git pull --ff-only")
-            rc, out, err = self._dev_run_git(
-                ['pull', '--ff-only'], timeout=120)
-            log(out)
-            log(err)
-            if rc != 0:
-                msg = (err or out or 'unknown').splitlines()[-1]
+                "[2/5] git pull origin…", color='#ff0')
+            ok, summary = self._dev_git_sync(log=log)
+            if not ok:
                 self._dev_ui_status(
-                    f"Pull failed: {msg}", color='#f44')
-                log(f"[!] Pull failed: {msg}")
+                    f"Sync failed: {summary}", color='#f44')
+                log(f"[!] Sync failed: {summary}")
                 return
 
             # 3. Start container detached.
@@ -5140,18 +5448,19 @@ class HudWindow(QMainWindow):
         if self._launch_queue:
             q_str = " > ".join(self._launch_queue)
             parts.append(f"Queued: {q_str}")
+        T = self._translate_to_theme
         if parts:
             self._queue_label.setText(" | ".join(parts))
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #ff0; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
         else:
             self._queue_label.setText("Queue: idle")
-            self._queue_label.setStyleSheet(
+            self._queue_label.setStyleSheet(T(
                 "border: none; color: #888; font-size: 10px;"
                 " font-family: monospace;"
-            )
+            ))
 
     def _toggle_device(self, label):
         """Toggle a device on/off. Uses a queue so only one starts at a time."""
@@ -5212,7 +5521,7 @@ class HudWindow(QMainWindow):
                 for i, (btn, blabel, _s) in enumerate(self._launch_nav_buttons):
                     if blabel == label:
                         btn.setText("Waiting")
-                        btn.setStyleSheet(self._launch_wait_style)
+                        btn.setStyleSheet(self._translate_to_theme(self._launch_wait_style))
                         self._launch_nav_buttons[i] = (btn, blabel, self._launch_wait_style)
                         break
                 self._update_selection()
@@ -5994,6 +6303,152 @@ class HudWindow(QMainWindow):
                 f"{'ON' if self._auto_mode else 'OFF'}"
             )
 
+    # -----------------------------------------------------------------
+    # Manual Drive mode — 'M' key, green overlay, arrow-key teleop
+    # -----------------------------------------------------------------
+    def _toggle_manual_mode(self):
+        """M-key handler. Enter: disengage AUTO if on (control.cpp gates
+        /joy on !autonomousMode), show green overlay, start 20 Hz Joy
+        publish tick. Exit: publish a zero-axes Joy for safety, stop
+        tick, hide overlay. Arrow-key handling itself lives in
+        keyPressEvent / keyReleaseEvent."""
+        if not self._manual_mode:
+            # control.cpp ignores /joy while autonomousMode is true, so
+            # manual drive can't reach the motors. Toggle AUTO off first.
+            # Per the AUTO-toggle-keeps-goal invariant, this doesn't
+            # cancel any pending nav2 goal.
+            if self._auto_mode:
+                self._toggle_auto_mode()
+            if self._manual_overlay is None:
+                self._build_manual_overlay()
+            self._manual_overlay.setGeometry(0, 0, self.width(), self.height())
+            self._manual_overlay.show()
+            self._manual_overlay.raise_()
+            self._manual_keys.clear()
+            self._manual_mode = True
+            self._manual_timer.start()
+            self._gui_log_msg("Manual Drive: ON (arrows = drive, Esc/M = exit)")
+        else:
+            self._manual_mode = False
+            self._manual_timer.stop()
+            self._manual_keys.clear()
+            self._publish_manual_joy(0.0, 0.0)
+            if self._manual_overlay is not None:
+                self._manual_overlay.hide()
+            self._gui_log_msg("Manual Drive: OFF")
+
+    def _build_manual_overlay(self):
+        """Lazily build the green Manual Drive overlay. Semi-transparent
+        so the operator still sees the underlying sensor canvases."""
+        overlay = QWidget(self)
+        overlay.setObjectName("manualOverlay")
+        overlay.setStyleSheet(
+            "QWidget#manualOverlay { background-color: rgba(0, 200, 0, 110); }"
+        )
+        overlay.setAutoFillBackground(True)
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setGeometry(0, 0, self.width(), self.height())
+
+        v = QVBoxLayout(overlay)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setAlignment(Qt.AlignCenter)
+        v.addStretch()
+
+        info_font = QFont()
+        info_font.setPointSize(32)
+        info_font.setBold(True)
+        info_style = "color: #fff; background: transparent; border: none;"
+
+        title = QLabel("MANUAL DRIVE")
+        title.setFont(info_font)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(info_style)
+        v.addWidget(title)
+
+        hint = QLabel("Arrow keys = drive   ·   M or Esc = exit")
+        hint.setFont(info_font)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(info_style)
+        v.addWidget(hint)
+
+        speed_hint = QLabel("1-9 = speed gear   ·   1 → 5,  2 → 10,  …,  9 → 45")
+        speed_hint.setFont(info_font)
+        speed_hint.setAlignment(Qt.AlignCenter)
+        speed_hint.setStyleSheet(info_style)
+        v.addWidget(speed_hint)
+
+        controller_hint = QLabel("(Ensure XBox controller is off)")
+        controller_hint.setFont(info_font)
+        controller_hint.setAlignment(Qt.AlignCenter)
+        controller_hint.setStyleSheet(info_style)
+        v.addWidget(controller_hint)
+
+        v.addStretch()
+        overlay.hide()
+        self._manual_overlay = overlay
+        return overlay
+
+    def _manual_tick(self):
+        """20 Hz publish tick while Manual Drive is on. Translates the
+        held arrow keys into tank-drive wheel commands and publishes via
+        synthetic Joy. control.cpp (tank-drive) maps axes[1]→left wheel,
+        axes[3]→right wheel; we synthesise those so this path is exactly
+        the Xbox stick path. Up = both forward; Down = both back; Left/
+        Right = spin in place; combinations mix (e.g. Up+Right curves
+        right). Opposed keys cancel."""
+        if not self._manual_mode:
+            return
+        fwd = 0.0
+        if Qt.Key_Up in self._manual_keys:
+            fwd += 1.0
+        if Qt.Key_Down in self._manual_keys:
+            fwd -= 1.0
+        turn = 0.0
+        if Qt.Key_Right in self._manual_keys:
+            turn += 1.0
+        if Qt.Key_Left in self._manual_keys:
+            turn -= 1.0
+        left  = max(-1.0, min(1.0, fwd + turn)) * self._MANUAL_STICK_MAG
+        right = max(-1.0, min(1.0, fwd - turn)) * self._MANUAL_STICK_MAG
+        self._publish_manual_joy(left, right)
+
+    def _publish_manual_speed_setpoint(self, gear):
+        """Publish an Int32 on /manual_speed_setpoint. control.cpp's
+        manual_speed_callback clamps to 0..75 and calls motors.setSpeed
+        directly, ignoring the request under AUTO. No-op if ROS isn't
+        available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'manual_speed_pub'):
+            return
+        try:
+            Int32Msg = node.manual_speed_pub.msg_type
+            msg = Int32Msg()
+            msg.data = int(gear)
+            node.manual_speed_pub.publish(msg)
+            self._gui_log_msg(f"Manual speed setpoint: {gear}")
+        except Exception as e:
+            self._gui_log_msg(f"Manual speed publish failed: {e}")
+
+    def _publish_manual_joy(self, left_wheel, right_wheel):
+        """Publish a synthetic Joy message with the same shape control.cpp
+        expects: axes[1] = left stick Y (left wheel), axes[3] = right
+        stick Y (right wheel). Buttons left zero so we don't trigger
+        X-button (auto toggle) or bumper speed changes. No-op if ROS
+        isn't available."""
+        node = self._ros_node
+        if node is None or not hasattr(node, 'joy_pub'):
+            return
+        try:
+            JoyMsg = node.joy_pub.msg_type
+            msg = JoyMsg()
+            msg.buttons = [0] * 11
+            msg.axes = [0.0] * 8
+            msg.axes[1] = float(left_wheel)
+            msg.axes[3] = float(right_wheel)
+            node.joy_pub.publish(msg)
+        except Exception as e:
+            self._gui_log_msg(f"Manual joy publish failed: {e}")
+
     def _position_auto_badge(self):
         """Pin the auto-mode badge to the upper-right of the central widget."""
         if not hasattr(self, '_auto_badge') or self._auto_badge is None:
@@ -6320,6 +6775,35 @@ class HudWindow(QMainWindow):
         # filter (see eventFilter) so it works from any focus context,
         # including QLineEdit. No handling needed here.
 
+        # Manual Drive mode owns input while active: arrows drive the
+        # robot, 1-9 snap the speed gear, Esc/M exit, everything else is
+        # swallowed so the operator can't accidentally toggle Auto /
+        # Performance / Record mid-drive.
+        if self._manual_mode:
+            if key == Qt.Key_M and not event.modifiers():
+                self._toggle_manual_mode()
+                return
+            if key == Qt.Key_Escape:
+                self._toggle_manual_mode()
+                return
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if not event.isAutoRepeat():
+                    self._manual_keys.add(key)
+                return
+            if Qt.Key_1 <= key <= Qt.Key_9 and not event.modifiers():
+                if not event.isAutoRepeat():
+                    gear = (key - Qt.Key_0) * 5  # 1→5, 2→10, ..., 9→45
+                    self._publish_manual_speed_setpoint(gear)
+                return
+            return
+
+        # 'M' enters Manual Drive (green overlay + arrow-key teleop).
+        # Same mod/focus rules as 'A': window-level only, no modifiers,
+        # so typing 'm' into a focused QLineEdit still enters the char.
+        if key == Qt.Key_M and not event.modifiers():
+            self._toggle_manual_mode()
+            return
+
         # 'A' toggles auto mode. No modifiers so it doesn't fight Ctrl+A
         # or similar; intentionally only handled at the window level so
         # that typing 'a' into a focused QLineEdit (send_goal / GPS
@@ -6337,6 +6821,40 @@ class HudWindow(QMainWindow):
         # Works from any screen and at any time, no test script required.
         if key == Qt.Key_R and not event.modifiers():
             self._request_record_toggle()
+            return
+
+        # --- Local goal-pick mode: arrows nudge map-frame target, Enter sends, Esc cancels ---
+        if self._local_goal_mode:
+            step = self._LOCAL_GOAL_STEP_M
+            if key == Qt.Key_Up:
+                self._move_local_goal(0.0, step)
+            elif key == Qt.Key_Down:
+                self._move_local_goal(0.0, -step)
+            elif key == Qt.Key_Right:
+                self._move_local_goal(step, 0.0)
+            elif key == Qt.Key_Left:
+                self._move_local_goal(-step, 0.0)
+            elif key in (Qt.Key_Return, Qt.Key_Enter):
+                self._exit_local_goal_mode(send=True)
+            elif key == Qt.Key_Escape:
+                self._exit_local_goal_mode(send=False)
+            return
+
+        # --- GPS goal-pick mode: arrows nudge lat/lon, Enter sends, Esc cancels ---
+        if self._gps_goal_mode:
+            step = self._GPS_GOAL_STEP_M
+            if key == Qt.Key_Up:
+                self._move_gps_goal(step, 0.0)
+            elif key == Qt.Key_Down:
+                self._move_gps_goal(-step, 0.0)
+            elif key == Qt.Key_Right:
+                self._move_gps_goal(0.0, step)
+            elif key == Qt.Key_Left:
+                self._move_gps_goal(0.0, -step)
+            elif key in (Qt.Key_Return, Qt.Key_Enter):
+                self._exit_gps_goal_mode(send=True)
+            elif key == Qt.Key_Escape:
+                self._exit_gps_goal_mode(send=False)
             return
 
         # --- Scrub mode: arrows move the slider, Enter exits ---
@@ -6433,20 +6951,25 @@ class HudWindow(QMainWindow):
                 self._toggle_sensor_expand(cell)
             else:
                 widget, _, _ = self._cur_btn()
-                if isinstance(widget, QLineEdit):
-                    # Hand keyboard focus to the field so the operator
-                    # can type. Pressing Enter inside the field fires
-                    # returnPressed → _on_send_*_clicked, which calls
-                    # clearFocus to hand control back to nav.
-                    widget.setFocus(Qt.OtherFocusReason)
-                    widget.selectAll()
-                elif widget.isEnabled():
+                if widget.isEnabled():
                     widget.click()
         elif key == Qt.Key_Space:
             if self._pb_state in ('playing', 'paused', 'ended'):
                 self._on_play_pause()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """Manual Drive needs key-release tracking so the robot stops the
+        moment the operator lets go. Outside manual mode this is a no-op
+        — the existing keyPressEvent owns all input semantics."""
+        if self._manual_mode:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if not event.isAutoRepeat():
+                    self._manual_keys.discard(key)
+                return
+        super().keyReleaseEvent(event)
 
     def _update_selection(self):
         """Restyle all buttons: selected gets highlight + mirrored arrows, others reset."""
@@ -6472,18 +6995,21 @@ class HudWindow(QMainWindow):
                         .replace("color: #dcdcdc", "color: #0f0")
                     ))
                 elif widget in self._sensor_cells or widget is self._power_cell:
-                    if is_selected:
+                    # Goal-pick mode wins over nav selection — the cyan
+                    # border tells the operator which plot the crosshair
+                    # is being placed on.
+                    goal_active = (
+                        (self._local_goal_mode
+                         and widget is self._canvas_to_cell.get(self._odom_canvas))
+                        or (self._gps_goal_mode
+                            and widget is self._canvas_to_cell.get(self._gps_canvas))
+                    )
+                    if goal_active:
+                        widget.setStyleSheet(T(self._sensor_goal_style))
+                    elif is_selected:
                         widget.setStyleSheet(T(self._sensor_sel_style))
                     else:
                         widget.setStyleSheet(T(self._sensor_frame_style))
-                elif isinstance(widget, QLineEdit):
-                    # QLineEdit nav participation. Don't call setText —
-                    # that would clobber the user's typed value. Highlight
-                    # via stylesheet instead.
-                    if is_selected:
-                        widget.setStyleSheet(T(self._send_field_sel_style))
-                    else:
-                        widget.setStyleSheet(T(base_style))
                 else:
                     # Check if this is the selected device button
                     is_selected_device = False
@@ -6511,6 +7037,33 @@ class HudWindow(QMainWindow):
                             widget.setStyleSheet(T(base_style))
         # Position floating directional indicators around the selected widget
         self._position_indicators()
+        # Auto-scroll the branches sub-page so arrow-key nav keeps the
+        # selected branch visible. The list often overflows the 280 px
+        # min-height scroll area once a repo accumulates branches.
+        self._ensure_branch_visible()
+
+    def _ensure_branch_visible(self):
+        """If the operator is navigating the Switch Branch sub-page,
+        scroll the branch list so the currently selected widget is in
+        view. No-op on every other page."""
+        if not hasattr(self, '_branch_scroll'):
+            return
+        if not hasattr(self, '_options_stack'):
+            return
+        if self._options_stack.currentIndex() != 5:
+            return
+        if self._nav_col != 0:
+            return
+        try:
+            widget, _, _ = self._cur_btn()
+        except Exception:
+            return
+        if widget is None:
+            return
+        # ensureWidgetVisible no-ops if `widget` isn't a descendant of
+        # the scroll area's viewport — that's the desired behavior for
+        # the Refresh / Back nav rows that live outside the scroller.
+        self._branch_scroll.ensureWidgetVisible(widget, 0, 40)
 
     def _position_indicators(self):
         """Show << and >> around the slider knob only when in scrub mode."""
@@ -6609,10 +7162,15 @@ class HudWindow(QMainWindow):
     # -- Container connection ------------------------------------------------
 
     def _on_connect_container(self):
-        """Toggle connection to the Docker container."""
+        """Toggle connection to the Docker container. Explicit click is
+        the only path that touches _container_user_disconnected — the
+        sticky flag goes True on disconnect (stops auto-reconnect) and
+        clears on a successful connect."""
         if self._container_connected:
+            self._container_user_disconnected = True
             self._disconnect_container()
         else:
+            self._container_user_disconnected = False
             self._connect_container()
 
     def _connect_container(self):
@@ -6754,20 +7312,38 @@ class HudWindow(QMainWindow):
         self._refresh_terminal_display()
 
     def _check_container_health(self):
-        """Periodic check: if connected, verify the container is still running."""
-        if not self._container_connected:
-            return
+        """Periodic check (5 Hz). Two jobs:
+          1. If connected, drop the connection when the container stops.
+          2. If not connected AND the user hasn't explicitly disconnected,
+             auto-connect as soon as the container is up. This way the
+             GUI re-attaches on container restarts and on startup without
+             the operator having to click Connect.
+        """
         try:
             result = subprocess.run(
                 ['docker', 'ps', '--quiet', '--filter', 'status=running',
                  '--filter', f'name=^/{self._container_name}$'],
                 capture_output=True, text=True, timeout=3,
             )
-            if not result.stdout.strip():
-                self._gui_log_msg(f"Container '{self._container_name}' stopped — disconnecting")
-                self._disconnect_container()
         except Exception:
-            pass
+            return
+        running = bool(result.stdout.strip())
+
+        if self._container_connected:
+            if not running:
+                self._gui_log_msg(
+                    f"Container '{self._container_name}' stopped — disconnecting"
+                )
+                # Involuntary drop — sticky flag stays False so we
+                # auto-reconnect when the container comes back.
+                self._disconnect_container()
+            return
+
+        if running and not self._container_user_disconnected:
+            self._gui_log_msg(
+                f"Container '{self._container_name}' is up — auto-connecting"
+            )
+            self._connect_container()
 
     def _wrap_container_cmd(self, cmd, label=None):
         """Wrap a command to run inside the Docker container via docker exec.
@@ -7659,10 +8235,29 @@ class HudWindow(QMainWindow):
             self._gps_trail.set_data(lons, lats)
             # Current position dot
             self._gps_dot.set_data([lons[-1]], [lats[-1]])
-            # 100 ft window centered on current position
             cur_lat, cur_lon = lats[-1], lons[-1]
-            dlat = _GPS_VIEW_RADIUS_M / 111320.0
-            dlon = _GPS_VIEW_RADIUS_M / (111320.0 * math.cos(math.radians(cur_lat)))
+            # View is a square in meters centered on the robot. Default
+            # radius is 100 ft; while the operator is placing a GPS
+            # goal, the radius grows uniformly to include the crosshair
+            # plus a 5 m buffer. Scaling stays proportional in both
+            # axes so the satellite tile never gets squished — without
+            # this, extending lon-only or lat-only stretches the image
+            # because 1° of lon is shorter than 1° of lat at this
+            # latitude.
+            view_radius_m = _GPS_VIEW_RADIUS_M
+            if self._gps_goal_mode:
+                dnorth_m = (self._gps_goal_lat - cur_lat) * 111320.0
+                deast_m = (
+                    (self._gps_goal_lon - cur_lon)
+                    * 111320.0
+                    * max(0.1, math.cos(math.radians(cur_lat)))
+                )
+                needed = max(abs(dnorth_m), abs(deast_m)) + 5.0
+                view_radius_m = max(view_radius_m, needed)
+            dlat = view_radius_m / 111320.0
+            dlon = view_radius_m / (
+                111320.0 * max(0.1, math.cos(math.radians(cur_lat)))
+            )
             self._gps_ax.set_xlim(cur_lon - dlon, cur_lon + dlon)
             self._gps_ax.set_ylim(cur_lat - dlat, cur_lat + dlat)
             # Show lat/lon truncated to 4 decimals
@@ -7743,6 +8338,18 @@ class HudWindow(QMainWindow):
                 max_x = max(max_x, cm_x1)
                 min_y = min(min_y, cm_y0)
                 max_y = max(max_y, cm_y1)
+            # If the operator is currently placing a local goal, include
+            # the crosshair (plus a buffer) in the bounds so arrowing
+            # past the visible area auto-zooms with breathing room
+            # instead of pinning the crosshair to the edge. The next
+            # redraw after _exit_local_goal_mode skips this branch, so
+            # the view snaps back to the normal bounds on send/cancel.
+            if self._local_goal_mode:
+                buf = 2.0
+                min_x = min(min_x, self._local_goal_x - buf)
+                max_x = max(max_x, self._local_goal_x + buf)
+                min_y = min(min_y, self._local_goal_y - buf)
+                max_y = max(max_y, self._local_goal_y + buf)
             dx = max_x - min_x
             dy = max_y - min_y
             span = max(dx, dy) * 1.3
@@ -8999,6 +9606,13 @@ if _HAS_ROS:
             # pattern as t002_automator._send_x_button_to_control.
             self.latest_autonomous_mode = None  # None until first /autonomous_mode msg
             self.joy_pub = self.create_publisher(Joy, '/joy', 10)
+            # Direct manual-speed setpoint for the HUD's Manual Drive
+            # mode (1-9 keys → 5/10/15/.../45 gear). control.cpp
+            # subscribes and snaps motors.setSpeed() — bypasses the slow
+            # bumper ramp (200 ms per +1). Honored only when !autonomousMode.
+            self.manual_speed_pub = self.create_publisher(
+                Int32, '/manual_speed_setpoint', 10,
+            )
             self.create_subscription(
                 Bool, '/autonomous_mode',
                 self._cb_autonomous_mode, _RELIABLE_QOS,
