@@ -135,9 +135,12 @@ controller_server:
     # the global path is close but locally improvable.
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
+      # Keep the 20 Hz control cadence, but keep rollout work within Jetson
+      # headroom. 40 * 500 = 20,000 sampled states per tick, down from
+      # 67,200, while preserving a 2.0 s / 1.0 m horizon at 0.50 m/s.
+      time_steps: 40
       model_dt: 0.05
-      batch_size: 1200
+      batch_size: 500
       # Pair with vx_max. Raising the cap to 0.50 without widening this
       # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
       # open-lane sim; 0.25 lets the optimizer actually explore/use the new
