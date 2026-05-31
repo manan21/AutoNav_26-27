@@ -395,7 +395,7 @@ private:
 	double  debug_image_max_rate_hz_ = 2.0;
 	int     debug_overlay_max_points_ = 3000;
 	bool    tf_use_latest_ = false;
-	double  brightness_threshold_ = 230.0;
+	double  brightness_threshold_ = 210.0;
 	int     half_window_size_ = 3;
 	float   sigma_threshold_ = 5.0f;
 	float   mew_threshold_ = 200.0f;
