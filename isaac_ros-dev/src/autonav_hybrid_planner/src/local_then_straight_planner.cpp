@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -33,6 +34,10 @@ LocalThenStraightPlanner::LocalThenStraightPlanner()
   local_horizon_m_(2.75),
   close_goal_distance_m_(3.0),
   far_path_spacing_m_(0.50),
+  start_search_radius_m_(1.00),
+  start_blocked_cost_threshold_(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE),
+  allow_unknown_start_(true),
+  relax_blocked_start_(true),
   far_collision_check_(false),
   configured_(false)
 {
@@ -69,6 +74,14 @@ void LocalThenStraightPlanner::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".far_path_spacing_m", rclcpp::ParameterValue(0.50));
   nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".start_search_radius_m", rclcpp::ParameterValue(1.00));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".start_blocked_cost_threshold", rclcpp::ParameterValue(253));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".allow_unknown_start", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".relax_blocked_start", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".far_collision_check", rclcpp::ParameterValue(false));
 
   node->get_parameter(name_ + ".near_planner_plugin", near_planner_plugin_);
@@ -76,11 +89,19 @@ void LocalThenStraightPlanner::configure(
   node->get_parameter(name_ + ".local_horizon_m", local_horizon_m_);
   node->get_parameter(name_ + ".close_goal_distance_m", close_goal_distance_m_);
   node->get_parameter(name_ + ".far_path_spacing_m", far_path_spacing_m_);
+  node->get_parameter(name_ + ".start_search_radius_m", start_search_radius_m_);
+  int start_blocked_cost_threshold = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
+  node->get_parameter(name_ + ".start_blocked_cost_threshold", start_blocked_cost_threshold);
+  node->get_parameter(name_ + ".allow_unknown_start", allow_unknown_start_);
+  node->get_parameter(name_ + ".relax_blocked_start", relax_blocked_start_);
   node->get_parameter(name_ + ".far_collision_check", far_collision_check_);
 
   local_horizon_m_ = std::max(0.1, local_horizon_m_);
   close_goal_distance_m_ = std::max(local_horizon_m_, close_goal_distance_m_);
   far_path_spacing_m_ = std::max(0.05, far_path_spacing_m_);
+  start_search_radius_m_ = std::max(0.0, start_search_radius_m_);
+  start_blocked_cost_threshold_ = static_cast<unsigned char>(
+    std::clamp(start_blocked_cost_threshold, 1, 255));
   near_planner_full_name_ = name_ + "." + near_planner_name_;
 
   try {
@@ -98,9 +119,14 @@ void LocalThenStraightPlanner::configure(
   RCLCPP_INFO(
     logger_,
     "Configured %s with near planner %s at namespace %s "
-    "(local_horizon=%.2fm, close_goal=%.2fm, far_spacing=%.2fm, far_collision_check=%s)",
+    "(local_horizon=%.2fm, close_goal=%.2fm, far_spacing=%.2fm, "
+    "start_search_radius=%.2fm, start_blocked_threshold=%u, "
+    "allow_unknown_start=%s, relax_blocked_start=%s, far_collision_check=%s)",
     name_.c_str(), near_planner_plugin_.c_str(), near_planner_full_name_.c_str(),
     local_horizon_m_, close_goal_distance_m_, far_path_spacing_m_,
+    start_search_radius_m_, static_cast<unsigned int>(start_blocked_cost_threshold_),
+    allow_unknown_start_ ? "true" : "false",
+    relax_blocked_start_ ? "true" : "false",
     far_collision_check_ ? "true" : "false");
 }
 
@@ -152,7 +178,8 @@ nav_msgs::msg::Path LocalThenStraightPlanner::createPlan(
     return empty;
   }
 
-  const double goal_distance = distanceBetween(start, goal);
+  const geometry_msgs::msg::PoseStamped planning_start = choosePlanningStart(start);
+  const double goal_distance = distanceBetween(planning_start, goal);
   if (goal_distance < 1e-3) {
     empty.poses.push_back(start);
     return empty;
@@ -160,17 +187,18 @@ nav_msgs::msg::Path LocalThenStraightPlanner::createPlan(
 
   if (goal_distance <= close_goal_distance_m_) {
     try {
-      return near_planner_->createPlan(start, goal);
+      return prependActualStart(
+        near_planner_->createPlan(planning_start, goal), start, planning_start);
     } catch (const std::exception & ex) {
       RCLCPP_WARN(logger_, "Near-field planner failed for close goal: %s", ex.what());
       return empty;
     }
   }
 
-  const auto handoff_goal = makeHandoffGoal(start, goal, goal_distance);
+  const auto handoff_goal = makeHandoffGoal(planning_start, goal, goal_distance);
   nav_msgs::msg::Path near_path;
   try {
-    near_path = near_planner_->createPlan(start, handoff_goal);
+    near_path = near_planner_->createPlan(planning_start, handoff_goal);
   } catch (const std::exception & ex) {
     RCLCPP_WARN(logger_, "Near-field planner failed for far goal: %s", ex.what());
     return empty;
@@ -195,7 +223,139 @@ nav_msgs::msg::Path LocalThenStraightPlanner::createPlan(
     return empty;
   }
 
-  return appendStraightSegment(near_path, goal);
+  return prependActualStart(appendStraightSegment(near_path, goal), start, planning_start);
+}
+
+bool LocalThenStraightPlanner::costIsBlocked(unsigned char cost) const
+{
+  if (cost == nav2_costmap_2d::NO_INFORMATION) {
+    return !allow_unknown_start_;
+  }
+  return cost >= start_blocked_cost_threshold_;
+}
+
+bool LocalThenStraightPlanner::startCellIsBlocked(
+  const geometry_msgs::msg::PoseStamped & start) const
+{
+  if (!costmap_) {
+    return false;
+  }
+  unsigned int mx = 0;
+  unsigned int my = 0;
+  if (!costmap_->worldToMap(start.pose.position.x, start.pose.position.y, mx, my)) {
+    return false;
+  }
+  return costIsBlocked(costmap_->getCost(mx, my));
+}
+
+geometry_msgs::msg::PoseStamped LocalThenStraightPlanner::choosePlanningStart(
+  const geometry_msgs::msg::PoseStamped & start) const
+{
+  if (!relax_blocked_start_ || !costmap_ || start_search_radius_m_ <= 0.0 ||
+    !startCellIsBlocked(start))
+  {
+    return start;
+  }
+
+  unsigned int start_mx = 0;
+  unsigned int start_my = 0;
+  if (!costmap_->worldToMap(start.pose.position.x, start.pose.position.y, start_mx, start_my)) {
+    return start;
+  }
+
+  const double resolution = costmap_->getResolution();
+  if (resolution <= 0.0) {
+    return start;
+  }
+  const int size_x = static_cast<int>(costmap_->getSizeInCellsX());
+  const int size_y = static_cast<int>(costmap_->getSizeInCellsY());
+  const int max_radius_cells = static_cast<int>(std::ceil(start_search_radius_m_ / resolution));
+  const int sx = static_cast<int>(start_mx);
+  const int sy = static_cast<int>(start_my);
+
+  double best_dist_sq = std::numeric_limits<double>::infinity();
+  int best_x = -1;
+  int best_y = -1;
+  for (int radius = 1; radius <= max_radius_cells; ++radius) {
+    bool found_on_ring = false;
+    for (int dy = -radius; dy <= radius; ++dy) {
+      for (int dx = -radius; dx <= radius; ++dx) {
+        if (std::max(std::abs(dx), std::abs(dy)) != radius) {
+          continue;
+        }
+        const int mx = sx + dx;
+        const int my = sy + dy;
+        if (mx < 0 || my < 0 || mx >= size_x || my >= size_y) {
+          continue;
+        }
+        const unsigned char cost = costmap_->getCost(
+          static_cast<unsigned int>(mx), static_cast<unsigned int>(my));
+        if (costIsBlocked(cost)) {
+          continue;
+        }
+        const double dist_sq = static_cast<double>(dx * dx + dy * dy);
+        if (dist_sq < best_dist_sq) {
+          best_dist_sq = dist_sq;
+          best_x = mx;
+          best_y = my;
+          found_on_ring = true;
+        }
+      }
+    }
+    if (found_on_ring) {
+      break;
+    }
+  }
+
+  if (best_x < 0 || best_y < 0) {
+    if (auto node = node_.lock()) {
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node->get_clock(), 2000,
+        "Start pose is in cost >= %u and no free planning start was found within %.2f m",
+        static_cast<unsigned int>(start_blocked_cost_threshold_), start_search_radius_m_);
+    } else {
+      RCLCPP_WARN(
+        logger_,
+        "Start pose is in cost >= %u and no free planning start was found within %.2f m",
+        static_cast<unsigned int>(start_blocked_cost_threshold_), start_search_radius_m_);
+    }
+    return start;
+  }
+
+  geometry_msgs::msg::PoseStamped relaxed = start;
+  costmap_->mapToWorld(
+    static_cast<unsigned int>(best_x), static_cast<unsigned int>(best_y),
+    relaxed.pose.position.x, relaxed.pose.position.y);
+  if (auto node = node_.lock()) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *node->get_clock(), 2000,
+      "Start pose is in cost >= %u; planning from nearest clear cell %.2f m away",
+      static_cast<unsigned int>(start_blocked_cost_threshold_),
+      std::sqrt(best_dist_sq) * resolution);
+  } else {
+    RCLCPP_WARN(
+      logger_,
+      "Start pose is in cost >= %u; planning from nearest clear cell %.2f m away",
+      static_cast<unsigned int>(start_blocked_cost_threshold_),
+      std::sqrt(best_dist_sq) * resolution);
+  }
+  return relaxed;
+}
+
+nav_msgs::msg::Path LocalThenStraightPlanner::prependActualStart(
+  nav_msgs::msg::Path path,
+  const geometry_msgs::msg::PoseStamped & actual_start,
+  const geometry_msgs::msg::PoseStamped & planning_start) const
+{
+  if (path.poses.empty() || distanceBetween(actual_start, planning_start) < 1e-3) {
+    return path;
+  }
+  auto start_pose = actual_start;
+  start_pose.header.frame_id = path.header.frame_id.empty()
+    ? actual_start.header.frame_id : path.header.frame_id;
+  start_pose.header.stamp = path.header.stamp;
+  path.poses.insert(path.poses.begin(), start_pose);
+  return path;
 }
 
 geometry_msgs::msg::PoseStamped LocalThenStraightPlanner::makeHandoffGoal(

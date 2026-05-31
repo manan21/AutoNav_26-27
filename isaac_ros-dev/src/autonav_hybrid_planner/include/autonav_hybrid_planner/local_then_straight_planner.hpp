@@ -51,6 +51,19 @@ private:
     const geometry_msgs::msg::PoseStamped & from,
     const geometry_msgs::msg::PoseStamped & goal) const;
 
+  geometry_msgs::msg::PoseStamped choosePlanningStart(
+    const geometry_msgs::msg::PoseStamped & start) const;
+
+  bool startCellIsBlocked(
+    const geometry_msgs::msg::PoseStamped & start) const;
+
+  bool costIsBlocked(unsigned char cost) const;
+
+  nav_msgs::msg::Path prependActualStart(
+    nav_msgs::msg::Path path,
+    const geometry_msgs::msg::PoseStamped & actual_start,
+    const geometry_msgs::msg::PoseStamped & planning_start) const;
+
   static double yawBetween(
     const geometry_msgs::msg::PoseStamped & from,
     const geometry_msgs::msg::PoseStamped & to);
@@ -74,6 +87,10 @@ private:
   double local_horizon_m_;
   double close_goal_distance_m_;
   double far_path_spacing_m_;
+  double start_search_radius_m_;
+  unsigned char start_blocked_cost_threshold_;
+  bool allow_unknown_start_;
+  bool relax_blocked_start_;
   bool far_collision_check_;
   bool configured_;
 };

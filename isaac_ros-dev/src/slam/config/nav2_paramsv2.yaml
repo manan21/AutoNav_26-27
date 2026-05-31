@@ -511,6 +511,14 @@ planner_server:
       close_goal_distance_m: 3.0
       far_path_spacing_m: 0.50
       far_collision_check: false
+      # If nav_center is sitting in transient inscribed/lethal cost,
+      # Smac rejects the start before searching. Plan from the nearest
+      # clear cell, then prepend the real robot pose so the controller can
+      # drive out instead of Nav2 giving up because of where it is.
+      relax_blocked_start: true
+      start_blocked_cost_threshold: 253
+      start_search_radius_m: 1.00
+      allow_unknown_start: true
       near_lattice:
         tolerance: 0.35
         allow_unknown: true
