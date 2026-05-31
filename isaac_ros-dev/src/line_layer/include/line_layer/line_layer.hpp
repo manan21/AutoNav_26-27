@@ -139,6 +139,7 @@ private:
   // obstacle inflation so tape keeps a narrower halo than PCA obstacles.
   double inflation_radius_;
   double cost_scaling_factor_;
+  bool lethal_inflation_;
   // Cells within this distance of a line are pinned to
   // INSCRIBED_INFLATED_OBSTACLE; the exponential decay starts from
   // there. Matching nav2's InflationLayer formula — without this

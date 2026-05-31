@@ -97,6 +97,7 @@ LineLayer::LineLayer()
   max_persisted_points_(12000),
   inflation_radius_(0.90),
   cost_scaling_factor_(5.0),
+  lethal_inflation_(false),
   inscribed_radius_(0.30),
   inflation_kernel_resolution_(0.0),
   costmap_topic_("/line_costmap"),
@@ -134,6 +135,7 @@ LineLayer::onInitialize()
   declareParameter("max_persisted_points", rclcpp::ParameterValue(12000));
   declareParameter("inflation_radius", rclcpp::ParameterValue(0.90));
   declareParameter("cost_scaling_factor", rclcpp::ParameterValue(5.0));
+  declareParameter("lethal_inflation", rclcpp::ParameterValue(false));
   declareParameter("inscribed_radius", rclcpp::ParameterValue(0.30));
   declareParameter("clear_topic", rclcpp::ParameterValue("/local_mirror_layer/clear"));
   declareParameter("clear_radius", rclcpp::ParameterValue(3.0));
@@ -157,6 +159,7 @@ LineLayer::onInitialize()
   node->get_parameter(name_ + "." + "max_persisted_points", max_persisted_points_);
   node->get_parameter(name_ + "." + "inflation_radius", inflation_radius_);
   node->get_parameter(name_ + "." + "cost_scaling_factor", cost_scaling_factor_);
+  node->get_parameter(name_ + "." + "lethal_inflation", lethal_inflation_);
   node->get_parameter(name_ + "." + "inscribed_radius", inscribed_radius_);
   node->get_parameter(name_ + "." + "clear_topic", clear_topic_);
   node->get_parameter(name_ + "." + "clear_radius", clear_radius_);
@@ -473,16 +476,11 @@ void LineLayer::buildInflationKernel(double resolution)
     return;
   }
 
-  // Match nav2_costmap_2d::InflationLayer's exact formula so line
-  // inflation visually matches obstacle inflation. Cells within
-  // `inscribed_radius_` of the center are pinned to
-  // INSCRIBED_INFLATED_OBSTACLE (full obstacle cost, not LETHAL).
-  // LETHAL is reserved for the exact line cell so stock Nav2 inflation
-  // can expand the true line obstacle footprint exactly once.
-  // Past that radius, exponential decay from INSCRIBED toward zero.
-  // Without this, a raw exp(-k*dist) from the center fell off so
-  // sharply that the visible halo was ~0.30 m, not the configured
-  // 0.90 m.
+  // Default behavior matches nav2_costmap_2d::InflationLayer's formula:
+  // exact line cells are lethal, the inscribed band is high cost, and
+  // the rest decays. For course lines that must be hard boundaries,
+  // lethal_inflation_ turns the whole configured radius into a uniform
+  // lethal band.
   const double inscribed = std::max(0.0, inscribed_radius_);
   const int radius_cells = static_cast<int>(
     std::ceil(inflation_radius_ / resolution));
@@ -495,7 +493,9 @@ void LineLayer::buildInflationKernel(double resolution)
         continue;
       }
       unsigned char cost;
-      if (dx == 0 && dy == 0) {
+      if (lethal_inflation_) {
+        cost = LETHAL_OBSTACLE;
+      } else if (dx == 0 && dy == 0) {
         cost = LETHAL_OBSTACLE;
       } else if (dist_m <= inscribed) {
         cost = INSCRIBED_INFLATED_OBSTACLE;

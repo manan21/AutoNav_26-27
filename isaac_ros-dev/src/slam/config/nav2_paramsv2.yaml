@@ -299,12 +299,12 @@ local_costmap:
         line_clear_range_min_m: 0.40
         line_clear_range_max_m: 4.50
         max_persisted_points: 12000
-        # Camera-line costs are narrow but planner-blocking. The small
-        # radius avoids boxing the robot in, while the slow decay keeps the
-        # visible halo above PathFootprintSafe's threshold so Smac cannot
-        # route the footprint across lines.
+        # Camera-line costs are narrow but planner-blocking. Stamp the full
+        # radius as lethal instead of a soft gradient so Smac cannot route
+        # through the line buffer.
         inflation_radius: 0.25
-        inscribed_radius: 0.02
+        inscribed_radius: 0.25
+        lethal_inflation: true
         cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
@@ -329,17 +329,12 @@ local_costmap:
         line_clear_range_min_m: 0.2
         line_clear_range_max_m: 6.0
         max_persisted_points: 2000
-        # LiDAR line detections are sparse obstacle-filtered points, not a
-        # continuous wall. Keep the lethal geometry exact, then publish a
-        # non-lethal preference field that encourages clearance without
-        # closing the IGVC-required 5 ft passage beside obstacles.
+        # LiDAR line detections are sparse obstacle-filtered points, but
+        # pathing through the line buffer is illegal. Stamp the full radius
+        # as lethal instead of a traversable soft gradient.
         inflation_radius: 0.25
-        # The 253 band is intentionally small. A wide inscribed band consumes
-        # too much of the narrow legal gap before the planner ever considers
-        # soft costs.
-        inscribed_radius: 0.05
-        # Match camera-line behavior: narrow line halo, slow enough decay
-        # that the planner cannot treat the visible line band as traversable.
+        inscribed_radius: 0.25
+        lethal_inflation: true
         cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
@@ -459,12 +454,9 @@ global_costmap:
         plugin: "local_mirror_layer::LocalMirrorLayer"
         enabled: True
         source_topic: /lidar_line_costmap
-        # Mirror the line-only costmap's full hard/soft field. Exact tape
-        # cells remain lethal, the line layer's small inscribed band remains
-        # near-hard, and its wider halo stays traversable soft cost. Because
-        # this layer runs after stock global inflation, tape does not receive
-        # a second footprint-radius hard centerline band that can close a
-        # legal 5 ft passage.
+        # Mirror the line-only costmap's full lethal field. Because this
+        # layer runs after stock global inflation, tape does not receive a
+        # second obstacle inflation pass.
         min_occupied_value_to_mirror: 1
         # Accept lower-cost clears only where the lidar line layer itself
         # would clear stale tape. Outside current lidar FOV, global tape
