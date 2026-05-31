@@ -28,7 +28,7 @@
     line_points_topic: "/line_points"
     target_frame: "odom"
     enable_timer: true
-    publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
+    publish_interval_ms: 50           # 20 Hz timer. Detection now measures ~20 ms total/frame (was ~80-100 ms before the detect-stage cleanup: dead float upload, host threshold/mask copy, output+integral memsets, full-image connected-components — see detection.cpp/cuda.cu), so the old "10 Hz fixed because CUDA caps at ~10-12 Hz" rationale no longer holds. 50 ms leaves ~2x headroom over the ~20 ms callback so every tick stays honest while enabling >=15 Hz output (the real cap is now the ZED RGB+depth publish rate, not this node). The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) still runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync.
     max_input_age_ms: 250             # Drop stale ZED pairs instead of processing queued old frames; confirmed line cache is republished for transient gaps.
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
