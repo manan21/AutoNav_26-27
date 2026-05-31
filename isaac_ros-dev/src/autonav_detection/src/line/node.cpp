@@ -26,11 +26,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <cstring>
+#include <limits>
 #include <queue>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class LineDetectorNode : public rclcpp::Node {
@@ -50,6 +53,8 @@ public:
 		this->declare_parameter("enable_timer", true);
 		this->declare_parameter("publish_interval_ms", 100);
 		this->declare_parameter("max_rgb_depth_delta_ms", 120);
+		this->declare_parameter("rgb_depth_sync_buffer_size", 12);
+		this->declare_parameter("rgb_depth_require_tf_ready", true);
 		this->declare_parameter("tf_lookup_timeout_ms", 100);
 		this->declare_parameter("tf_wait_for_stamp_ms", 125);
 		this->declare_parameter("line_hold_timeout_ms", 8000);
@@ -102,6 +107,8 @@ public:
 		this->get_parameter("enable_timer", enable_timer_);
 		publish_interval_ms_ = std::max<int64_t>(50, this->get_parameter("publish_interval_ms").as_int());
 		max_rgb_depth_delta_ms_ = std::max<int64_t>(0, this->get_parameter("max_rgb_depth_delta_ms").as_int());
+		rgb_depth_sync_buffer_size_ = std::max<int64_t>(2, this->get_parameter("rgb_depth_sync_buffer_size").as_int());
+		rgb_depth_require_tf_ready_ = this->get_parameter("rgb_depth_require_tf_ready").as_bool();
 		tf_lookup_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("tf_lookup_timeout_ms").as_int());
 		tf_wait_for_stamp_ms_ = std::max<int64_t>(0, this->get_parameter("tf_wait_for_stamp_ms").as_int());
 		line_hold_timeout_ms_ = std::max<int64_t>(0, this->get_parameter("line_hold_timeout_ms").as_int());
@@ -149,6 +156,8 @@ public:
 		RCLCPP_INFO(this->get_logger(), "Timer enabled: %s", enable_timer_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "Publish interval: %ld ms", publish_interval_ms_);
 		RCLCPP_INFO(this->get_logger(), "RGB/depth max delta: %ld ms", max_rgb_depth_delta_ms_);
+		RCLCPP_INFO(this->get_logger(), "RGB/depth sync buffer: %ld frames", rgb_depth_sync_buffer_size_);
+		RCLCPP_INFO(this->get_logger(), "RGB/depth require TF ready: %s", rgb_depth_require_tf_ready_ ? "true" : "false");
 		RCLCPP_INFO(this->get_logger(), "TF lookup timeout: %ld ms", tf_lookup_timeout_ms_);
 		RCLCPP_INFO(this->get_logger(), "Stamped TF wait: %ld ms", tf_wait_for_stamp_ms_);
 		RCLCPP_INFO(this->get_logger(), "Line hold timeout: %ld ms", line_hold_timeout_ms_);
@@ -182,10 +191,14 @@ public:
 		auto get_latest_msg = [this](sensor_msgs::msg::Image::SharedPtr msg) {
 			std::lock_guard<std::mutex> lock(callback_lock);
 			latest_img = msg;
+			image_buffer_.push_back(msg);
+			trimImageBuffer(image_buffer_);
 		};
 		auto get_latest_depth_msg = [this](sensor_msgs::msg::Image::SharedPtr msg) {
 			std::lock_guard<std::mutex> lock(depth_callback_lock);
 			latest_depth_img = msg;
+			depth_buffer_.push_back(msg);
+			trimImageBuffer(depth_buffer_);
 		};
 		
 		_zed_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
@@ -268,6 +281,8 @@ private:
 	
 	sensor_msgs::msg::Image::SharedPtr latest_img;
 	sensor_msgs::msg::Image::SharedPtr latest_depth_img;
+	std::deque<sensor_msgs::msg::Image::SharedPtr> image_buffer_;
+	std::deque<sensor_msgs::msg::Image::SharedPtr> depth_buffer_;
 	
 	tf2_ros::Buffer tf_buffer;
 	tf2_ros::TransformListener tf_listener;
@@ -284,6 +299,8 @@ private:
 	std::string target_frame_;
 	int64_t publish_interval_ms_ = 100;
 	int64_t max_rgb_depth_delta_ms_ = 120;
+	int64_t rgb_depth_sync_buffer_size_ = 12;
+	bool    rgb_depth_require_tf_ready_ = true;
 	int64_t tf_lookup_timeout_ms_ = 100;
 	int64_t tf_wait_for_stamp_ms_ = 125;
 	int64_t line_hold_timeout_ms_ = 8000;
@@ -356,6 +373,12 @@ private:
 		cv::Point pixel;
 	};
 
+	struct SynchronizedImagePair {
+		sensor_msgs::msg::Image::SharedPtr camera;
+		sensor_msgs::msg::Image::SharedPtr depth;
+		bool waiting_for_tf = false;
+	};
+
 	struct VoxelKey {
 		int x = 0;
 		int y = 0;
@@ -402,6 +425,9 @@ private:
 	bool imagesAreSynchronized(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const sensor_msgs::msg::Image::SharedPtr & depth_msg);
+	void trimImageBuffer(std::deque<sensor_msgs::msg::Image::SharedPtr> & buffer) const;
+	bool hasStampedBaseTransform(const sensor_msgs::msg::Image::SharedPtr & depth_msg);
+	SynchronizedImagePair getSynchronizedImages();
 
 	void publishLinePoints(const autonav_interfaces::msg::LinePoints & message);
 	void publishPointCloudFromLineMessage(const autonav_interfaces::msg::LinePoints & message);
@@ -530,6 +556,114 @@ bool LineDetectorNode::imagesAreSynchronized(
 	}
 
 	return true;
+}
+
+void LineDetectorNode::trimImageBuffer(
+	std::deque<sensor_msgs::msg::Image::SharedPtr> & buffer) const
+{
+	const size_t max_size = static_cast<size_t>(rgb_depth_sync_buffer_size_);
+	while (buffer.size() > max_size) {
+		buffer.pop_front();
+	}
+}
+
+bool LineDetectorNode::hasStampedBaseTransform(
+	const sensor_msgs::msg::Image::SharedPtr & depth_msg)
+{
+	if (!depth_msg || !rgb_depth_require_tf_ready_) {
+		return true;
+	}
+	try {
+		return tf_buffer.canTransform(
+			target_frame_,
+			"base_link",
+			rclcpp::Time(depth_msg->header.stamp),
+			rclcpp::Duration::from_nanoseconds(0));
+	} catch (const tf2::TransformException &) {
+		return false;
+	}
+}
+
+LineDetectorNode::SynchronizedImagePair LineDetectorNode::getSynchronizedImages()
+{
+	std::scoped_lock lock(callback_lock, depth_callback_lock);
+	if (image_buffer_.empty() || depth_buffer_.empty()) {
+		return {latest_img, latest_depth_img, false};
+	}
+
+	const int64_t max_delta_ns = max_rgb_depth_delta_ms_ * 1000000LL;
+	auto stamp_ns = [](const sensor_msgs::msg::Image::SharedPtr & msg) -> int64_t {
+		if (!msg) {
+			return 0;
+		}
+		return static_cast<int64_t>(msg->header.stamp.sec) * 1000000000LL +
+			static_cast<int64_t>(msg->header.stamp.nanosec);
+	};
+
+	sensor_msgs::msg::Image::SharedPtr best_image;
+	sensor_msgs::msg::Image::SharedPtr best_depth;
+	size_t best_image_index = 0;
+	size_t best_depth_index = 0;
+	sensor_msgs::msg::Image::SharedPtr fallback_image;
+	sensor_msgs::msg::Image::SharedPtr fallback_depth;
+	size_t fallback_image_index = 0;
+	size_t fallback_depth_index = 0;
+
+	for (size_t image_index = image_buffer_.size(); image_index-- > 0;) {
+		const auto & image = image_buffer_[image_index];
+		const int64_t image_ns = stamp_ns(image);
+		int64_t nearest_delta_ns = std::numeric_limits<int64_t>::max();
+		size_t nearest_depth_index = 0;
+
+		for (size_t depth_index = 0; depth_index < depth_buffer_.size(); ++depth_index) {
+			const int64_t depth_ns = stamp_ns(depth_buffer_[depth_index]);
+			const int64_t delta_ns =
+				(image_ns >= depth_ns) ? (image_ns - depth_ns) : (depth_ns - image_ns);
+			if (delta_ns < nearest_delta_ns) {
+				nearest_delta_ns = delta_ns;
+				nearest_depth_index = depth_index;
+			}
+		}
+
+		if (nearest_delta_ns <= max_delta_ns) {
+			const auto & depth = depth_buffer_[nearest_depth_index];
+			if (!fallback_image || !fallback_depth) {
+				fallback_image = image;
+				fallback_depth = depth;
+				fallback_image_index = image_index;
+				fallback_depth_index = nearest_depth_index;
+			}
+			if (hasStampedBaseTransform(depth)) {
+				best_image = image;
+				best_depth = depth;
+				best_image_index = image_index;
+				best_depth_index = nearest_depth_index;
+				break;
+			}
+		}
+	}
+
+	if (!best_image || !best_depth) {
+		if (!fallback_image || !fallback_depth) {
+			return {latest_img, latest_depth_img, false};
+		}
+		if (rgb_depth_require_tf_ready_) {
+			return {nullptr, nullptr, true};
+		}
+		best_image = fallback_image;
+		best_depth = fallback_depth;
+		best_image_index = fallback_image_index;
+		best_depth_index = fallback_depth_index;
+	}
+
+	if (best_image_index > 0) {
+		image_buffer_.erase(image_buffer_.begin(), image_buffer_.begin() + best_image_index);
+	}
+	if (best_depth_index > 0) {
+		depth_buffer_.erase(depth_buffer_.begin(), depth_buffer_.begin() + best_depth_index);
+	}
+
+	return {best_image, best_depth, false};
 }
 
 void LineDetectorNode::publishLinePoints(const autonav_interfaces::msg::LinePoints & message)
@@ -1397,19 +1531,18 @@ void LineDetectorNode::line_service(
 {
 	(void)request;
 
-	// Get latest images
-	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(callback_lock);
-		return latest_img;
-	}();
-	
-	sensor_msgs::msg::Image::SharedPtr depth_camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(depth_callback_lock);
-		return latest_depth_img;
-	}();
+	const auto image_pair = getSynchronizedImages();
+	const auto camera_msg = image_pair.camera;
+	const auto depth_camera_msg = image_pair.depth;
 
 	if (!camera_msg || !depth_camera_msg) {
-		RCLCPP_ERROR(this->get_logger(), "No camera images available");
+		if (image_pair.waiting_for_tf) {
+			RCLCPP_WARN_THROTTLE(
+				this->get_logger(), *get_clock(), 3000,
+				"No synchronized camera pair has TF ready yet");
+		} else {
+			RCLCPP_ERROR(this->get_logger(), "No camera images available");
+		}
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_camera_msg)) {
@@ -1482,16 +1615,9 @@ void LineDetectorNode::line_callback()
 	
 	if (!enable_timer_) return;
 
-	// Get latest images
-	sensor_msgs::msg::Image::SharedPtr camera_msg = [this]() {
-		std::lock_guard<std::mutex> lock(callback_lock);
-		return latest_img;
-	}();
-	
-	sensor_msgs::msg::Image::SharedPtr depth_msg = [this]() {
-		std::lock_guard<std::mutex> lock(depth_callback_lock);
-		return latest_depth_img;
-	}();
+	const auto image_pair = getSynchronizedImages();
+	const auto camera_msg = image_pair.camera;
+	const auto depth_msg = image_pair.depth;
 
 	if (!camera_msg || !depth_msg) {
 		// Republish cached confirmed voxels (held for confirmed_hold_ms)
@@ -1499,7 +1625,10 @@ void LineDetectorNode::line_callback()
 		// republish pattern so the local_costmap sees stable line
 		// obstacles across transient input gaps.
 		republishConfirmedCache(this->now());
-		publish_timed_diagnostics("missing camera/depth image");
+		publish_timed_diagnostics(
+			image_pair.waiting_for_tf
+				? "waiting for synchronized RGB/depth/TF pair"
+				: "missing camera/depth image");
 		return;
 	}
 	if (!imagesAreSynchronized(camera_msg, depth_msg)) {
