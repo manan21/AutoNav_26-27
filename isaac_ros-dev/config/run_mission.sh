@@ -70,6 +70,8 @@ else
 fi
 
 i=0
+ok=0
+aborted=0
 while IFS= read -r raw || [[ -n $raw ]]; do
   line=${raw%%#*}                           # strip inline comments
   line=${line//$'\r'/}                      # strip CRs
@@ -80,67 +82,85 @@ while IFS= read -r raw || [[ -n $raw ]]; do
   read -r kind a b extra <<< "$normalized"
 
   i=$((i + 1))
+  status=0
 
   case $kind in
     GI)
       # Argless: record-and-store the robot's current GPS position so a
-      # later GR leg can return to it.
+      # later GR leg can return to it. Per-leg failures (bad args, no
+      # GPS) flow through the "log + continue" path below; the mission
+      # never skips ahead because of a problem on this leg.
       if [[ -n ${a:-} ]]; then
-        echo "GI takes no arguments: $raw" >&2
-        exit 1
+        echo "[$i/$TOTAL] GI takes no arguments: $raw" >&2
+        status=1
+      else
+        echo "[$i/$TOTAL] GI (recording current GPS, ${GI_SAMPLES} samples)"
+        python3 "$GI_RECORDER" \
+          --samples "$GI_SAMPLES" \
+          "$GI_WAYPOINT_FILE"
+        status=$?
       fi
-      echo "[$i/$TOTAL] GI (recording current GPS, ${GI_SAMPLES} samples)"
-      python3 "$GI_RECORDER" \
-        --samples "$GI_SAMPLES" \
-        "$GI_WAYPOINT_FILE"
-      status=$?
       ;;
     GR)
       # Argless: replay the GI-recorded waypoint as a GA-style goal.
+      # Same policy as GI — any precondition gap is logged and we move
+      # on; the mission file's remaining legs still get dispatched.
       if [[ -n ${a:-} ]]; then
-        echo "GR takes no arguments: $raw" >&2
-        exit 1
+        echo "[$i/$TOTAL] GR takes no arguments: $raw" >&2
+        status=1
+      elif [[ ! -f $GI_WAYPOINT_FILE ]]; then
+        echo "[$i/$TOTAL] GR before GI — no recorded waypoint at $GI_WAYPOINT_FILE" >&2
+        status=1
+      else
+        read -r r_lat r_lon _rest < "$GI_WAYPOINT_FILE" || true
+        if [[ -z ${r_lat:-} || -z ${r_lon:-} ]]; then
+          echo "[$i/$TOTAL] GR: malformed recorded waypoint in $GI_WAYPOINT_FILE" >&2
+          status=1
+        else
+          echo "[$i/$TOTAL] GR (returning to $r_lat $r_lon)"
+          "$SEND_GPS" "$r_lat" "$r_lon"
+          status=$?
+        fi
       fi
-      if [[ ! -f $GI_WAYPOINT_FILE ]]; then
-        echo "GR before GI — no recorded waypoint at $GI_WAYPOINT_FILE" >&2
-        exit 1
-      fi
-      read -r r_lat r_lon _rest < "$GI_WAYPOINT_FILE" || true
-      if [[ -z ${r_lat:-} || -z ${r_lon:-} ]]; then
-        echo "GR: malformed recorded waypoint in $GI_WAYPOINT_FILE" >&2
-        exit 1
-      fi
-      echo "[$i/$TOTAL] GR (returning to $r_lat $r_lon)"
-      "$SEND_GPS" "$r_lat" "$r_lon"
-      status=$?
       ;;
     ER|EA|GA)
       if [[ -n ${extra:-} ]]; then
-        echo "leg has extra fields: $raw" >&2
-        exit 1
+        echo "[$i/$TOTAL] leg has extra fields: $raw" >&2
+        status=1
+      elif [[ -z ${a:-} || -z ${b:-} ]]; then
+        echo "[$i/$TOTAL] leg missing values: $raw" >&2
+        status=1
+      else
+        echo "[$i/$TOTAL] $kind $a $b"
+        case $kind in
+          ER) "$SEND_LOCAL" -r "$a" "$b" ;;
+          EA) "$SEND_LOCAL" "$a" "$b" ;;
+          GA) "$SEND_GPS" "$a" "$b" ;;
+        esac
+        status=$?
       fi
-      if [[ -z ${a:-} || -z ${b:-} ]]; then
-        echo "leg missing values: $raw" >&2
-        exit 1
-      fi
-      echo "[$i/$TOTAL] $kind $a $b"
-      case $kind in
-        ER) "$SEND_LOCAL" -r "$a" "$b" ;;
-        EA) "$SEND_LOCAL" "$a" "$b" ;;
-        GA) "$SEND_GPS" "$a" "$b" ;;
-      esac
-      status=$?
       ;;
     *)
-      echo "unknown leg type '$kind' in: $raw" >&2
-      exit 1
+      echo "[$i/$TOTAL] unknown leg type '$kind' in: $raw" >&2
+      status=1
       ;;
   esac
 
-  if [[ $status -ne 0 ]]; then
-    echo "leg $i ($raw) failed with status $status — stopping mission." >&2
-    exit "$status"
+  # Mission policy: a Nav2 abort on one leg is not a mission-level
+  # failure — the operator wants the chain to keep dispatching the next
+  # waypoint regardless. The only exit we treat as "stop the whole
+  # mission" is 130 (the SIGINT/SIGTERM trap path inside the dispatchers,
+  # i.e. operator-initiated cancel). Everything else gets logged loudly
+  # and we move on.
+  if [[ $status -eq 0 ]]; then
+    ok=$((ok + 1))
+  elif [[ $status -eq 130 ]]; then
+    echo "leg $i ($raw) interrupted by operator (exit 130) — stopping mission." >&2
+    exit 130
+  else
+    aborted=$((aborted + 1))
+    echo "leg $i ($raw) returned status $status — continuing to next leg." >&2
   fi
 done < "$MISSION"
 
-echo "mission complete: $i/$TOTAL legs succeeded."
+echo "mission complete: $ok/$TOTAL legs succeeded, $aborted aborted."

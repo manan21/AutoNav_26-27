@@ -38,16 +38,41 @@ GOAL_YAML="{goal_type: 0, target: {header: {frame_id: 'wgs84'}, pose: {position:
 # Tempfile to capture send_goal's stdout so the trap can parse the UUID.
 OUT_LOG=$(mktemp -t send_gps_waypoint.XXXXXX)
 
-cleanup_tmp() { rm -f "$OUT_LOG"; }
+cleanup_tmp() {
+  # Kill the live-display tail before deleting its source file so we
+  # don't leak a follower into the next mission leg.
+  if [[ -n "${TAIL_PID:-}" ]]; then
+    kill "$TAIL_PID" 2>/dev/null || true
+    wait "$TAIL_PID" 2>/dev/null || true
+  fi
+  rm -f "$OUT_LOG"
+}
 trap cleanup_tmp EXIT
 
-# Run send_goal in the background, teeing stdout so the operator still
-# sees feedback in real time AND we have a parseable copy in OUT_LOG.
+# Run send_goal in the background with stdout/stderr going to OUT_LOG,
+# and stream the log to the terminal via a separate `tail -f`. This is
+# subtler than the obvious `ros2 ... | tee LOG &` form:
+#
+#   * With `cmd | tee FILE &`, $! is tee's PID. `wait "$!"` then returns
+#     tee's exit (0 on EOF) even when ros2 reported ABORTED — silently
+#     masking every Nav2 abort. `pipefail` doesn't fix this because it
+#     applies to synchronous pipelines, not to `wait <pid>`.
+#   * Splitting the pipeline keeps $! pointing at ros2 directly so
+#     `wait "$SEND_PID"` returns the real action terminal status
+#     (SUCCEEDED → 0, ABORTED/REJECTED/CANCELED → non-zero), which
+#     run_mission.sh logs per leg.
+#
+# `tail --pid=SEND_PID -F` follows the file and self-exits when ros2
+# dies, so we don't need a separate kill in the happy path. -F (not -f)
+# tolerates the file being created just-in-time by ros2's first write.
 ros2 action send_goal /navigate_to_waypoint \
   autonav_interfaces/action/NavigateToWaypoint \
   "$GOAL_YAML" \
-  --feedback 2>&1 | tee "$OUT_LOG" &
+  --feedback >"$OUT_LOG" 2>&1 &
 SEND_PID=$!
+
+tail --pid="$SEND_PID" -n +1 -F "$OUT_LOG" 2>/dev/null &
+TAIL_PID=$!
 
 on_interrupt() {
   echo "" >&2
