@@ -17,10 +17,23 @@
            tick; if that path is forward, FollowPath resumes.
     4. If everything stalls, cycle through recoveries forever.
 
-  Recovery sequence:
-    1. BreadcrumbReverse / BackUp — back out of inflated footprint contact
-    2. GradientEscape   — follow costmap gradient away from high cost
-    3. Clear costmaps + Wait — remove ghost obstacles and let transients pass
+  Plan-recovery cascade (mirrors the sim's three-behavior conditional
+  flow in bt_sim_gui.py — FORWARD_BLOCKED_BREADCRUMB_REVERSE /
+  GRADIENT_ESCAPE / GOAL_BEND):
+    1. BreadcrumbReverse — retrace verified-safe forward path. FAILED
+       immediately if buffer empty.
+    2. GradientEscape    — drive down the inflation gradient until the
+       body cell cost drops below the planner's blocking threshold.
+       Self-exits as a no-op if the robot is already clear.
+    3. ClearCostmap + Wait — return SUCCESS so the outer pipeline retries.
+       GoalBender at the top of BendAndPlan re-fires on the next 3 Hz
+       tick and bends the goal forward when the buffer is empty AND the
+       path leads behind, giving the planner a forward target.
+  Blind BackUp is intentionally NOT in this cascade. It was the source
+  of unintended rear motion when breadcrumb_reverse fell through (the
+  log said "buffer empty" while BackUp commanded a 0.20 m reverse).
+  The outer RecoveryFallback round-robin still includes BackUp as the
+  last-resort response to a fully-stuck robot.
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -91,29 +104,39 @@
                      next tick replans. -->
                 <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
                 <ReactiveFallback name="PlanRecoveryEscape">
-                  <!-- First try to reverse along breadcrumbs — fastest
-                       recovery when the robot has been moving and has crumbs
-                       to spend. -->
+                  <!-- Mirrors the sim's three-behavior conditional cascade
+                       (bt_sim_gui.py FORWARD_BLOCKED_BREADCRUMB_REVERSE /
+                       GRADIENT_ESCAPE / GOAL_BEND). Blind BackUp was
+                       removed: when breadcrumb_reverse can't help (buffer
+                       empty), the sim falls through to GOAL_BEND, never
+                       to an uninformed reverse. Goal-bending happens at
+                       the top of BendAndPlan on every 3 Hz tick — and
+                       GoalBender already knows to bend when the path is
+                       behind and the breadcrumb buffer is empty — so
+                       letting this fallback return SUCCESS (via
+                       ClearCostmap+Wait) hands control back to the outer
+                       pipeline where GoalBender re-fires and the planner
+                       gets a forward plan against the bent goal. -->
+                  <!-- 1. If breadcrumbs exist, retrace them. Returns
+                          FAILED immediately when the buffer is empty so
+                          the fallback advances on the same tick. -->
                   <DriveOnHeading server_name="breadcrumb_reverse"
                     dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
-                  <BackUp backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
-                  <BackUp server_name="inflation_backout"
-                    backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
-                  <!-- Primary plan-recovery action: follow the costmap
-                       gradient down to below cost 100 (body ~0.29 m clear
-                       of obstacles, well below the inscribed cell that
-                       blocks NavfnPlanner). time_allowance matches the
-                       behavior_server's internal 15 s timeout so the
-                       behavior gets its full budget. -->
+                  <!-- 2. If the body is sitting in the inscribed band,
+                          drive down the inflation gradient until the
+                          planner can seed. gradient_escape now self-exits
+                          when robot cell cost drops below 253, so it is a
+                          no-op when the robot is already clear. -->
                   <DriveOnHeading server_name="gradient_escape"
                     dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
+                  <!-- 3. Transient-state escape hatch: clear the local
+                          costmap around the robot and pause one tick so
+                          GoalBender can re-evaluate against fresh costs.
+                          Returning SUCCESS escalates the outer
+                          RecoveryNode to retry ComputePathToPose, which
+                          runs *after* GoalBender re-fires at the top of
+                          BendAndPlan. -->
                   <Sequence name="PlanRecoveryClearThenWait">
-                    <!-- LOCAL clear only (sim spec): wiping the entire
-                         global costmap erases distant lidar marks the
-                         robot needs to re-find its way back, and the
-                         planner immediately draws a straight line through
-                         the now-empty space. A 1 m around-robot clear
-                         handles transient inflation without that memory loss. -->
                     <ClearCostmapAroundRobot name="ClearAroundRobot-PlanRecovery"
                       service_name="local_costmap/clear_around_local_costmap"
                       reset_distance="1.0"/>
