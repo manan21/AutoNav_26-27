@@ -288,8 +288,8 @@ __global__ void __cerias_kernel (
         const uint8_t *gray_u8,
         Npp32f *integral,
         Npp64f *integral_sq,
-        int2 *output,
-        int *counter,
+        uint8_t *line_mask,
+        int *raw_counter,
         int width, int height,
         int half_window,
         float brightness_threshold,
@@ -336,18 +336,55 @@ __global__ void __cerias_kernel (
 
     if (sigma < sigma_threshold && mew > mew_threshold) {
 
-        int index = atomicAdd(counter, 1);
-        output[index] = make_int2(x, y);
+        // Pass 1 only marks the dense mask; compaction happens in the
+        // speckle filter (pass 2). raw_counter is just for diagnostics.
+        line_mask[y * width + x] = 1;
+        atomicAdd(raw_counter, 1);
 
     }
 
 }
 
+// Pass 2: neighbor-density speckle filter + compaction (replaces the
+// host cv::connectedComponentsWithStats). One thread per pixel.
+__global__ void __speckle_filter_kernel (
+        const uint8_t *line_mask,
+        int2 *output,
+        int *counter,
+        int width, int height,
+        int radius,
+        int min_neighbors
+    )
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height || !line_mask[y * width + x])
+        return;
+
+    int neighbors = 0;
+    for (int dy = -radius; dy <= radius; ++dy) {
+        const int ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int nx = x + dx;
+            if (nx < 0 || nx >= width) continue;
+            neighbors += line_mask[ny * width + nx];
+        }
+    }
+
+    if (neighbors >= min_neighbors) {
+        const int index = atomicAdd(counter, 1);
+        output[index] = make_int2(x, y);
+    }
+}
+
 extern "C" void cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             int2 * output,
-                             int * counter,
+                             uint8_t * line_mask,
+                             int * raw_counter,
                              int width, int height,
                              int half_window,
                              float brightness_threshold,
@@ -366,7 +403,7 @@ extern "C" void cerias_kernel(const uint8_t * gray_u8,
 
         gray_u8,
         integral, integral_sq,
-        output, counter,
+        line_mask, raw_counter,
         width, height,
         half_window,
         brightness_threshold,
@@ -376,6 +413,28 @@ extern "C" void cerias_kernel(const uint8_t * gray_u8,
     );
 
 
+}
+
+extern "C" void speckle_filter_kernel(const uint8_t * line_mask,
+                             int2 * output,
+                             int * counter,
+                             int width, int height,
+                             int radius,
+                             int min_neighbors)
+{
+    dim3 block(16, 16);
+    dim3 grid(
+        (width + block.x - 1) / block.x,
+        (height + block.y - 1) / block.y
+    );
+
+    __speckle_filter_kernel<<<grid, block>>>(
+        line_mask,
+        output, counter,
+        width, height,
+        radius,
+        min_neighbors
+    );
 }
 
 extern "C" cudaError_t project_line_pixels_cuda(

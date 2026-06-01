@@ -6,17 +6,19 @@
 namespace
 {
 
-constexpr int kMinLineComponentPixels = 20;
-constexpr float kMinLineMajorAxisPx = 12.0F;
-// Image-space CC aspect gate. Was 4.0 which rejected T- and L-junctions:
-// when both arms of a T are bright and connected, the bounding rect of
-// all the pixels is roughly square (aspect ~2), failing the gate and
-// dropping the entire line into 0-1 trivial "kept components" with very
-// few of the original 16k+ bright pixels surviving. 2.0 admits T/L
-// junctions while still rejecting blob speckles (which are aspect ~1).
-// Round bright objects (cones, dots) are intentionally NOT this
-// detector's job — those are handled by the lidar/grade obstacle path.
-constexpr float kMinLineAspectRatio = 2.0F;
+// GPU speckle-filter knobs (replaces the host cv::connectedComponents
+// area filter). A surviving line pixel must have at least
+// kSpeckleMinNeighbors line-mask neighbors within kSpeckleRadiusPx
+// (Chebyshev). This is shape-agnostic — straight lines, curves, and
+// T/L junctions are all locally dense, so they pass; isolated speckle
+// and tiny blobs (cones/dots, handled by the lidar/grade path) do not.
+// Tuned conservatively (errs toward keeping pixels); the downstream ROI,
+// ground, depth, and geometry gates remove anything that slips through.
+// radius 2 = 5x5 window (24 neighbors max); a 1px-wide line pixel has
+// ~4 on-line neighbors, so 4 keeps thin lines while dropping <4-pixel
+// specks.
+constexpr int kSpeckleRadiusPx = 2;
+constexpr int kSpeckleMinNeighbors = 4;
 
 // Persistent CUDA device buffers reused across every detect_line_pixels
 // call. Previously each frame allocated and freed all seven buffers
@@ -35,8 +37,10 @@ struct LineDeviceBuffers
     Npp8u   *u8_input    = nullptr;
     Npp32f  *integral    = nullptr;
     Npp64f  *integral_sq = nullptr;
+    uint8_t *line_mask   = nullptr;
     int2    *output      = nullptr;
     int     *counter     = nullptr;
+    int     *raw_counter = nullptr;
 
     bool ensure(int new_w, int new_h);
     void freeAll();
@@ -58,9 +62,13 @@ bool LineDeviceBuffers::ensure(int new_w, int new_h)
                    int_cells * sizeof(Npp32f)) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&integral_sq),
                    int_cells * sizeof(Npp64f)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&line_mask),
+                   total) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&output),
                    total * sizeof(int2)) != cudaSuccess) { freeAll(); return false; }
     if (cudaMalloc(reinterpret_cast<void**>(&counter),
+                   sizeof(int)) != cudaSuccess) { freeAll(); return false; }
+    if (cudaMalloc(reinterpret_cast<void**>(&raw_counter),
                    sizeof(int)) != cudaSuccess) { freeAll(); return false; }
 
     // Zero the integral buffers once, here. nppiSqrIntegral rewrites the
@@ -86,111 +94,20 @@ void LineDeviceBuffers::freeAll()
     if (u8_input)    { cudaFree(u8_input);    u8_input    = nullptr; }
     if (integral)    { cudaFree(integral);    integral    = nullptr; }
     if (integral_sq) { cudaFree(integral_sq); integral_sq = nullptr; }
+    if (line_mask)   { cudaFree(line_mask);   line_mask   = nullptr; }
     if (output)      { cudaFree(output);      output      = nullptr; }
     if (counter)     { cudaFree(counter);     counter     = nullptr; }
+    if (raw_counter) { cudaFree(raw_counter); raw_counter = nullptr; }
     width = 0;
     height = 0;
 }
 
 LineDeviceBuffers g_line_bufs;
 
-std::pair<int2 *, int *> filter_line_components(
-    const int2 *points,
-    int count,
-    int width,
-    int height,
-    int roi_min_y,
-    int * kept_component_count)
-{
-    int *filtered_count = new int(0);
-    int2 *filtered_points = new int2[1];
-
-    if (!points || count <= 0 || width <= 0 || height <= 0) {
-        return std::make_pair(filtered_points, filtered_count);
-    }
-
-    // Connected components only need to run over the ROI band. The top
-    // rows are zeroed before detection so the kernel never emits pixels
-    // there; scanning them in CC is wasted work (~45% of the image at the
-    // default roi_min_y_fraction). Restrict the labeling to
-    // [roi_y, height) and offset y coordinates accordingly.
-    const int roi_y = std::clamp(roi_min_y, 0, height - 1);
-    const int roi_h = height - roi_y;
-
-    // Persist the component_mask between frames; only allocate on size
-    // change. cv::Mat::zeros allocates fresh memory every frame; setTo(0)
-    // reuses the buffer. The mask is sized to the ROI band only.
-    static cv::Mat component_mask;
-    if (component_mask.rows != roi_h || component_mask.cols != width ||
-        component_mask.type() != CV_8UC1) {
-        component_mask = cv::Mat::zeros(roi_h, width, CV_8UC1);
-    } else {
-        component_mask.setTo(0);
-    }
-    for (int i = 0; i < count; ++i) {
-        const int x = points[i].x;
-        const int y = points[i].y - roi_y;
-        if (0 <= x && x < width && 0 <= y && y < roi_h) {
-            component_mask.at<uint8_t>(y, x) = 255;
-        }
-    }
-
-    cv::Mat labels;
-    cv::Mat stats;
-    cv::Mat centroids;
-    const int num_labels =
-        cv::connectedComponentsWithStats(component_mask, labels, stats, centroids, 8, CV_32S);
-
-    // Area-only CC filter. Previously this looped (num_labels × W × H) to
-    // collect each component's pixels for a cv::minAreaRect aspect/major
-    // check — ~50 ms per frame on 540 × 960 with many small ground-
-    // speckle components. The aspect filter also rejected curved /
-    // T/L-shaped lines (the user explicitly noted this), so it served
-    // neither speed nor accuracy. Now: O(num_labels) iterations only,
-    // keep every component above kMinLineComponentPixels. Shape
-    // classification is the CUDA kernel's job upstream.
-    std::vector<uint8_t> keep_component(num_labels, 0);
-    int kept_components = 0;
-    for (int label = 1; label < num_labels; ++label) {
-        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
-        if (area < kMinLineComponentPixels) {
-            continue;
-        }
-        keep_component[label] = 1;
-        ++kept_components;
-    }
-
-    std::vector<int2> kept_points;
-    kept_points.reserve(count);
-    for (int i = 0; i < count; ++i) {
-        const int x = points[i].x;
-        const int y = points[i].y - roi_y;
-        if (0 <= x && x < width && 0 <= y && y < roi_h) {
-            const int label = labels.at<int>(y, x);
-            if (label > 0 && keep_component[label]) {
-                kept_points.push_back(points[i]);
-            }
-        }
-    }
-
-    delete[] filtered_points;
-    *filtered_count = static_cast<int>(kept_points.size());
-    filtered_points = new int2[std::max(1, *filtered_count)];
-    for (int i = 0; i < *filtered_count; ++i) {
-        filtered_points[i] = kept_points[i];
-    }
-
-    RCLCPP_DEBUG(
-        rclcpp::get_logger("lines"),
-        "Filtered line pixels from %d to %d using %d kept connected components",
-        count, *filtered_count, kept_components);
-
-    if (kept_component_count) {
-        *kept_component_count = kept_components;
-    }
-
-    return std::make_pair(filtered_points, filtered_count);
-}
+// The host-side connected-components speckle filter has been replaced by
+// the GPU __speckle_filter_kernel (see cuda.cu) — pass 2 of the detector.
+// detect_line_pixels now receives an already-filtered, compacted point
+// list straight off the device, so no CPU labeling / gather pass remains.
 
 }  // namespace
 
@@ -314,66 +231,85 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
     RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Integral images computed, launching kernel");
 
     const uint8_t *device_gray = g_line_bufs.u8_input;  // uploaded by __get_integral_image
+    uint8_t *line_mask         = g_line_bufs.line_mask;
     int2    *output            = g_line_bufs.output;
     int     *counter           = g_line_bufs.counter;
+    int     *raw_counter       = g_line_bufs.raw_counter;
+    const size_t total         = static_cast<size_t>(width) * height;
 
     cudaError_t err;
 
-    // Only the counter needs zeroing each frame. The kernel writes the
-    // output array at atomically-assigned indices [0, counter) and the
-    // host reads back only that many entries, so the W*H*sizeof(int2)
-    // output buffer never needs a per-frame memset (~4 MB at 540x960).
-    err = cudaMemset(counter, 0, sizeof(int));
-    if (err != cudaSuccess) {
-        RCLCPP_ERROR(rclcpp::get_logger("lines"),
-                     "cudaMemset failed for counter: %s",
-                     cudaGetErrorString(err));
+    auto fail_empty = [&]() {
         int *counter_return = new int;
         *counter_return = 0;
         int2 *output_return = new int2[1];
         return std::make_pair(output_return, counter_return);
+    };
+
+    // Per-frame zeroing: the dense line mask (pass 1 writes 1s into it,
+    // so stale 1s from the prior frame must be cleared) and both counters.
+    // The W*H*sizeof(int2) output buffer is NOT memset — pass 2 compacts
+    // into [0, counter) and the host reads back only that many entries.
+    if (cudaMemset(line_mask, 0, total) != cudaSuccess ||
+        cudaMemset(counter, 0, sizeof(int)) != cudaSuccess ||
+        cudaMemset(raw_counter, 0, sizeof(int)) != cudaSuccess) {
+        RCLCPP_ERROR(rclcpp::get_logger("lines"), "cudaMemset failed staging kernels");
+        return fail_empty();
     }
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernel");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Persistent buffers staged, launching kernels");
 
-    // Launch kernel. Brightness gating happens on-GPU from device_gray.
+    // Pass 1: classify pixels into the dense line mask (brightness gate +
+    // local-statistics test). Pass 2: GPU speckle filter + compaction —
+    // replaces the host cv::connectedComponents. Both kernels are async;
+    // a single cudaDeviceSynchronize below covers them.
     cerias_kernel(
         device_gray,
         integral, integral_sq,
-        output, counter,
+        line_mask, raw_counter,
         width, height,
         half_window,
         static_cast<float>(brightness_threshold),
         sigma_threshold,
         mew_threshold
     );
+    speckle_filter_kernel(
+        line_mask,
+        output, counter,
+        width, height,
+        kSpeckleRadiusPx,
+        kSpeckleMinNeighbors
+    );
 
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel launch failed: %s",
                      cudaGetErrorString(err));
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
+        return fail_empty();
     }
 
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         RCLCPP_ERROR(rclcpp::get_logger("lines"), "Kernel execution failed: %s",
                      cudaGetErrorString(err));
-        int *counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
+        return fail_empty();
     }
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Kernel executed successfully");
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Kernels executed successfully");
 
-    // Copy results back. counter and output are device pointers into
-    // the persistent buffer set; only the host-side return arrays
-    // ('counter_return', 'output_return') are heap-allocated for the
-    // caller to own.
+    // Pre-speckle (raw) count for diagnostics only.
+    int raw_count = 0;
+    if (cudaMemcpy(&raw_count, raw_counter, sizeof(int),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        raw_count = 0;
+    }
+    if (stats) {
+        stats->raw_pixels = raw_count;
+    }
+
+    // The compacted, speckle-filtered point list comes straight off the
+    // device — no host CC/gather pass. counter/output are persistent
+    // device buffers; only the returned host arrays are caller-owned.
     int *counter_return = new int;
     err = cudaMemcpy(counter_return, counter, sizeof(int),
                      cudaMemcpyDeviceToHost);
@@ -382,16 +318,16 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                      "cudaMemcpy failed for counter: %s",
                      cudaGetErrorString(err));
         delete counter_return;
-        counter_return = new int;
-        *counter_return = 0;
-        int2 *output_return = new int2[1];
-        return std::make_pair(output_return, counter_return);
+        return fail_empty();
     }
 
-    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
-    if (stats) {
-        stats->raw_pixels = *counter_return;
+    // Guard against an overflow of the output buffer (capacity = W*H).
+    if (*counter_return < 0) {
+        *counter_return = 0;
     }
+    *counter_return = std::min(*counter_return, static_cast<int>(total));
+
+    RCLCPP_DEBUG(rclcpp::get_logger("lines"), "Detected %d line pixels", *counter_return);
 
     int2 *output_return = new int2[std::max(1, *counter_return)];
 
@@ -405,23 +341,13 @@ std::pair<int2*, int*> lines::detect_line_pixels(const cv::Mat &image,
                          cudaGetErrorString(err));
             delete[] output_return;
             delete counter_return;
-            counter_return = new int;
-            *counter_return = 0;
-            output_return = new int2[1];
-            return std::make_pair(output_return, counter_return);
+            return fail_empty();
         }
     }
 
-    int kept_components = 0;
-    auto filtered_results = filter_line_components(
-        output_return, *counter_return, width, height, roi_min_y, &kept_components);
-    delete[] output_return;
-    delete counter_return;
-    output_return = filtered_results.first;
-    counter_return = filtered_results.second;
     if (stats) {
         stats->filtered_pixels = *counter_return;
-        stats->kept_components = kept_components;
+        stats->kept_components = 0;  // no CC stage anymore
     }
 
     if (debug_image_write_enabled) {

@@ -18,11 +18,15 @@
 // The brightness pre-gate reads the uploaded grayscale image directly on
 // the GPU; no host-side cv::threshold/mask upload is needed. Defaults are
 // wired through node.cpp from line_detector.yaml; not compile-time consts.
+// Pass 1: classify each pixel. Writes a dense binary line mask
+// (line_mask[y*width+x] = 1 for line candidates) instead of a compacted
+// list, so the speckle filter (pass 2) can do neighbor lookups. Also
+// increments raw_counter for diagnostics (pre-speckle pixel count).
 __global__ void __cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             int2 * output,
-                             int * counter,
+                             uint8_t * line_mask,
+                             int * raw_counter,
                              int width, int height,
                              int half_window,
                              float brightness_threshold,
@@ -33,13 +37,34 @@ __global__ void __cerias_kernel(const uint8_t * gray_u8,
 extern "C" void cerias_kernel(const uint8_t * gray_u8,
                              Npp32f * integral,
                              Npp64f * integral_sq,
-                             int2 * output,
-                             int * counter,
+                             uint8_t * line_mask,
+                             int * raw_counter,
                              int width, int height,
                              int half_window,
                              float brightness_threshold,
                              float sigma_threshold,
                              float mew_threshold);
+
+
+// Pass 2: GPU speckle filter + compaction. Replaces the host-side
+// cv::connectedComponentsWithStats. A mask pixel survives iff it has at
+// least min_neighbors line-mask neighbors within `radius` (Chebyshev
+// window) — isolated speckle has few neighbors, line pixels have many.
+// Survivors are compacted into output[atomicAdd(counter)] as (x, y).
+__global__ void __speckle_filter_kernel(const uint8_t * line_mask,
+                             int2 * output,
+                             int * counter,
+                             int width, int height,
+                             int radius,
+                             int min_neighbors);
+
+
+extern "C" void speckle_filter_kernel(const uint8_t * line_mask,
+                             int2 * output,
+                             int * counter,
+                             int width, int height,
+                             int radius,
+                             int min_neighbors);
 
 struct LineProjectionResult
 {
