@@ -101,6 +101,13 @@ bt_navigator_navigate_to_pose_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: False
+    # Kept at 20.0. MPPI requires controller period (1/controller_frequency)
+    # <= model_dt (0.05). Lowering to 10 Hz (period 0.10 > 0.05) makes
+    # controller_server FAIL to configure ("Controller period more then model
+    # dt") and aborts the ENTIRE nav2 bringup. So MPPI CPU is cut via
+    # batch_size (1200 -> 600) below, NOT via frequency. The lifecycle bond
+    # timeout this load used to trip is now absorbed by bond_timeout: 20.0 in
+    # the lifecycle_manager (src/slam/launch/nav2_navigation.launch.py).
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
@@ -140,7 +147,11 @@ controller_server:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
       model_dt: 0.05
-      batch_size: 1200
+      # Halved 1200 -> 600 to cut MPPI CPU ~2x on the 15W Jetson WITHOUT
+      # touching controller_frequency/model_dt (constrained: period <= model_dt).
+      # Fewer sampled trajectories = slightly noisier optimum; fine at this
+      # robot's speeds. This is the MPPI load lever now that 20 Hz is fixed.
+      batch_size: 600
       # Pair with vx_max. Raising the cap to 0.50 without widening this
       # sampling distribution left MPPI choosing ~0.20 m/s trajectories in
       # open-lane sim; 0.25 lets the optimizer actually explore/use the new
@@ -221,12 +232,15 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      # Refresh the local costmap at the sensor input rate (~20 Hz) so line +
-      # lidar lethal cells appear at the same cadence as the feeds (lidar
-      # /scan_fullframe ~20 Hz; /line_points ~20 Hz after the accelerated
-      # camera + reliable-QoS changes). Was 15.0.
-      update_frequency: 20.0
-      publish_frequency: 20.0
+      # Intentionally HALF the 20 Hz controller (was 20 Hz sensor cadence).
+      # MPPI samples the costmap once per control cycle; at 10 Hz each cycle
+      # sees a costmap <=~100 ms old, and lethal line + lidar markings persist
+      # between updates so none are dropped (~5 cm of travel at 0.5 m/s). This
+      # halves costmap CPU. publish_frequency is viz / external-consumer only
+      # (the controller reads the Costmap2D object directly, not the
+      # /local_costmap/costmap topic), so it stays at 5 Hz. Previously 15.0.
+      update_frequency: 10.0
+      publish_frequency: 5.0
       global_frame: odom
       robot_base_frame: nav_center
       use_sim_time: False
