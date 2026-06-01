@@ -1,2 +1,2 @@
-Retired legacy Gazebo Classic package. Use igvc_competition_sim for the active
-ROS Humble + Gazebo Fortress competition simulation.
+Retired legacy Gazebo Classic package. Use the standalone autonav_sim repo for
+the active ROS Humble + Gazebo Fortress IGVC simulation.

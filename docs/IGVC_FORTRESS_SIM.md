@@ -1,8 +1,23 @@
 # IGVC Fortress Simulation
 
 The active Gazebo simulation target is `igvc_competition_sim`, built for ROS 2
-Humble plus Gazebo Fortress. The older Gazebo Classic `sim` and `autonav_sim`
-packages are intentionally ignored by colcon.
+Humble plus Gazebo Fortress. It now lives in the standalone `autonav_sim` repo,
+not inside this robot-stack repo.
+
+On Cole's machines, the host source is usually:
+
+```bash
+/Users/cole/code/git/autonav_sim
+```
+
+The planning/control AutoResearch VM workspace is usually:
+
+```bash
+/home/cole.guest/autonav_split_ws/src/autonav_sim
+```
+
+The older in-repo Gazebo Classic `sim` and `autonav_sim` packages are
+intentionally ignored by colcon.
 
 ## Purpose
 
@@ -30,10 +45,10 @@ obstacle path.
 
 ## Course
 
-The compact course source is:
+The compact course source is in the standalone sim repo:
 
 ```bash
-isaac_ros-dev/src/igvc_competition_sim/config/igvc_competition_compact.yaml
+igvc_competition_sim/config/igvc_competition_compact.yaml
 ```
 
 It includes:
@@ -46,10 +61,10 @@ It includes:
   giving the GPS EKF enough motion before GPS waypoint legs.
 - First-44-ft speed-check metadata and live scoring stations.
 
-Regenerate the SDF after changing the YAML:
+Regenerate the SDF after changing the YAML from the standalone sim repo:
 
 ```bash
-cd isaac_ros-dev/src/igvc_competition_sim
+cd /path/to/autonav_sim/igvc_competition_sim
 python3 -m igvc_competition_sim.generate_world \
   --course-config config/igvc_competition_compact.yaml \
   --output worlds/igvc_competition_compact.sdf
@@ -57,18 +72,19 @@ python3 -m igvc_competition_sim.generate_world \
 
 ## Run
 
-Build the workspace first:
+Build a workspace that contains both this robot repo and the standalone sim
+repo:
 
 ```bash
-cd isaac_ros-dev
-colcon build
+cd /path/to/workspace
+colcon build --symlink-install
 source install/setup.bash
 ```
 
 Run the full test:
 
 ```bash
-cd isaac_ros-dev/src/igvc_competition_sim
+cd /path/to/autonav_sim/igvc_competition_sim
 ./Run_IGVC_COMPETITION_FORTRESS_TEST.command
 ```
 
