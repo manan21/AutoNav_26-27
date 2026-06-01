@@ -91,7 +91,6 @@ class GpsEkf:
             [q_pos ** 2, q_pos ** 2, q_theta ** 2]
         )
         self._R: np.ndarray = np.diag([r_gps ** 2, r_gps ** 2])
-        self._I: np.ndarray = np.eye(3)
         self._r_gps: float = float(r_gps)
 
         # Diagnostics
@@ -167,24 +166,68 @@ class GpsEkf:
         sim lines 1046-1070, plus the consecutive-reject-streak counter
         used by lock-in recovery (see ``force_accept_next``).
         """
-        z = np.array([zx, zy], dtype=float)
-        H = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-        y = z - H @ self.x
-        S = H @ self.P @ H.T + self._R
-        try:
-            S_inv = np.linalg.inv(S)
-        except np.linalg.LinAlgError:
+        y0 = float(zx) - float(self.x[0])
+        y1 = float(zy) - float(self.x[1])
+        s00 = float(self.P[0, 0] + self._R[0, 0])
+        s01 = float(self.P[0, 1])
+        s10 = float(self.P[1, 0])
+        s11 = float(self.P[1, 1] + self._R[1, 1])
+        det = s00 * s11 - s01 * s10
+        if not math.isfinite(det) or abs(det) < 1e-18:
             return False
-        m2 = float(y @ S_inv @ y)
-        self.last_innovation = (float(y[0]), float(y[1]))
+
+        inv00 = s11 / det
+        inv01 = -s01 / det
+        inv10 = -s10 / det
+        inv11 = s00 / det
+        sy0 = inv00 * y0 + inv01 * y1
+        sy1 = inv10 * y0 + inv11 * y1
+        m2 = y0 * sy0 + y1 * sy1
+        self.last_innovation = (y0, y1)
         self.last_mahalanobis = m2
         if m2 > gate_chi2:
             self.rejected_count += 1
             self.consecutive_rejects += 1
             return False
-        K = self.P @ H.T @ S_inv
-        self.x = self.x + K @ y
-        self.P = (self._I - K @ H) @ self.P
+
+        p00 = float(self.P[0, 0])
+        p01 = float(self.P[0, 1])
+        p02 = float(self.P[0, 2])
+        p10 = float(self.P[1, 0])
+        p11 = float(self.P[1, 1])
+        p12 = float(self.P[1, 2])
+        p20 = float(self.P[2, 0])
+        p21 = float(self.P[2, 1])
+        p22 = float(self.P[2, 2])
+
+        k00 = p00 * inv00 + p01 * inv10
+        k01 = p00 * inv01 + p01 * inv11
+        k10 = p10 * inv00 + p11 * inv10
+        k11 = p10 * inv01 + p11 * inv11
+        k20 = p20 * inv00 + p21 * inv10
+        k21 = p20 * inv01 + p21 * inv11
+
+        self.x[0] += k00 * y0 + k01 * y1
+        self.x[1] += k10 * y0 + k11 * y1
+        self.x[2] = wrap_pi(self.x[2] + k20 * y0 + k21 * y1)
+
+        # H selects rows 0 and 1, so (I - K H) P == P - K @ P[:2, :].
+        self.P[0, 0] -= k00 * p00 + k01 * p10
+        self.P[0, 1] -= k00 * p01 + k01 * p11
+        self.P[0, 2] -= k00 * p02 + k01 * p12
+        self.P[1, 0] -= k10 * p00 + k11 * p10
+        self.P[1, 1] -= k10 * p01 + k11 * p11
+        self.P[1, 2] -= k10 * p02 + k11 * p12
+        self.P[2, 0] -= k20 * p00 + k21 * p10
+        self.P[2, 1] -= k20 * p01 + k21 * p11
+        self.P[2, 2] -= k20 * p02 + k21 * p12
+
+        p01_new = 0.5 * (self.P[0, 1] + self.P[1, 0])
+        p02_new = 0.5 * (self.P[0, 2] + self.P[2, 0])
+        p12_new = 0.5 * (self.P[1, 2] + self.P[2, 1])
+        self.P[0, 1] = self.P[1, 0] = p01_new
+        self.P[0, 2] = self.P[2, 0] = p02_new
+        self.P[1, 2] = self.P[2, 1] = p12_new
         # Floor the position variance HERE, immediately after the Kalman
         # gain shrinks it. The predict step also enforces this floor, but
         # update() can drive P[0,0]/P[1,1] far below it in a single step
