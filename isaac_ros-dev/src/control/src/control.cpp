@@ -57,7 +57,8 @@ class ControlNode : public rclcpp::Node {
         // serial ports test
         this->declare_parameter(
             "motor_port",
-            "/dev/serial/by-id/usb-RoboteQ_RoboteQ_FBLG2360T_HABJAA5QR0E5NDEg_207A34554147-if00");
+            // "/dev/serial/by-id/usb-RoboteQ_RoboteQ_FBLG2360T_HABJAA5QR0E5NDEg_207A34554147-if00"
+            "/dev/serial/by-id/usb-RoboteQ_RoboteQ_FBLG2360T_IwBCAAlQMTlZMDIg_2074307C3931-if00");
 
         this->declare_parameter(
             "arduino_port",
