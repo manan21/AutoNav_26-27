@@ -28,7 +28,7 @@
     line_points_topic: "/line_points"
     target_frame: "odom"
     enable_timer: true
-    publish_interval_ms: 100          # 10 Hz fixed — fresh CUDA detection caps at ~10-12 Hz on this Jetson, so 10 Hz keeps every tick honest (no skipped timer events) for reliability. The cached-confirmed-voxel republish (republishConfirmedCache, see node.cpp) runs on every failure path so the local costmap sees a steady stream regardless of RGB/depth desync, matching the lidar PCA node's cached-cloud pattern.
+    publish_interval_ms: 50           # 20 Hz timer (was 100/10 Hz). The old "CUDA detection caps at ~10-12 Hz" rationale is obsolete: measured total callback is ~3.3 ms (cuda_detect ~1.4 ms), so 10 Hz was an artificial cap that held the line costmap to ~10 Hz while the lidar feeds it at ~20 Hz. At 50 ms the detector runs at the camera input rate so lethal line points reach the costmap at ~20 Hz to match the lidar. The processing_busy_ guard still skips a tick if a previous detection is mid-flight; the cached-confirmed-voxel republish still runs on every failure path.
     max_input_age_ms: 250             # Drop stale ZED pairs instead of processing queued old frames; confirmed line cache is republished for transient gaps.
     max_rgb_depth_delta_ms: 500       # RGB/depth sync window — widened from 120 ms; live diagnostics showed every frame rejected as "RGB/depth desynchronization" at the tighter gate.
     tf_lookup_timeout_ms: 100
@@ -39,7 +39,7 @@
     odom_topic: "/local_ekf/odom"
 
     # ── Geometry / stability gates ───────────────────────────────────────
-    roi_min_y_fraction: 0.30       # Lower includes more upper-image pixels so farther ground lines are processed.
+    roi_min_y_fraction: 0.40       # Keep the bottom 60% of the image; ignore the top 40% (matches the old-branch crop). Fewer pixels processed per frame and drops sky/horizon clutter.
     max_depth_m: 5.5
     base_min_x_m: 0.30
     base_max_x_m: 4.75
