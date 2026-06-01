@@ -465,6 +465,7 @@ private:
 	struct DebugFrame {
 		sensor_msgs::msg::Image::SharedPtr camera_msg;
 		cv::Mat gray_image;
+		int roi_min_y = 0;
 		std::vector<cv::Point> raw_pixels;
 		std::vector<cv::Point> accepted_pixels;
 		std::vector<cv::Point> published_pixels;
@@ -557,9 +558,16 @@ private:
 		const int2 * line_points,
 		int line_points_len,
 		int max_points) const;
+	int roiMinYForHeight(int image_height) const;
+	cv::Rect roiRectForImage(const cv::Mat & image) const;
+	void offsetLinePixelRows(
+		int2 * line_points,
+		int line_points_len,
+		int y_offset) const;
 	void enqueueDebugFrame(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
+		int roi_min_y,
 		const int2 * line_points,
 		int line_points_len,
 		const std::vector<CandidatePoint> & accepted_candidates,
@@ -568,6 +576,7 @@ private:
 	void publishDebugImages(
 		const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 		const cv::Mat & gray_image,
+		int roi_min_y,
 		const std::vector<cv::Point> & raw_pixels,
 		const std::vector<cv::Point> & accepted_pixels,
 		const std::vector<cv::Point> & published_pixels);
@@ -1644,9 +1653,45 @@ std::vector<cv::Point> LineDetectorNode::sampleRawLinePixels(
 	return sampled;
 }
 
+int LineDetectorNode::roiMinYForHeight(int image_height) const
+{
+	if (image_height <= 0) {
+		return 0;
+	}
+	return std::clamp(
+		static_cast<int>(
+			std::round(static_cast<double>(image_height) * roi_min_y_fraction_)),
+		0,
+		image_height);
+}
+
+cv::Rect LineDetectorNode::roiRectForImage(const cv::Mat & image) const
+{
+	const int roi_min_y = roiMinYForHeight(image.rows);
+	return cv::Rect(
+		0,
+		roi_min_y,
+		image.cols,
+		std::max(0, image.rows - roi_min_y));
+}
+
+void LineDetectorNode::offsetLinePixelRows(
+	int2 * line_points,
+	int line_points_len,
+	int y_offset) const
+{
+	if (!line_points || line_points_len <= 0 || y_offset == 0) {
+		return;
+	}
+	for (int i = 0; i < line_points_len; ++i) {
+		line_points[i].y += y_offset;
+	}
+}
+
 void LineDetectorNode::enqueueDebugFrame(
 	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 	const cv::Mat & gray_image,
+	int roi_min_y,
 	const int2 * line_points,
 	int line_points_len,
 	const std::vector<CandidatePoint> & accepted_candidates,
@@ -1672,6 +1717,7 @@ void LineDetectorNode::enqueueDebugFrame(
 	DebugFrame frame;
 	frame.camera_msg = camera_msg;
 	frame.gray_image = gray_image.clone();
+	frame.roi_min_y = roi_min_y;
 	if (need_overlay) {
 		frame.raw_pixels = sampleRawLinePixels(
 			line_points, line_points_len, per_group_budget);
@@ -1703,6 +1749,7 @@ void LineDetectorNode::debugImageTimerCallback()
 	publishDebugImages(
 		frame.camera_msg,
 		frame.gray_image,
+		frame.roi_min_y,
 		frame.raw_pixels,
 		frame.accepted_pixels,
 		frame.published_pixels);
@@ -1711,6 +1758,7 @@ void LineDetectorNode::debugImageTimerCallback()
 void LineDetectorNode::publishDebugImages(
 	const sensor_msgs::msg::Image::SharedPtr & camera_msg,
 	const cv::Mat & gray_image,
+	int roi_min_y,
 	const std::vector<cv::Point> & raw_pixels,
 	const std::vector<cv::Point> & accepted_pixels,
 	const std::vector<cv::Point> & published_pixels)
@@ -1740,6 +1788,13 @@ void LineDetectorNode::publishDebugImages(
 	} catch (const cv_bridge::Exception & ex) {
 		cv::cvtColor(gray_image, raw_bgr, cv::COLOR_GRAY2BGR);
 	}
+	if (roi_min_y > 0 &&
+		raw_bgr.rows == static_cast<int>(camera_msg->height) &&
+		raw_bgr.rows > roi_min_y)
+	{
+		raw_bgr = raw_bgr(
+			cv::Rect(0, roi_min_y, raw_bgr.cols, raw_bgr.rows - roi_min_y)).clone();
+	}
 
 	const std_msgs::msg::Header header = camera_msg->header;
 	const bool need_mask = _debug_mask_image_pub->get_subscription_count() > 0;
@@ -1757,24 +1812,22 @@ void LineDetectorNode::publishDebugImages(
 	}
 	if (need_overlay) {
 		cv::Mat overlay = raw_bgr.clone();
-		for (const auto & pixel : raw_pixels) {
-			const int x = pixel.x;
-			const int y = pixel.y;
-			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
-				cv::circle(overlay, pixel, 2, cv::Scalar(0, 0, 255), -1);
+		auto draw_debug_pixel = [&](const cv::Point & pixel, int radius, const cv::Scalar & color) {
+			const cv::Point draw_pixel(pixel.x, pixel.y - roi_min_y);
+			if (0 <= draw_pixel.x && draw_pixel.x < overlay.cols &&
+				0 <= draw_pixel.y && draw_pixel.y < overlay.rows)
+			{
+				cv::circle(overlay, draw_pixel, radius, color, -1);
 			}
+		};
+		for (const auto & pixel : raw_pixels) {
+			draw_debug_pixel(pixel, 2, cv::Scalar(0, 0, 255));
 		}
 		for (const auto & pixel : accepted_pixels) {
-			const int x = pixel.x;
-			const int y = pixel.y;
-			if (0 <= x && x < overlay.cols && 0 <= y && y < overlay.rows) {
-				cv::circle(overlay, pixel, 3, cv::Scalar(0, 255, 255), -1);
-			}
+			draw_debug_pixel(pixel, 3, cv::Scalar(0, 255, 255));
 		}
 		for (const auto & pixel : published_pixels) {
-			if (0 <= pixel.x && pixel.x < overlay.cols && 0 <= pixel.y && pixel.y < overlay.rows) {
-				cv::circle(overlay, pixel, 4, cv::Scalar(0, 255, 0), -1);
-			}
+			draw_debug_pixel(pixel, 4, cv::Scalar(0, 255, 0));
 		}
 		_debug_overlay_image_pub->publish(
 			*cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, overlay).toImageMsg());
@@ -1826,15 +1879,26 @@ void LineDetectorNode::line_service(
 		RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
 		return;
 	}
+	if (cv_ptr->image.empty() || cv_ptr->image.type() != CV_8UC1) {
+		RCLCPP_ERROR(this->get_logger(), "Invalid image after conversion");
+		return;
+	}
+
+	const cv::Rect detection_roi = roiRectForImage(cv_ptr->image);
+	if (detection_roi.width <= 0 || detection_roi.height <= 0) {
+		return;
+	}
+	const cv::Mat roi_gray = cv_ptr->image(detection_roi).clone();
 
 	// Detect lines
 	lines::LinePixelDetectionStats pixel_stats;
-	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(cv_ptr->image,
+	std::pair<int2*,int*> line_pair = lines::detect_line_pixels(roi_gray,
 				brightness_threshold_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
 				debug_image_write_enabled_, &pixel_stats);
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
+	offsetLinePixelRows(line_points, *line_points_len, detection_roi.y);
 
 	DetectionFrameStats stats;
 	stats.raw_pixels = pixel_stats.raw_pixels;
@@ -1983,13 +2047,20 @@ void LineDetectorNode::line_callback()
 		publish_timed_diagnostics("invalid grayscale image");
 		return;
 	}
+	const cv::Rect detection_roi = roiRectForImage(cv_ptr->image);
+	if (detection_roi.width <= 0 || detection_roi.height <= 0) {
+		republishConfirmedCache(active_stamp);
+		publish_timed_diagnostics("empty ROI");
+		return;
+	}
+	const cv::Mat roi_gray = cv_ptr->image(detection_roi).clone();
 
 	// Detect lines
 	std::pair<int2*,int*> line_pair;
 	lines::LinePixelDetectionStats pixel_stats;
 	try {
 		const auto detect_start = std::chrono::steady_clock::now();
-		line_pair = lines::detect_line_pixels(cv_ptr->image,
+		line_pair = lines::detect_line_pixels(roi_gray,
 				brightness_threshold_, half_window_size_,
 				sigma_threshold_, mew_threshold_,
 				debug_image_write_enabled_, &pixel_stats);
@@ -2003,6 +2074,7 @@ void LineDetectorNode::line_callback()
 	
 	int2* line_points = line_pair.first;
 	int* line_points_len = line_pair.second;
+	offsetLinePixelRows(line_points, *line_points_len, detection_roi.y);
 	stats.raw_pixels = pixel_stats.raw_pixels;
 	stats.filtered_pixels = pixel_stats.filtered_pixels;
 	stats.kept_components = pixel_stats.kept_components;
@@ -2045,7 +2117,7 @@ void LineDetectorNode::line_callback()
 		republishConfirmedCache(this->now());
 		const auto debug_start = std::chrono::steady_clock::now();
 		enqueueDebugFrame(
-			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			camera_msg, roi_gray, detection_roi.y, line_points, *line_points_len,
 			{}, publishedDebugPixels());
 		stats.debug_publish_ms = elapsed_ms(debug_start);
 		publish_timed_diagnostics("processed frame stale before temporal update");
@@ -2071,7 +2143,7 @@ void LineDetectorNode::line_callback()
 		}
 		const auto debug_start = std::chrono::steady_clock::now();
 		enqueueDebugFrame(
-			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			camera_msg, roi_gray, detection_roi.y, line_points, *line_points_len,
 			{}, publishedDebugPixels());
 		stats.debug_publish_ms = elapsed_ms(debug_start);
 		publish_timed_diagnostics(yaw_gated ? "yaw gated empty line detection" : "empty line detection");
@@ -2114,7 +2186,7 @@ void LineDetectorNode::line_callback()
 		republishConfirmedCache(this->now());
 		const auto debug_start = std::chrono::steady_clock::now();
 		enqueueDebugFrame(
-			camera_msg, cv_ptr->image, line_points, *line_points_len,
+			camera_msg, roi_gray, detection_roi.y, line_points, *line_points_len,
 			clustered_points, publishedDebugPixels());
 		stats.debug_publish_ms = elapsed_ms(debug_start);
 		publish_timed_diagnostics("projected frame stale before temporal update");
@@ -2153,7 +2225,7 @@ void LineDetectorNode::line_callback()
 	}
 	const auto debug_start = std::chrono::steady_clock::now();
 	enqueueDebugFrame(
-		camera_msg, cv_ptr->image, line_points, *line_points_len,
+		camera_msg, roi_gray, detection_roi.y, line_points, *line_points_len,
 		clustered_points, publishedDebugPixels());
 	stats.debug_publish_ms = elapsed_ms(debug_start);
 	publish_timed_diagnostics(
