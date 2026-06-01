@@ -26,8 +26,19 @@ for sender in "$SEND_LOCAL" "$SEND_GPS"; do
   fi
 done
 
-# Count active legs for progress reporting.
-TOTAL=$(grep -cE '^[[:space:]]*[A-Z]{2}[[:space:]]' "$MISSION" || true)
+# GI (GPS Insert) records the robot's current GPS position to this file
+# by averaging N /gps_fix samples; a later GR (GPS Return) leg reads it
+# back and dispatches send_GPS_waypoint.sh. The recorder intentionally
+# has no timeout — see record_gps_here.py for the rationale.
+GI_RECORDER="$SCRIPT_DIR/record_gps_here.py"
+GI_WAYPOINT_FILE="${GI_WAYPOINT_FILE:-$SCRIPT_DIR/gi_waypoint.txt}"
+GI_SAMPLES="${GI_SAMPLES:-10}"
+
+# Count active legs for progress reporting. Match both two-arg kinds
+# (ER/EA/GA, followed by whitespace) and argless kinds (GI/GR, alone
+# on the line); without the `($|[[:space:]])` branch a trailing GI/GR
+# would be invisible to the progress counter.
+TOTAL=$(grep -cE '^[[:space:]]*[A-Z]{2}([[:space:]]|$)' "$MISSION" || true)
 if [[ $TOTAL -eq 0 ]]; then
   echo "no active legs in $MISSION (only comments / blanks). Nothing to do." >&2
   exit 0
@@ -68,31 +79,66 @@ while IFS= read -r raw || [[ -n $raw ]]; do
   normalized=${line//,/ }
   read -r kind a b extra <<< "$normalized"
 
-  if [[ -n ${extra:-} ]]; then
-    echo "leg has extra fields: $raw" >&2
-    exit 1
-  fi
-  if [[ -z ${a:-} || -z ${b:-} ]]; then
-    echo "leg missing values: $raw" >&2
-    exit 1
-  fi
-
   i=$((i + 1))
-  echo "[$i/$TOTAL] $kind $a $b"
 
   case $kind in
-    ER) "$SEND_LOCAL" -r "$a" "$b" ;;
-    EA) "$SEND_LOCAL" "$a" "$b" ;;
-    GA) "$SEND_GPS" "$a" "$b" ;;
+    GI)
+      # Argless: record-and-store the robot's current GPS position so a
+      # later GR leg can return to it.
+      if [[ -n ${a:-} ]]; then
+        echo "GI takes no arguments: $raw" >&2
+        exit 1
+      fi
+      echo "[$i/$TOTAL] GI (recording current GPS, ${GI_SAMPLES} samples)"
+      python3 "$GI_RECORDER" \
+        --samples "$GI_SAMPLES" \
+        "$GI_WAYPOINT_FILE"
+      status=$?
+      ;;
+    GR)
+      # Argless: replay the GI-recorded waypoint as a GA-style goal.
+      if [[ -n ${a:-} ]]; then
+        echo "GR takes no arguments: $raw" >&2
+        exit 1
+      fi
+      if [[ ! -f $GI_WAYPOINT_FILE ]]; then
+        echo "GR before GI — no recorded waypoint at $GI_WAYPOINT_FILE" >&2
+        exit 1
+      fi
+      read -r r_lat r_lon _rest < "$GI_WAYPOINT_FILE" || true
+      if [[ -z ${r_lat:-} || -z ${r_lon:-} ]]; then
+        echo "GR: malformed recorded waypoint in $GI_WAYPOINT_FILE" >&2
+        exit 1
+      fi
+      echo "[$i/$TOTAL] GR (returning to $r_lat $r_lon)"
+      "$SEND_GPS" "$r_lat" "$r_lon"
+      status=$?
+      ;;
+    ER|EA|GA)
+      if [[ -n ${extra:-} ]]; then
+        echo "leg has extra fields: $raw" >&2
+        exit 1
+      fi
+      if [[ -z ${a:-} || -z ${b:-} ]]; then
+        echo "leg missing values: $raw" >&2
+        exit 1
+      fi
+      echo "[$i/$TOTAL] $kind $a $b"
+      case $kind in
+        ER) "$SEND_LOCAL" -r "$a" "$b" ;;
+        EA) "$SEND_LOCAL" "$a" "$b" ;;
+        GA) "$SEND_GPS" "$a" "$b" ;;
+      esac
+      status=$?
+      ;;
     *)
       echo "unknown leg type '$kind' in: $raw" >&2
       exit 1
       ;;
   esac
-  status=$?
 
   if [[ $status -ne 0 ]]; then
-    echo "leg $i ($kind $a $b) failed with status $status — stopping mission." >&2
+    echo "leg $i ($raw) failed with status $status — stopping mission." >&2
     exit "$status"
   fi
 done < "$MISSION"
