@@ -58,10 +58,10 @@ void LocalThenStraightPlanner::configure(
 
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".near_planner_plugin",
-    rclcpp::ParameterValue("nav2_smac_planner/SmacPlannerLattice"));
+    rclcpp::ParameterValue("nav2_navfn_planner/NavfnPlanner"));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".near_planner_name",
-    rclcpp::ParameterValue("near_lattice"));
+    rclcpp::ParameterValue("near"));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".local_horizon_m", rclcpp::ParameterValue(2.75));
   nav2_util::declare_parameter_if_not_declared(

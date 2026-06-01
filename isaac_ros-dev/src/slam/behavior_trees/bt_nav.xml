@@ -82,22 +82,31 @@
                    case the previous PHASEA tuning targeted; this just
                    widens the budget for both. -->
               <RecoveryNode number_of_retries="8" name="ComputePathRecovery">
-                <!-- Let the planner's published path reach the controller.
-                     PathFootprintSafe was vetoing valid-looking plans before
-                     MPPI could produce /cmd_vel_nav, which made RViz show a
-                     path while the BT fell through to recovery/BackUp. -->
+                <!-- Point-based NavfnPlanner; clearance is enforced by the
+                     0.70 m inflation_radius (> 0.682 m circumscribed robot
+                     radius). NavfnPlanner has no footprint check, so it
+                     refuses to plan only when the body center is on a
+                     literal lethal/inscribed cell. The recovery chain
+                     below pushes the body off any such cell, then the
+                     next tick replans. -->
                 <ComputePathToPose goal="{nav_goal}" path="{path}" planner_id="GridBased"/>
                 <ReactiveFallback name="PlanRecoveryEscape">
-                  <!-- First try to reverse along breadcrumbs. This can move
-                       even when the planner start pose is too close to inflated
-                       line/obstacle cost for Smac to seed a path. -->
+                  <!-- First try to reverse along breadcrumbs — fastest
+                       recovery when the robot has been moving and has crumbs
+                       to spend. -->
                   <DriveOnHeading server_name="breadcrumb_reverse"
                     dist_to_travel="0.0" speed="0.1" time_allowance="5.0"/>
                   <BackUp backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
                   <BackUp server_name="inflation_backout"
                     backup_dist="0.20" backup_speed="0.05" time_allowance="6.0"/>
+                  <!-- Primary plan-recovery action: follow the costmap
+                       gradient down to below cost 100 (body ~0.29 m clear
+                       of obstacles, well below the inscribed cell that
+                       blocks NavfnPlanner). time_allowance matches the
+                       behavior_server's internal 15 s timeout so the
+                       behavior gets its full budget. -->
                   <DriveOnHeading server_name="gradient_escape"
-                    dist_to_travel="0.0" speed="0.1" time_allowance="8.0"/>
+                    dist_to_travel="0.0" speed="0.1" time_allowance="15.0"/>
                   <Sequence name="PlanRecoveryClearThenWait">
                     <!-- LOCAL clear only (sim spec): wiping the entire
                          global costmap erases distant lidar marks the

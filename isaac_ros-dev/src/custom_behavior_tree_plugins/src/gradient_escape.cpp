@@ -1,11 +1,12 @@
 #include "gradient_escape/gradient_escape.hpp"
 
+#include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace gradient_escape
@@ -14,10 +15,9 @@ namespace gradient_escape
 GradientEscape::GradientEscape()
 : TimedBehavior<DriveOnHeadingAction>(),
   escape_speed_(0.1),
-  cost_threshold_(127),
-  sample_radius_(0.15),
-  num_samples_(16),
-  timeout_s_(15.0)
+  max_search_radius_m_(2.0),
+  timeout_s_(15.0),
+  plan_topic_("/plan")
 {
 }
 
@@ -31,23 +31,26 @@ void GradientEscape::onConfigure()
   nav2_util::declare_parameter_if_not_declared(
     node, "gradient_escape.escape_speed", rclcpp::ParameterValue(0.1));
   nav2_util::declare_parameter_if_not_declared(
-    node, "gradient_escape.cost_threshold", rclcpp::ParameterValue(127.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, "gradient_escape.sample_radius", rclcpp::ParameterValue(0.15));
-  nav2_util::declare_parameter_if_not_declared(
-    node, "gradient_escape.num_samples", rclcpp::ParameterValue(16));
+    node, "gradient_escape.max_search_radius_m", rclcpp::ParameterValue(2.0));
   nav2_util::declare_parameter_if_not_declared(
     node, "gradient_escape.timeout", rclcpp::ParameterValue(15.0));
+  nav2_util::declare_parameter_if_not_declared(
+    node, "gradient_escape.plan_topic", rclcpp::ParameterValue(std::string("/plan")));
 
   node->get_parameter("gradient_escape.escape_speed", escape_speed_);
-  node->get_parameter("gradient_escape.cost_threshold", cost_threshold_);
-  node->get_parameter("gradient_escape.sample_radius", sample_radius_);
-  node->get_parameter("gradient_escape.num_samples", num_samples_);
+  node->get_parameter("gradient_escape.max_search_radius_m", max_search_radius_m_);
   node->get_parameter("gradient_escape.timeout", timeout_s_);
+  node->get_parameter("gradient_escape.plan_topic", plan_topic_);
 
-  // Subscribe to the local costmap for raw cell costs
   costmap_sub_ = std::make_shared<nav2_costmap_2d::CostmapSubscriber>(
     node, "local_costmap/costmap_raw");
+
+  plan_sub_ = node->create_subscription<nav_msgs::msg::Path>(
+    plan_topic_, rclcpp::QoS(1).reliable(),
+    [this](nav_msgs::msg::Path::SharedPtr msg) {
+      std::lock_guard<std::mutex> lock(plan_mutex_);
+      latest_plan_ = msg;
+    });
 
   feedback_ = std::make_shared<DriveOnHeadingAction::Feedback>();
 }
@@ -56,109 +59,172 @@ Status GradientEscape::onRun(
   const std::shared_ptr<const DriveOnHeadingAction::Goal> /*command*/)
 {
   start_time_ = clock_->now();
-  RCLCPP_INFO(logger_, "GradientEscape: starting (threshold=%d, speed=%.2f, timeout=%.1fs)",
-    static_cast<int>(cost_threshold_), escape_speed_, timeout_s_);
-  return Status::SUCCEEDED;  // proceed to onCycleUpdate loop
+  RCLCPP_INFO(
+    logger_,
+    "GradientEscape: starting (speed=%.2f m/s, search_radius=%.2f m, timeout=%.1f s)",
+    escape_speed_, max_search_radius_m_, timeout_s_);
+  return Status::SUCCEEDED;  // proceed into onCycleUpdate loop
 }
 
 Status GradientEscape::onCycleUpdate()
 {
-  // ---- timeout check ----
-  double elapsed = (clock_->now() - start_time_).seconds();
+  const double elapsed = (clock_->now() - start_time_).seconds();
   if (elapsed > timeout_s_) {
-    RCLCPP_WARN(logger_, "GradientEscape: timed out after %.1fs", timeout_s_);
+    RCLCPP_WARN(logger_, "GradientEscape: timed out after %.1f s", timeout_s_);
     stopRobot();
     return Status::FAILED;
   }
 
-  // ---- get robot pose in the costmap frame (odom) ----
+  // ---- Primary exit: /plan is back live ----
+  // A non-empty path published after this behavior started means the
+  // planner can route again. This only fires if a concurrent re-planning
+  // mechanism is in place; otherwise we fall through to the cost check.
+  {
+    std::lock_guard<std::mutex> lock(plan_mutex_);
+    if (latest_plan_ && !latest_plan_->poses.empty()) {
+      const rclcpp::Time stamp(latest_plan_->header.stamp, clock_->get_clock_type());
+      if (stamp.nanoseconds() > 0 && stamp > start_time_) {
+        RCLCPP_INFO(
+          logger_,
+          "GradientEscape: /plan back live (%zu poses) after %.1f s, exiting",
+          latest_plan_->poses.size(), elapsed);
+        stopRobot();
+        return Status::SUCCEEDED;
+      }
+    }
+  }
+
+  // ---- Robot pose in the costmap frame ----
   geometry_msgs::msg::PoseStamped pose;
   if (!nav2_util::getCurrentPose(
-        pose, *tf_, global_frame_, robot_base_frame_,
-        transform_tolerance_))
+      pose, *tf_, global_frame_, robot_base_frame_, transform_tolerance_))
   {
     RCLCPP_ERROR(logger_, "GradientEscape: cannot get robot pose");
     stopRobot();
     return Status::FAILED;
   }
 
-  double rx = pose.pose.position.x;
-  double ry = pose.pose.position.y;
-
-  // ---- read costmap ----
   std::shared_ptr<nav2_costmap_2d::Costmap2D> costmap;
   try {
     costmap = costmap_sub_->getCostmap();
   } catch (const std::exception & e) {
-    RCLCPP_WARN_THROTTLE(logger_, *clock_, 2000,
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 2000,
       "GradientEscape: costmap not available yet (%s)", e.what());
-    return Status::RUNNING;  // keep waiting
+    return Status::RUNNING;
   }
 
-  unsigned int mx, my;
-  if (!costmap->worldToMap(rx, ry, mx, my)) {
-    RCLCPP_WARN(logger_, "GradientEscape: robot outside costmap");
+  const double rx = pose.pose.position.x;
+  const double ry = pose.pose.position.y;
+
+  unsigned int rmx = 0;
+  unsigned int rmy = 0;
+  if (!costmap->worldToMap(rx, ry, rmx, rmy)) {
+    RCLCPP_WARN(logger_, "GradientEscape: robot outside local costmap");
     stopRobot();
     return Status::FAILED;
   }
 
-  unsigned char robot_cost = costmap->getCost(mx, my);
-
-  // ---- success check ----
-  if (robot_cost < static_cast<unsigned char>(cost_threshold_)) {
-    RCLCPP_INFO(logger_, "GradientEscape: escaped (cost %d < %d) in %.1fs",
-      static_cast<int>(robot_cost), static_cast<int>(cost_threshold_), elapsed);
+  // ---- Fallback exit: robot cell cost is below the planner's blocking
+  // threshold. NavfnPlanner blocks at cost >= INSCRIBED_INFLATED_OBSTACLE
+  // (253), so once the robot's cell is below that the planner can seed
+  // a path on the next BT cycle. This is the realistic exit for the
+  // current BT structure where the planner only re-fires after this
+  // behavior returns SUCCESS. ----
+  const unsigned char robot_cost = costmap->getCost(rmx, rmy);
+  if (robot_cost < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+    RCLCPP_INFO(
+      logger_,
+      "GradientEscape: robot cell cost %u below planner threshold (253) after %.1f s, exiting",
+      static_cast<unsigned int>(robot_cost), elapsed);
     stopRobot();
     return Status::SUCCEEDED;
   }
 
-  // ---- sample gradient ----
-  double best_angle = 0.0;
-  unsigned char best_cost = 255;
+  // ---- Search for the nearest lethal cell within max_search_radius_m_ ----
+  const double resolution = costmap->getResolution();
+  const int search_cells = static_cast<int>(
+    std::ceil(max_search_radius_m_ / resolution));
+  const int size_x = static_cast<int>(costmap->getSizeInCellsX());
+  const int size_y = static_cast<int>(costmap->getSizeInCellsY());
+
+  const int min_mx = std::max(0, static_cast<int>(rmx) - search_cells);
+  const int max_mx = std::min(size_x - 1, static_cast<int>(rmx) + search_cells);
+  const int min_my = std::max(0, static_cast<int>(rmy) - search_cells);
+  const int max_my = std::min(size_y - 1, static_cast<int>(rmy) + search_cells);
+
+  int best_dx = 0;
+  int best_dy = 0;
+  int best_d2 = std::numeric_limits<int>::max();
   bool found = false;
 
-  for (int i = 0; i < num_samples_; ++i) {
-    double angle = 2.0 * M_PI * i / num_samples_;
-    double sx = rx + sample_radius_ * std::cos(angle);
-    double sy = ry + sample_radius_ * std::sin(angle);
-
-    unsigned int smx, smy;
-    if (!costmap->worldToMap(sx, sy, smx, smy)) {
-      continue;
-    }
-
-    unsigned char c = costmap->getCost(smx, smy);
-    if (c < best_cost) {
-      best_cost = c;
-      best_angle = angle;
-      found = true;
+  for (int my = min_my; my <= max_my; ++my) {
+    const int dy = my - static_cast<int>(rmy);
+    const int dy2 = dy * dy;
+    for (int mx = min_mx; mx <= max_mx; ++mx) {
+      const unsigned char c = costmap->getCost(
+        static_cast<unsigned int>(mx), static_cast<unsigned int>(my));
+      if (c < nav2_costmap_2d::LETHAL_OBSTACLE) {
+        continue;
+      }
+      const int dx = mx - static_cast<int>(rmx);
+      const int d2 = dx * dx + dy2;
+      if (d2 < best_d2) {
+        best_d2 = d2;
+        best_dx = dx;
+        best_dy = dy;
+        found = true;
+      }
     }
   }
 
   if (!found) {
-    RCLCPP_WARN(logger_, "GradientEscape: no viable direction");
+    // Nothing lethal in range yet robot is in cost >= 253. This usually
+    // means the body is sitting inside an inflated region with the actual
+    // lethal source just outside the bounded search. Widening the search
+    // is cheap; alternatively the recovery falls through to ClearCostmap
+    // on the next BT cycle.
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 2000,
+      "GradientEscape: no lethal cell within %.1f m, holding position",
+      max_search_radius_m_);
     stopRobot();
-    return Status::FAILED;
+    return Status::RUNNING;
   }
 
-  // ---- command velocity toward lowest cost ----
-  double robot_yaw = tf2::getYaw(pose.pose.orientation);
-  double rel = best_angle - robot_yaw;
+  // best_dx, best_dy point FROM the robot TO the nearest lethal cell
+  // (cell deltas). Robot escapes by moving in the opposite direction,
+  // so the escape angle is atan2(-dy, -dx). If multiple lethal cells
+  // are equally close, the search picks one arbitrarily — the only
+  // pinch case where that matters (robot between two equidistant
+  // obstacles) is rare given IGVC's 5 ft minimum obstacle spacing.
+  const double escape_angle = std::atan2(
+    static_cast<double>(-best_dy), static_cast<double>(-best_dx));
 
-  // normalise to [-pi, pi]
-  while (rel >  M_PI) rel -= 2.0 * M_PI;
-  while (rel < -M_PI) rel += 2.0 * M_PI;
+  const double robot_yaw = tf2::getYaw(pose.pose.orientation);
+  double rel = escape_angle - robot_yaw;
+  while (rel > M_PI) {rel -= 2.0 * M_PI;}
+  while (rel < -M_PI) {rel += 2.0 * M_PI;}
 
   auto cmd = std::make_unique<geometry_msgs::msg::Twist>();
 
-  if (std::abs(rel) < M_PI / 2.0) {
-    // Escape direction is roughly ahead — drive with proportional steering
+  if (std::abs(rel) <= M_PI_2) {
+    // Escape direction is in the front half-plane: drive forward and
+    // steer toward it. Proportional gain 1.5 with a 1.0 rad/s clamp
+    // gives smooth alignment without jerk.
     cmd->linear.x = escape_speed_;
     cmd->angular.z = std::clamp(rel * 1.5, -1.0, 1.0);
   } else {
-    // Escape direction is behind — rotate in place first
-    cmd->linear.x = 0.0;
-    cmd->angular.z = std::copysign(0.5, rel);
+    // Escape direction is in the rear half-plane: reverse straight along
+    // the body axis. For a diff-drive sitting next to an obstacle, this
+    // is safer than rotating in place (which sweeps the body sideways
+    // through the obstacle). Steering compensates for the alignment
+    // between body-rear and the escape direction.
+    cmd->linear.x = -escape_speed_;
+    double rel_rear = rel - std::copysign(M_PI, rel);  // angle between
+                                                       // body-rear and
+                                                       // escape direction
+    cmd->angular.z = std::clamp(rel_rear * 1.5, -1.0, 1.0);
   }
 
   vel_pub_->publish(std::move(cmd));

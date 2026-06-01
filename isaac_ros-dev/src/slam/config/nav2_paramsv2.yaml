@@ -88,7 +88,10 @@ bt_navigator:
       - autonav_goal_bender_bt_node
       - autonav_path_significantly_changed_bt_node   # PHASEB
       - autonav_is_forward_blocked_bt_node            # breadcrumb dispatch
-      - autonav_path_footprint_safe_bt_node           # runtime global footprint path gate
+      # autonav_path_footprint_safe_bt_node removed: planner is now
+      # point-based with 0.70 m inflation_radius (> 0.682 m circumscribed
+      # robot radius), so footprint validation of the planner's output
+      # is no longer needed and was already not invoked by bt_nav.xml.
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -298,11 +301,16 @@ local_costmap:
         line_clear_range_min_m: 0.40
         line_clear_range_max_m: 4.50
         max_persisted_points: 12000
-        # Camera-line costs are narrow but planner-blocking. The modest
-        # radius avoids boxing the robot in, while the slow decay keeps the
-        # visible halo expensive enough that Smac/MPPI prefer staying off lines.
-        inflation_radius: 0.30
-        inscribed_radius: 0.02
+        # 0.41 m inscribed band (matches body half-width). Solid barrier
+        # for the planner: adjacent line-point detections' inscribed regions
+        # overlap as long as detection spacing is < 0.82 m, so tape reads
+        # as a continuous lethal line rather than dotted cost-253 islands
+        # that the planner could route between. 5 ft IGVC lane (1.52 m
+        # midline gap → 0.76 m from each line) clears the inscribed band
+        # by 0.35 m on each side — still comfortably traversable.
+        # 0.70 m inflation_radius keeps a soft preference for wider lanes.
+        inflation_radius: 0.70
+        inscribed_radius: 0.41
         cost_scaling_factor: 1.0
         clearing: True
         rolling_window: True
@@ -327,15 +335,15 @@ local_costmap:
         line_clear_range_min_m: 0.2
         line_clear_range_max_m: 6.0
         max_persisted_points: 2000
-        # LiDAR line detections are sparse obstacle-filtered points, not a
-        # continuous wall. Keep the lethal geometry exact, then publish a
-        # non-lethal preference field that encourages clearance without
-        # closing the IGVC-required 5 ft passage beside obstacles.
-        inflation_radius: 0.30
-        # The 253 band is intentionally small. A wide inscribed band consumes
-        # too much of the narrow legal gap before the planner ever considers
-        # soft costs.
-        inscribed_radius: 0.05
+        # 0.41 m inscribed band (matches body half-width). Same logic as
+        # the camera line_layer: lidar tape detections need wide enough
+        # inscribed regions that the planner sees them as a solid lethal
+        # line, not a dotted set of cost-253 points that the planner could
+        # squeeze the body between. 5 ft IGVC lane (1.52 m midline gap)
+        # is still traversable: midline at 0.76 m from each line, 0.35 m
+        # clear of inscribed band on each side.
+        inflation_radius: 0.70
+        inscribed_radius: 0.41
         # Match camera-line behavior: narrow line halo, slow enough decay
         # that the planner cannot treat the visible line band as traversable.
         cost_scaling_factor: 1.0
@@ -345,11 +353,12 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # PCA/cone stay-away cost. The lidar line layer runs after this layer
-        # and uses its own narrower local halo; global planning receives
-        # lidar tape memory before global inflation.
+        # PCA/cone stay-away cost. Halo (0.70 m) exceeds the robot's
+        # circumscribed radius (0.682 m) so a point-based planner planning
+        # from the body center keeps the body clear of cones without
+        # relying on a footprint check.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.30
+        inflation_radius: 0.70
 
       always_send_full_costmap: True
 
@@ -365,17 +374,30 @@ global_costmap:
       # corner-cut from continuous replanning around the axle offset.
       robot_base_frame: nav_center
       use_sim_time: False
-      # Footprint expressed in nav_center frame (symmetric ±0.545 x,
-      # ±0.41 y) — see local_costmap footprint note.
+      # Full body polygon. Two roles in the planner's costmap:
+      #   1. Sets layered_costmap inscribed_radius = 0.41 m (min distance
+      #      from center to any edge). The stock InflationLayer below uses
+      #      that to mark cells within 0.41 m of any obstacle as cost 253
+      #      (INSCRIBED_INFLATED_OBSTACLE), which NavfnPlanner treats as
+      #      blocked. Net effect: any planner-produced path keeps the
+      #      body center ≥ 0.41 m from every obstacle, so the body
+      #      half-width can never overlap a cone/line. This is what
+      #      keeps the robot out of lethal zones to begin with — recovery
+      #      behaviors like gradient_escape are emergency-only.
+      #   2. NavfnPlanner itself still treats the robot as a point at the
+      #      start cell (no multi-cell footprint check), so it does not
+      #      refuse to seed just because the body footprint touches soft
+      #      cost — only the start cell's single cost matters. That
+      #      lenience is what the original SmacPlannerLattice lacked.
+      # Corner-clip protection (body corners reach 0.682 m from center)
+      # is handled at the controller via MPPI's own footprint-aware
+      # rollouts on the local costmap.
       footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
-      # Plan with a small real-world clearance margin. The 5 ft IGVC gap is
-      # wide enough for this padding, and the previous unpadded global
-      # footprint allowed Smac to publish centerlines that the body still
-      # carried over the tape.
-      footprint_padding: 0.05
-      # Match the Smac Lattice primitive grid. The installed differential
-      # drive primitive set below is generated for 5 cm cells; using a
-      # different global resolution invalidates its discrete state graph.
+      # No padding — the 0.41 m inscribed band already provides the body
+      # half-width keepout; padding would just chip away at the 0.76 m
+      # available in 5 ft IGVC passages.
+      footprint_padding: 0.0
+      # 5 cm cells match the local costmap.
       resolution: 0.05
       # static_layer drives the global costmap geometry from /map_padded, which is a dynamic bounding box covering robot footprint + goal + plan. The width/height/origin below are only the pre-first-/map_padded fallback.
       width: 6
@@ -477,11 +499,19 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Stock global inflation for PCA/cone obstacles. Lidar tape is mirrored
-        # after this layer using the line layer's own hard/soft field so the
-        # planner can still use IGVC-minimum 5 ft passages.
+        # Stock global inflation for PCA/cone obstacles. Two bands:
+        #   - 0.00 to 0.41 m from obstacle: inscribed (cost 253). Hard-
+        #     blocked for NavfnPlanner. Comes from the global_costmap
+        #     footprint's inscribed_radius (= robot half-width).
+        #   - 0.41 to 0.70 m from obstacle: exponential soft cost.
+        #     Decays from 252 at d=0.41 down to ~7 at d=0.70 with
+        #     cost_scaling_factor=3.2. Planner can traverse but prefers
+        #     wider clearance, which keeps the body away from the inscribed
+        #     band when a wider lane exists.
+        # Lidar tape is mirrored after this layer using the line layer's
+        # own hard/soft field, so 5 ft IGVC passages stay open.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.30
+        inflation_radius: 0.70
       always_send_full_costmap: True
 
 map_server:
@@ -506,32 +536,36 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       # Far GPS goals do not need a footprint-aware SE2 search across the
-      # entire 20-30 m route. The hybrid planner keeps the expensive lattice
-      # search inside the local-costmap horizon, then appends a coarse straight
-      # segment to the far goal. As the robot drives, the 3 Hz BT replanner
-      # continually recomputes the next precise near-field segment.
+      # entire 20-30 m route. The hybrid planner runs a fast point-based
+      # Dijkstra search inside the local-costmap horizon, then appends a
+      # coarse straight segment to the far goal. As the robot drives, the
+      # 3 Hz BT replanner continually recomputes the next near-field segment.
       plugin: "autonav_hybrid_planner/LocalThenStraightPlanner"
-      near_planner_plugin: "nav2_smac_planner/SmacPlannerLattice"
-      near_planner_name: "near_lattice"
+      # NavfnPlanner reads single-cell cost at the planning location, so
+      # it does not refuse to seed just because the body footprint overlaps
+      # soft inflation — only the start cell's cost matters. That was the
+      # failure mode that motivated the swap from SmacPlannerLattice.
+      # Body half-width clearance is enforced by the global_costmap's
+      # inscribed_radius (0.41 m, from the polygon footprint): Navfn
+      # blocks at cost ≥ 253, so every routed cell is ≥ 0.41 m from any
+      # obstacle and the body never overlaps. The 0.70 m inflation_radius
+      # adds a soft preference for even wider clearance.
+      near_planner_plugin: "nav2_navfn_planner/NavfnPlanner"
+      near_planner_name: "near"
       local_horizon_m: 2.75
       close_goal_distance_m: 3.0
       far_path_spacing_m: 0.50
       far_collision_check: false
-      near_lattice:
+      near:
         tolerance: 0.35
+        # Dijkstra (uniform-cost). A* would shave a few ms but the local
+        # 2.75 m horizon is small enough that Dijkstra's exhaustive expansion
+        # is already sub-millisecond, and it gives a smoother cost gradient
+        # which matters more here than raw search speed.
+        use_astar: false
+        # Treat unknown cells as traversable so the planner can still seed
+        # the first few replans during /map_padded warm-up.
         allow_unknown: true
-        max_iterations: 50000
-        max_on_approach_iterations: 1000
-        max_planning_time: 0.20
-        lattice_filepath: "/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/diff/output.json"
-        # The line/cone fields carry clearance preferences. Keep the penalty
-        # moderate so Smac still uses the guaranteed 5 ft passage when that is
-        # the only legal route.
-        cost_penalty: 4.0
-        # Keep the default penalty so in-place rotations are used only when the
-        # lattice needs them for obstacle avoidance, not as cheap shortcuts.
-        rotation_penalty: 5.0
-        allow_reverse_expansion: false
 
 smoother_server:
   ros__parameters:
@@ -578,19 +612,26 @@ behavior_server:
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
-    # GradientEscape parameters.
-    # sample_radius 0.15 → 0.80: must reach across the obstacle/line
-    # soft-cost halo. At 0.15 m every sample was inside the inflation
-    # field with nearly identical cost, so the gradient was
-    # indistinguishable and escape direction was arbitrary.
-    # cost_threshold 127 → 200: a robot stuck near a wall typically reads
-    # cost in the 150-250 range (inflated but not lethal). 127 was below
-    # the steady-state cost the robot lives in during normal driving, so
-    # the SUCCESS check almost never tripped before timeout.
+    # GradientEscape parameters — emergency-only recovery when the planner
+    # cannot seed a path. Drives the robot radially away from the nearest
+    # cell with cost >= LETHAL_OBSTACLE in the local costmap, then exits
+    # on one of two conditions:
+    #   1. /plan publishes a non-empty path stamped after this behavior
+    #      started ("path is back live"). Only fires if a concurrent
+    #      re-planner ticks during recovery; with the current BT structure
+    #      this is dormant.
+    #   2. The robot's own cell cost drops below INSCRIBED_INFLATED_OBSTACLE
+    #      (253), i.e., the planner's blocking threshold. This is the
+    #      working exit for the current BT: once gradient_escape returns
+    #      SUCCESS the RecoveryNode re-fires ComputePathToPose, which now
+    #      sees a planner-traversable start cell and produces a path.
+    # max_search_radius_m: bounded scan around the robot for the nearest
+    # lethal cell. 2.0 m comfortably covers the local costmap's relevant
+    # neighborhood; widen if the robot routinely stalls with "no lethal
+    # cell within range" warnings.
     gradient_escape.escape_speed: 0.1
-    gradient_escape.cost_threshold: 200.0
-    gradient_escape.sample_radius: 0.80
-    gradient_escape.num_samples: 16
+    gradient_escape.max_search_radius_m: 2.0
+    gradient_escape.plan_topic: "/plan"
     gradient_escape.timeout: 15.0
     # BreadcrumbReverse parameters. Targets the most recent breadcrumb
     # on /breadcrumb_tail; arrival tolerance matches the buffer's
