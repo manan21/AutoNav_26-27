@@ -3,5 +3,28 @@
 
 /**:
     ros__parameters:
+        general:
+            # Downgrade the camera feed from HD1080 to 240p.
+            #
+            # Why: the ZED grabs at 15 Hz internally, but with HD1080 grab +
+            # NEURAL_LIGHT depth on a CPU-saturated Orin it dropped ~36% of
+            # frames and only DELIVERED RGB+depth at ~1.3 Hz to subscribers
+            # (measured /zed/.../rgb/color/rect/image = 1.30 Hz). That starves
+            # the entire line-detection -> costmap pipeline; everything
+            # downstream was running on the detector's cached-voxel republish,
+            # not fresh imagery. Small messages on the same node were fine
+            # (IMU 198 Hz, camera_info 8 Hz) -> the cost was the large HD image
+            # grab/depth compute + serialization, not the camera or the
+            # detector (CUDA detect is ~20 ms).
+            #
+            # HD720 grab is ~44% the pixels of HD1080 -> much cheaper
+            # NEURAL_LIGHT depth (fewer dropped frames). pub_downscale_factor
+            # 3.0 takes the published RGB + depth_registered to 1280x720 / 3 =
+            # 426x240 (240p), so the messages the detector subscribes to are
+            # tiny and clear the transport at the full 15 Hz pub_frame_rate.
+            grab_resolution: 'HD720'      # was HD1080 (submodule default)
+            pub_resolution: 'CUSTOM'      # downscale published image/depth
+            pub_downscale_factor: 3.0     # 720 / 3 = 240p published (was 2.0 -> 540p)
+            pub_frame_rate: 15.0          # match grab rate; this is the 15 Hz target
         sensors:
             sensors_pub_rate: 380.0
