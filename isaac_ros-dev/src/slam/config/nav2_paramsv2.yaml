@@ -145,7 +145,7 @@ controller_server:
       vx_std: 0.35
       vy_std: 0.01
       wz_std: 0.70
-      vx_max: 0.50
+      vx_max: 1.00
       vx_min: 0.04
       vy_max: 0.0
       wz_max: 1.0
@@ -187,7 +187,7 @@ controller_server:
         cost_power: 1
         cost_weight: 1.6
         critical_cost: 300.0
-        consider_footprint: true
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 0.6
         inflation_layer_name: "inflation_layer"
@@ -233,10 +233,10 @@ local_costmap:
       resolution: 0.05
       # Footprint expressed in nav_center frame (was base_link with
       # +0.77/-0.32 x-extent; -0.225 shift makes it symmetric).
-      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
+      #footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
       # Match the BT/global footprint safety margin so MPPI evaluates the
       # same padded body the bag analysis enforces.
-      footprint_padding: 0.05
+      #footprint_padding: 0.05
       # Keep stock Nav2 inflation local to PCA obstacle cells. Camera and
       # LiDAR line layers run after obstacle inflation so tape costs stay
       # narrow enough to avoid boxing the robot at the start pose.
@@ -307,7 +307,7 @@ local_costmap:
         # radius avoids boxing the robot in, while the slow decay keeps the
         # visible halo above PathFootprintSafe's threshold so Smac cannot
         # route the footprint across lines.
-        inflation_radius: 0.25
+        inflation_radius: 0.6
         inscribed_radius: 0.02
         cost_scaling_factor: 1.0
         clearing: True
@@ -337,7 +337,7 @@ local_costmap:
         # continuous wall. Keep the lethal geometry exact, then publish a
         # non-lethal preference field that encourages clearance without
         # closing the IGVC-required 5 ft passage beside obstacles.
-        inflation_radius: 0.25
+        inflation_radius: 0.6
         # The 253 band is intentionally small. A wide inscribed band consumes
         # too much of the narrow legal gap before the planner ever considers
         # soft costs.
@@ -355,7 +355,7 @@ local_costmap:
         # and uses its own narrower local halo; global planning receives
         # lidar tape memory before global inflation.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.25
+        inflation_radius: 0.6
 
       always_send_full_costmap: True
 
@@ -373,12 +373,12 @@ global_costmap:
       use_sim_time: False
       # Footprint expressed in nav_center frame (symmetric ±0.545 x,
       # ±0.41 y) — see local_costmap footprint note.
-      footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
+      #footprint: "[ [0.545, 0.41], [0.545, -0.41], [-0.545, -0.41], [-0.545, 0.41] ]"
       # Plan with a small real-world clearance margin. The 5 ft IGVC gap is
       # wide enough for this padding, and the previous unpadded global
       # footprint allowed Smac to publish centerlines that the body still
       # carried over the tape.
-      footprint_padding: 0.05
+      #footprint_padding: 0.05
       # Match the Smac Lattice primitive grid. The installed differential
       # drive primitive set below is generated for 5 cm cells; using a
       # different global resolution invalidates its discrete state graph.
@@ -487,7 +487,7 @@ global_costmap:
         # after this layer using the line layer's own hard/soft field so the
         # planner can still use IGVC-minimum 5 ft passages.
         cost_scaling_factor: 3.2
-        inflation_radius: 0.25
+        inflation_radius: 0.6
       always_send_full_costmap: True
 
 map_server:
@@ -552,7 +552,7 @@ smoother_server:
 behavior_server:
   ros__parameters:
     costmap_topic: local_costmap/costmap_raw
-    footprint_topic: local_costmap/published_footprint
+    #footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
     behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait", "gradient_escape", "breadcrumb_reverse"]
     spin:
@@ -672,7 +672,7 @@ velocity_smoother:
     scale_velocities: False
     feedback: "OPEN_LOOP"
     # ────────────────────────────────────────────────────────────────
-    # 0.50 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
+    # 0.85 m/s here is the ACTUAL top speed the robot sees on /cmd_vel,
     # matching the MPPI vx_max above. Two distinct
     # constraints meet at this value — touching either side has cost:
     #
@@ -691,13 +691,16 @@ velocity_smoother:
     #   yaw drifts, slam_toolbox has to scan-match-correct map→odom
     #   against a moving target → map-catching-up snap → stall.
     # ────────────────────────────────────────────────────────────────
-    # PHASE C.1 outdoor-validated at 0.50 m/s. Held at 0.50 for outdoor
-    # GPS-waypoint and AutoNav runs; drop to 0.25 m/s for in-house lab
-    # tests near people / equipment.
-    max_velocity: [0.50, 0.0, 1.0]
+    # Requested regular AutoNav speed: 0.85 m/s. This is above the last
+    # documented 0.50 m/s outdoor validation, so bag-test it for MPPI
+    # chatter, obstacle clearance, and command gaps before competition use.
+    max_velocity: [0.85, 0.0, 1.0]
     min_velocity: [-0.25, 0.0, -1.0]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    # Dampen yaw-rate step changes. The previous +/-3.2 rad/s^2 limit could
+    # snap to the requested turn rate in ~0.3 s, which made path corrections
+    # easy to overshoot and then chase back the other way.
+    max_accel: [2.5, 0.0, 2.0]
+    max_decel: [-2.5, 0.0, -2.0]
     # /local_ekf/odom is the EKF-fused output. Only matters if feedback
     # is switched away from OPEN_LOOP (the current setting at line above
     # ignores this topic).

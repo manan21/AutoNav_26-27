@@ -3,7 +3,8 @@
 # Each non-blank, non-comment line is one leg of a sequenced mission.
 # Legs fire top-to-bottom; the first leg that aborts stops the chain.
 #
-# Format:  <KIND> <a>, <b>
+# Format:  <KIND> <a>, <b>     (two-arg legs)
+#          <KIND>                (argless legs: GI, GR)
 # Kinds:
 #   ER  Euclidean Relative — desired nav_center travel (dx, dy) in meters,
 #       relative to the robot's pose at the moment the leg starts.
@@ -13,16 +14,30 @@
 #   GA  GPS Absolute — (latitude, longitude) in decimal degrees;
 #       use negative values for S latitude / W longitude.
 #       Dispatched to send_GPS_waypoint.sh lat lon
+#   GI  GPS Insert — record the robot's current GPS position by averaging
+#       10 /gps_fix samples and store it as the "return" waypoint. Place
+#       at the top of a mission to capture the start pose.
+#   GR  GPS Return — navigate back to the GI-recorded waypoint. Place at
+#       the bottom of the mission for an out-and-back course.
 #
 # Lines beginning with '#' and blank lines are ignored.
 # Numbers may be space- or comma-separated.
 # ER 5.0, 0.0
 
 # Test field waypoints
+GI
 GA 42.6682118 -83.2184587
 GA 42.6680860 -83.2184456
 GA 42.6679601 -83.2184327
-
+GR
 # House waypoints
 # GA 42.5349794 -83.0765889
 # GA 42.5349818 -83.0764813
+
+#GI
+#GA 42.6682697 -83.2193403
+#GA 42.6681206 -83.2193606
+#GA 42.6680766 -83.2193592
+#GA 42.6679277 -83.2193276
+#GR
+

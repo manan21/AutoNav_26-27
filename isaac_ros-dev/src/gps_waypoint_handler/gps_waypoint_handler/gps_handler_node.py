@@ -191,6 +191,20 @@ GOAL_REPUBLISH_HEARTBEAT_S: float = 0.2
 GOAL_POSE_HEARTBEAT_S: float = 60.0
 
 # ────────────────────────────────────────────────────────────────────
+# Nav2-hiccup redispatch throttle. Nav2 is NOT a critical dependency
+# of /navigate_to_waypoint — an inner NavigateToPose ABORTED / REJECTED
+# / externally-CANCELED is treated as a recoverable hiccup rather than
+# a terminal status for the outer GPS goal. The execute loop resets
+# the inner-goal state and re-fires _dispatch_nav2_goal_once at most
+# once per this interval so a sustained Nav2 fault (planner crashed,
+# server bouncing through lifecycle, etc.) does not turn into a
+# busy-loop send_goal storm. 1 s is slower than the feedback tick
+# (FEEDBACK_HZ=2) but fast enough to recover within one human-noticeable
+# beat of a transient.
+# ────────────────────────────────────────────────────────────────────
+NAV2_REDISPATCH_MIN_INTERVAL_S: float = 1.0
+
+# ────────────────────────────────────────────────────────────────────
 # CONTROLLER-CHATTER-SENSITIVE — heading resync cadence. Each resync
 # event corrects accumulated EKF yaw bias (which is map↔odom-adjacent
 # in that the bias originates upstream of slam_toolbox's correction
@@ -421,6 +435,11 @@ class _ActiveGoal:
     nav2_done_status: Optional[int] = None
     nav2_failure_reason: str = ""
     nav2_cancel_requested: bool = False
+    # Last time the execute loop re-fired NavigateToPose after a Nav2
+    # hiccup (ABORTED / REJECTED / externally-CANCELED). Throttle gate
+    # for NAV2_REDISPATCH_MIN_INTERVAL_S so a wedged Nav2 doesn't get
+    # spammed with send_goal at feedback rate.
+    last_nav2_redispatch_s: float = 0.0
     # Local-vs-world divergence detector baselines. Lazy-initialized
     # on the first odom tick that has both a valid EKF position and a
     # valid raw GPS sample — they can't be set at goal acceptance
@@ -1718,6 +1737,37 @@ class GpsHandlerNode(Node):
             lambda done: self._on_nav2_goal_response(active.handle, done)
         )
 
+    def _reset_nav2_for_redispatch(self, active: "_ActiveGoal") -> None:
+        """Clear inner-Nav2 state so the next publisher tick re-fires
+        ``_dispatch_nav2_goal_once`` with the current refined goal pose.
+
+        Called when Nav2 returns a non-success terminal status that we
+        deliberately refuse to propagate (ABORTED / REJECTED / externally-
+        CANCELED). Operator/preempt-driven cancels run through
+        ``_terminate`` → ``_cancel_nav2_goal`` instead — those set
+        ``nav2_cancel_requested`` and never reach this path.
+
+        Setting ``last_published_goal_map = None`` re-arms the "first
+        publish of a leg" branch in ``_publish_goal`` / ``_publisher_tick``
+        (the existing path that calls ``_dispatch_nav2_goal_once`` and
+        routes through /goal_pose instead of /goal_update), so we reuse
+        the well-tested startup dispatch instead of duplicating it here.
+        Feedback briefly reports ``current_goal_in_map`` as zeros for the
+        one tick between reset and the eager republish in the caller —
+        acceptable, the timestamp aligns with the publish that follows.
+        """
+        with self._lock:
+            if self._active is None or self._active.handle is not active.handle:
+                return
+            self._active.nav2_goal_sent = False
+            self._active.nav2_goal_accepted = None
+            self._active.nav2_goal_handle = None
+            self._active.nav2_result_future = None
+            self._active.nav2_done_status = None
+            self._active.nav2_failure_reason = ""
+            self._active.nav2_cancel_requested = False
+            self._active.last_published_goal_map = None
+
     def _cancel_nav2_goal(self, active: Optional["_ActiveGoal"]) -> None:
         """Best-effort async cancel of the direct Nav2 action goal."""
         if active is None or active.nav2_goal_handle is None:
@@ -2429,14 +2479,50 @@ class GpsHandlerNode(Node):
                         NavigateToWaypoint.Result.STATUS_CANCELED,
                         "client canceled",
                     )
+                # Nav2 hiccup policy: Nav2 is NOT a critical dependency
+                # of /navigate_to_waypoint. Operator/preempt cancels are
+                # already handled by the two checks above (those routes
+                # set ``nav2_cancel_requested`` via ``_cancel_nav2_goal``
+                # before invoking ``_terminate``). Anything that reaches
+                # _nav2_failure_for_active here is therefore a Nav2-side
+                # event we do not let kill the outer GPS goal: ABORTED,
+                # UNKNOWN, REJECTED, or external CANCEL. We reset the
+                # inner state and re-fire ``_dispatch_nav2_goal_once`` via
+                # the existing "first publish of a leg" path in
+                # ``_publisher_tick``. The throttle gate keeps a wedged
+                # Nav2 from being spammed with send_goal at FEEDBACK_HZ;
+                # the throttle window only blocks the *re-fire*, the
+                # outer GPS goal still runs and continues publishing
+                # feedback, so the operator sees that we're stuck rather
+                # than seeing a silent abort.
                 nav2_failure = self._nav2_failure_for_active(active)
                 if nav2_failure is not None:
-                    nav2_status, nav2_reason = nav2_failure
-                    return self._terminate(
-                        goal_handle,
-                        nav2_status,
-                        nav2_reason,
-                    )
+                    _nav2_status, nav2_reason = nav2_failure
+                    now_redispatch = self._now_s()
+                    if (
+                        now_redispatch - active.last_nav2_redispatch_s
+                        >= NAV2_REDISPATCH_MIN_INTERVAL_S
+                    ):
+                        active.last_nav2_redispatch_s = now_redispatch
+                        self.get_logger().warn(
+                            f"Nav2 reported non-success ({nav2_reason}); "
+                            f"re-dispatching NavigateToPose — GPS waypoint "
+                            f"stays active"
+                        )
+                        self._reset_nav2_for_redispatch(active)
+                        # Eager republish so we don't wait up to one
+                        # publisher period for the re-fire — matches the
+                        # eager-initial-publish pattern at the top of
+                        # execute_callback. Idempotent: the publisher
+                        # tick's own locking guards against a double
+                        # /goal_pose if a timer-driven tick lands in the
+                        # same instant.
+                        try:
+                            self._publisher_tick()
+                        except Exception as exc:  # noqa: BLE001
+                            self.get_logger().warn(
+                                f"Nav2 redispatch publisher_tick raised: {exc}"
+                            )
 
                 with self._lock:
                     ekf_xy = self._ekf.pos_xy
