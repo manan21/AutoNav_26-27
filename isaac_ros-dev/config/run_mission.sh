@@ -1,20 +1,102 @@
 #!/usr/bin/env bash
 # run_mission.sh — sequence a chain of waypoints from stored_waypoints.txt.
 #
-# Usage: ./run_mission.sh [mission_file]
+# Usage: ./run_mission.sh [-n|-s] [mission_file]
+#   -n            (default) execute GA waypoints in file order
+#   -s            reverse the order of active GA legs at load time so
+#                 the course runs in the opposite direction without
+#                 having to edit the mission file. GI / GR / EA / ER
+#                 legs and comments keep their original positions.
 #   mission_file  defaults to stored_waypoints.txt next to this script.
 #
-# Each leg blocks until its action returns terminal status. The first
-# leg that aborts stops the mission and exits non-zero.
+# Per-leg policy: a leg returning non-zero is logged and the mission
+# continues to the next leg. The only mid-mission stop is exit 130
+# (SIGINT/SIGTERM caught by a dispatcher's own trap).
 
 set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+DIRECTION=N
+while getopts ":nsh" opt; do
+  case $opt in
+    n) DIRECTION=N ;;
+    s) DIRECTION=S ;;
+    h)
+      sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    \?)
+      echo "unknown option: -$OPTARG" >&2
+      echo "usage: $0 [-n|-s] [mission_file]" >&2
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND - 1))
+
 MISSION=${1:-"$SCRIPT_DIR/stored_waypoints.txt"}
 
 if [[ ! -f $MISSION ]]; then
   echo "mission file not found: $MISSION" >&2
   exit 1
+fi
+
+# Direction handling: -s reverses only the active GA legs (lines that
+# match the leg-dispatch parser's expectation of `GA <a> <b>`). All
+# other lines — GI, GR, EA, ER, comments, blanks — stay at their
+# original positions. The reversed mission is materialized into a
+# tempfile that becomes the new $MISSION; the dispatch loop below
+# reads it normally without knowing whether reversal happened.
+#
+# Why a tempfile instead of an in-memory array fed to the loop:
+# the existing `while read … < "$MISSION"` form is well tested
+# (handles CRs, inline comments, trailing-newline-less files); a
+# tempfile keeps that path untouched and makes the reversal visible
+# for post-mortem ("what was actually dispatched?").
+REVERSED_MISSION=""
+cleanup_reversed() {
+  if [[ -n "$REVERSED_MISSION" && -f "$REVERSED_MISSION" ]]; then
+    rm -f "$REVERSED_MISSION"
+  fi
+}
+trap cleanup_reversed EXIT
+
+if [[ $DIRECTION == "S" ]]; then
+  REVERSED_MISSION=$(mktemp -t mission_S.XXXXXX)
+  # Portable read into array — matches the dispatch loop's own
+  # `while IFS= read … || [[ -n $line ]]` pattern (which handles
+  # files without a trailing newline) and keeps this script
+  # buildable on bash 3.x as well as bash 5 on the Jetson.
+  _LINES=()
+  while IFS= read -r _line || [[ -n $_line ]]; do
+    _LINES+=("$_line")
+  done < "$MISSION"
+
+  # Indices of active GA legs (commented-out or non-GA lines skipped).
+  _ga_idx=()
+  for _i in "${!_LINES[@]}"; do
+    if [[ "${_LINES[_i]}" =~ ^[[:space:]]*GA[[:space:]] ]]; then
+      _ga_idx+=("$_i")
+    fi
+  done
+
+  # In-place reverse of the GA subsequence by swapping symmetric
+  # pairs of indices. Handles odd counts — the middle GA stays put.
+  _n=${#_ga_idx[@]}
+  for ((_k = 0; _k < _n / 2; _k++)); do
+    _lo=${_ga_idx[_k]}
+    _hi=${_ga_idx[_n - 1 - _k]}
+    _tmp=${_LINES[_lo]}
+    _LINES[_lo]=${_LINES[_hi]}
+    _LINES[_hi]=$_tmp
+  done
+
+  printf '%s\n' "${_LINES[@]}" > "$REVERSED_MISSION"
+  MISSION=$REVERSED_MISSION
+  echo "Direction: SOUTH — reversed $_n GA leg(s) (mission file at $REVERSED_MISSION)."
+else
+  echo "Direction: NORTH — GA legs in file order."
 fi
 
 SEND_LOCAL="$SCRIPT_DIR/send_goal.sh"
