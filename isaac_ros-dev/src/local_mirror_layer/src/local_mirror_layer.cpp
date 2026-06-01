@@ -525,7 +525,10 @@ void LocalMirrorLayer::updateCosts(
           if (allow_decrease_ && incoming < existing &&
             decreaseAllowedAt(wx, wy, robot_x, robot_y, robot_yaw, have_pose))
           {
-            costmap_[idx] = incoming;
+            // A FREE source cell means "forget this remembered mark", not
+            // "paint FREE into the global master". Keeping it as no-opinion
+            // prevents one mirror layer from clearing other global layers.
+            costmap_[idx] = incoming == FREE_SPACE ? NO_INFORMATION : incoming;
           }
         }
       }
@@ -585,7 +588,7 @@ void LocalMirrorLayer::updateCosts(
     for (int i = min_i; i < max_i; ++i) {
       const unsigned int idx = j * size_x_ + i;
       const unsigned char layer_cost = costmap_[idx];
-      if (layer_cost == NO_INFORMATION) {
+      if (layer_cost == NO_INFORMATION || layer_cost == FREE_SPACE) {
         continue;
       }
       const unsigned int midx = j * master_size_x + i;

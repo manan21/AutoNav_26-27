@@ -213,15 +213,12 @@ def generate_launch_description():
     # heights count. -0.10 m → 1.50 m covers everything from just below
     # the wheels to ~1.5 m above the chassis, which is more than enough
     # for any AutoNav obstacle. angle_increment 0.0087 rad ≈ 0.5°.
-    # Asymmetric marking vs clearing FOV: mark anything the lidar sees
-    # in the full 180° forward view, but only clear (raytrace-free) the
-    # central 140° (±70°). The outer 20° wedge on each side is "trust
-    # the sensor's hits, don't trust its claim that a cell is free" —
-    # the lidar's beam density / angular accuracy is worst at the
-    # extremes, so we don't let those rays raytrace-clear stored marks.
+    # Mark and clear only the central 140 degrees (+/-70 deg). Edge-FOV
+    # PCA points are the most prone to turn smearing, so avoid letting
+    # them seed obstacle marks that can box in the robot.
     # Two converters share the same input pointcloud:
-    #   /scan_pca_filtered      → 180°, marking source
-    #   /scan_pca_filtered_clear→ 160°, clearing source
+    #   /scan_pca_filtered      -> 140 deg, marking source
+    #   /scan_pca_filtered_clear-> 140 deg, clearing source
     # The local obstacle_layer in the Nav2 params lists both as
     # observation_sources, with marking/clearing flags split.
     pca_pc2_to_scan = Node(
@@ -235,8 +232,8 @@ def generate_launch_description():
             'queue_size':      1,
             'min_height':     -0.10,
             'max_height':      1.50,
-            'angle_min':      -1.5708,   # -90° (full 180° marking)
-            'angle_max':       1.5708,   # +90°
+            'angle_min':      -1.2217,   # -70° (140° marking)
+            'angle_max':       1.2217,   # +70°
             'angle_increment': 0.0087,
             'scan_time':       0.1,
             'range_min':       0.30,
@@ -286,7 +283,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'tile_size_m': 1.0,
-            'output_resolution': 0.10,
+            'output_resolution': 0.05,
             # Subscribe to SLAM's map topic and republish as /map_padded
             'input_topic': '/map',
             'output_topic': '/map_padded',

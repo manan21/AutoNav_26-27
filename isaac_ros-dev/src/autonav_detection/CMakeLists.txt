@@ -37,8 +37,25 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(CUDAToolkit QUIET)
 if(CUDAToolkit_FOUND)
   enable_language(CUDA)
-  # Jetson Orin Nano is Ampere (SM 87)
-  set(CMAKE_CUDA_ARCHITECTURES 87)
+  # Build a fat binary covering every GPU this stack runs on so the SAME source
+  # is canon on the robot AND on x86 dev/autoresearch hosts. A single-arch build
+  # (e.g. only SM 87) produces "no kernel image is available for execution on the
+  # device" at launch on any other GPU -> 0 line pixels -> 0 line points.
+  #   87 = Jetson Orin (real robot, Ampere)
+  #   86 = RTX 30-series laptop/desktop dev + autoresearch sim host (Ampere)
+  #   89 = Ada (RTX 40-series), in case a newer dev box is used
+  # Override on a constrained box with -DCMAKE_CUDA_ARCHITECTURES=<arch> (or
+  # =native) to build only the local arch and speed up compilation.
+  # Set UNCONDITIONALLY: enable_language(CUDA) above pre-populates
+  # CMAKE_CUDA_ARCHITECTURES with a default (52 here), so a `if(NOT DEFINED)`
+  # guard never fires and you silently get only SM 52 SASS -> PTX-JIT fallback ->
+  # "PTX compiled with an unsupported toolchain" on newer GPUs/drivers.
+  # Build only the local arch (faster) with -DAUTONAV_CUDA_ARCHS=native (or =86).
+  if(DEFINED AUTONAV_CUDA_ARCHS)
+    set(CMAKE_CUDA_ARCHITECTURES ${AUTONAV_CUDA_ARCHS})
+  else()
+    set(CMAKE_CUDA_ARCHITECTURES 86 87 89)
+  endif()
 else()
   message(WARNING "CUDAToolkit not found; skipping CUDA line_detector target.")
 endif()
@@ -55,6 +72,15 @@ if(CUDAToolkit_FOUND)
 
   target_compile_features(line_detector PUBLIC cxx_std_17)
   set_target_properties(line_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  # Pin per-target CUDA archs directly: colcon/ament seeds a cache
+  # CMAKE_CUDA_ARCHITECTURES (=52) that overrides the directory-scope set() above,
+  # which would emit only SM 52 SASS -> PTX-JIT -> launch failure on the robot
+  # (sm_87) and dev hosts (sm_86). The target property is authoritative.
+  if(DEFINED AUTONAV_CUDA_ARCHS)
+    set_target_properties(line_detector PROPERTIES CUDA_ARCHITECTURES "${AUTONAV_CUDA_ARCHS}")
+  else()
+    set_target_properties(line_detector PROPERTIES CUDA_ARCHITECTURES "86;87;89")
+  endif()
 
   # Force -O3 + -DNDEBUG for the host-side host code regardless of the
   # workspace's CMAKE_BUILD_TYPE. Same reasoning as grade_detector below
