@@ -11,19 +11,22 @@ control_node:
     controller_topic: "joy"
     encoder_topic: "encoders"
     path_planning_topic: "cmd_vel"
-    # Autonomous turn slowdown. Preserve the planner's angular.z, but
-    # reduce forward progress as turn demand rises so the robot advances
-    # less during hard turns and gives perception more time to react.
+    # Autonomous turn shaping. First reduce forward progress as turn demand
+    # rises, then cap angular.z by curvature so low-speed corrections do not
+    # collapse into abrupt near-pivots.
     # Live-tunable via `ros2 param set /control_node ...`.
     turn_slowdown_enabled: true
     turn_slowdown_start_angular_rad_s: 0.20   # |angular.z| at or below this -> no linear slowdown
     turn_slowdown_full_angular_rad_s: 0.65    # |angular.z| at or above this -> full slowdown applied
     turn_slowdown_min_linear_scale: 0.40      # forward cmd bottoms out at 40% during hardest turns
+    auto_curvature_cap_enabled: true
+    auto_min_turn_radius_m: 0.90              # |angular.z| <= linear.x / radius while driving forward
     # Autonomous motor deadband compensation. Nav2 may command small
     # nonzero /cmd_vel values that are valid trajectory requests but
     # below the drivetrain's static-friction threshold. Keep exact zero
-    # as zero; lift small nonzero wheel commands to the minimum motor
-    # argument that should produce real movement.
+    # as zero; lift small same-direction traction commands to the minimum
+    # motor argument that should produce real movement. Tiny inner-wheel
+    # reverse commands during forward turns are not boosted.
     auto_deadband_comp_enabled: true
     auto_deadband_min_motor_arg: 6.5           # move() arg; stepSize=10 -> 65 per-mille RoboteQ throttle
     auto_deadband_apply_below_motor_arg: 6.5   # only lift nonzero wheel args below this magnitude

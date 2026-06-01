@@ -86,14 +86,15 @@ The effective forward cap is `min(MPPI FollowPath.vx_max, velocity_smoother.max_
 |---|---|---|---|---|
 | `velocity_smoother.max_velocity[0]` | ⚠️ | `0.50` m/s | Hard cap on forward `/cmd_vel.linear.x` | Higher → faster, watch for chatter past ~0.50 outdoors before EKF tuning |
 | `velocity_smoother.min_velocity[0]` | 🟡 | `-0.25` m/s | Hard cap on reverse | Leave lower unless deliberately testing faster reverse/recovery motion |
-| `velocity_smoother.max_accel[0]` | 🟡 | `2.5` m/s² | Smoother linear accel cap | Higher → snappier ramp-up; retune with MPPI samples and chatter checks. |
-| `velocity_smoother.max_decel[0]` | 🟡 | `-2.5` m/s² | Smoother linear decel cap | Pair with max_accel |
+| `velocity_smoother.max_accel[0]` | 🟡 | `1.2` m/s² | Smoother linear accel cap | Higher → snappier ramp-up; retune with MPPI samples and chatter checks. |
+| `velocity_smoother.max_decel[0]` | 🟡 | `-1.2` m/s² | Smoother linear decel cap | Pair with max_accel |
 | `controller_server.controller_frequency` | 🟡 | `20.0` Hz | MPPI control tick rate | Higher → more responsive, more CPU |
 | `controller_server.FollowPath.vx_max` | ⚠️ | `0.50` m/s | MPPI forward sampling cap | Pair with `velocity_smoother.max_velocity[0]` |
 | `controller_server.FollowPath.vx_std` | ⚠️ | `0.25` m/s | MPPI forward sampling spread | Must be wide enough for MPPI to explore the intended cap; `0.12` still behaved like a ~0.20 m/s controller |
 | `controller_server.FollowPath.vx_min` | 🟡 | `0.0` m/s | MPPI reverse sampling cap | Current local controller is forward-only; reverse is handled by `breadcrumb_reverse` |
 | `controller_server.FollowPath.vy_max` | 🔴 | `0.0` m/s | Lateral sampling cap | Must remain zero for differential drive |
-| `controller_server.FollowPath.wz_max` | 🟡 | `1.0` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |
+| `controller_server.FollowPath.wz_std` | 🟡 | `0.45` rad/s | MPPI angular sampling spread | Higher → samples sharper yaw corrections, higher overshoot risk |
+| `controller_server.FollowPath.wz_max` | 🟡 | `0.65` rad/s | MPPI angular sampling cap | Higher → more aggressive turns, higher overshoot risk |
 | `controller_server.FollowPath.time_steps × model_dt` | 🟡 | `56 × 0.05 = 2.8` s | MPPI rollout horizon | Longer sees farther but costs CPU and can over-commit |
 | `controller_server.FollowPath.batch_size` | 🟡 | `1200` | Samples per MPPI tick | Higher → better local search, more CPU |
 
@@ -297,7 +298,7 @@ Design invariants (not tunables — described for context):
 
 `stepSize = 10` and `speed = 10` keep manual full-stick conservative. The outdoor AutoNav cap is now higher than manual default; raise manual `speed` only as a separate driver-control tuning decision.
 
-Autonomous deadband compensation is applied after `cmd_vel` is converted to per-wheel motor arguments and after grade compensation. Exact zero remains zero; small nonzero wheel commands are lifted so Nav2's valid low-speed turn requests do not sit below static friction. With defaults, `auto_deadband_min_motor_arg = 6.5`, so `6.5 × stepSize(10) = 65` per-mille RoboteQ throttle.
+Autonomous deadband compensation is applied after `cmd_vel` is converted to per-wheel motor arguments and after grade compensation. Exact zero remains zero; small same-direction traction commands are lifted so Nav2's valid low-speed turn requests do not sit below static friction. During forward/reverse translation, tiny opposite-sign inner-wheel commands are not boosted, which avoids turning small corrections into snap pivots. With defaults, `auto_deadband_min_motor_arg = 6.5`, so `6.5 × stepSize(10) = 65` per-mille RoboteQ throttle.
 
 ### Control node motor tunables (`node_params.yaml`)
 
@@ -306,6 +307,8 @@ Autonomous deadband compensation is applied after `cmd_vel` is converted to per-
 | `auto_deadband_comp_enabled` | ⚠️ | `true` | Enables autonomous-only minimum effective motor command | Does not affect manual joystick or exact zero stop commands |
 | `auto_deadband_min_motor_arg` | ⚠️ | `6.5` | Minimum `motors.move()` argument for each nonzero wheel command | Raise toward `7.5` if the robot still twitches; lower toward `5.5` if turns become too abrupt |
 | `auto_deadband_apply_below_motor_arg` | ⚠️ | `6.5` | Only commands below this magnitude are lifted | Keep equal to `auto_deadband_min_motor_arg` unless deliberately shaping the transition |
+| `auto_curvature_cap_enabled` | 🟢 | `true` | Caps autonomous `angular.z` while driving forward | Keeps turn slowdown from creating high-curvature low-speed pivots |
+| `auto_min_turn_radius_m` | 🟢 | `0.90` m | Minimum forward-driving turn radius in the control bridge | Lower permits sharper corrections; higher damps swinging more |
 
 ### Motor controller build-time constants (`motor_controller.hpp`)
 

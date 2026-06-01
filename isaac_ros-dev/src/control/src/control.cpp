@@ -36,20 +36,23 @@ class ControlNode : public rclcpp::Node {
         this->declare_parameter("controller_topic", "joy");
         this->declare_parameter("encoder_topic", "encoders");
         this->declare_parameter("path_planning_topic", "cmd_vel");
-        // Autonomous turn slowdown. Preserve the controller's commanded
-        // yaw rate, but reduce forward progress as |angular.z| rises so
-        // the robot does not overrun newly visible hazards during turns.
+        // Autonomous turn shaping. First reduce forward progress as turn
+        // demand rises; then optionally cap angular.z by curvature so a
+        // low-speed correction cannot become an abrupt near-pivot.
         // Live-tunable via `ros2 param set /control_node ...`.
         this->declare_parameter("turn_slowdown_enabled", true);
         this->declare_parameter("turn_slowdown_start_angular_rad_s", 0.20);
         this->declare_parameter("turn_slowdown_full_angular_rad_s", 0.65);
         this->declare_parameter("turn_slowdown_min_linear_scale", 0.40);
+        this->declare_parameter("auto_curvature_cap_enabled", true);
+        this->declare_parameter("auto_min_turn_radius_m", 0.90);
         // Autonomous motor deadband compensation. Nav2's small nonzero
         // /cmd_vel commands are still valid motion requests, but the
         // RoboteQ + drivetrain can sit below static-friction threshold.
         // Compensation is applied per wheel after cmd_vel->wheel-speed
-        // conversion and grade compensation. Exact zero stays exact
-        // zero so stop/watchdog behavior is unchanged.
+        // conversion and grade compensation. Exact zero stays exact zero,
+        // and tiny inner-wheel reverse commands during forward turns are
+        // left unboosted so small corrections do not become snap pivots.
         this->declare_parameter("auto_deadband_comp_enabled", true);
         this->declare_parameter("auto_deadband_min_motor_arg", 6.5);
         this->declare_parameter("auto_deadband_apply_below_motor_arg", 6.5);
@@ -686,7 +689,7 @@ class ControlNode : public rclcpp::Node {
         }
     }
 
-    double compensate_auto_deadband(double motor_arg) {
+    double compensate_auto_deadband(double motor_arg, double forward_command) {
         if (!std::isfinite(motor_arg)) return 0.0;
         if (!this->get_parameter("auto_deadband_comp_enabled").as_bool()) {
             return motor_arg;
@@ -694,6 +697,15 @@ class ControlNode : public rclcpp::Node {
 
         const double abs_arg = std::abs(motor_arg);
         if (abs_arg < 1e-6) return 0.0;
+
+        // During forward/reverse translation, only lift wheel commands that
+        // push in the same direction as the average drive command. This keeps
+        // small opposite-sign inner-wheel requests from being amplified into
+        // abrupt pivots while preserving pure rotation behavior.
+        if (std::abs(forward_command) > 1e-6 &&
+            std::signbit(motor_arg) != std::signbit(forward_command)) {
+            return motor_arg;
+        }
 
         const double min_arg = std::max(
             0.0,
@@ -782,9 +794,9 @@ class ControlNode : public rclcpp::Node {
                const double forward_cmd = 0.5 * (left_wheel_speed + right_wheel_speed);
                const double mult = grade_speed_multiplier(forward_cmd);
                const double right_motor_arg =
-                   compensate_auto_deadband(right_wheel_speed * 40 * mult);
+                   compensate_auto_deadband(right_wheel_speed * 40 * mult, forward_cmd);
                const double left_motor_arg =
-                   compensate_auto_deadband(left_wheel_speed * 40 * mult);
+                   compensate_auto_deadband(left_wheel_speed * 40 * mult, forward_cmd);
                motors.move(right_motor_arg, left_motor_arg);
            }
         }
@@ -886,6 +898,23 @@ class ControlNode : public rclcpp::Node {
 
                 linear_move = static_cast<float>(
                     static_cast<double>(linear_move) * linear_scale);
+            }
+
+            // Enforce a minimum turn radius while driving forward. The turn
+            // slowdown above lowers linear speed during hard corrections; this
+            // paired cap lowers yaw rate with it instead of preserving a high
+            // angular command at a now-low forward speed.
+            if (this->get_parameter("auto_curvature_cap_enabled").as_bool() &&
+                linear_move > 1e-6f) {
+                const double min_turn_radius = std::max(
+                    1e-3,
+                    this->get_parameter("auto_min_turn_radius_m").as_double());
+                const double max_angular =
+                    std::abs(static_cast<double>(linear_move)) / min_turn_radius;
+                angular_move = static_cast<float>(std::clamp(
+                    static_cast<double>(angular_move),
+                    -max_angular,
+                    max_angular));
             }
 
             left_wheel_speed = linear_move - ( angular_move * (WHEEL_BASE/2));
