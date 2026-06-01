@@ -96,6 +96,8 @@ from .gps_ekf import (
 # convergence is happening upstream regardless.
 NAV2_GOAL_HZ: float = 1.0
 FEEDBACK_HZ: float = 2.0
+DIAGNOSTICS_HZ: float = 1.0
+ESTIMATOR_AUX_HZ: float = 10.0
 
 # Convergence / arrival (§3.2)
 # Tightened from the plan's 1.0 m default to 0.25 m so the action
@@ -310,8 +312,8 @@ GPS_HISTORY_LEN: int = 400
 # Liveness
 GPS_STALE_TIMEOUT_S: float = 5.0
 TF_TIMEOUT_S: float = 0.5
-"""``map → odom`` lookup timeout. Skip the publish on TF failure rather
-than emit a stale pose (manifest §5.6 "TF safety")."""
+"""Timeout for infrequent helper TF lookups. High-rate GPS navigation
+lookups fail fast and retry on the next timer tick."""
 
 EARTH_R_M: float = 6_371_000.0
 """Earth radius (m), used in the equirectangular lat/lon → meters
@@ -326,6 +328,7 @@ linearization around the datum."""
 # (so URDF edits are picked up automatically).
 GPS_LINK_FRAME: str = "gps_footprint"
 BASE_LINK_FRAME: str = "base_link"
+GPS_LINK_TF_RETRY_S: float = 1.0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -479,6 +482,8 @@ class GpsHandlerNode(Node):
         self.declare_parameter("success_radius_m", SUCCESS_RADIUS_M)
         self.declare_parameter("nav2_goal_hz", NAV2_GOAL_HZ)
         self.declare_parameter("feedback_hz", FEEDBACK_HZ)
+        self.declare_parameter("diagnostics_hz", DIAGNOSTICS_HZ)
+        self.declare_parameter("estimator_aux_hz", ESTIMATOR_AUX_HZ)
         self.declare_parameter("gps_stale_timeout_s", GPS_STALE_TIMEOUT_S)
         self.declare_parameter("tf_timeout_s", TF_TIMEOUT_S)
         self.declare_parameter("map_frame", "map")
@@ -520,6 +525,13 @@ class GpsHandlerNode(Node):
         self._feedback_hz: float = float(
             self.get_parameter("feedback_hz").value
         )
+        self._diagnostics_hz: float = max(
+            0.0,
+            float(self.get_parameter("diagnostics_hz").value),
+        )
+        aux_hz = max(1.0, float(self.get_parameter("estimator_aux_hz").value))
+        self._estimator_aux_period_s: float = 1.0 / aux_hz
+        self._last_estimator_aux_stamp_s: Optional[float] = None
         self._gps_stale_timeout_s: float = float(
             self.get_parameter("gps_stale_timeout_s").value
         )
@@ -591,6 +603,7 @@ class GpsHandlerNode(Node):
         self._last_gps_xy: Optional[Tuple[float, float]] = None
         self._last_gps_stamp_s: Optional[float] = None
         self._gps_pending: bool = False  # set by /gps_fix, cleared by EKF tick
+        self._last_theta_measurement_gps_stamp_s: Optional[float] = None
 
         # Latest odom snapshot, for predict deltas + bootstrap pairs.
         self._last_odom_xy: Optional[Tuple[float, float]] = None
@@ -601,6 +614,7 @@ class GpsHandlerNode(Node):
         # Cached base_link → gps_footprint translation. Looked up lazily
         # on the first GPS callback (TF tree may not be live at __init__).
         self._gps_link_offset_xy: Optional[Tuple[float, float]] = None
+        self._last_gps_link_tf_lookup_s: float = -math.inf
         self._last_odom_stamp_s: Optional[float] = None
         self._odom_distance_m: float = 0.0
 
@@ -621,7 +635,8 @@ class GpsHandlerNode(Node):
         self._next_hint_stamp_s: float = 0.0
         # Hard cap as defense-in-depth. Time-window trim in
         # ``_update_moving_away`` keeps this near MOVING_AWAY_WINDOW_S
-        # × tick rate (~30 Hz × 3 s ≈ 90 entries). The cap protects
+        # × estimator_aux_hz (~10 Hz × 3 s ≈ 30 entries by default).
+        # The cap protects
         # against pathological clock-skew or paused-trim scenarios from
         # unbounded growth over a long-running session.
         self._dist_history: Deque[Tuple[float, float]] = deque(maxlen=512)
@@ -750,12 +765,16 @@ class GpsHandlerNode(Node):
             self._publisher_tick,
             callback_group=self._estimator_cbg,
         )
-        # Diagnostic publisher always-on at 5 Hz — cheap.
-        self._diag_timer = self.create_timer(
-            0.2,
-            self._diag_tick,
-            callback_group=self._estimator_cbg,
-        )
+        # Diagnostic publishing is intentionally slower than the estimator
+        # heartbeat. JSON serialization + DDS traffic showed up as avoidable
+        # GPS-node CPU during robot tests.
+        self._diag_timer = None
+        if self._diagnostics_hz > 0.0:
+            self._diag_timer = self.create_timer(
+                1.0 / max(self._diagnostics_hz, 0.1),
+                self._diag_tick,
+                callback_group=self._estimator_cbg,
+            )
         # Health publisher at 1 Hz — emits one /gps_waypoint/health
         # String per second so the GUI can render a status badge.
         self._health_timer = self.create_timer(
@@ -801,8 +820,10 @@ class GpsHandlerNode(Node):
 
         self.get_logger().info(
             f"gps_handler_node up — /goal_pose @ {self._nav2_goal_hz:.1f} Hz, "
-            f"feedback @ {self._feedback_hz:.1f} Hz, success_radius "
-            f"= {self._success_radius_default:.2f} m"
+            f"feedback @ {self._feedback_hz:.1f} Hz, diagnostics @ "
+            f"{self._diagnostics_hz:.1f} Hz, estimator_aux @ "
+            f"{(1.0 / self._estimator_aux_period_s):.1f} Hz, "
+            f"success_radius = {self._success_radius_default:.2f} m"
         )
 
     def _now_s(self) -> float:
@@ -838,8 +859,8 @@ class GpsHandlerNode(Node):
 
     def _odom_callback(self, msg: Odometry) -> None:
         """EKF heartbeat. Predict on every odom message; if a fresh GPS
-        fix is queued, run update + maybe-resync; always tick the
-        candidate-goal smoother + moving-away detector. Always-on.
+        fix is queued, run update + maybe-resync. Auxiliary GPS-CoG and
+        candidate-goal checks are rate-limited separately from odom.
         """
         ox = float(msg.pose.pose.position.x)
         oy = float(msg.pose.pose.position.y)
@@ -874,6 +895,9 @@ class GpsHandlerNode(Node):
                 self._last_odom_xy = (ox, oy)
                 self._last_odom_stamp_s = stamp_s
                 self._dist_history.clear()
+                self._last_estimator_aux_stamp_s = None
+                self._last_theta_measurement_gps_stamp_s = None
+                self._last_gps_link_tf_lookup_s = -math.inf
                 self._heading_resync_until_s = 0.0
                 self._envelope_suspended_until_s = 0.0
                 return
@@ -955,20 +979,33 @@ class GpsHandlerNode(Node):
                         self._ekf.update(zx, zy)
                     self._maybe_resync_heading()
 
-            # ── θ measurement: GPS-CoG + IMU yaw ───────────────────
-            # PRIMARY θ source. Uses no odom angle. Fires every odom
-            # tick after bootstrap, with a 1.5 m baseline gate so
-            # CoG isn't sampled from GPS noise alone. The disabled
-            # resync paths (_maybe_resync_heading,
-            # _periodic_heading_refit, _force_heading_resync) used
-            # ``atan2(odom_displacement)`` — this replaces them.
-            self._inject_gps_cog_theta_measurement()
+            aux_due = (
+                self._last_estimator_aux_stamp_s is None
+                or (
+                    stamp_s - self._last_estimator_aux_stamp_s
+                    >= self._estimator_aux_period_s
+                )
+            )
+            if aux_due:
+                self._last_estimator_aux_stamp_s = stamp_s
 
-            # ── Self-correction layers ─────────────────────────────
-            self._update_candidate_smoother()
-            self._update_next_hint_smoother()
-            self._update_moving_away()
-            self._update_local_world_divergence()
+                # ── θ measurement: GPS-CoG + IMU yaw ───────────────
+                # PRIMARY θ source. It uses GPS history, so running it
+                # faster than GPS produces repeated measurements without
+                # new information. Bound it independently from odom rate.
+                self._inject_gps_cog_theta_measurement()
+
+                # ── Self-correction layers ─────────────────────────
+                # Candidate smoothing feeds a 1 Hz publisher, so 10 Hz is
+                # still comfortably oversampled while avoiding high-rate
+                # odom CPU on the robot.
+                if self._active is not None:
+                    self._update_candidate_smoother()
+                    self._update_next_hint_smoother()
+                    self._update_moving_away()
+                    self._update_local_world_divergence()
+                elif self._next_hint_enabled and self._next_hint_world_xy is not None:
+                    self._update_next_hint_smoother()
 
     def _next_hint_callback(self, msg: PoseStamped) -> None:
         """improve/gps-waypoint-continuity — optional hint that the
@@ -1048,13 +1085,18 @@ class GpsHandlerNode(Node):
             # R(yaw_world) · antenna_offset_baselink from the raw fix
             # before fusing. yaw_world = odom_yaw + ekf.theta (the
             # rotation between odom and world).
-            if self._gps_link_offset_xy is None:
+            now_s = self._now_s()
+            if (
+                self._gps_link_offset_xy is None
+                and now_s - self._last_gps_link_tf_lookup_s >= GPS_LINK_TF_RETRY_S
+            ):
+                self._last_gps_link_tf_lookup_s = now_s
                 try:
                     tf = self._tf_buffer.lookup_transform(
                         BASE_LINK_FRAME,
                         GPS_LINK_FRAME,
                         Time(),
-                        rclpy.duration.Duration(seconds=0.5),
+                        rclpy.duration.Duration(seconds=0.0),
                     )
                     ax = float(tf.transform.translation.x)
                     ay = float(tf.transform.translation.y)
@@ -1408,7 +1450,7 @@ class GpsHandlerNode(Node):
           * baseline ≥ 1.5 m over the window (sub-baseline → CoG
             uncertainty σ ≈ σ_pos / baseline dominates GPS noise)
 
-        Called from ``_odom_callback`` on every odom tick. Pairs with
+        Called from ``_odom_callback`` at ``estimator_aux_hz``. Pairs with
         ``gps_ekf.predict``'s zeroed F[0,2]/F[1,2] cross-terms (which
         prevent GPS position updates from rotating θ via correlation):
         together they make the EKF's θ depend ONLY on GPS-CoG +
@@ -1418,6 +1460,10 @@ class GpsHandlerNode(Node):
             return
         if len(self._gps_history) < 8:
             return
+        newest_stamp_s = self._gps_history[-1][0]
+        if newest_stamp_s == self._last_theta_measurement_gps_stamp_s:
+            return
+        self._last_theta_measurement_gps_stamp_s = newest_stamp_s
         # Window of the most recent samples — ~3 s at 10 Hz GPS.
         n = min(30, len(self._gps_history))
         old_gps = self._gps_history[-n][1]
@@ -1956,13 +2002,17 @@ class GpsHandlerNode(Node):
             goal_in_odom_x = odom_x + delta_odom_x
             goal_in_odom_y = odom_y + delta_odom_y
 
-        # Look up map → odom and project into map frame.
+        # Look up map → odom and project into map frame. The first publish
+        # may race TF startup, so allow the configured wait there; once a
+        # goal is already live, fail fast and retry on the next timer tick.
+        first_pub = active.last_published_goal_map is None
+        tf_timeout_s = self._tf_timeout_s if first_pub else 0.0
         try:
             tf_map_odom = self._tf_buffer.lookup_transform(
                 self._map_frame,
                 self._odom_frame,
                 Time(),
-                rclpy.duration.Duration(seconds=self._tf_timeout_s),
+                rclpy.duration.Duration(seconds=tf_timeout_s),
             )
         except (LookupException, ConnectivityException, ExtrapolationException):
             self.get_logger().debug(
@@ -2063,7 +2113,6 @@ class GpsHandlerNode(Node):
         # GoalUpdater absorbs it without canceling FollowPath. The
         # heartbeat timer is still reset on heartbeat-due ticks so we
         # never fall back to a /goal_pose cycle mid-leg (PHASEA A.3).
-        first_pub = active.last_published_goal_map is None
         heartbeat_due = (
             now_pub_s - active.last_goal_pose_t_s
             > GOAL_POSE_HEARTBEAT_S

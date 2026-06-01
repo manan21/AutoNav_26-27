@@ -11,12 +11,11 @@ Why this filter exists:
     The robot has no magnetometer (slam/config/dual_ekf_navsat_params.yaml
     sets magnetic_declination_radians: 0.0 and use_odometry_yaw: true).
     The unknown rotation between the ``odom`` frame and the world / GPS
-    frame is the EKF's third state: ``θ``. ``θ`` is observable through
-    the joint dynamics — when GPS shows the robot moving in a direction
-    that disagrees with the odom-frame direction, the only state that
-    explains it is ``θ``. The off-diagonal covariance entries grow
-    naturally as the robot moves, so a single GPS update propagates
-    information into ``θ``.
+    frame is the EKF's third state: ``θ``. Position is predicted from
+    odom deltas and corrected by GPS. ``θ`` is corrected by direct
+    measurements from GPS course-over-ground minus IMU-fused odom yaw in
+    ``gps_handler_node``; GPS position updates intentionally do not infer
+    heading from encoder-biased odom deltas.
 
     The pure EKF cannot escape a 180°-wrong cold start, so a closed-form
     weighted circular mean of ``atan2(Δgps) − atan2(Δodom)`` runs while
@@ -135,9 +134,10 @@ class GpsEkf:
         # calls sourced from GPS course-over-ground + IMU yaw (see
         # ``gps_handler_node._inject_gps_cog_theta_measurement``).
         # No ODOM angle anywhere in the θ chain.
-        F = np.eye(3)
-        # F[0, 2] and F[1, 2] intentionally left at 0.
-        self.P = F @ self.P @ F.T + self._Q * float(dt)
+        # F is intentionally identity here, so F @ P @ F.T is just P.
+        # Avoid allocating/multiplying three small numpy matrices on every
+        # odom tick.
+        self.P += self._Q * float(dt)
         # Position-variance floor — see EKF_POS_VAR_FLOOR docstring.
         # When clamping a diagonal entry up, scale the corresponding row
         # and column off-diagonals by sqrt(new/old) so correlation
@@ -251,23 +251,45 @@ class GpsEkf:
         resync event.
 
         Measurement model: H = [0, 0, 1], R = theta_meas_std². The
-        gain ``K = P[:, 2] / (P[2,2] + R)`` is a 3-vector — the
-        accumulated cross-covariance entries propagate information
-        from the θ observation into x and y too.
+        gain ``K = P[:, 2] / (P[2,2] + R)`` is a 3-vector. Current
+        production tuning keeps θ decorrelated from GPS position so this
+        update normally affects θ only, while still preserving the
+        general scalar Kalman form if covariance is reintroduced later.
         """
         R_theta = float(theta_meas_std) ** 2
         innovation = wrap_pi(float(theta_obs) - self.x[2])
         S = float(self.P[2, 2]) + R_theta
         if S <= 0.0:
             return False
-        K = self.P[:, 2] / S
-        self.x[0] += K[0] * innovation
-        self.x[1] += K[1] * innovation
-        self.x[2] = wrap_pi(self.x[2] + K[2] * innovation)
-        # H = [0,0,1] selects row 2: (I - K H) P  ≡  P - outer(K, P[2,:]).
-        self.P = self.P - np.outer(K, self.P[2, :])
-        # Re-symmetrize for numerical safety.
-        self.P = 0.5 * (self.P + self.P.T)
+        k0 = float(self.P[0, 2]) / S
+        k1 = float(self.P[1, 2]) / S
+        k2 = float(self.P[2, 2]) / S
+        self.x[0] += k0 * innovation
+        self.x[1] += k1 * innovation
+        self.x[2] = wrap_pi(self.x[2] + k2 * innovation)
+
+        # H = [0,0,1] selects row 2: (I - K H) P == P - outer(K, P[2,:]).
+        # Hand-code the 3x3 scalar update to avoid allocating on each GPS
+        # heading measurement.
+        p20 = float(self.P[2, 0])
+        p21 = float(self.P[2, 1])
+        p22 = float(self.P[2, 2])
+        self.P[0, 0] -= k0 * p20
+        self.P[0, 1] -= k0 * p21
+        self.P[0, 2] -= k0 * p22
+        self.P[1, 0] -= k1 * p20
+        self.P[1, 1] -= k1 * p21
+        self.P[1, 2] -= k1 * p22
+        self.P[2, 0] -= k2 * p20
+        self.P[2, 1] -= k2 * p21
+        self.P[2, 2] -= k2 * p22
+
+        p01 = 0.5 * (self.P[0, 1] + self.P[1, 0])
+        p02 = 0.5 * (self.P[0, 2] + self.P[2, 0])
+        p12 = 0.5 * (self.P[1, 2] + self.P[2, 1])
+        self.P[0, 1] = self.P[1, 0] = p01
+        self.P[0, 2] = self.P[2, 0] = p02
+        self.P[1, 2] = self.P[2, 1] = p12
         self.update_count += 1
         return True
 
