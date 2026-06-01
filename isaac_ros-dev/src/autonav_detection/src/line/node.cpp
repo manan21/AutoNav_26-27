@@ -248,12 +248,22 @@ public:
 			latest_depth_img = msg;
 		};
 		
+		// Subscribe RELIABLE (not SensorDataQoS / best-effort). The ZED
+		// publishes the rect image + depth reliably at ~18.6 Hz, but over the
+		// bare-UDP DDS profile (fastdds_udp.xml disables builtin transports and
+		// uses an untuned UDPv4 socket) a best-effort subscriber loses ~half of
+		// each large image's fragments and only ingests ~9-10 Hz -- which
+		// capped /line_points and the line costmap regardless of camera FPS.
+		// Measured directly: reliable sub = 18.62 Hz vs best-effort = 9.12 Hz on
+		// the same topic. Reliable retransmits the dropped fragments so the
+		// detector sees the full publish rate (~20 Hz, matching the lidar).
+		// keep_last(2) bounds latency to ~1 frame of buffering.
 		_zed_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			camera_topic, rclcpp::SensorDataQoS().keep_last(1), get_latest_msg,
+			camera_topic, rclcpp::QoS(rclcpp::KeepLast(2)).reliable(), get_latest_msg,
 			camera_sub_options);
 
 		_zed_depth_subscriber = this->create_subscription<sensor_msgs::msg::Image>(
-			depth_camera_topic, rclcpp::SensorDataQoS().keep_last(1), get_latest_depth_msg,
+			depth_camera_topic, rclcpp::QoS(rclcpp::KeepLast(2)).reliable(), get_latest_depth_msg,
 			depth_sub_options);
 
 		_camera_model_sub = this->create_subscription<sensor_msgs::msg::CameraInfo>(

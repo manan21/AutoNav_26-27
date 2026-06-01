@@ -24,12 +24,13 @@
             # tiny and clear the transport at the full 15 Hz pub_frame_rate.
             grab_resolution: 'HD720'      # was HD1080 (submodule default)
             # Uncap the grab rate. The submodule default grab_frame_rate was
-            # 15, which HARD-CAPPED the published feed at 15 FPS no matter how
-            # much compute headroom existed -- that is the real reason the
-            # camera could not reach 20 FPS. HD720 supports 15/30/60 FPS, so we
-            # grab at 30 and publish 20 (pub_frame_rate <= grab_frame_rate). The
-            # extra grabbed frames give the depth pipeline slack to keep depth
-            # near 20 Hz instead of aliasing down to the publish rate.
+            # 15, which HARD-CAPPED the published feed at 15 FPS regardless of
+            # compute headroom -- the real reason 20 FPS was impossible. HD720
+            # supports 15/30/60 FPS; grab 30 and publish 20. (The publisher
+            # already reaches ~18.6 FPS at 240p; the remaining starvation was a
+            # DDS best-effort fragment-loss issue, fixed on the consumer side --
+            # see the reliable-QoS change in autonav_detection/src/line/node.cpp.
+            # So VGA is NOT needed; HD720 keeps more detail.)
             grab_frame_rate: 30           # was 15 (the FPS ceiling)
             pub_resolution: 'CUSTOM'      # downscale published image/depth
             pub_downscale_factor: 3.0     # 720 / 3 = 240p published (was 2.0 -> 540p)
