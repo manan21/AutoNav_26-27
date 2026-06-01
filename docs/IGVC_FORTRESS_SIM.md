@@ -1,8 +1,14 @@
 # IGVC Fortress Simulation
 
 The active Gazebo simulation target is `igvc_competition_sim`, built for ROS 2
-Humble plus Gazebo Fortress. The older Gazebo Classic `sim` and `autonav_sim`
-packages are intentionally ignored by colcon.
+Humble plus Gazebo Fortress. It now lives in the standalone `autonav_sim` repo,
+not inside this robot-stack repo:
+
+- `https://github.com/blobspire/autonav_sim.git`
+
+Keep the robot stack and simulator as sibling packages in the same ROS
+workspace. The older in-repo Gazebo Classic `sim` and `autonav_sim` packages
+are intentionally ignored by colcon.
 
 ## Purpose
 
@@ -28,12 +34,32 @@ The SICK-style cloud keeps the existing first-return lidar-line model for
 reflective tape and pothole discs, while cylinder obstacles feed the PCA
 obstacle path.
 
-## Course
+## Workspace Setup
 
-The compact course source is:
+Create a ROS workspace with both repos under `src/`:
 
 ```bash
-isaac_ros-dev/src/igvc_competition_sim/config/igvc_competition_compact.yaml
+mkdir -p autonav_ws/src
+cd autonav_ws/src
+git clone https://github.com/blobspire/autonav_sim.git
+git clone <robot-repo-url> AutoNav_25-26
+```
+
+Build from the workspace root:
+
+```bash
+cd autonav_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+## Course
+
+The compact course source is in the standalone sim repo:
+
+```bash
+autonav_sim/igvc_competition_sim/config/igvc_competition_compact.yaml
 ```
 
 It includes:
@@ -46,10 +72,10 @@ It includes:
   giving the GPS EKF enough motion before GPS waypoint legs.
 - First-44-ft speed-check metadata and live scoring stations.
 
-Regenerate the SDF after changing the YAML:
+Regenerate the SDF after changing the YAML from the standalone sim repo:
 
 ```bash
-cd isaac_ros-dev/src/igvc_competition_sim
+cd autonav_ws/src/autonav_sim/igvc_competition_sim
 python3 -m igvc_competition_sim.generate_world \
   --course-config config/igvc_competition_compact.yaml \
   --output worlds/igvc_competition_compact.sdf
@@ -57,18 +83,10 @@ python3 -m igvc_competition_sim.generate_world \
 
 ## Run
 
-Build the workspace first:
-
-```bash
-cd isaac_ros-dev
-colcon build
-source install/setup.bash
-```
-
 Run the full test:
 
 ```bash
-cd isaac_ros-dev/src/igvc_competition_sim
+cd autonav_ws/src/autonav_sim/igvc_competition_sim
 ./Run_IGVC_COMPETITION_FORTRESS_TEST.command
 ```
 
