@@ -2752,14 +2752,23 @@ class GpsHandlerNode(Node):
         # EXECUTING with event CANCELED`` and bubbles up as the
         # ``execute_callback exception`` we saw repeating every ~5 s.
         # Use ``goal_handle.is_cancel_requested`` to disambiguate.
-        if result.succeeded:
-            goal_handle.succeed()
-        elif goal_handle.is_cancel_requested:
-            # client cancel — handle is already in CANCELING
-            goal_handle.canceled()
-        else:
-            # internal preempt or abort — handle is in EXECUTING
-            goal_handle.abort()
+        try:
+            if not goal_handle.is_active:
+                self.get_logger().debug(
+                    "goal handle already terminal; skipping duplicate transition"
+                )
+            elif result.succeeded:
+                goal_handle.succeed()
+            elif goal_handle.is_cancel_requested:
+                # client cancel — handle is already in CANCELING
+                goal_handle.canceled()
+            else:
+                # internal preempt or abort — handle is in EXECUTING
+                goal_handle.abort()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"goal terminal transition skipped after state race: {exc}"
+            )
 
         # Release any newer goal that's waiting in its preempt branch.
         if active is not None and active.preempt_done is not None:
