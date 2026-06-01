@@ -1773,7 +1773,7 @@ class GpsHandlerNode(Node):
         active: "_ActiveGoal",
         goal_map_xy: Tuple[float, float],
     ) -> None:
-        """Publish a LOCAL/map-frame goal directly to /goal_pose.
+        """Publish a LOCAL/map-frame goal through the Nav2 action path.
 
         For LOCAL goals the goal's (x, y) is *already* in map frame —
         no projection, no TF lookup, no candidate smoother. This is the
@@ -1808,7 +1808,7 @@ class GpsHandlerNode(Node):
         first_pub = active.last_published_goal_map is None
         if first_pub:
             self._dispatch_nav2_goal_once(active, msg)
-            self._goal_pub.publish(msg)
+            self._goal_update_pub.publish(msg)
             active.last_goal_pose_t_s = now_pub_s
         else:
             self._goal_update_pub.publish(msg)
@@ -2004,13 +2004,13 @@ class GpsHandlerNode(Node):
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
 
-        # Route: ONLY the first publish of a leg goes to /goal_pose
-        # (kicks NavigateToPose action / sets the action handle). Every
-        # subsequent in-mission update — including the periodic safety
-        # heartbeat — flows through /goal_update so the BT's
-        # GoalUpdater absorbs it without canceling FollowPath. The
-        # heartbeat timer is still reset on heartbeat-due ticks so we
-        # never fall back to a /goal_pose cycle mid-leg (PHASEA A.3).
+        # Route: ONLY the direct NavigateToPose action starts a new leg.
+        # Publishing the same first pose to /goal_pose also triggers
+        # bt_navigator's topic goal bridge, which self-preempts the
+        # action goal we track and can make waypoint 1 abort while the
+        # replacement Nav2 goal is still executing. Topic-side pose
+        # traffic therefore always flows through /goal_update, where
+        # GoalUpdater can absorb it without canceling FollowPath.
         first_pub = active.last_published_goal_map is None
         heartbeat_due = (
             now_pub_s - active.last_goal_pose_t_s
@@ -2018,7 +2018,7 @@ class GpsHandlerNode(Node):
         )
         if first_pub:
             self._dispatch_nav2_goal_once(active, msg)
-            self._goal_pub.publish(msg)
+            self._goal_update_pub.publish(msg)
             active.last_goal_pose_t_s = now_pub_s
         else:
             self._goal_update_pub.publish(msg)
