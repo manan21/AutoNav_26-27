@@ -218,8 +218,12 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 15.0
-      publish_frequency: 15.0
+      # Refresh the local costmap at the sensor input rate (~20 Hz) so line +
+      # lidar lethal cells appear at the same cadence as the feeds (lidar
+      # /scan_fullframe ~20 Hz; /line_points ~20 Hz after the accelerated
+      # camera + reliable-QoS changes). Was 15.0.
+      update_frequency: 20.0
+      publish_frequency: 20.0
       global_frame: odom
       robot_base_frame: nav_center
       use_sim_time: False
