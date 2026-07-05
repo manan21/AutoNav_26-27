@@ -47,14 +47,29 @@
       <mass value="0.45" />
       <inertia ixx="0.0009" iyy="0.0009" izz="0.0005" ixy="0" ixz="0" iyz="0" />
     </inertial>
-    <visual>
+    <!-- Caster fork/mount as PRIMITIVES. The Caster_link.STL mesh combines the
+         fork AND wheel as one rigid piece, which renders wrong on an articulated
+         caster (the wheel can't roll independently, leaving it detached/floating);
+         these primitives match the prior baked-SDF caster and articulate cleanly. -->
+    <visual name="caster_mount">
+      <origin xyz="0 0 0.025" rpy="0 0 0" />
+      <geometry><cylinder radius="0.028" length="0.055" /></geometry>
+      <material name="caster_mount_mat"><color rgba="0.55 0.58 0.66 1.0" /></material>
+    </visual>
+    <visual name="caster_swivel_pin">
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <mesh filename="package://bringup/description/meshes/Caster_link.STL" />
-      </geometry>
-      <material name="caster_material">
-        <color rgba="0.866666666666667 0.909803921568627 1 1" />
-      </material>
+      <geometry><cylinder radius="0.018" length="0.05" /></geometry>
+      <material name="caster_pin_mat"><color rgba="0.32 0.34 0.40 1.0" /></material>
+    </visual>
+    <visual name="caster_fork_left">
+      <origin xyz="-0.045 0.042 -0.003" rpy="0 0 0" />
+      <geometry><box size="0.036 0.016 0.15" /></geometry>
+      <material name="caster_fork_l_mat"><color rgba="0.42 0.45 0.52 1.0" /></material>
+    </visual>
+    <visual name="caster_fork_right">
+      <origin xyz="-0.045 -0.042 -0.003" rpy="0 0 0" />
+      <geometry><box size="0.036 0.016 0.15" /></geometry>
+      <material name="caster_fork_r_mat"><color rgba="0.42 0.45 0.52 1.0" /></material>
     </visual>
   </link>
   <joint name="Caster" type="continuous">
@@ -76,6 +91,11 @@
         <cylinder radius="0.075" length="0.064" />
       </geometry>
     </collision>
+    <visual name="caster_wheel_visual">
+      <origin xyz="0 0 0" rpy="1.570796 0 0" />
+      <geometry><cylinder radius="0.075" length="0.064" /></geometry>
+      <material name="caster_wheel_mat"><color rgba="0.04 0.04 0.04 1.0" /></material>
+    </visual>
   </link>
   <joint name="Caster_Wheel_Roll" type="continuous">
     <origin xyz="-0.045000 0 -0.013580" rpy="0 0 0" />
