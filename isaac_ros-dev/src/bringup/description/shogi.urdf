@@ -161,7 +161,16 @@
     <origin xyz="0 -0.361630 0" rpy="2.749800 0 -1.570804" />
     <parent link="base_link" />
     <child link="right_wheel_link" />
-    <axis xyz="1 0 0" />
+    <!-- Axis reversed vs the original (which shared "1 0 0" with Left_Wheel).
+         Left/Right origins have OPPOSITE-signed yaw (+1.570796 / -1.570804), so a
+         shared +X axis yields ANTIPARALLEL world spin axes (left +Y, right -Y).
+         The Gazebo DiffDrive plugin assumes parallel wheel axes, so with the
+         original axes "forward" spins the robot in place and "rotate" drives it
+         straight. Reversing to -1 0 0 makes both spin axes +Y (parallel) so the
+         diff-drive works. INERT on the real robot: the wheel joints are fed q=0
+         by joint_state_publisher (no encoder->joint_state source in the stack),
+         and at q=0 the TF equals the joint origin regardless of axis sign. -->
+    <axis xyz="-1 0 0" />
   </joint>
 
   <link name="left_wheel_link">
