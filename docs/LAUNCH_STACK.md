@@ -76,9 +76,14 @@ running so you can read its logs in the terminal viewer.
 ## RViz
 
 RViz runs **locally on your own Linux laptop** (not in the container)
-— see the main `README.md` for the `ROS_DOMAIN_ID` setup. Once it's
-open, set the base frame to `map` and add the visualizations you
-need (TF, costmaps, point clouds).
+— see the main `README.md` for the `ROS_DOMAIN_ID` setup. Launch it
+with `./config/run-rviz.sh`, which opens the CV-pipeline config
+(`src/autonav_viz/rviz/cv_pipeline.rviz`): lane masks, classified
+obstacles, light/sign readouts, costmaps and path, in the `odom` frame.
+Point `AUTONAV_RVIZ_CONFIG` at another `.rviz` file to override it.
+For placeholder perception data on topics no detector publishes yet,
+run `ros2 launch autonav_viz viz.launch.py use_stub:=true` instead
+(see `src/autonav_viz/README.md`).
 
 You don't strictly need RViz on demo day — the GUI shows the same
 costmap, path, robot pose, and GPS map that you'd otherwise be

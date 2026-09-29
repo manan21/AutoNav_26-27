@@ -14,6 +14,7 @@ A briefing on each ROS2 package under `isaac_ros-dev/src/`. Bigger packages are 
 - [autonav_electrical_publisher](#autonav_electrical_publisher)
 - [autonav_interfaces](#autonav_interfaces)
 - [autonav_sim](#autonav_sim)
+- [autonav_viz](#autonav_viz)
 - [autonav-gui-hud](#autonav-gui-hud)
   - [What it is and where it runs](#what-it-is-and-where-it-runs)
   - [Install and launch](#install-and-launch)
@@ -167,6 +168,21 @@ Custom ROS2 message and service definitions used across the project. Pure interf
 | **Build** | `ament_cmake` |
 
 > **Heads up:** Kept around for reference / rollback, not in active use. It is intentionally ignored by colcon.
+
+## autonav_viz
+
+RViz visualization suite for the CV pipeline: white vs yellow lane masks, classified obstacles, traffic-light and sign readouts, and the BEV costmap / path view. It owns a perception **topic contract** (`/perception/*`), so displays for detectors that don't exist yet are fed by a stub until the real detector publishes on the same topic.
+
+| | |
+|---|---|
+| **Provides** | `rviz/cv_pipeline.rviz`, `launch/viz.launch.py`, node `perception_viz_stub` (testing only) |
+| **Subscribes (RViz)** | `/line_detection/debug/*`, `/lines_pointcloud`, `/lidar_line_detection/debug/points`, `/scan_pca_filtered_points`, `/local_costmap/costmap`, `/line_costmap`, `/plan`, plus the `/perception/*` contract |
+| **Publishes (stub)** | `/perception/lanes/{yellow_mask,mask_color}`, `/perception/objects/markers`, `/perception/signals/markers`, `/perception/detections/image`, `/perception/bev/image` |
+| **Build** | `ament_python` |
+
+> **Heads up:** `./config/run-rviz.sh` opens `cv_pipeline.rviz` by default (override with `AUTONAV_RVIZ_CONFIG`). Turn off each `publish_*` stub param as the real detector for that topic comes online. See `isaac_ros-dev/src/autonav_viz/README.md` for the full contract and marker conventions.
+
+---
 
 ## autonav-gui-hud
 
